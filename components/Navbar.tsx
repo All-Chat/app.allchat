@@ -22,7 +22,7 @@ export default function Navbar() {
   const handleLogout = async () => {
     await signOut({ redirect: false });
     toast.success("Logged out successfully");
-    router.push("/");
+    router.push("/app");
   };
 
   const handleToast = (type: string) => {
@@ -47,37 +47,7 @@ export default function Navbar() {
             />
           </Link>
 
-          {/* CENTER - DESKTOP LINKS (Hidden on mobile) */}
-          <div className="hidden md:flex items-center gap-8">
-            {isLoggedIn ? (
-              <Link
-                href="/dashboard"
-                className="relative flex items-center gap-2 text-sm font-medium text-gray-900 transition-colors group"
-              >
-                <LayoutDashboard className="w-4 h-4 text-green-500" />
-                <span>Dashboard</span>
-                <span className="absolute -bottom-1 left-0 w-0 h-0.5 bg-green-500 transition-all group-hover:w-full"></span>
-              </Link>
-            ) : (
-              <>
-                <Link
-                  href="/"
-                  className="relative flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors group"
-                >
-                  <Home className="w-4 h-4 text-green-500" />
-                  <span>Home</span>
-                  <span className="absolute -bottom-1 left-0 w-0 h-0.5 bg-green-500 transition-all group-hover:w-full"></span>
-                </Link>
-                <Link
-                  href="/#features"
-                  className="relative text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors group"
-                >
-                  <span>Features</span>
-                  <span className="absolute -bottom-1 left-0 w-0 h-0.5 bg-green-500 transition-all group-hover:w-full"></span>
-                </Link>
-              </>
-            )}
-          </div>
+         
 
           {/* RIGHT - BUTTONS (Visible on all screens, no hamburger) */}
           <div className="flex items-center gap-2 sm:gap-3">
@@ -92,23 +62,7 @@ export default function Navbar() {
               </button>
             ) : (
               <>
-                <Link
-                  href="/signin"
-                  onClick={() => handleToast("login")}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs sm:text-sm font-semibold border border-gray-300 text-gray-800 hover:bg-gray-100 transition"
-                >
-                  <LogIn className="w-4 h-4" />
-                  <span className="hidden sm:inline">Sign In</span>
-                </Link>
-
-                <Link
-                  href="/signup"
-                  onClick={() => handleToast("signup")}
-                  className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs sm:text-sm font-semibold text-white bg-gradient-to-r from-green-500 to-emerald-600 shadow-md shadow-green-500/30 hover:shadow-green-500/50 transition-all hover:scale-105"
-                >
-                  <UserPlus className="w-4 h-4" />
-                  <span className="hidden sm:inline">Sign Up</span>
-                </Link>
+               
               </>
             )}
           </div>
