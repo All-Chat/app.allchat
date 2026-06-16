@@ -1,5 +1,6 @@
-/* eslint-disable react-hooks/immutability */
 /* eslint-disable react-hooks/purity */
+/* eslint-disable react-hooks/immutability */
+ 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
@@ -64,10 +65,10 @@ export default function EditCampaign() {
         (t: any) => t.name === initialCampaignData.templateName && t.language === initialCampaignData.languageCode
       );
       if (tmpl) {
-        handleTemplateSelect(tmpl.name, tmpl.language);
+        handleTemplateSelect(tmpl.name, tmpl.language, initialCampaignData.variables);
       } else {
         const fallback = templates.find((t: any) => t.name === initialCampaignData.templateName);
-        if (fallback) handleTemplateSelect(fallback.name, fallback.language);
+        if (fallback) handleTemplateSelect(fallback.name, fallback.language, initialCampaignData.variables);
       }
     }
   }, [initialCampaignData, templates]);
@@ -109,19 +110,18 @@ export default function EditCampaign() {
     } catch (err) { toast.error("Failed to load campaign data"); } finally { setLoadingData(false); }
   };
 
-  const handleTemplateSelect = (name: string, langOrPreserved?: string | string[]) => {
-    let language: string | undefined;
-    let preservedVars: string[] | undefined;
+  const handleTemplateSelect = (name: string, language?: string, preservedVars?: string[]) => {
+// language & preserved vars are now explicit params
 
-    if (Array.isArray(langOrPreserved)) { preservedVars = langOrPreserved; }
-    else if (typeof langOrPreserved === "string" && langOrPreserved) { language = langOrPreserved; }
+let tmpl: any;
 
-    let tmpl: any;
-    if (language) { tmpl = templates.find((t: any) => t.name === name && t.language === language); }
-    else if (preservedVars) {
-      tmpl = templates.find((t: any) => t.name === name && t.language === languageCode);
-      if (!tmpl) tmpl = templates.find((t: any) => t.name === name);
-    } else { tmpl = templates.find((t: any) => t.name === name); }
+if (language) {
+  tmpl = templates.find((t: any) => t.name === name && t.language === language);
+} else {
+  tmpl =
+    templates.find((t: any) => t.name === name && t.language === languageCode) ||
+    templates.find((t: any) => t.name === name);
+}
 
     if (!tmpl) return;
     setSelectedTemplate(tmpl);
@@ -143,8 +143,7 @@ export default function EditCampaign() {
     setBodyText(text);
     const matches = text.match(/\{\{\d+\}\}/g) || [];
 
-    if (preservedVars && preservedVars.length === matches.length) setVariables(preservedVars);
-    else setVariables(matches.map(() => ""));
+    setVariables(matches.map((_: any, i: number) => preservedVars?.[i] || ""));
 
     const footerComp = tmpl.components?.find((c: any) => c.type === "FOOTER");
     setFooterText(footerComp?.text || "");
