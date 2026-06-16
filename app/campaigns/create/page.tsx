@@ -52,7 +52,7 @@ export default function CreateCampaign() {
     if (status === "authenticated") {
       fetchTemplates();
     } else if (status === "unauthenticated") {
-      window.location.href = "/signin";
+      window.location.href = "/";
     }
   }, [status]);
 
@@ -64,7 +64,7 @@ export default function CreateCampaign() {
     try {
       const res = await fetch("/api/campaigns/templates");
       const data = await res.json();
-      if (res.status === 401) { window.location.href = "/signin"; return; }
+      if (res.status === 401) { window.location.href = "/"; return; }
       if (data.success) setTemplates(data.templates);
     } catch (err) {
       console.error("Failed to fetch templates", err);
@@ -308,7 +308,7 @@ export default function CreateCampaign() {
         });
       }
 
-      if (res.status === 401) { toast.error("Session expired."); setTimeout(() => window.location.href = "/signin", 1500); return; }
+      if (res.status === 401) { toast.error("Session expired."); setTimeout(() => window.location.href = "/", 1500); return; }
 
       const data = await res.json();
       if (data.success) { toast.success(isSchedule ? "Scheduled!" : "Saved!"); setTimeout(() => window.location.href = "/campaigns/list", 1000); }
