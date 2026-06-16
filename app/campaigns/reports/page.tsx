@@ -84,7 +84,7 @@ export default function ReportsPage() {
     if (status === "authenticated") {
       fetchCampaigns();
     } else if (status === "unauthenticated") {
-      window.location.href = "/signin";
+      window.location.href = "/";
     }
   }, [status]);
 
@@ -98,7 +98,7 @@ export default function ReportsPage() {
   const fetchCampaigns = async () => {
     try {
       const res = await fetch("/api/campaigns/list");
-      if (res.status === 401) { window.location.href = "/signin"; return; }
+      if (res.status === 401) { window.location.href = "/"; return; }
       const data = await res.json();
       if (data.success) {
         const validCampaigns = data.campaigns.filter((c: Campaign) => c.status !== "saved" && c.status !== "scheduled");
