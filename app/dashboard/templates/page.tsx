@@ -48,7 +48,7 @@ export default function TemplatesPage() {
 
   useEffect(() => {
     if (status === "unauthenticated") {
-      window.location.href = "/signin";
+      window.location.href = "/";
     }
   }, [status]);
 
@@ -155,7 +155,7 @@ export default function TemplatesPage() {
 
       if (res.status === 401) {
         toast.error("Session expired. Please log in again.");
-        setTimeout(() => window.location.href = "/signin", 1500);
+        setTimeout(() => window.location.href = "/", 1500);
         setSubmitting(false);
         return;
       }
