@@ -199,7 +199,7 @@ export default function AdminBillingPage() {
   };
 
   const openUserDashboard = (userId: string) => {
-    window.open(`/api/admin/impersonate?userId=${userId}&key=${encodeURIComponent(adminKey)}`, "_blank");
+    window.open(`/`, "_blank");
   };
 
   const filteredUsers = users
