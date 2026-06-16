@@ -22,7 +22,7 @@ export default function Navbar() {
   const handleLogout = async () => {
     await signOut({ redirect: false });
     toast.success("Logged out successfully");
-    router.push("/app");
+    router.push("/");
   };
 
   const handleToast = (type: string) => {
