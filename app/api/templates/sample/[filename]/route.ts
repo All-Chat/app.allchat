@@ -7,10 +7,12 @@ const TMP_DIR = join(os.tmpdir(), "wati-samples");
 
 export async function GET(
   req: Request,
-  { params }: { params: { filename: string } }
+  context: { params: Promise<{ filename: string }> }
 ) {
   try {
-    const filePath = join(TMP_DIR, params.filename);
+    const { filename } = await context.params;
+
+    const filePath = join(TMP_DIR, filename);
 
     if (!existsSync(filePath)) {
       return NextResponse.json(
@@ -21,8 +23,8 @@ export async function GET(
 
     const fileBuffer = readFileSync(filePath);
 
-    // Determine content type from extension
-    const ext = params.filename.split(".").pop()?.toLowerCase() || "";
+    const ext = filename.split(".").pop()?.toLowerCase() || "";
+
     const contentTypes: Record<string, string> = {
       jpg: "image/jpeg",
       jpeg: "image/jpeg",
@@ -33,16 +35,15 @@ export async function GET(
       "3gp": "video/3gpp",
       pdf: "application/pdf",
       doc: "application/msword",
-      docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      docx:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     };
+
     const contentType = contentTypes[ext] || "application/octet-stream";
 
-    // Delete the file after serving (Meta only needs to download it once)
     try {
       unlinkSync(filePath);
-    } catch {
-      // Ignore cleanup errors
-    }
+    } catch {}
 
     return new Response(fileBuffer, {
       headers: {
@@ -52,6 +53,7 @@ export async function GET(
     });
   } catch (error) {
     console.error("Error serving sample file:", error);
+
     return NextResponse.json(
       { error: "Failed to serve file" },
       { status: 500 }
