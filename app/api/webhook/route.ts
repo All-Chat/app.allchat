@@ -106,7 +106,10 @@ export async function POST(req: Request) {
 
           console.log("📤 Sending:", message);
 
-          await sendWhatsAppTemplate(phone, message);
+          await sendWhatsAppTemplate({
+  phone,
+  message,
+});
 
           await Message.create({
             userId,
