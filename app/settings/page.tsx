@@ -57,7 +57,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (status === "authenticated") fetchSettings();
-    else if (status === "unauthenticated") window.location.href = "/signin";
+    else if (status === "unauthenticated") window.location.href = "/";
   }, [status]);
 
   const handleSave = async (e: React.FormEvent) => {
