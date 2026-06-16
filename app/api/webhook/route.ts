@@ -17,11 +17,8 @@ export async function POST(req: Request) {
 
     const value = body?.entry?.[0]?.changes?.[0]?.value;
 
-    // ===============================
-    // IGNORE NON-MESSAGE EVENTS
-    // ===============================
+    // Ignore non-message events
     if (!value?.messages?.length) {
-      console.log("ℹ️ Not a message event (ignored)");
       return NextResponse.json({ success: true });
     }
 
@@ -37,12 +34,11 @@ export async function POST(req: Request) {
 
     const incoming = text.toLowerCase().trim();
 
-    console.log("📩 Incoming message:", phone, "->", incoming);
+    console.log("📩 Incoming:", phone, incoming);
 
-    // ===============================
-    // IDENTIFY USER (MULTI-TENANT)
-    // ===============================
+    // Identify user
     const metadataPhoneNumberId = value?.metadata?.phone_number_id;
+
     let userId: string | null = null;
 
     if (metadataPhoneNumberId) {
@@ -53,15 +49,12 @@ export async function POST(req: Request) {
       if (ownerUser) userId = ownerUser._id.toString();
     }
 
-    // fallback user
     if (!userId) {
       const fallbackUser = await User.findOne().sort({ _id: -1 });
       if (fallbackUser) userId = fallbackUser._id.toString();
     }
 
-    // ===============================
-    // SAVE INCOMING MESSAGE
-    // ===============================
+    // Save incoming message
     await Message.create({
       userId,
       phone,
@@ -69,19 +62,11 @@ export async function POST(req: Request) {
       direction: "in",
     });
 
-    // ===============================
-    // LOAD WORKFLOWS
-    // ===============================
-    const workflowQuery = userId ? { userId } : {};
-    const workflows = await Workflow.find(workflowQuery);
-
-    console.log("🔍 Workflows found:", workflows.length);
+    // Load workflows
+    const workflows = await Workflow.find(userId ? { userId } : {});
 
     let matched = false;
 
-    // ===============================
-    // WORKFLOW ENGINE
-    // ===============================
     for (const wf of workflows) {
       const triggers =
         wf?.triggers ||
@@ -95,9 +80,9 @@ export async function POST(req: Request) {
 
       for (const trigger of triggers) {
         const keyword = trigger?.keyword?.toLowerCase().trim();
-        if (!keyword) continue;
-
         const matchMode = trigger?.matchMode || "contains";
+
+        if (!keyword) continue;
 
         if (matchMode === "exact") {
           if (incoming === keyword) isMatch = true;
@@ -108,7 +93,6 @@ export async function POST(req: Request) {
 
       if (isMatch) {
         matched = true;
-        console.log("⚡ MATCHED WORKFLOW");
 
         const actions = wf?.actions || [];
         const rootStep = wf?.steps?.[wf?.rootStepId];
@@ -117,30 +101,19 @@ export async function POST(req: Request) {
           ? [rootStep.message]
           : actions.map((a: any) => a?.message);
 
-        if (!messagesToSend.length || !messagesToSend[0]) {
-          console.log("❌ No messages in workflow");
-          continue;
-        }
-
         for (const message of messagesToSend) {
           if (!message) continue;
 
-          console.log("📤 Sending message:", message);
+          console.log("📤 Sending:", message);
 
-          try {
-            await sendWhatsAppTemplate(phone, message);
+          await sendWhatsAppTemplate(phone, message);
 
-            console.log("✅ Sent successfully");
-
-            await Message.create({
-              userId,
-              phone,
-              text: message,
-              direction: "out",
-            });
-          } catch (err) {
-            console.error("❌ Send failed:", err);
-          }
+          await Message.create({
+            userId,
+            phone,
+            text: message,
+            direction: "out",
+          });
         }
 
         break;
@@ -153,7 +126,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ success: true });
   } catch (err: any) {
-    console.error("❌ Webhook error:", err);
+    console.error(err);
 
     return NextResponse.json(
       { success: false, error: err.message },
