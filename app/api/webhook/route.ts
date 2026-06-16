@@ -1,9 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Message from "@/models/Message";
 import Workflow from "@/models/Workflow";
-import User from "@/models/User"; // ADDED: To find which user owns this number
+import User from "@/models/User";
 import { sendWhatsAppTemplate } from "@/lib/whatsapp";
 
 export async function POST(req: Request) {
@@ -39,19 +40,20 @@ export async function POST(req: Request) {
     console.log("📩 Incoming message:", phone, "->", incoming);
 
     // ===============================
-    // IDENTIFY USER (CRITICAL FOR MULTI-TENANT)
+    // IDENTIFY USER (MULTI-TENANT)
     // ===============================
-    // Since Meta calls this webhook directly, there's no NextAuth session.
-    // We find the user based on the WhatsApp Phone Number ID Meta sends.
     const metadataPhoneNumberId = value?.metadata?.phone_number_id;
     let userId: string | null = null;
 
     if (metadataPhoneNumberId) {
-      const ownerUser = await User.findOne({ whatsappPhoneNumberId: metadataPhoneNumberId });
+      const ownerUser = await User.findOne({
+        whatsappPhoneNumberId: metadataPhoneNumberId,
+      });
+
       if (ownerUser) userId = ownerUser._id.toString();
     }
 
-    // Fallback: If you only have 1 user on the platform, assign it to them
+    // fallback user
     if (!userId) {
       const fallbackUser = await User.findOne().sort({ _id: -1 });
       if (fallbackUser) userId = fallbackUser._id.toString();
@@ -61,14 +63,14 @@ export async function POST(req: Request) {
     // SAVE INCOMING MESSAGE
     // ===============================
     await Message.create({
-      userId, // ADDED: Tie to the user who owns this number
+      userId,
       phone,
       text,
       direction: "in",
     });
 
     // ===============================
-    // LOAD WORKFLOWS FOR THIS USER
+    // LOAD WORKFLOWS
     // ===============================
     const workflowQuery = userId ? { userId } : {};
     const workflows = await Workflow.find(workflowQuery);
@@ -78,13 +80,16 @@ export async function POST(req: Request) {
     let matched = false;
 
     // ===============================
-    // WORKFLOW ENGINE (UPDATED FOR TRIGGERS ARRAY)
+    // WORKFLOW ENGINE
     // ===============================
     for (const wf of workflows) {
-      // Support both new array format and old single keyword format
-      const triggers = wf?.triggers || (wf?.trigger ? [{ keyword: wf.trigger.keyword, matchMode: "exact" }] : []);
+      const triggers =
+        wf?.triggers ||
+        (wf?.trigger
+          ? [{ keyword: wf.trigger.keyword, matchMode: "contains" }]
+          : []);
 
-      if (triggers.length === 0) continue;
+      if (!triggers.length) continue;
 
       let isMatch = false;
 
@@ -97,7 +102,6 @@ export async function POST(req: Request) {
         if (matchMode === "exact") {
           if (incoming === keyword) isMatch = true;
         } else {
-          // Contains mode
           if (incoming.includes(keyword)) isMatch = true;
         }
       }
@@ -106,13 +110,14 @@ export async function POST(req: Request) {
         matched = true;
         console.log("⚡ MATCHED WORKFLOW");
 
-        // Support both new steps format and old actions format
         const actions = wf?.actions || [];
         const rootStep = wf?.steps?.[wf?.rootStepId];
-        
-        const messagesToSend = rootStep ? [rootStep.message] : actions.map((a: any) => a?.message);
 
-        if (messagesToSend.length === 0 || !messagesToSend[0]) {
+        const messagesToSend = rootStep
+          ? [rootStep.message]
+          : actions.map((a: any) => a?.message);
+
+        if (!messagesToSend.length || !messagesToSend[0]) {
           console.log("❌ No messages in workflow");
           continue;
         }
@@ -124,11 +129,11 @@ export async function POST(req: Request) {
 
           try {
             await sendWhatsAppTemplate(phone, message);
+
             console.log("✅ Sent successfully");
 
-            // SAVE OUTGOING MESSAGE
             await Message.create({
-              userId, // ADDED: Tie to the user who owns this number
+              userId,
               phone,
               text: message,
               direction: "out",
@@ -138,7 +143,7 @@ export async function POST(req: Request) {
           }
         }
 
-        break; // Stop after first matched workflow
+        break;
       }
     }
 
