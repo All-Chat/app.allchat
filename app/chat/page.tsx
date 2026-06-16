@@ -91,7 +91,7 @@ const parseTemplateButtons = (buttons: TemplateButton[] | string | undefined): T
 
 const handleUnauthorized = (res: Response) => {
   if (res.status === 401) {
-    window.location.href = "/signin";
+    window.location.href = "/";
     return true;
   }
   return false;
@@ -278,7 +278,7 @@ export default function ChatPage() {
   // ─── Effects ───
   useEffect(() => {
     if (status === "authenticated") loadChats();
-    else if (status === "unauthenticated") window.location.href = "/signin";
+    else if (status === "unauthenticated") window.location.href = "/";
   }, [status]);
 
   useEffect(() => {
