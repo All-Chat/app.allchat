@@ -83,7 +83,7 @@ function EditCampaignContent() {
       const res = await fetch("/api/campaigns/templates");
       const data = await res.json();
       if (res.status === 401) {
-        window.location.href = "/signin";
+        window.location.href = "/";
         return;
       }
       if (data.success) setTemplates(data.templates);
@@ -96,7 +96,7 @@ function EditCampaignContent() {
     try {
       const res = await fetch("/api/campaigns/list");
       if (res.status === 401) {
-        window.location.href = "/signin";
+        window.location.href = "/";
         return;
       }
       const data = await res.json();
@@ -470,7 +470,7 @@ function EditCampaignContent() {
 
       if (res.status === 401) {
         toast.error("Session expired.");
-        setTimeout(() => (window.location.href = "/signin"), 1500);
+        setTimeout(() => (window.location.href = "/"), 1500);
         return;
       }
       const data = await res.json();
