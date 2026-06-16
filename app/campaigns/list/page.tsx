@@ -94,7 +94,7 @@ export default function CampaignList() {
       fetchBilling();
       const interval = setInterval(loadCampaigns, 3000);
       return () => clearInterval(interval);
-    } else if (status === "unauthenticated") { router.push("/signin"); }
+    } else if (status === "unauthenticated") { router.push("/"); }
   }, [status, router]);
 
   useEffect(() => {
@@ -120,7 +120,7 @@ export default function CampaignList() {
   const loadCampaigns = async () => {
     try {
       const res = await fetch("/api/campaigns/list");
-      if (res.status === 401) { router.push("/signin"); return; }
+      if (res.status === 401) { router.push("/"); return; }
       const data = await res.json();
       if (data.success) setCampaigns(data.campaigns);
     } catch (err) { console.error("Failed to load campaigns", err); }
