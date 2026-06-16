@@ -52,7 +52,7 @@ export default function SignupPage() {
       if (loginResult?.error) {
         // If auto-login fails, send them to the login page manually
         toast.error("Account created, please log in manually.");
-        setTimeout(() => window.location.href = "/signin", 1500);
+        setTimeout(() => window.location.href = "/", 1500);
       } else {
         // 3. If auto-login works, redirect to dashboard
         setTimeout(() => window.location.href = "/dashboard", 1000);
@@ -155,7 +155,7 @@ export default function SignupPage() {
         {/* Footer */}
         <p className="text-center text-sm text-gray-500 mt-8">
           Already have an account?{" "}
-          <Link href="/signin" className="text-green-600 font-semibold hover:underline">
+          <Link href="/" className="text-green-600 font-semibold hover:underline">
             Sign In
           </Link>
         </p>
