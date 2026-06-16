@@ -6,6 +6,7 @@ import User from "@/models/User";
 export async function POST(req: Request) {
   try {
     await connectDB();
+
     const { name, password } = await req.json();
 
     if (!name || !password) {
@@ -17,6 +18,7 @@ export async function POST(req: Request) {
 
     // 1. Find User
     const user = await User.findOne({ name });
+
     if (!user) {
       return NextResponse.json(
         { message: "Invalid name or password" },
@@ -24,7 +26,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2. Check Password (Plain text comparison as requested)
+    // 2. Check Password (plain text as you requested)
     if (user.password !== password) {
       return NextResponse.json(
         { message: "Invalid name or password" },
@@ -32,17 +34,16 @@ export async function POST(req: Request) {
       );
     }
 
-    // 3. Success - Return user data
-    const userObj = user.toObject();
-    delete userObj.password; // Remove password before sending to frontend
+    // 3. Success - Return user data (SAFE FIX)
+    const { password: _, ...safeUser } = user.toObject();
 
     return NextResponse.json({
       success: true,
-      user: userObj,
+      user: safeUser,
     });
   } catch (error: any) {
     return NextResponse.json(
-      { message: error.message },
+      { message: error.message || "Internal Server Error" },
       { status: 500 }
     );
   }
