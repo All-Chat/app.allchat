@@ -55,7 +55,7 @@ export default function SendMessagePage() {
       fetchTemplates();
       fetchBilling();
     } else if (status === "unauthenticated") {
-      window.location.href = "/signin";
+      window.location.href = "/";
     }
   }, [status]);
 
@@ -70,7 +70,7 @@ export default function SendMessagePage() {
     try {
       const res = await fetch("/api/campaigns/templates");
       if (res.status === 401) {
-        window.location.href = "/signin";
+        window.location.href = "/";
         return;
       }
       const data = await res.json();
@@ -192,7 +192,7 @@ export default function SendMessagePage() {
 
       if (res.status === 401) {
         toast.error("Session expired. Please log in again.");
-        setTimeout(() => (window.location.href = "/signin"), 1500);
+        setTimeout(() => (window.location.href = "/"), 1500);
         return;
       }
 
