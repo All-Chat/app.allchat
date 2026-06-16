@@ -36,25 +36,30 @@ export async function POST(req: Request) {
 
     console.log("📩 Incoming:", phone, incoming);
 
-    // Identify user
+    // =========================
+    // IDENTIFY USER (MULTI-TENANT)
+    // =========================
     const metadataPhoneNumberId = value?.metadata?.phone_number_id;
 
     let userId: string | null = null;
+    let user: any = null;
 
     if (metadataPhoneNumberId) {
-      const ownerUser = await User.findOne({
+      user = await User.findOne({
         whatsappPhoneNumberId: metadataPhoneNumberId,
       });
 
-      if (ownerUser) userId = ownerUser._id.toString();
+      if (user) userId = user._id.toString();
     }
 
     if (!userId) {
-      const fallbackUser = await User.findOne().sort({ _id: -1 });
-      if (fallbackUser) userId = fallbackUser._id.toString();
+      user = await User.findOne().sort({ _id: -1 });
+      if (user) userId = user._id.toString();
     }
 
-    // Save incoming message
+    // =========================
+    // SAVE INCOMING MESSAGE
+    // =========================
     await Message.create({
       userId,
       phone,
@@ -62,11 +67,16 @@ export async function POST(req: Request) {
       direction: "in",
     });
 
-    // Load workflows
+    // =========================
+    // LOAD WORKFLOWS
+    // =========================
     const workflows = await Workflow.find(userId ? { userId } : {});
 
     let matched = false;
 
+    // =========================
+    // WORKFLOW ENGINE
+    // =========================
     for (const wf of workflows) {
       const triggers =
         wf?.triggers ||
@@ -104,12 +114,16 @@ export async function POST(req: Request) {
         for (const message of messagesToSend) {
           if (!message) continue;
 
-          console.log("📤 Sending:", message);
+          console.log("📤 Sending template message:", message);
 
+          // =========================
+          // FIXED CALL (MATCHES YOUR LIB)
+          // =========================
           await sendWhatsAppTemplate({
-  phone,
-  message,
-});
+            to: phone,
+            templateName: message, // assuming your workflow stores template name here
+            languageCode: "en_US",
+          });
 
           await Message.create({
             userId,
@@ -129,7 +143,7 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ success: true });
   } catch (err: any) {
-    console.error(err);
+    console.error("❌ Webhook error:", err);
 
     return NextResponse.json(
       { success: false, error: err.message },
