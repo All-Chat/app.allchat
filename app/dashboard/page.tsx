@@ -111,7 +111,7 @@ export default function DashboardPage() {
       }, 30000);
       return () => clearInterval(interval);
     } else if (status === "unauthenticated") {
-      window.location.href = "/signin";
+      window.location.href = "/";
     }
   }, [status]);
 
