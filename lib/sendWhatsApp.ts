@@ -3,13 +3,13 @@
 export async function sendWhatsAppMessage(
   phone: string, 
   step: any, 
-  inputPhoneNumberId?: string, // ADDED: Multi-tenant Phone Number ID
-  inputAccessToken?: string    // ADDED: Multi-tenant Access Token
+  inputPhoneNumberId?: string, // Multi-tenant Phone Number ID
+  inputAccessToken?: string    // Multi-tenant Access Token
 ) {
-  // ADDED: Sanitize phone number (strip + sign) to prevent Meta API errors
+  // Sanitize phone number (strip + sign) to prevent Meta API errors
   const sanitizedPhone = phone.replace(/\+/g, "");
 
-  // ADDED: Use passed credentials, fallback to environment variables
+  // Use passed credentials, fallback to environment variables
   const phoneNumberId = inputPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = inputAccessToken || process.env.META_ACCESS_TOKEN;
 
@@ -23,7 +23,7 @@ export async function sendWhatsAppMessage(
   if (step.buttons && step.buttons.length > 0) {
     payload = {
       messaging_product: "whatsapp",
-      to: sanitizedPhone, // CHANGED: Use sanitized phone
+      to: sanitizedPhone, 
       type: "interactive",
       interactive: {
         type: "button",
@@ -32,9 +32,9 @@ export async function sendWhatsAppMessage(
           buttons: step.buttons.map((btn: any) => ({
             type: "reply",
             reply: {
-              // IMPORTANT: We set the button ID to the nextStepId!
-              // When clicked, WA sends this ID back to our webhook.
-              id: btn.nextStepId || "END_FLOW", 
+              // IMPORTANT: Send the button's own ID!
+              // The webhook will receive this ID, find the button, and follow its nextStepId.
+              id: btn.id, 
               title: btn.label.substring(0, 20), // WA limits button titles to 20 chars
             },
           })),
@@ -45,13 +45,13 @@ export async function sendWhatsAppMessage(
     // Otherwise, send standard text message
     payload = {
       messaging_product: "whatsapp",
-      to: sanitizedPhone, // CHANGED: Use sanitized phone
+      to: sanitizedPhone, 
       type: "text",
       text: { body: step.message },
     };
   }
 
-  // CHANGED: Updated from v17.0 to v21.0 to match your other API routes
+  // Send the API request to Meta
   const res = await fetch(
     `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
     {
