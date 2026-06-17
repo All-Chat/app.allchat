@@ -1,3 +1,4 @@
+/* eslint-disable prefer-const */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
@@ -5,7 +6,9 @@ import Message from "@/models/Message";
 import Campaign from "@/models/Campaign";
 import Workflow from "@/models/Workflow";
 import User from "@/models/User";
-import Session from "@/models/Session"; // Import Session Model
+import Session from "@/models/Session";
+import Contact from "@/models/Contact";
+import Tag from "@/models/Tag";
 import { sendWhatsAppMessage } from "@/lib/sendWhatsApp";
 
 export const dynamic = "force-dynamic";
@@ -46,7 +49,7 @@ export async function POST(req: Request) {
     await connectDB();
 
     // ==========================================
-    // IDENTIFY USER (CRITICAL FOR MULTI-TENANT)
+    // IDENTIFY USER
     // ==========================================
     const metadataPhoneNumberId = value?.metadata?.phone_number_id;
     let userId: string | null = null;
@@ -60,7 +63,7 @@ export async function POST(req: Request) {
     }
 
     if (!userId) {
-      ownerUser = await User.findOne().sort({ _id: -1 }); // Fallback
+      ownerUser = await User.findOne().sort({ _id: -1 });
       if (ownerUser) userId = ownerUser._id.toString();
     }
 
@@ -219,7 +222,7 @@ export async function POST(req: Request) {
     console.log(`📩 INBOUND SAVED ✔️ for ${phone}`);
 
     // ==========================================
-    // 3. CAMPAIGN REPORT UPDATE
+    // 3. CAMPAIGN REPORT UPDATE & DYNAMIC AUTO-TAGGING
     // ==========================================
     if (textToSave) {
       try {
@@ -248,6 +251,12 @@ export async function POST(req: Request) {
           if (latestCampaign) targetedCampaigns.push(latestCampaign);
         }
 
+        // Fetch all user tags ONCE to check against the reply
+        let userTags: any[] = [];
+        if (userId) {
+          userTags = await Tag.find({ userId }).select("name");
+        }
+
         for (const camp of targetedCampaigns) {
           if (!camp.reportData) continue;
           let reportIndex = contextId
@@ -264,11 +273,59 @@ export async function POST(req: Request) {
               currentReplies.push(textToSave);
               camp.reportData[reportIndex].replies = currentReplies;
               camp.reportData[reportIndex].status = "read";
+              
+              // --- DYNAMIC AUTO-TAGGING LOGIC ---
+              const currentTags = camp.reportData[reportIndex].tags || [];
+              let detectedTags: string[] = [];
+
+              // Check if any word in the reply matches any of the user's tags
+              for (const t of userTags) {
+                const tagNameLower = t.name.toLowerCase();
+                // If the reply string includes the tag name
+                if (tagNameLower && lowerText.includes(tagNameLower)) {
+                  detectedTags.push(t.name); // Push the original cased tag name
+                }
+              }
+
+              // Add detected tags to the campaign report
+              if (detectedTags.length > 0) {
+                for (const dt of detectedTags) {
+                  if (!currentTags.includes(dt)) {
+                    currentTags.push(dt);
+                  }
+                }
+                camp.reportData[reportIndex].tags = currentTags;
+              }
+
               camp.markModified("reportData");
               await camp.save();
-              console.log(
-                `📩 Saved reply for ${phone} in Campaign: ${camp.name}`
-              );
+              console.log(`📩 Saved reply for ${phone} in Campaign: ${camp.name}`);
+
+              // --- SAVE TO CONTACTS DB (Isolated to prevent crashes) ---
+              if (detectedTags.length > 0 && userId) {
+                try {
+                  for (const dt of detectedTags) {
+                    // Tag already exists since we fetched from DB, but safe to upsert
+                    await Tag.findOneAndUpdate(
+                      { userId, name: dt },
+                      { $setOnInsert: { userId, name: dt } },
+                      { upsert: true, new: true }
+                    );
+
+                    await Contact.findOneAndUpdate(
+                      { userId, phone },
+                      { 
+                        $setOnInsert: { userId, phone, name: contactName },
+                        $addToSet: { tags: dt } 
+                      },
+                      { upsert: true, new: true }
+                    );
+                  }
+                  console.log(`🏷️ Contact ${phone} tagged as: ${detectedTags.join(", ")}`);
+                } catch (tagErr) {
+                  console.error("⚠️ Failed to save Contact/Tag globally:", tagErr);
+                }
+              }
             }
           }
         }
@@ -278,11 +335,10 @@ export async function POST(req: Request) {
     }
 
     // ==========================================
-    // 4. WORKFLOW LOGIC (WITH GLOBAL BUTTON SEARCH)
+    // 4. WORKFLOW LOGIC
     // ==========================================
     if (messageType === "text" || isButtonReply) {
       try {
-        // --- STEP A: CHECK FOR ACTIVE SESSION (BUTTON CLICK) ---
         if (isButtonReply && userId) {
           const session = await Session.findOne({ phone, userId });
           
@@ -292,8 +348,6 @@ export async function POST(req: Request) {
             if (wf && wf.steps) {
               let clickedBtn = null;
 
-              // Search ALL steps in the workflow for the clicked button ID
-              // This fixes the issue of clicking buttons from previous messages!
               for (const stepId in wf.steps) {
                 const step = wf.steps[stepId];
                 const btn = step.buttons?.find((b: any) => 
@@ -309,11 +363,9 @@ export async function POST(req: Request) {
                 const nextStep = wf.steps[clickedBtn.nextStepId];
                 
                 if (nextStep) {
-                  // Update session to the new step
                   session.currentStepId = nextStep.id;
                   await session.save();
 
-                  // Send the next message
                   await sendWhatsAppMessage(
                     phone, 
                     nextStep, 
@@ -324,27 +376,24 @@ export async function POST(req: Request) {
                   await Message.create({
                     userId,
                     phone,
-                    text: nextStep.message,
+                    text: nextStep.message || `[${nextStep.stepType?.toUpperCase()}]`,
                     direction: "out",
                     messageType: "text",
                   });
                   console.log(`📤 OUTBOUND WORKFLOW (Next Step) SAVED ✔️`);
-                  return NextResponse.json({ success: true }); // Stop here, button handled
+                  return NextResponse.json({ success: true });
                 }
               } else {
-                // Button has no next step -> End flow
                 await Session.deleteOne({ _id: session._id });
                 console.log(`🛑 Workflow ended for ${phone}`);
                 return NextResponse.json({ success: true });
               }
             } else {
-              // Workflow/Step missing, clear session
               await Session.deleteOne({ _id: session._id });
             }
           }
         }
 
-        // --- STEP B: CHECK FOR TRIGGERS (NEW TEXT MESSAGE) ---
         const workflowQuery: any = {};
         if (userId) workflowQuery.userId = userId;
         const workflows = await Workflow.find(workflowQuery);
@@ -371,8 +420,8 @@ export async function POST(req: Request) {
 
         if (matchedWorkflow && matchedStepId) {
           const step = matchedWorkflow.steps?.[matchedStepId];
-          if (step?.message) {
-            // Send the initial message
+          
+          if (step && (step.message || step.stepType === "template" || step.stepType === "url_action" || step.stepType === "call_action")) {
             await sendWhatsAppMessage(
               phone, 
               step, 
@@ -383,13 +432,12 @@ export async function POST(req: Request) {
             await Message.create({
               userId,
               phone,
-              text: step.message,
+              text: step.message || `[${step.stepType?.toUpperCase()}]`,
               direction: "out",
               messageType: "text",
             });
             console.log(`📤 OUTBOUND WORKFLOW (Trigger) SAVED ✔️`);
 
-            // Create/Update Session so we know where they are when they click a button
             await Session.findOneAndUpdate(
               { phone, userId },
               { 
