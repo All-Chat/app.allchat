@@ -19,11 +19,14 @@ export default function DynamicFormPage() {
 
   useEffect(() => {
     if (!stepId) return;
+
+    // Fetch the form configuration from the database
     fetch(`/api/form/${stepId}`)
       .then((res) => res.json())
       .then((data) => {
         if (data.step) {
           setStepData(data.step);
+          // Initialize empty state for each field
           const initialData: Record<string, string> = {};
           data.step.metadata?.formFields?.forEach((field: any) => {
             initialData[field.id] = "";
@@ -38,12 +41,14 @@ export default function DynamicFormPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
+
     try {
       await fetch(`/api/form/${stepId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ phone, formData }),
       });
+      
       setSuccess(true);
     } catch (error) {
       console.error("Submission failed", error);
@@ -52,7 +57,13 @@ export default function DynamicFormPage() {
     }
   };
 
-  if (loading) return <div className="min-h-screen bg-slate-50 flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-emerald-600" /></div>;
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-emerald-600" />
+      </div>
+    );
+  }
 
   if (success) {
     return (
@@ -92,7 +103,9 @@ export default function DynamicFormPage() {
         <form onSubmit={handleSubmit} className="space-y-4">
           {stepData.metadata?.formFields?.map((field: any) => (
             <div key={field.id}>
-              <label className="block text-sm font-medium text-gray-700 mb-1">{field.label || "Field"}</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                {field.label || "Field"}
+              </label>
               <input
                 type={field.type || "text"}
                 required
