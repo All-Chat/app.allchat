@@ -4,17 +4,22 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { connectDB } from "@/lib/mongodb";
 import User from "@/models/User";
-import Media from "@/models/Media"; // Import Media Model
+import Media from "@/models/Media";
 
 export async function POST(req: Request) {
   try {
     await connectDB();
     
     const session = await getServerSession(authOptions);
-    const user: any = await User.findOne({ email: session?.user?.email });
+    const userId = session?.user?.id;
     
-    const phoneNumberId = user?.whatsappPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
-    const token = user?.whatsappAccessToken || process.env.META_ACCESS_TOKEN;
+    let ownerUser: any = null;
+    if (userId) {
+      ownerUser = await User.findById(userId);
+    }
+
+    const phoneNumberId = ownerUser?.whatsappPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
+    const token = ownerUser?.whatsappAccessToken || process.env.META_ACCESS_TOKEN;
 
     if (!phoneNumberId || !token) {
       return NextResponse.json({ error: "WhatsApp credentials not found" }, { status: 400 });
@@ -25,7 +30,6 @@ export async function POST(req: Request) {
     
     if (!file) return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
 
-    // Determine media type based on file
     let mediaType: "image" | "video" | "audio" | "document" = "document";
     if (file.type.startsWith("image")) mediaType = "image";
     if (file.type.startsWith("video")) mediaType = "video";
@@ -48,9 +52,9 @@ export async function POST(req: Request) {
     
     if (data.id) {
       // SAVE TO MEDIA LIBRARY DATABASE
-      if (user?._id) {
+      if (userId) {
         await Media.create({
-          userId: user._id,
+          userId,
           mediaId: data.id,
           type: mediaType,
           filename: file.name
