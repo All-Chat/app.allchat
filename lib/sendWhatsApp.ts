@@ -4,47 +4,33 @@
 export async function sendWhatsAppMessage(
   phone: string, 
   step: any, 
-  inputPhoneNumberId?: string, // Multi-tenant Phone Number ID
-  inputAccessToken?: string    // Multi-tenant Access Token
+  inputPhoneNumberId?: string, 
+  inputAccessToken?: string
 ) {
-  // Sanitize phone number (strip + sign) to prevent Meta API errors
   const sanitizedPhone = phone.replace(/\+/g, "");
-
-  // Use passed credentials, fallback to environment variables
   const phoneNumberId = inputPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = inputAccessToken || process.env.META_ACCESS_TOKEN;
 
   if (!phoneNumberId || !token) {
-    throw new Error("WhatsApp credentials are missing (not provided and not in env)");
+    throw new Error("WhatsApp credentials are missing");
   }
 
-  let payload: any = {
-    messaging_product: "whatsapp",
-    to: sanitizedPhone, 
-  };
+  let payload: any = { messaging_product: "whatsapp", to: sanitizedPhone };
 
-  // Check if it's a social media link or a media file
   const isLink = step.mediaType === "link" && step.mediaUrl;
   const hasMedia = step.mediaUrl && ["image", "video", "audio", "document"].includes(step.mediaType);
   const hasButtons = step.buttons && step.buttons.length > 0;
-  
-  // Check if it's a URL Action node (Opens link in browser on click)
   const isUrlAction = step.stepType === "url_action" && step.url;
-  
-  // Check if it's a Call Action node
   const isCallAction = step.stepType === "call_action" && step.phoneNumber;
 
-  // Check if the mediaUrl is a standard URL or a Meta Media ID
   const isUrl = step.mediaUrl?.startsWith("http");
   const mediaObj = isUrl ? { link: step.mediaUrl } : { id: step.mediaUrl };
 
-  // If it's a link, append the URL to the message text so WhatsApp can generate a preview
   let bodyText = step.message || " ";
   if (isLink) {
     bodyText = `${step.message || ""}\n${step.mediaUrl}`.trim();
   }
 
-  // Handle URL Action (Opens link in browser on click)
   if (isUrlAction) {
     payload.type = "interactive";
     payload.interactive = {
@@ -59,9 +45,26 @@ export async function sendWhatsAppMessage(
       }
     };
   } else if (isCallAction) {
-    // NEW: Send a Contact Card (vCard)
-    // This creates a native WhatsApp UI with "Call" and "Message" buttons.
-    // The raw number is hidden inside the contact card.
+    // STEP 1: Send the text message first (if provided)
+    if (step.message && step.message.trim() !== "") {
+      const textPayload = {
+        messaging_product: "whatsapp",
+        to: sanitizedPhone,
+        type: "text",
+        text: { body: step.message }
+      };
+      try {
+        await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify(textPayload)
+        });
+      } catch (err) {
+        console.error("Failed to send text before contact card", err);
+      }
+    }
+
+    // STEP 2: Send the Contact Card (Acts as the Call Button)
     payload.type = "contacts";
     payload.contacts = [
       {
@@ -78,54 +81,44 @@ export async function sendWhatsAppMessage(
       }
     ];
   } else if (hasButtons) {
-    // Send Interactive Button Message (with optional Media Header)
     payload.type = "interactive";
     payload.interactive = {
       type: "button",
-      body: { text: bodyText }, // WhatsApp requires body text
+      body: { text: bodyText },
       action: {
         buttons: step.buttons.map((btn: any) => ({
           type: "reply",
-          reply: {
-            id: btn.id, 
-            title: btn.label.substring(0, 20), // WA limits button titles to 20 chars
-          },
+          reply: { id: btn.id, title: btn.label.substring(0, 20) },
         })),
       },
     };
 
-    // If media exists, attach it as a header (Links cannot be headers, so we only do this for files)
     if (hasMedia) {
       payload.interactive.header = {
         type: step.mediaType,
-        [step.mediaType]: mediaObj // Automatically uses { link: "..." } or { id: "..." }
+        [step.mediaType]: mediaObj
       };
     }
   } else if (hasMedia) {
-    // Send Media Message with Caption (No buttons)
     payload.type = step.mediaType;
     payload[step.mediaType] = {
       ...mediaObj,
-      caption: step.message || undefined, // Caption only works for image/video/document
+      caption: step.message || undefined,
     };
   } else {
-    // Send standard text message OR link message with rich preview
     payload.type = "text";
     payload.text = { 
-      preview_url: true, // THIS IS CRITICAL: Enables WhatsApp previews for YT, Insta, FB links
+      preview_url: true, 
       body: bodyText 
     };
   }
 
-  // Send the API request to Meta
+  // Send the main API request to Meta
   const res = await fetch(
     `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
     {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }
   );
