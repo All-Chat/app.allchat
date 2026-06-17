@@ -8,7 +8,7 @@ import Sidebar from "@/components/Sidebar";
 import {
   Upload, FileSpreadsheet, Clock, Globe, CheckCircle2,
   Users, Sparkles, Send, RotateCcw, AlertCircle,
-  FileText, Film, Image as ImageIcon, Loader2, X, Link,
+  FileText, Film, Image as ImageIcon, Loader2, X, Link, Tag as TagIcon,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -19,6 +19,9 @@ function EditCampaignContent() {
   const campaignId = searchParams.get("id");
 
   const [templates, setTemplates] = useState<any[]>([]);
+  const [tags, setTags] = useState<any[]>([]);
+  const [selectedTag, setSelectedTag] = useState("");
+  
   const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
   const [rawNumbers, setRawNumbers] = useState<string[]>([]);
   const [rawNames, setRawNames] = useState<string[]>([]);
@@ -55,6 +58,7 @@ function EditCampaignContent() {
 
   useEffect(() => {
     fetchTemplates();
+    fetchTags();
     if (campaignId) fetchCampaignData();
   }, [campaignId]);
 
@@ -83,7 +87,7 @@ function EditCampaignContent() {
       const res = await fetch("/api/campaigns/templates");
       const data = await res.json();
       if (res.status === 401) {
-        window.location.href = "/";
+        window.location.href = "/signin";
         return;
       }
       if (data.success) setTemplates(data.templates);
@@ -92,11 +96,45 @@ function EditCampaignContent() {
     }
   };
 
+  const fetchTags = async () => {
+    try {
+      const res = await fetch("/api/tags");
+      const data = await res.json();
+      if (data.tags) setTags(data.tags);
+    } catch (err) {
+      console.error("Failed to fetch tags", err);
+    }
+  };
+
+  const handleTagSelect = async (tagName: string) => {
+    setSelectedTag(tagName);
+    if (!tagName) return;
+    
+    try {
+      const res = await fetch(`/api/contacts?tag=${encodeURIComponent(tagName)}`);
+      const data = await res.json();
+      if (data.success && data.contacts.length > 0) {
+        const numbers = data.contacts.map((c: any) => c.phone);
+        const names = data.contacts.map((c: any) => c.name || "");
+        const { finalNumbers, finalNames } = cleanAndValidateNumbers(numbers, names);
+        setRawNumbers(finalNumbers);
+        setRawNames(finalNames);
+        toast.success(`Loaded ${finalNumbers.length} valid numbers from tag: ${tagName}`);
+      } else {
+        toast.error("No contacts found for this tag");
+        setRawNumbers([]);
+        setStats({ valid: 0, invalid: 0, duplicates: 0 });
+      }
+    } catch (err) {
+      toast.error("Error fetching contacts by tag");
+    }
+  };
+
   const fetchCampaignData = async () => {
     try {
       const res = await fetch("/api/campaigns/list");
       if (res.status === 401) {
-        window.location.href = "/";
+        window.location.href = "/signin";
         return;
       }
       const data = await res.json();
@@ -273,7 +311,7 @@ function EditCampaignContent() {
     const names: string[] = [];
     fileRows.forEach((row) => {
       numbers.push(row[phoneIdx] || "");
-      names.push(nameIdx !== -1 ? row[nameIdx] || "" : "");
+      names.push(nameIdx !== -1 ? (row[nameIdx] || "") : "");
     });
     const { finalNumbers, finalNames } = cleanAndValidateNumbers(numbers, names);
     setRawNumbers(finalNumbers);
@@ -470,7 +508,7 @@ function EditCampaignContent() {
 
       if (res.status === 401) {
         toast.error("Session expired.");
-        setTimeout(() => (window.location.href = "/"), 1500);
+        setTimeout(() => (window.location.href = "/signin"), 1500);
         return;
       }
       const data = await res.json();
@@ -688,6 +726,21 @@ function EditCampaignContent() {
                       className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all font-bold shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"
                     />
                   </div>
+                </div>
+
+                {/* TAG DROPDOWN SECTION */}
+                <div className="bg-purple-50/50 border border-purple-100 rounded-xl p-4 space-y-2">
+                  <label className="text-[11px] font-extrabold text-purple-800 uppercase tracking-widest flex items-center gap-2"><TagIcon size={14} /> Load from Tags</label>
+                  <select
+                    value={selectedTag}
+                    onChange={(e) => handleTagSelect(e.target.value)}
+                    className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-purple-100 focus:border-purple-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"
+                  >
+                    <option value="">-- Select a Tag to Load Contacts --</option>
+                    {tags.map((t) => (
+                      <option key={t._id} value={t.name}>{t.name}</option>
+                    ))}
+                  </select>
                 </div>
 
                 {uploadStep === 1 ? (
