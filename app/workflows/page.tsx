@@ -20,9 +20,6 @@ import ReactFlow, {
   useReactFlow,
   ReactFlowProvider,
   MarkerType,
-  BaseEdge,
-  EdgeLabelRenderer,
-  getBezierPath,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import {
@@ -78,57 +75,6 @@ function Toast({ message, type, onClose }: { message: string; type: "success" | 
       </span>
       {message}
     </div>
-  );
-}
-
-/* ────────────────────────────────────────────
-   REACT FLOW CUSTOM REMOVABLE EDGE
-   ──────────────────────────────────────────── */
-function RemovableEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style, markerEnd }: any) {
-  const { setEdges } = useReactFlow();
-  
-  // Use Bezier path to fix the issue of wires going behind boxes when looping backward
-  const [edgePath, labelX, labelY] = getBezierPath({
-    sourceX,
-    sourceY,
-    sourcePosition,
-    targetX,
-    targetY,
-    targetPosition,
-  });
-
-  return (
-    <>
-      <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={style} />
-      <EdgeLabelRenderer>
-        <button
-          style={{
-            position: 'absolute',
-            transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
-            pointerEvents: 'all',
-            background: '#fff',
-            border: '1px solid #e5e7eb',
-            borderRadius: '50%',
-            width: '20px',
-            height: '20px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            color: '#ef4444',
-            boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-            zIndex: 10,
-          }}
-          className="nodrag nopan"
-          onClick={(e) => {
-            e.stopPropagation();
-            setEdges((es) => es.filter((e) => e.id !== id));
-          }}
-        >
-          <X size={12} />
-        </button>
-      </EdgeLabelRenderer>
-    </>
   );
 }
 
@@ -295,7 +241,6 @@ const MessageNode = ({ data, id }: any) => {
 };
 
 const nodeTypes = { trigger: TriggerNode, message: MessageNode };
-const edgeTypes = { removable: RemovableEdge };
 
 /* ────────────────────────────────────────────
    FLOW CANVAS (Inner component to use hooks)
@@ -338,14 +283,14 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
       });
     });
 
-    // Edges
+    // Edges (Using "default" which is a smooth Bezier curve)
     if (initialData.rootStepId) {
       initEdges.push({ 
         id: "e-trigger-root", 
         source: "trigger-node", 
         target: initialData.rootStepId, 
         animated: true, 
-        type: "removable", // CHANGED TO REMOVABLE
+        type: "default", 
         markerEnd: { type: MarkerType.ArrowClosed, color: '#10b981' },
         style: { stroke: '#10b981', strokeWidth: 2 }
       });
@@ -360,7 +305,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
             sourceHandle: btn.id,
             target: btn.nextStepId,
             animated: true,
-            type: "removable", // CHANGED TO REMOVABLE
+            type: "default", 
             markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6' },
             style: { stroke: '#3b82f6', strokeWidth: 2 }
           });
@@ -375,14 +320,20 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
   const onConnect = useCallback((params: Connection) => {
     // If connecting from trigger, replace existing trigger connection
     if (params.source === "trigger-node") {
-      setEdges((eds) => eds.filter((e) => e.source !== "trigger-node").concat(addEdge({ ...params, animated: true, type: "removable", style: { stroke: '#10b981', strokeWidth: 2 } }, eds)));
+      setEdges((eds) => eds.filter((e) => e.source !== "trigger-node").concat(addEdge({ ...params, animated: true, type: "default", style: { stroke: '#10b981', strokeWidth: 2 } }, eds)));
     } else {
       // If connecting from a button, remove existing connection from that specific button
       setEdges((eds) => {
         const filtered = eds.filter((e) => !(e.source === params.source && e.sourceHandle === params.sourceHandle));
-        return addEdge({ ...params, animated: true, type: "removable", style: { stroke: '#3b82f6', strokeWidth: 2 } }, filtered);
+        return addEdge({ ...params, animated: true, type: "default", style: { stroke: '#3b82f6', strokeWidth: 2 } }, filtered);
       });
     }
+  }, [setEdges]);
+
+  // Double-click on edge to delete it
+  const onEdgeDoubleClick = useCallback((event: React.MouseEvent, edge: Edge) => {
+    event.stopPropagation();
+    setEdges((eds) => eds.filter((e) => e.id !== edge.id));
   }, [setEdges]);
 
   const onDragOver = useCallback((event: React.DragEvent) => {
@@ -507,6 +458,11 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
               <p className="text-[10px] text-gray-400">Drag to canvas</p>
             </div>
           </div>
+          {/* Helper Text */}
+          <div className="mt-4 text-[10px] text-gray-400 leading-relaxed">
+            <p>💡 <strong>Tip:</strong> Drag nodes onto the canvas. Draw wires by dragging from the green/blue dots.</p>
+            <p className="mt-2">🗑️ <strong>Delete wire:</strong> Double-click the wire.</p>
+          </div>
         </div>
 
         {/* React Flow Canvas */}
@@ -520,7 +476,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
             onDrop={onDrop}
             onDragOver={onDragOver}
             nodeTypes={nodeTypes}
-            edgeTypes={edgeTypes}
+            onEdgeDoubleClick={onEdgeDoubleClick}
             fitView
             deleteKeyCode={['Backspace', 'Delete']}
           >
