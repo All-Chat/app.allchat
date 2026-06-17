@@ -45,41 +45,22 @@ export async function sendWhatsAppMessage(
       }
     };
   } else if (isCallAction) {
-    // STEP 1: Send the text message first (if provided)
-    if (step.message && step.message.trim() !== "") {
-      const textPayload = {
-        messaging_product: "whatsapp",
-        to: sanitizedPhone,
-        type: "text",
-        text: { body: step.message }
-      };
-      try {
-        await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify(textPayload)
-        });
-      } catch (err) {
-        console.error("Failed to send text before contact card", err);
+    // BYPASS: Meta blocks tel: links. We use our own Next.js API route to redirect to tel:
+    const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
+    const dialUrl = `${baseUrl}/api/dial?num=${encodeURIComponent(step.phoneNumber)}`;
+    
+    payload.type = "interactive";
+    payload.interactive = {
+      type: "cta_url",
+      body: { text: bodyText },
+      action: {
+        name: "cta_url",
+        parameters: {
+          display_text: step.urlLabel?.substring(0, 20) || "Call Now",
+          url: dialUrl
+        }
       }
-    }
-
-    // STEP 2: Send the Contact Card (Acts as the Call Button)
-    payload.type = "contacts";
-    payload.contacts = [
-      {
-        name: {
-          formatted_name: step.urlLabel?.substring(0, 20) || "Call Now",
-          first_name: step.urlLabel?.substring(0, 20) || "Call Now"
-        },
-        phones: [
-          {
-            phone: step.phoneNumber,
-            type: "MAIN"
-          }
-        ]
-      }
-    ];
+    };
   } else if (hasButtons) {
     payload.type = "interactive";
     payload.interactive = {
