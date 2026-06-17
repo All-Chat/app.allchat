@@ -32,13 +32,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    // 🔴 READ THE NEW FIELDS FROM THE REQUEST BODY
     const { name, isCampaignSpecific, campaignId, campaignName } = await req.json();
     
     if (!name || !name.trim()) {
       return NextResponse.json({ error: "Tag name is required" }, { status: 400 });
     }
 
-    // Prevent duplicate tags for the same user (and same campaign if specific)
+    // Check if tag already exists
     const query: any = { userId, name: name.trim().toLowerCase() };
     if (isCampaignSpecific) {
       query.isCampaignSpecific = true;
@@ -49,6 +50,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Tag already exists" }, { status: 400 });
     }
 
+    // 🔴 SAVE THE NEW FIELDS TO DATABASE
     const tag = await Tag.create({ 
       userId, 
       name: name.trim(),
