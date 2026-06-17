@@ -3,7 +3,7 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 "use client";
 
-import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Sidebar from "@/components/Sidebar"; 
 import ReactFlow, {
   Background,
@@ -27,7 +27,6 @@ import {
   MessageSquare,
   Plus,
   Trash2,
-  GripVertical,
   X,
   Workflow as WorkflowIcon,
   Check,
@@ -38,6 +37,10 @@ import {
   Crosshair,
   Loader2,
   Layout,
+  FileText,
+  Upload,
+  Link as LinkIcon,
+  Music,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 
@@ -46,7 +49,14 @@ import { useSession } from "next-auth/react";
    ──────────────────────────────────────────── */
 type Trigger = { keyword: string; matchMode: "exact" | "contains" };
 type Button = { id: string; label: string; nextStepId: string | null };
-type Step = { id: string; message: string; buttons: Button[]; position?: { x: number; y: number } };
+type Step = { 
+  id: string; 
+  message: string; 
+  buttons: Button[]; 
+  position?: { x: number; y: number };
+  mediaType?: "image" | "video" | "document" | "audio" | null;
+  mediaUrl?: string | null;
+};
 type Workflow = {
   _id: string;
   triggers: Trigger[];
@@ -181,6 +191,74 @@ const MessageNode = ({ data, id }: any) => {
     updateNode({ buttons: data.buttons.map((b: Button) => (b.id === btnId ? { ...b, label } : b)) });
   };
 
+  // FILE LIMITATIONS CONFIG
+  const maxSizes: Record<string, number> = {
+    image: 5 * 1024 * 1024, // 5MB
+    video: 16 * 1024 * 1024, // 16MB
+    audio: 16 * 1024 * 1024, // 16MB
+    document: 100 * 1024 * 1024 // 100MB
+  };
+
+  const allowedTypes: Record<string, string[]> = {
+    image: ["image/jpeg", "image/png", "image/webp"],
+    video: ["video/mp4", "video/3gpp"],
+    audio: ["audio/mpeg", "audio/aac", "audio/ogg", "audio/amr"],
+    document: [
+      "application/pdf", "text/plain", "application/msword", 
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.ms-powerpoint", 
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/vnd.ms-excel", 
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    ]
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    let mediaType: "image" | "video" | "document" | "audio" = "document";
+    if (file.type.startsWith("image")) mediaType = "image";
+    if (file.type.startsWith("video")) mediaType = "video";
+    if (file.type.startsWith("audio")) mediaType = "audio";
+
+    // VALIDATIONS
+    if (!allowedTypes[mediaType]?.includes(file.type)) {
+      alert(`Invalid file format for ${mediaType}. Please check WhatsApp allowed formats.`);
+      return;
+    }
+    if (file.size > maxSizes[mediaType]) {
+      alert(`File is too large. Max size for ${mediaType} is ${maxSizes[mediaType] / (1024 * 1024)}MB.`);
+      return;
+    }
+
+    updateNode({ mediaUrl: "UPLOADING...", mediaType });
+
+    const formData = new FormData();
+    formData.append("file", file);
+    
+    try {
+      const res = await fetch("/api/upload", { method: "POST", body: formData });
+      
+      // SAFELY PARSE JSON
+      const text = await res.text();
+      if (!res.ok) {
+        throw new Error(text || "Upload failed");
+      }
+      const resData = JSON.parse(text);
+      
+      if (resData.success && resData.url) {
+        updateNode({ mediaUrl: resData.url, mediaType });
+      } else {
+        throw new Error(resData.error || "Unknown error");
+      }
+    } catch (err: any) {
+      console.error("Upload failed", err);
+      alert("Media upload failed: " + err.message);
+      updateNode({ mediaUrl: null, mediaType: null });
+    }
+  };
+
   return (
     <div className="w-72 bg-white border border-gray-200 shadow-lg rounded-2xl overflow-hidden group">
       <Handle type="target" position={Position.Left} className="!bg-emerald-500 !w-3 !h-3 !border-2 !border-white" />
@@ -195,7 +273,82 @@ const MessageNode = ({ data, id }: any) => {
         </button>
       </div>
       
+      {/* Media Preview Area */}
+      {data.mediaUrl && (
+        <div 
+          className="relative border-b border-gray-100 cursor-pointer group/media bg-gray-50 p-4 flex items-center gap-3" 
+          onClick={() => updateNode({ mediaUrl: null, mediaType: null })} 
+          title="Click to remove media"
+        >
+          {data.mediaUrl.startsWith("http") ? (
+            <>
+              {data.mediaType === "image" && <img src={data.mediaUrl} alt="Media" className="w-full h-32 object-cover" />}
+              {data.mediaType === "video" && <video src={data.mediaUrl} className="w-full h-32 object-cover" controls />}
+              {data.mediaType === "audio" && <audio src={data.mediaUrl} controls className="w-full mt-2" />}
+              {data.mediaType === "document" && (
+                <div className="flex items-center gap-2 w-full">
+                  <FileText size={24} className="text-red-500" />
+                  <span className="text-xs text-gray-600 truncate">Document URL (Click to remove)</span>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="flex items-center gap-2 w-full">
+              {data.mediaUrl === "UPLOADING..." ? (
+                <Loader2 size={20} className="animate-spin text-gray-400" />
+              ) : (
+                <FileText size={24} className="text-emerald-500" />
+              )}
+              <span className="text-xs text-gray-600 truncate">
+                {data.mediaUrl === "UPLOADING..." ? "Uploading to WhatsApp..." : `${data.mediaType?.toUpperCase()} Uploaded to WhatsApp (Click to remove)`}
+              </span>
+            </div>
+          )}
+          <div className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover/media:opacity-100 transition-opacity">
+            <X size={12} />
+          </div>
+        </div>
+      )}
+
       <div className="p-3 space-y-3">
+        
+        {/* Media Upload UI (if no media) */}
+        {!data.mediaUrl && (
+          <div className="border border-dashed border-gray-200 rounded-xl p-2 space-y-2">
+            <div className="flex gap-2">
+              <select 
+                value={data.mediaType || ""} 
+                onChange={(e) => updateNode({ mediaType: e.target.value || null })}
+                className="flex-1 text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-600 focus:outline-none"
+              >
+                <option value="">No Media</option>
+                <option value="image">Image (5MB)</option>
+                <option value="video">Video (16MB)</option>
+                <option value="audio">Audio (16MB)</option>
+                <option value="document">PDF / Doc (100MB)</option>
+              </select>
+            </div>
+            {data.mediaType && (
+              <div className="space-y-2">
+                <div className="relative">
+                  <LinkIcon size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input 
+                    type="text" 
+                    placeholder="Paste Public URL" 
+                    value={data.mediaUrl && data.mediaUrl !== "UPLOADING..." ? data.mediaUrl : ""} 
+                    onChange={(e) => updateNode({ mediaUrl: e.target.value })}
+                    className="w-full pl-7 pr-2 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400"
+                  />
+                </div>
+                <label className="flex items-center justify-center gap-1 w-full py-1.5 border border-gray-200 rounded-lg cursor-pointer text-xs text-gray-600 hover:bg-gray-50">
+                  <Upload size={12} /> Upload to WhatsApp
+                  <input type="file" className="hidden" onChange={handleFileUpload} />
+                </label>
+              </div>
+            )}
+          </div>
+        )}
+
         <textarea 
           value={data.message} 
           onChange={(e) => handleMsgChange(e.target.value)} 
@@ -243,7 +396,7 @@ const MessageNode = ({ data, id }: any) => {
 const nodeTypes = { trigger: TriggerNode, message: MessageNode };
 
 /* ────────────────────────────────────────────
-   FLOW CANVAS (Inner component to use hooks)
+   FLOW CANVAS
    ──────────────────────────────────────────── */
 function FlowCanvas({ initialData, editId, onSave, onCancel }: { 
   initialData: Workflow; 
@@ -258,12 +411,10 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
-  // Initialize nodes and edges from data
   useEffect(() => {
     const initNodes: Node[] = [];
     const initEdges: Edge[] = [];
 
-    // Trigger Node
     initNodes.push({
       id: "trigger-node",
       type: "trigger",
@@ -272,18 +423,21 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
       draggable: true,
     });
 
-    // Message Nodes
     Object.values(initialData.steps || {}).forEach((step) => {
       initNodes.push({
         id: step.id,
         type: "message",
         position: step.position || { x: Math.random() * 400, y: Math.random() * 400 },
-        data: { message: step.message, buttons: step.buttons },
+        data: { 
+          message: step.message, 
+          buttons: step.buttons,
+          mediaUrl: step.mediaUrl || null,
+          mediaType: step.mediaType || null
+        },
         draggable: true,
       });
     });
 
-    // Edges (Using "default" which is a smooth Bezier curve)
     if (initialData.rootStepId) {
       initEdges.push({ 
         id: "e-trigger-root", 
@@ -318,11 +472,9 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
   }, [initialData]);
 
   const onConnect = useCallback((params: Connection) => {
-    // If connecting from trigger, replace existing trigger connection
     if (params.source === "trigger-node") {
       setEdges((eds) => eds.filter((e) => e.source !== "trigger-node").concat(addEdge({ ...params, animated: true, type: "default", style: { stroke: '#10b981', strokeWidth: 2 } }, eds)));
     } else {
-      // If connecting from a button, remove existing connection from that specific button
       setEdges((eds) => {
         const filtered = eds.filter((e) => !(e.source === params.source && e.sourceHandle === params.sourceHandle));
         return addEdge({ ...params, animated: true, type: "default", style: { stroke: '#3b82f6', strokeWidth: 2 } }, filtered);
@@ -330,7 +482,6 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     }
   }, [setEdges]);
 
-  // Double-click on edge to delete it
   const onEdgeDoubleClick = useCallback((event: React.MouseEvent, edge: Edge) => {
     event.stopPropagation();
     setEdges((eds) => eds.filter((e) => e.id !== edge.id));
@@ -351,12 +502,11 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
       id: uid(),
       type,
       position,
-      data: { message: "", buttons: [] },
+      data: { message: "", buttons: [], mediaUrl: null, mediaType: null },
     };
     setNodes((nds) => nds.concat(newNode));
   }, [screenToFlowPosition, setNodes]);
 
-  // Auto-Format Layout Button
   const formatLayout = () => {
     const newNodes = [...nodes];
     const triggerNode = newNodes.find(n => n.id === "trigger-node");
@@ -397,7 +547,14 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         const edge = edges.find(e => e.source === n.id && e.sourceHandle === btn.id);
         return { ...btn, nextStepId: edge ? edge.target : null };
       });
-      steps[n.id] = { id: n.id, message: n.data.message, buttons: buttonsWithLinks, position: n.position };
+      steps[n.id] = { 
+        id: n.id, 
+        message: n.data.message, 
+        buttons: buttonsWithLinks, 
+        position: n.position,
+        mediaUrl: n.data.mediaUrl,
+        mediaType: n.data.mediaType
+      };
     });
 
     const rootEdge = edges.find(e => e.source === "trigger-node");
@@ -416,7 +573,6 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         isFullScreen ? 'fixed inset-0 z-50 bg-white' : 'bg-white rounded-2xl border border-gray-200 shadow-sm relative h-[80vh]'
       }`}
     >
-      {/* Top Header */}
       <div className="p-3 border-b border-gray-100 bg-white z-30 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-3">
           <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${editId ? "bg-amber-100 text-amber-600" : "bg-emerald-100 text-emerald-600"}`}>
@@ -440,9 +596,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         </div>
       </div>
 
-      {/* Main Canvas Area */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Builder Sidebar */}
         <div className="w-48 border-r border-gray-200 bg-gray-50 p-3 hidden md:block">
           <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Nodes</h3>
           <div 
@@ -458,14 +612,13 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
               <p className="text-[10px] text-gray-400">Drag to canvas</p>
             </div>
           </div>
-          {/* Helper Text */}
           <div className="mt-4 text-[10px] text-gray-400 leading-relaxed">
-            <p>💡 <strong>Tip:</strong> Drag nodes onto the canvas. Draw wires by dragging from the green/blue dots.</p>
+            <p>💡 <strong>Tip:</strong> Drag nodes onto the canvas. Draw wires by dragging from the dots.</p>
             <p className="mt-2">🗑️ <strong>Delete wire:</strong> Double-click the wire.</p>
+            <p className="mt-2">🖼️ <strong>Media:</strong> Add media via URL or Upload. Click media to remove it.</p>
           </div>
         </div>
 
-        {/* React Flow Canvas */}
         <div ref={reactFlowWrapper} className="flex-1 h-full bg-gray-50/80 bg-dots">
           <ReactFlow
             nodes={nodes}
@@ -487,7 +640,6 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         </div>
       </div>
 
-      {/* Floating Save Button */}
       <div className="absolute bottom-4 right-4 z-30">
         <button onClick={handleSave} className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold text-white bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 hover:shadow-xl hover:scale-105">
           {editId ? "Update Workflow" : "Create Workflow"}
@@ -497,9 +649,6 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
   );
 }
 
-/* ────────────────────────────────────────────
-   WORKFLOW BUILDER FORM (Provider Wrapper)
-   ──────────────────────────────────────────── */
 function WorkflowForm({ editId, initialData, onSave, onCancel }: { editId: string | null; initialData: Workflow; onSave: (wf: Workflow) => void; onCancel: () => void }) {
   return (
     <ReactFlowProvider>
@@ -508,9 +657,6 @@ function WorkflowForm({ editId, initialData, onSave, onCancel }: { editId: strin
   );
 }
 
-/* ────────────────────────────────────────────
-   WORKFLOW CARD (LIST)
-   ──────────────────────────────────────────── */
 function WorkflowCard({ wf, onEdit, onDelete }: { wf: Workflow; onEdit: (wf: Workflow) => void; onDelete: (id: string) => void }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const rootStep = wf.steps[wf.rootStepId];
@@ -537,15 +683,18 @@ function WorkflowCard({ wf, onEdit, onDelete }: { wf: Workflow; onEdit: (wf: Wor
                   <MessageSquare size={14} className="text-emerald-500 mt-0.5 shrink-0" />
                   <p className="text-sm text-gray-700 leading-relaxed line-clamp-2">{rootStep.message || "No message set"}</p>
                 </div>
-                {rootStep.buttons.length > 0 && (
-                  <div className="flex flex-wrap gap-2 mt-1">
-                    {rootStep.buttons.map(b => (
-                      <span key={b.id} className="px-2 py-0.5 bg-blue-50 border border-blue-200 rounded-full text-[10px] font-semibold text-blue-700 flex items-center gap-1">
-                        <MousePointerClick size={8} /> {b.label || "Button"}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                <div className="flex flex-wrap gap-2 mt-1">
+                  {rootStep.mediaUrl && (
+                    <span className="px-2 py-0.5 bg-gray-100 border border-gray-200 rounded-full text-[10px] font-semibold text-gray-600 flex items-center gap-1 capitalize">
+                      <FileText size={8} /> {rootStep.mediaType}
+                    </span>
+                  )}
+                  {rootStep.buttons.map(b => (
+                    <span key={b.id} className="px-2 py-0.5 bg-blue-50 border border-blue-200 rounded-full text-[10px] font-semibold text-blue-700 flex items-center gap-1">
+                      <MousePointerClick size={8} /> {b.label || "Button"}
+                    </span>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -565,9 +714,6 @@ function WorkflowCard({ wf, onEdit, onDelete }: { wf: Workflow; onEdit: (wf: Wor
   );
 }
 
-/* ────────────────────────────────────────────
-   MAIN HOME PAGE
-   ──────────────────────────────────────────── */
 export default function Home() {
   const { data: session, status } = useSession();
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
@@ -583,7 +729,7 @@ export default function Home() {
     return {
       _id: "new",
       triggers: [{ keyword: "", matchMode: "contains" }],
-      steps: { [rootId]: { id: rootId, message: "", buttons: [] } },
+      steps: { [rootId]: { id: rootId, message: "", buttons: [], mediaUrl: null, mediaType: null } },
       rootStepId: rootId,
     };
   }, []);
@@ -603,7 +749,7 @@ export default function Home() {
     return {
       ...wf,
       triggers: (wf.triggers || [{ keyword: wf.trigger?.keyword || "" }]).map((t: any) => typeof t === 'string' ? { keyword: t, matchMode: "contains" } : { keyword: t.keyword, matchMode: t.matchMode || "contains" }),
-      steps: { [rootId]: { id: rootId, message: actions[0]?.message || "", buttons: [] } },
+      steps: { [rootId]: { id: rootId, message: actions[0]?.message || "", buttons: [], mediaUrl: null, mediaType: null } },
       rootStepId: rootId,
     };
   };
@@ -693,7 +839,6 @@ export default function Home() {
       <main className="ml-0 md:ml-64 min-h-screen flex flex-col">
         <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
           
-          {/* Responsive Header */}
           <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-gray-200 -mx-4 sm:-mx-6 px-4 sm:px-6 py-4">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div>
