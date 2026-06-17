@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import { 
   BarChart3, Download, Loader2, Search, CheckCircle, XCircle, Clock, 
-  MessageSquare, Eye, CheckCheck, AlertTriangle, Copy, Ban, Radio, ArrowLeft 
+  MessageSquare, Eye, CheckCheck, AlertTriangle, Copy, Ban, Radio, ArrowLeft, X, Tag as TagIcon, Users 
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -19,7 +19,8 @@ type ReportItem = {
   status: string; 
   replies?: string[];
   reply?: string | null; 
-  repliedAt?: string | null 
+  repliedAt?: string | null;
+  tags?: string[];
 };
 
 type Campaign = {
@@ -79,10 +80,16 @@ export default function ReportsPage() {
 
   // Responsive toggle state
   const [showCampaignList, setShowCampaignList] = useState(true);
+  
+  // Modal & Tags State
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [tags, setTags] = useState<any[]>([]);
+  const [tagFilter, setTagFilter] = useState("all");
 
   useEffect(() => {
     if (status === "authenticated") {
       fetchCampaigns();
+      fetchTags();
     } else if (status === "unauthenticated") {
       window.location.href = "/";
     }
@@ -112,6 +119,16 @@ export default function ReportsPage() {
     }
   };
 
+  const fetchTags = async () => {
+    try {
+      const res = await fetch("/api/tags");
+      const data = await res.json();
+      if (data.tags) setTags(data.tags);
+    } catch (err) {
+      console.error("Failed to fetch tags", err);
+    }
+  };
+
   const fetchReportData = async (id: string) => {
     try {
       const res = await fetch(`/api/campaigns/list`);
@@ -137,12 +154,25 @@ export default function ReportsPage() {
       return d.phone.includes(search) || d.name?.toLowerCase().includes(search.toLowerCase()) || replies.some(r => r.toLowerCase().includes(search.toLowerCase()));
     });
 
+  // Modal Filter Logic
+  const modalFilteredData = reportData.filter(d => {
+    if (tagFilter === "all") return true;
+    if (tagFilter === "untagged") return !d.tags || d.tags.length === 0;
+    return d.tags?.includes(tagFilter);
+  });
+
   const downloadExcel = () => {
     if (filteredData.length === 0) { toast.error("No data to download"); return; }
     const wsData = filteredData.map(d => {
       const replies = getRepliesList(d);
       const statusConfig = getStatusConfig(d.status, replies);
-      return { "Name": d.name || "N/A", "Phone Number": d.phone, "Status": statusConfig.label, "Replies (Max 5)": replies.length > 0 ? replies.join(" | ") : "No Reply" };
+      return { 
+        "Name": d.name || "N/A", 
+        "Phone Number": d.phone, 
+        "Status": statusConfig.label, 
+        "Tags": d.tags?.join(", ") || "None",
+        "Replies (Max 5)": replies.length > 0 ? replies.join(" | ") : "No Reply" 
+      };
     });
     const ws = XLSX.utils.json_to_sheet(wsData);
     const wb = XLSX.utils.book_new();
@@ -153,10 +183,9 @@ export default function ReportsPage() {
 
   const selectedCamp = campaigns.find(c => c._id === selectedId);
 
-  // Handle campaign selection on mobile
   const handleSelectCampaign = (id: string) => {
     setSelectedId(id);
-    setShowCampaignList(false); // Switch to report view on mobile
+    setShowCampaignList(false);
   };
 
   if (status === "loading" || (status === "authenticated" && loading)) {
@@ -169,27 +198,20 @@ export default function ReportsPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-gray-900">
-      {/* Sidebar Component - Handles Mobile Subnavbar automatically */}
       <Sidebar />
 
-      {/* Main Content Area */}
       <div className="md:ml-64 flex h-screen overflow-hidden">
         
-        {/* ═══════ LEFT: CAMPAIGN LIST PANEL ═══════ */}
+        {/* LEFT: CAMPAIGN LIST PANEL */}
         <div className={`w-full md:w-80 bg-white md:border-r border-slate-200 flex flex-col shadow-sm flex-shrink-0 ${
           showCampaignList ? "flex" : "hidden md:flex"
         }`}>
-          
-          {/* Mobile Header */}
           <div className="md:hidden h-14 bg-[#f0f2f5] flex items-center px-4 border-b border-slate-200 flex-shrink-0">
             <span className="font-bold text-gray-800 text-lg tracking-tight flex-1">Reports</span>
           </div>
-
-          {/* Desktop Header */}
           <div className="hidden md:block p-4 border-b border-slate-100 bg-slate-50">
             <h2 className="font-bold text-slate-800 flex items-center gap-2"><BarChart3 size={16} /> Campaign Reports</h2>
           </div>
-
           <div className="flex-1 overflow-y-auto">
             {campaigns.length === 0 ? (
               <p className="p-4 text-sm text-slate-400 text-center">No completed campaigns yet</p>
@@ -218,7 +240,7 @@ export default function ReportsPage() {
           </div>
         </div>
 
-        {/* ═══════ RIGHT: REPORT TABLE PANEL ═══════ */}
+        {/* RIGHT: REPORT TABLE PANEL */}
         <div className={`flex-1 flex flex-col bg-slate-50 overflow-hidden ${
           !showCampaignList ? "flex" : "hidden md:flex"
         }`}>
@@ -232,10 +254,8 @@ export default function ReportsPage() {
             </div>
           ) : (
             <>
-              {/* Report Header */}
               <div className="bg-white p-3 sm:p-4 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-end shadow-sm gap-3">
                 <div className="flex items-center gap-2 w-full sm:w-auto">
-                  {/* Mobile Back Button */}
                   <button 
                     onClick={() => setShowCampaignList(true)} 
                     className="md:hidden p-2 hover:bg-slate-100 rounded-lg transition-colors mr-1 flex-shrink-0"
@@ -281,6 +301,15 @@ export default function ReportsPage() {
                       <option value="invalid">Invalid</option>
                       <option value="duplicate">Duplicate</option>
                     </select>
+                    
+                    {/* NEW: View Details Button */}
+                    <button 
+                      onClick={() => setIsModalOpen(true)} 
+                      className="px-4 py-2 bg-indigo-500 text-white rounded-lg text-xs font-bold hover:bg-indigo-600 flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0"
+                    >
+                      <Users size={12}/> View Details
+                    </button>
+
                     <button 
                       onClick={downloadExcel} 
                       className="px-4 py-2 bg-emerald-500 text-white rounded-lg text-xs font-bold hover:bg-emerald-600 flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0"
@@ -291,7 +320,6 @@ export default function ReportsPage() {
                 </div>
               </div>
 
-              {/* Report Table Container */}
               <div className="flex-1 overflow-y-auto overflow-x-auto p-4 sm:p-6">
                 <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden min-w-[640px]">
                   <table className="w-full text-sm">
@@ -353,6 +381,83 @@ export default function ReportsPage() {
           )}
         </div>
       </div>
+
+      {/* ═══════ AUDIENCE DETAILS MODAL ═══════ */}
+      {isModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
+            
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-5 border-b border-slate-200">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">Audience Details</h3>
+                <p className="text-xs text-slate-500 mt-0.5">{selectedCamp?.name}</p>
+              </div>
+              <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-lg transition-colors">
+                <X className="w-5 h-5 text-slate-500" />
+              </button>
+            </div>
+
+            {/* Modal Filter Bar */}
+            <div className="flex items-center gap-3 p-4 bg-slate-50 border-b border-slate-200">
+              <div className="relative flex-1">
+                <TagIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <select 
+                  value={tagFilter} 
+                  onChange={(e) => setTagFilter(e.target.value)} 
+                  className="w-full pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none shadow-sm"
+                >
+                  <option value="all">All Contacts</option>
+                  <option value="untagged">Untagged</option>
+                  {tags.map(t => (
+                    <option key={t._id} value={t.name}>{t.name}</option>
+                  ))}
+                </select>
+              </div>
+              <span className="text-xs font-bold text-slate-600 bg-white px-3 py-2 rounded-lg border border-slate-200 shadow-sm">
+                {modalFilteredData.length} Contacts
+              </span>
+            </div>
+
+            {/* Modal Table */}
+            <div className="flex-1 overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-white sticky top-0 border-b border-slate-200">
+                  <tr>
+                    <th className="px-5 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Phone</th>
+                    <th className="px-5 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Name</th>
+                    <th className="px-5 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Tags</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {modalFilteredData.map((d, i) => (
+                    <tr key={i} className="hover:bg-slate-50">
+                      <td className="px-5 py-3 font-mono text-xs">{d.phone}</td>
+                      <td className="px-5 py-3 font-medium text-slate-900 text-xs">{d.name || "—"}</td>
+                      <td className="px-5 py-3">
+                        <div className="flex flex-wrap gap-1">
+                          {d.tags && d.tags.length > 0 ? (
+                            d.tags.map((tag, idx) => (
+                              <span key={idx} className="px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full text-[10px] font-semibold flex items-center gap-1">
+                                <TagIcon size={8} /> {tag}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-[10px] text-slate-400 italic">No tags</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {modalFilteredData.length === 0 && (
+                    <tr><td colSpan={3} className="text-center py-8 text-slate-400 text-xs">No contacts found for this filter.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ToastContainer position="bottom-right" theme="light" autoClose={3000} />
     </div>
