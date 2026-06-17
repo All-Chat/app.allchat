@@ -32,21 +32,29 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { name } = await req.json();
+    const { name, isCampaignSpecific, campaignId, campaignName } = await req.json();
     
     if (!name || !name.trim()) {
       return NextResponse.json({ error: "Tag name is required" }, { status: 400 });
     }
 
-    // Prevent duplicate tags for the same user
-    const existing = await Tag.findOne({ userId, name: name.trim().toLowerCase() });
+    // Prevent duplicate tags for the same user (and same campaign if specific)
+    const query: any = { userId, name: name.trim().toLowerCase() };
+    if (isCampaignSpecific) {
+      query.isCampaignSpecific = true;
+      query.campaignId = campaignId;
+    }
+    const existing = await Tag.findOne(query);
     if (existing) {
       return NextResponse.json({ error: "Tag already exists" }, { status: 400 });
     }
 
     const tag = await Tag.create({ 
       userId, 
-      name: name.trim() 
+      name: name.trim(),
+      isCampaignSpecific: isCampaignSpecific || false,
+      campaignId: isCampaignSpecific ? campaignId : null,
+      campaignName: isCampaignSpecific ? campaignName : null
     });
 
     return NextResponse.json({ success: true, tag });
