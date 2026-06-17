@@ -599,19 +599,24 @@ const CallActionNode = ({ data, id }: any) => {
       </div>
       
       <div className="p-3 space-y-3">
+        <textarea 
+          value={data.message} 
+          onChange={(e) => updateNode({ message: e.target.value })} 
+          placeholder="Message to show above the call button..." 
+          rows={2} 
+          className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-400 transition-all resize-none" 
+        />
+        
         <div className="space-y-2">
-          {/* Contact Name (Acts as the Button Text) */}
           <div className="relative">
             <MousePointerClick size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-rose-500" />
             <input 
               value={data.urlLabel || ""} 
               onChange={(e) => updateNode({ urlLabel: e.target.value })} 
-              placeholder="Contact Name (e.g. Call Support)" 
+              placeholder="Button Name (e.g. Call Support)" 
               className="w-full pl-8 pr-2 py-1.5 text-xs border border-rose-200 rounded-lg focus:outline-none focus:border-rose-400 shadow-sm bg-white text-gray-800" 
             />
           </div>
-          
-          {/* Phone Number Input */}
           <div className="relative">
             <PhoneCall size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-rose-500" />
             <input 
@@ -623,7 +628,7 @@ const CallActionNode = ({ data, id }: any) => {
           </div>
         </div>
         <p className="text-[9px] text-gray-500 leading-tight px-1">
-          📞 Sends a WhatsApp Contact Card. The raw number is hidden, and users see native &ldquo;Call&ldquo; and &ldquo;Message&ldquo; buttons.
+          📞 Sends your text message, then a Contact Card with a native Call button. The raw number stays hidden.
         </p>
       </div>
     </div>
@@ -738,7 +743,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     let newData: any = { message: "" };
     if (type === "message") newData = { message: "", buttons: [], mediaUrl: null, mediaType: null };
     if (type === "url_action") newData = { message: "", urlLabel: "", url: "" };
-    if (type === "call_action") newData = { message: "", phoneNumber: "" };
+    if (type === "call_action") newData = { message: "", urlLabel: "", phoneNumber: "" };
 
     const newNode = { id: uid(), type, position, data: newData };
     setNodes((nds) => nds.concat(newNode));
@@ -782,9 +787,12 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         return { ...btn, nextStepId: edge ? edge.target : null };
       }) : [];
 
-      steps[n.id] = { 
-        id: n.id, 
-        stepType: n.type as Step["stepType"],
+      // Narrow node type for Step.stepType to satisfy TypeScript
+      const stepType = n.type as "message" | "url_action" | "call_action" | undefined;
+
+      steps[n.id] = {
+        id: n.id,
+        stepType,
         message: n.data.message, 
         buttons: buttonsWithLinks, 
         position: n.position,
@@ -809,10 +817,11 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
 
   return (
     <div className={`overflow-hidden flex flex-col transition-all duration-300 ease-in-out ${
-        isFullScreen ? 'fixed inset-0 z-50 bg-white' : 'bg-white rounded-2xl border border-gray-200 shadow-sm relative h-[80vh]'
+        // FIX: Added h-screen w-screen to remove the bottom gap in full screen
+        isFullScreen ? 'fixed inset-0 z-50 bg-white h-screen w-screen' : 'bg-white rounded-2xl border border-gray-200 shadow-sm relative h-[80vh]'
       }`}
     >
-      <div className="p-3 border-b border-gray-100 bg-white z-30 flex items-center justify-between shadow-sm">
+      <div className="p-3 border-b border-gray-100 bg-white z-30 flex items-center justify-between shadow-sm shrink-0">
         <div className="flex items-center gap-3">
           <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${editId ? "bg-amber-100 text-amber-600" : "bg-emerald-100 text-emerald-600"}`}>
             <WorkflowIcon size={16} />
@@ -836,8 +845,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* SIDEBAR */}
-        <div className="w-48 border-r border-gray-200 bg-gray-50 p-3 hidden md:block space-y-3">
+        <div className="w-48 border-r border-gray-200 bg-gray-50 p-3 hidden md:block space-y-3 overflow-y-auto shrink-0">
           <div>
             <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Nodes</h3>
             
@@ -869,7 +877,6 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
               </div>
             </div>
 
-            {/* NEW CALL ACTION */}
             <div 
               onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "call_action")} 
               draggable 
@@ -892,7 +899,8 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           </div>
         </div>
 
-        <div ref={reactFlowWrapper} className="flex-1 h-full bg-gray-50/80 bg-dots">
+        {/* FIX: Added w-full h-full to ensure canvas fills the area properly */}
+        <div ref={reactFlowWrapper} className="flex-1 h-full w-full bg-gray-50/80 bg-dots">
           <ReactFlow
             nodes={nodes} edges={edges}
             onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
