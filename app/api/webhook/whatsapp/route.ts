@@ -5,7 +5,7 @@ import Message from "@/models/Message";
 import Campaign from "@/models/Campaign";
 import Workflow from "@/models/Workflow";
 import User from "@/models/User";
-import Session from "@/models/Session"; // ADDED: Import Session Model
+import Session from "@/models/Session"; // Import Session Model
 import { sendWhatsAppMessage } from "@/lib/sendWhatsApp";
 
 export const dynamic = "force-dynamic";
@@ -278,7 +278,7 @@ export async function POST(req: Request) {
     }
 
     // ==========================================
-    // 4. WORKFLOW LOGIC (WITH BUTTON SESSIONS)
+    // 4. WORKFLOW LOGIC (WITH GLOBAL BUTTON SEARCH)
     // ==========================================
     if (messageType === "text" || isButtonReply) {
       try {
@@ -288,13 +288,22 @@ export async function POST(req: Request) {
           
           if (session) {
             const wf = await Workflow.findById(session.workflowId);
-            const currentStep = wf?.steps?.[session.currentStepId];
             
-            if (wf && currentStep) {
-              // Find the button that matches the clicked button ID
-              const clickedBtn = currentStep.buttons.find((b: any) => 
-                b.id === buttonId || b.label?.toLowerCase() === lowerText
-              );
+            if (wf && wf.steps) {
+              let clickedBtn = null;
+
+              // Search ALL steps in the workflow for the clicked button ID
+              // This fixes the issue of clicking buttons from previous messages!
+              for (const stepId in wf.steps) {
+                const step = wf.steps[stepId];
+                const btn = step.buttons?.find((b: any) => 
+                  b.id === buttonId || b.label?.toLowerCase() === lowerText
+                );
+                if (btn) {
+                  clickedBtn = btn;
+                  break;
+                }
+              }
 
               if (clickedBtn && clickedBtn.nextStepId) {
                 const nextStep = wf.steps[clickedBtn.nextStepId];
