@@ -28,8 +28,11 @@ export async function sendWhatsAppMessage(
   const hasMedia = step.mediaUrl && ["image", "video", "audio", "document"].includes(step.mediaType);
   const hasButtons = step.buttons && step.buttons.length > 0;
   
-  // NEW: Check if it's a URL Action node (Opens link in browser on click)
+  // Check if it's a URL Action node (Opens link in browser on click)
   const isUrlAction = step.stepType === "url_action" && step.url;
+  
+  // NEW: Check if it's a Call Action node
+  const isCallAction = step.stepType === "call_action" && step.phoneNumber;
 
   // Check if the mediaUrl is a standard URL or a Meta Media ID
   const isUrl = step.mediaUrl?.startsWith("http");
@@ -37,11 +40,15 @@ export async function sendWhatsAppMessage(
 
   // If it's a link, append the URL to the message text so WhatsApp can generate a preview
   let bodyText = step.message || " ";
-  if (isLink) {
+  
+  if (isCallAction) {
+    // Format number so WhatsApp makes it clickable to open the dialer
+    bodyText = `${step.message || "Call us at:"}\n📞 ${step.phoneNumber}`;
+  } else if (isLink) {
     bodyText = `${step.message || ""}\n${step.mediaUrl}`.trim();
   }
 
-  // NEW: Handle URL Action (Opens link in browser on click)
+  // Handle URL Action (Opens link in browser on click)
   if (isUrlAction) {
     payload.type = "interactive";
     payload.interactive = {
@@ -54,6 +61,13 @@ export async function sendWhatsAppMessage(
           url: step.url
         }
       }
+    };
+  } else if (isCallAction) {
+    // Send standard text message for the call action so the number is clickable
+    payload.type = "text";
+    payload.text = { 
+      preview_url: false, 
+      body: bodyText 
     };
   } else if (hasButtons) {
     // Send Interactive Button Message (with optional Media Header)
