@@ -5,6 +5,7 @@ import Message from "@/models/Message";
 import Campaign from "@/models/Campaign";
 import Workflow from "@/models/Workflow";
 import User from "@/models/User";
+import Session from "@/models/Session"; // ADDED: Import Session Model
 import { sendWhatsAppMessage } from "@/lib/sendWhatsApp";
 
 export const dynamic = "force-dynamic";
@@ -42,9 +43,6 @@ export async function POST(req: Request) {
 
     if (!value) return NextResponse.json({ success: true });
 
-    // ==========================================
-    // CONNECT DB EARLY — needed for User lookup
-    // ==========================================
     await connectDB();
 
     // ==========================================
@@ -52,7 +50,7 @@ export async function POST(req: Request) {
     // ==========================================
     const metadataPhoneNumberId = value?.metadata?.phone_number_id;
     let userId: string | null = null;
-    let ownerUser: any = null; // Store full user object to use their credentials later
+    let ownerUser: any = null;
 
     if (metadataPhoneNumberId) {
       ownerUser = await User.findOne({
@@ -155,7 +153,6 @@ export async function POST(req: Request) {
     // ==========================================
     // 2. HANDLE INBOUND MESSAGES
     // ==========================================
-
     if (!value?.messages?.length) return NextResponse.json({ success: true });
 
     const message = value.messages[0];
@@ -209,7 +206,6 @@ export async function POST(req: Request) {
     if (!textToSave && !buttonId && !mediaId)
       return NextResponse.json({ success: true });
 
-    // FIXED: Changed metaMessageId to whatsappMessageId to match your schema and outbound messages
     await Message.create({
       userId,
       phone,
@@ -217,7 +213,7 @@ export async function POST(req: Request) {
       direction: "in",
       messageType,
       mediaUrl: mediaId,
-      whatsappMessageId: message.id || null, 
+      whatsappMessageId: message.id || null,
       contactName: contactName,
     });
     console.log(`📩 INBOUND SAVED ✔️ for ${phone}`);
@@ -282,10 +278,64 @@ export async function POST(req: Request) {
     }
 
     // ==========================================
-    // 4. WORKFLOW LOGIC
+    // 4. WORKFLOW LOGIC (WITH BUTTON SESSIONS)
     // ==========================================
-    if (messageType === "text") {
+    if (messageType === "text" || isButtonReply) {
       try {
+        // --- STEP A: CHECK FOR ACTIVE SESSION (BUTTON CLICK) ---
+        if (isButtonReply && userId) {
+          const session = await Session.findOne({ phone, userId });
+          
+          if (session) {
+            const wf = await Workflow.findById(session.workflowId);
+            const currentStep = wf?.steps?.[session.currentStepId];
+            
+            if (wf && currentStep) {
+              // Find the button that matches the clicked button ID
+              const clickedBtn = currentStep.buttons.find((b: any) => 
+                b.id === buttonId || b.label?.toLowerCase() === lowerText
+              );
+
+              if (clickedBtn && clickedBtn.nextStepId) {
+                const nextStep = wf.steps[clickedBtn.nextStepId];
+                
+                if (nextStep) {
+                  // Update session to the new step
+                  session.currentStepId = nextStep.id;
+                  await session.save();
+
+                  // Send the next message
+                  await sendWhatsAppMessage(
+                    phone, 
+                    nextStep, 
+                    ownerUser?.whatsappPhoneNumberId, 
+                    ownerUser?.whatsappAccessToken
+                  );
+                  
+                  await Message.create({
+                    userId,
+                    phone,
+                    text: nextStep.message,
+                    direction: "out",
+                    messageType: "text",
+                  });
+                  console.log(`📤 OUTBOUND WORKFLOW (Next Step) SAVED ✔️`);
+                  return NextResponse.json({ success: true }); // Stop here, button handled
+                }
+              } else {
+                // Button has no next step -> End flow
+                await Session.deleteOne({ _id: session._id });
+                console.log(`🛑 Workflow ended for ${phone}`);
+                return NextResponse.json({ success: true });
+              }
+            } else {
+              // Workflow/Step missing, clear session
+              await Session.deleteOne({ _id: session._id });
+            }
+          }
+        }
+
+        // --- STEP B: CHECK FOR TRIGGERS (NEW TEXT MESSAGE) ---
         const workflowQuery: any = {};
         if (userId) workflowQuery.userId = userId;
         const workflows = await Workflow.find(workflowQuery);
@@ -293,45 +343,27 @@ export async function POST(req: Request) {
         let matchedStepId: string | null = null;
         let matchedWorkflow: any = null;
 
-        if (buttonId) {
-          const cleanButtonId = buttonId.toLowerCase().trim();
-          for (const wf of workflows) {
-            const hasMatch = wf.triggers?.some((t: any) => {
-              const triggerKeyword = t.keyword.toLowerCase().trim();
-              const mode = t.matchMode || "contains";
-              if (mode === "exact") return cleanButtonId === triggerKeyword;
-              else
-                return (
-                  cleanButtonId.includes(triggerKeyword) ||
-                  triggerKeyword.includes(cleanButtonId)
-                );
-            });
-            if (hasMatch) {
-              matchedWorkflow = wf;
-              matchedStepId = wf.rootStepId;
-              break;
-            }
-          }
-        } else if (lowerText) {
-          for (const wf of workflows) {
-            const hasMatch = wf.triggers?.some((t: any) => {
-              const triggerKeyword = t.keyword.toLowerCase().trim();
-              const mode = t.matchMode || "contains";
-              if (mode === "exact") return lowerText === triggerKeyword;
-              else return lowerText.includes(triggerKeyword);
-            });
-            if (hasMatch) {
-              matchedWorkflow = wf;
-              matchedStepId = wf.rootStepId;
-              break;
-            }
+        const checkText = isButtonReply ? (textToSave || "") : lowerText;
+
+        for (const wf of workflows) {
+          const hasMatch = wf.triggers?.some((t: any) => {
+            const triggerKeyword = t.keyword.toLowerCase().trim();
+            const mode = t.matchMode || "contains";
+            if (mode === "exact") return checkText === triggerKeyword;
+            else return checkText.includes(triggerKeyword);
+          });
+          
+          if (hasMatch) {
+            matchedWorkflow = wf;
+            matchedStepId = wf.rootStepId;
+            break;
           }
         }
 
         if (matchedWorkflow && matchedStepId) {
           const step = matchedWorkflow.steps?.[matchedStepId];
           if (step?.message) {
-            // ADDED: Pass the owner's specific WhatsApp credentials for multi-tenant sending
+            // Send the initial message
             await sendWhatsAppMessage(
               phone, 
               step, 
@@ -346,7 +378,18 @@ export async function POST(req: Request) {
               direction: "out",
               messageType: "text",
             });
-            console.log(`📤 OUTBOUND WORKFLOW SAVED ✔️`);
+            console.log(`📤 OUTBOUND WORKFLOW (Trigger) SAVED ✔️`);
+
+            // Create/Update Session so we know where they are when they click a button
+            await Session.findOneAndUpdate(
+              { phone, userId },
+              { 
+                workflowId: matchedWorkflow._id, 
+                currentStepId: step.id,
+                updatedAt: new Date() 
+              },
+              { upsert: true, new: true }
+            );
           }
         }
       } catch (workflowError) {
