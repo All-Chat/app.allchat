@@ -12,10 +12,10 @@ const FormSubmissionSchema = new mongoose.Schema({
 });
 const FormSubmission = mongoose.models.FormSubmission || mongoose.model("FormSubmission", FormSubmissionSchema);
 
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     await connectDB();
-    const stepId = params.id;
+    const { id: stepId } = await params; // Await params here
     const workflows = await Workflow.find({});
     let foundStep = null;
 
@@ -34,10 +34,10 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   }
 }
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     await connectDB();
-    const stepId = params.id;
+    const { id: stepId } = await params; // Await params here
     const { phone, formData } = await req.json();
     await FormSubmission.create({ phone: phone || "unknown", stepId, data: formData });
     return NextResponse.json({ success: true, message: "Form submitted successfully" });
