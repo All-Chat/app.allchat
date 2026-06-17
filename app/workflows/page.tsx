@@ -602,21 +602,24 @@ const CallActionNode = ({ data, id }: any) => {
         <textarea 
           value={data.message} 
           onChange={(e) => updateNode({ message: e.target.value })} 
-          placeholder="Message to show above the call button..." 
+          placeholder="Message to show above the button..." 
           rows={2} 
           className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-400 transition-all resize-none" 
         />
         
         <div className="space-y-2">
+          {/* Button Text Input */}
           <div className="relative">
             <MousePointerClick size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-rose-500" />
             <input 
               value={data.urlLabel || ""} 
               onChange={(e) => updateNode({ urlLabel: e.target.value })} 
-              placeholder="Button Name (e.g. Call Support)" 
+              placeholder="Button Text (e.g. Call Support)" 
               className="w-full pl-8 pr-2 py-1.5 text-xs border border-rose-200 rounded-lg focus:outline-none focus:border-rose-400 shadow-sm bg-white text-gray-800" 
             />
           </div>
+          
+          {/* Phone Number Input */}
           <div className="relative">
             <PhoneCall size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-rose-500" />
             <input 
@@ -628,7 +631,7 @@ const CallActionNode = ({ data, id }: any) => {
           </div>
         </div>
         <p className="text-[9px] text-gray-500 leading-tight px-1">
-          📞 Sends your text message, then a Contact Card with a native Call button. The raw number stays hidden.
+          📞 Sends a clean WhatsApp button. Clicking it instantly opens the phone&apos;s native dialer with the number filled in.
         </p>
       </div>
     </div>
