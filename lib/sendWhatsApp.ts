@@ -23,19 +23,27 @@ export async function sendWhatsAppMessage(
     to: sanitizedPhone, 
   };
 
-  const hasMedia = step.mediaUrl && step.mediaType;
+  // Check if it's a social media link or a media file
+  const isLink = step.mediaType === "link" && step.mediaUrl;
+  const hasMedia = step.mediaUrl && ["image", "video", "audio", "document"].includes(step.mediaType);
   const hasButtons = step.buttons && step.buttons.length > 0;
 
   // Check if the mediaUrl is a standard URL or a Meta Media ID
   const isUrl = step.mediaUrl?.startsWith("http");
   const mediaObj = isUrl ? { link: step.mediaUrl } : { id: step.mediaUrl };
 
+  // If it's a link, append the URL to the message text so WhatsApp can generate a preview
+  let bodyText = step.message || " ";
+  if (isLink) {
+    bodyText = `${step.message || ""}\n${step.mediaUrl}`.trim();
+  }
+
   if (hasButtons) {
     // Send Interactive Button Message (with optional Media Header)
     payload.type = "interactive";
     payload.interactive = {
       type: "button",
-      body: { text: step.message || " " }, // WhatsApp requires body text
+      body: { text: bodyText }, // WhatsApp requires body text
       action: {
         buttons: step.buttons.map((btn: any) => ({
           type: "reply",
@@ -47,7 +55,7 @@ export async function sendWhatsAppMessage(
       },
     };
 
-    // If media exists, attach it as a header
+    // If media exists, attach it as a header (Links cannot be headers, so we only do this for files)
     if (hasMedia) {
       payload.interactive.header = {
         type: step.mediaType,
@@ -62,9 +70,12 @@ export async function sendWhatsAppMessage(
       caption: step.message || undefined, // Caption only works for image/video/document
     };
   } else {
-    // Send standard text message
+    // Send standard text message OR link message with rich preview
     payload.type = "text";
-    payload.text = { body: step.message || " " };
+    payload.text = { 
+      preview_url: true, // THIS IS CRITICAL: Enables WhatsApp previews for YT, Insta, FB links
+      body: bodyText 
+    };
   }
 
   // Send the API request to Meta
