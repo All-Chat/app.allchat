@@ -27,6 +27,9 @@ export async function sendWhatsAppMessage(
   const isLink = step.mediaType === "link" && step.mediaUrl;
   const hasMedia = step.mediaUrl && ["image", "video", "audio", "document"].includes(step.mediaType);
   const hasButtons = step.buttons && step.buttons.length > 0;
+  
+  // NEW: Check if it's a URL Action node (Opens link in browser on click)
+  const isUrlAction = step.stepType === "url_action" && step.url;
 
   // Check if the mediaUrl is a standard URL or a Meta Media ID
   const isUrl = step.mediaUrl?.startsWith("http");
@@ -38,7 +41,21 @@ export async function sendWhatsAppMessage(
     bodyText = `${step.message || ""}\n${step.mediaUrl}`.trim();
   }
 
-  if (hasButtons) {
+  // NEW: Handle URL Action (Opens link in browser on click)
+  if (isUrlAction) {
+    payload.type = "interactive";
+    payload.interactive = {
+      type: "cta_url",
+      body: { text: bodyText },
+      action: {
+        name: "cta_url",
+        parameters: {
+          display_text: step.urlLabel?.substring(0, 20) || "Visit Link",
+          url: step.url
+        }
+      }
+    };
+  } else if (hasButtons) {
     // Send Interactive Button Message (with optional Media Header)
     payload.type = "interactive";
     payload.interactive = {
