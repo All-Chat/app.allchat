@@ -31,7 +31,7 @@ export async function sendWhatsAppMessage(
   // Check if it's a URL Action node (Opens link in browser on click)
   const isUrlAction = step.stepType === "url_action" && step.url;
   
-    // Check if it's a Call Action node
+  // Check if it's a Call Action node
   const isCallAction = step.stepType === "call_action" && step.phoneNumber;
 
   // Check if the mediaUrl is a standard URL or a Meta Media ID
@@ -40,13 +40,7 @@ export async function sendWhatsAppMessage(
 
   // If it's a link, append the URL to the message text so WhatsApp can generate a preview
   let bodyText = step.message || " ";
-  
-  if (isCallAction) {
-    // Get the custom button name entered by the user, or default to "Call Now"
-    const buttonText = step.urlLabel?.substring(0, 20) || "Call Now";
-    // Format message so the user sees their custom button text, followed by the clickable number
-    bodyText = `${step.message || ""}\n\n📞 *${buttonText}*\n${step.phoneNumber}`.trim();
-  } else if (isLink) {
+  if (isLink) {
     bodyText = `${step.message || ""}\n${step.mediaUrl}`.trim();
   }
 
@@ -65,14 +59,24 @@ export async function sendWhatsAppMessage(
       }
     };
   } else if (isCallAction) {
-    // Send standard text message for the call action.
-    // WhatsApp will automatically parse the phone number and make it clickable.
-    // Clicking the number opens the phone's contacts/dialer.
-    payload.type = "text";
-    payload.text = { 
-      preview_url: false, 
-      body: bodyText 
-    };
+    // NEW: Send a Contact Card (vCard)
+    // This creates a native WhatsApp UI with "Call" and "Message" buttons.
+    // The raw number is hidden inside the contact card.
+    payload.type = "contacts";
+    payload.contacts = [
+      {
+        name: {
+          formatted_name: step.urlLabel?.substring(0, 20) || "Call Now",
+          first_name: step.urlLabel?.substring(0, 20) || "Call Now"
+        },
+        phones: [
+          {
+            phone: step.phoneNumber,
+            type: "MAIN"
+          }
+        ]
+      }
+    ];
   } else if (hasButtons) {
     // Send Interactive Button Message (with optional Media Header)
     payload.type = "interactive";
