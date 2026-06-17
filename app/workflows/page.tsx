@@ -254,14 +254,28 @@ const MessageNode = ({ data, id }: any) => {
     }
   };
 
-  const openLibrary = async () => {
+    const openLibrary = async () => {
     setShowLibrary(true);
+    setLibraryItems([]); // Clear existing items to show loading state
     try {
       const res = await fetch("/api/media");
-      const data = await res.json();
-      if (data.media) setLibraryItems(data.media);
-    } catch (err) {
+      const text = await res.text(); // Read response as text first to prevent JSON parsing errors
+      
+      if (!res.ok) {
+        console.error("Library API Error:", text);
+        alert("Failed to load media library. Did you create the /api/media/route.ts file?");
+        setShowLibrary(false);
+        return;
+      }
+      
+      const data = JSON.parse(text);
+      if (data.media) {
+        setLibraryItems(data.media);
+      }
+    } catch (err: any) {
       console.error("Failed to load library", err);
+      alert("An error occurred while fetching the media library.");
+      setShowLibrary(false);
     }
   };
 
