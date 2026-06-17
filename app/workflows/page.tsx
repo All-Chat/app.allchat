@@ -1,66 +1,41 @@
-/* eslint-disable react-hooks/immutability */
-/* eslint-disable react-hooks/preserve-manual-memoization */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable react-hooks/exhaustive-deps */
 /* eslint-disable react-hooks/set-state-in-effect */
 "use client";
 
-import { useEffect, useState, useCallback, useRef, DragEvent, MouseEvent } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Sidebar from "@/components/Sidebar"; 
-import ReactFlow, {
-  ReactFlowProvider,
-  Background,
-  Controls,
-  MiniMap,
-  addEdge,
-  useNodesState,
-  useEdgesState,
-  Handle,
-  Position,
-  Connection,
-  Node,
-  Edge,
-  useReactFlow,
-  getBezierPath,
-  EdgeLabelRenderer,
-} from "reactflow";
-import "reactflow/dist/style.css";
+import {
+  DragDropContext,
+  Droppable,
+  Draggable,
+  DropResult,
+} from "@hello-pangea/dnd";
 import {
   Zap,
   MessageSquare,
   Plus,
   Trash2,
+  GripVertical,
   X,
   Workflow,
   Check,
+  MousePointerClick,
+  ArrowDown,
   Maximize,
   Minimize,
-  Type,
   Crosshair,
-  PhoneCall,
-  Globe,
-  Clock,
-  HelpCircle,
+  Type,
   Loader2,
-  Lock,
-  Unlock,
-  Wand2,
-  Shrink,
-  Image as ImageIcon,
-  Upload,
-  MousePointerClick,
-  LayoutTemplate,
-  Share2,
-  ClipboardList,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 
 /* ────────────────────────────────────────────
-   TYPES & UTILS
+   TYPES
    ──────────────────────────────────────────── */
 type Trigger = { keyword: string; matchMode: "exact" | "contains" };
-type Button = { id: string; label: string; nextStepId: string | null; phoneNumber?: string; url?: string };
-type Step = { id: string; message: string; buttons: Button[]; waitType?: "wait" | "none"; nodeType?: string; metadata?: any };
+type Button = { id: string; label: string; nextStepId: string | null };
+type Step = { id: string; message: string; buttons: Button[] };
 type Workflow = {
   _id: string;
   triggers: Trigger[];
@@ -93,753 +68,317 @@ function Toast({ message, type, onClose }: { message: string; type: "success" | 
 }
 
 /* ────────────────────────────────────────────
-   REACT FLOW CUSTOM DELETABLE EDGE
+   DRAGGABLE TRIGGER ITEM (WITH MATCH MODE)
    ──────────────────────────────────────────── */
-const DeletableEdge = ({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style, markerEnd }: any) => {
-  const { setEdges } = useReactFlow();
-  const [edgePath, labelX, labelY] = getBezierPath({
-    sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition,
-  });
-
-  const onDelete = (event: MouseEvent) => {
-    event.stopPropagation();
-    setEdges((eds) => eds.filter((e) => e.id !== id));
-  };
-
+function TriggerItem({ trigger, index, onChange, onRemove }: { trigger: Trigger; index: number; onChange: (i: number, v: string, mode?: "exact" | "contains") => void; onRemove: (i: number) => void }) {
   return (
-    <>
-      <path id={id} style={style} className="react-flow__edge-path" d={edgePath} markerEnd={markerEnd} />
-      <EdgeLabelRenderer>
-        <button
-          onClick={onDelete}
-          className="absolute bg-white border border-gray-300 rounded-full w-5 h-5 flex items-center justify-center text-gray-400 hover:text-red-500 hover:border-red-400 shadow-sm transition-colors pointer-events-auto"
-          style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
-        >
-          <X size={12} />
-        </button>
-      </EdgeLabelRenderer>
-    </>
-  );
-};
-
-const edgeTypes = { deletable: DeletableEdge };
-
-/* ────────────────────────────────────────────
-   REACT FLOW CUSTOM NODES
-   ──────────────────────────────────────────── */
-const CustomNode = ({ id, data, type }: any) => {
-  const handleDataChange = (key: string, value: any) => {
-    data.onChange(id, { ...data, [key]: value });
-  };
-
-  const handleKeywordChange = (index: number, value: string) => {
-    const newKeywords = [...(data.keywords || [])];
-    newKeywords[index] = value;
-    handleDataChange("keywords", newKeywords);
-  };
-
-  const addKeyword = () => handleDataChange("keywords", [...(data.keywords || []), ""]);
-  const removeKeyword = (index: number) => handleDataChange("keywords", (data.keywords || []).filter((_: any, i: number) => i !== index));
-
-  // File Upload Logic (5MB Limit)
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    
-    if (file.size > 5 * 1024 * 1024) {
-      alert("File size exceeds 5MB limit!");
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      handleDataChange("mediaUrl", ev.target?.result);
-      if (file.type.startsWith("video")) handleDataChange("mediaType", "video");
-      else if (file.type.includes("pdf")) handleDataChange("mediaType", "pdf");
-      else handleDataChange("mediaType", "image");
-    };
-    reader.readAsDataURL(file);
-  };
-
-  // Dynamic Buttons Logic
-  const addButton = () => {
-    const newBtn = { id: uid(), label: "" };
-    handleDataChange("buttons", [...(data.buttons || []), newBtn]);
-  };
-  const removeButton = (btnId: string) => {
-    handleDataChange("buttons", (data.buttons || []).filter((b: any) => b.id !== btnId));
-  };
-  const handleButtonLabelChange = (btnId: string, label: string) => {
-    const updated = (data.buttons || []).map((b: any) => b.id === btnId ? { ...b, label } : b);
-    handleDataChange("buttons", updated);
-  };
-
-  const inputClasses = (color: string) => `w-full px-3 py-2 bg-gray-50 border rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 transition-all resize-none ${color}`;
-  
-  const canHaveButtons = type === "message" || type === "mediaNode";
-  const hasDynamicButtons = canHaveButtons && data.buttons?.length > 0;
-  const isTerminalNode = type === "delay" || type === "linkWorkflowNode"; // Nodes that don't have a default output
-
-  return (
-    <div className="w-72 bg-white border border-gray-200 shadow-lg rounded-2xl overflow-hidden group relative pb-4">
-      {type !== "trigger" && <Handle type="target" position={Position.Top} className="!w-3 !h-3 !bg-gray-400 !border-2 !border-white" />}
-      
-      <div className={`p-3 flex items-center gap-2 border-b border-gray-100 ${
-        type === "trigger" ? "bg-amber-50 text-amber-700" :
-        type === "callButton" ? "bg-blue-50 text-blue-700" :
-        type === "websiteButton" ? "bg-purple-50 text-purple-700" :
-        type === "question" ? "bg-pink-50 text-pink-700" :
-        type === "delay" ? "bg-gray-100 text-gray-700" :
-        type === "mediaNode" ? "bg-indigo-50 text-indigo-700" :
-        type === "templateNode" ? "bg-teal-50 text-teal-700" :
-        type === "linkWorkflowNode" ? "bg-orange-50 text-orange-700" :
-        type === "formNode" ? "bg-fuchsia-50 text-fuchsia-700" :
-        "bg-emerald-50 text-emerald-700"
-      }`}>
-        {type === "trigger" && <Zap size={14} />}
-        {type === "message" && <MessageSquare size={14} />}
-        {type === "callButton" && <PhoneCall size={14} />}
-        {type === "websiteButton" && <Globe size={14} />}
-        {type === "question" && <HelpCircle size={14} />}
-        {type === "delay" && <Clock size={14} />}
-        {type === "mediaNode" && <ImageIcon size={14} />}
-        {type === "templateNode" && <LayoutTemplate size={14} />}
-        {type === "linkWorkflowNode" && <Share2 size={14} />}
-        {type === "formNode" && <ClipboardList size={14} />}
-        
-        <span className="text-xs font-bold uppercase tracking-wider">
-          {type === "trigger" ? "Trigger" : 
-           type === "callButton" ? "Call Action" :
-           type === "websiteButton" ? "Website Link" :
-           type === "question" ? "Capture Reply" :
-           type === "delay" ? "Delay Wait" : 
-           type === "mediaNode" ? "Media Message" :
-           type === "templateNode" ? "WhatsApp Template" :
-           type === "linkWorkflowNode" ? "Link to Workflow" :
-           type === "formNode" ? "Create Form" : "Message Step"}
-        </span>
-        
-        {type !== "trigger" && (
-          <button onClick={() => data.onDelete(id)} className="ml-auto opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-colors">
-            <Trash2 size={14} />
-          </button>
-        )}
-      </div>
-
-      <div className="p-3 space-y-3">
-        {type === "trigger" && (
-          <>
-            <div className="space-y-2">
-              {data.keywords?.map((kw: string, i: number) => (
-                <div key={i} className="flex items-center gap-2 group/kw">
-                  <input 
-                    value={kw} 
-                    onChange={(e) => handleKeywordChange(i, e.target.value)} 
-                    placeholder={`Keyword ${i + 1}`} 
-                    className="w-full px-3 py-2 bg-white border border-amber-200 rounded-xl text-sm text-gray-900 placeholder:text-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-400 transition-all shadow-sm" 
-                  />
-                  {data.keywords.length > 1 && (
-                    <button onClick={() => removeKeyword(i)} className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover/kw:opacity-100">
-                      <X size={14} />
-                    </button>
-                  )}
-                </div>
-              ))}
-              <button onClick={addKeyword} className="text-xs font-semibold text-amber-600 hover:text-amber-800 flex items-center gap-1 transition-colors">
-                <Plus size={12} /> Add another keyword
-              </button>
-            </div>
-            <div className="flex items-center bg-gray-100 rounded-lg border border-gray-200 p-0.5">
-              <button onClick={() => handleDataChange("matchMode", "contains")} className={`flex-1 p-1.5 rounded-md text-xs font-semibold flex items-center justify-center gap-1 ${data.matchMode === "contains" ? "bg-blue-500 text-white" : "text-gray-400"}`}>
-                <Type size={12} /> Contains
-              </button>
-              <button onClick={() => handleDataChange("matchMode", "exact")} className={`flex-1 p-1.5 rounded-md text-xs font-semibold flex items-center justify-center gap-1 ${data.matchMode === "exact" ? "bg-purple-500 text-white" : "text-gray-400"}`}>
-                <Crosshair size={12} /> Exact
-              </button>
-            </div>
-          </>
-        )}
-
-        {type === "message" && (
-          <textarea 
-            value={data.message} 
-            onChange={(e) => handleDataChange("message", e.target.value)} 
-            placeholder="Type auto-reply message..." 
-            rows={3} 
-            className={inputClasses("border-gray-200 focus:ring-emerald-500/20 focus:border-emerald-400")} 
-          />
-        )}
-
-        {type === "mediaNode" && (
-          <>
-            <div className="space-y-2">
-              {/* Image Preview */}
-              {data.mediaUrl && data.mediaType === 'image' && (
-                <div className="relative w-full h-32 rounded-lg overflow-hidden border border-indigo-100 mb-2">
-                  <img src={data.mediaUrl} alt="Preview" className="w-full h-full object-cover" />
-                  <button 
-                    onClick={() => handleDataChange("mediaUrl", "")} 
-                    className="absolute top-1 right-1 bg-black/60 text-white rounded-full p-1 hover:bg-black/80"
-                  >
-                    <X size={12} />
-                  </button>
-                </div>
-              )}
-              <input 
-                value={data.mediaUrl && data.mediaUrl.startsWith('data:') ? "" : data.mediaUrl} 
-                onChange={(e) => handleDataChange("mediaUrl", e.target.value)} 
-                placeholder="Paste Image/Video/PDF URL" 
-                className={inputClasses("border-indigo-200 focus:ring-indigo-500/20 focus:border-indigo-400")} 
-              />
-              <div className="flex items-center justify-center w-full">
-                <label className="flex flex-col items-center justify-center w-full h-16 border-2 border-indigo-200 border-dashed rounded-lg cursor-pointer bg-indigo-50 hover:bg-indigo-100 transition-colors">
-                  <div className="flex flex-col items-center justify-center pt-2">
-                    <Upload size={16} className="text-indigo-500 mb-1" />
-                    <p className="text-xs text-indigo-600">Upload (Max 5MB)</p>
-                  </div>
-                  <input type="file" className="hidden" onChange={handleFileUpload} accept="image/*,video/*,application/pdf" />
-                </label>
-              </div>
-            </div>
-            <textarea 
-              value={data.message} 
-              onChange={(e) => handleDataChange("message", e.target.value)} 
-              placeholder="Caption (optional)..." 
-              rows={2} 
-              className={inputClasses("border-indigo-200 focus:ring-indigo-500/20 focus:border-indigo-400")} 
-            />
-          </>
-        )}
-
-        {type === "templateNode" && (
-          <>
+    <Draggable draggableId={`trigger-${index}`} index={index}>
+      {(provided) => (
+        <div ref={provided.innerRef} {...provided.draggableProps} className="flex items-center gap-2 group">
+          <div {...provided.dragHandleProps} className="text-gray-300 hover:text-gray-500 cursor-grab shrink-0"><GripVertical size={18} /></div>
+          <div className="flex-1 relative min-w-0">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-amber-500"><Zap size={14} /></span>
             <input 
-              value={data.templateName} 
-              onChange={(e) => handleDataChange("templateName", e.target.value)} 
-              placeholder="Approved Template Name (e.g. welcome_msg)" 
-              className={inputClasses("border-teal-200 focus:ring-teal-500/20 focus:border-teal-400")} 
+              value={trigger.keyword} 
+              onChange={(e) => onChange(index, e.target.value)} 
+              placeholder="e.g. price" 
+              className="w-full pl-9 pr-4 py-2.5 bg-white border border-amber-200 rounded-xl text-sm text-gray-900 placeholder:text-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-400 transition-all shadow-sm" 
             />
-            <p className="text-[11px] text-teal-600 font-medium bg-teal-50 p-2 rounded-lg">Sends an official Meta-approved template. Ensure it exists in your WhatsApp Manager.</p>
-          </>
-        )}
-
-        {type === "linkWorkflowNode" && (
-          <>
-            <input 
-              value={data.targetWorkflowId} 
-              onChange={(e) => handleDataChange("targetWorkflowId", e.target.value)} 
-              placeholder="Target Workflow ID or Name" 
-              className={inputClasses("border-orange-200 focus:ring-orange-500/20 focus:border-orange-400")} 
-            />
-            <p className="text-[11px] text-orange-600 font-medium bg-orange-50 p-2 rounded-lg">Ends current flow and immediately starts another one.</p>
-          </>
-        )}
-
-        {type === "formNode" && (
-          <>
-            <input 
-              value={data.formTitle} 
-              onChange={(e) => handleDataChange("formTitle", e.target.value)} 
-              placeholder="Form Title (e.g. Contact Details)" 
-              className={inputClasses("border-fuchsia-200 focus:ring-fuchsia-500/20 focus:border-fuchsia-400")} 
-            />
-            <input 
-              value={data.submitButtonText} 
-              onChange={(e) => handleDataChange("submitButtonText", e.target.value)} 
-              placeholder="Submit Button Text (e.g. Submit)" 
-              className={inputClasses("border-fuchsia-200 focus:ring-fuchsia-500/20 focus:border-fuchsia-400")} 
-            />
-            <p className="text-[11px] text-fuchsia-600 font-medium bg-fuchsia-50 p-2 rounded-lg">Bot sends a secure link to user. Flow pauses until form is submitted.</p>
-          </>
-        )}
-
-        {type === "question" && (
-          <>
-            <textarea 
-              value={data.message} 
-              onChange={(e) => handleDataChange("message", e.target.value)} 
-              placeholder="Ask a question..." 
-              rows={3} 
-              className={inputClasses("border-gray-200 focus:ring-pink-500/20 focus:border-pink-400")} 
-            />
-            <p className="text-[11px] text-pink-600 font-medium bg-pink-50 p-2 rounded-lg">Flow waits here for user to reply.</p>
-          </>
-        )}
-
-        {type === "delay" && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600">Wait</span>
-            <input 
-              type="number" 
-              value={data.delaySeconds} 
-              onChange={(e) => handleDataChange("delaySeconds", e.target.value)} 
-              className="w-16 px-2 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:border-gray-400 shadow-sm" 
-            />
-            <span className="text-sm text-gray-600">seconds before next step</span>
           </div>
-        )}
-
-        {(type === "callButton" || type === "websiteButton") && (
-          <>
-            <textarea 
-              value={data.message} 
-              onChange={(e) => handleDataChange("message", e.target.value)} 
-              placeholder="Message before button..." 
-              rows={2} 
-              className={inputClasses(type === "callButton" ? "border-blue-200 focus:ring-blue-500/20 focus:border-blue-400" : "border-purple-200 focus:ring-purple-500/20 focus:border-purple-400")} 
-            />
-            <input 
-              value={data.buttonText} 
-              onChange={(e) => handleDataChange("buttonText", e.target.value)} 
-              placeholder={type === "callButton" ? "Button Text (e.g. Call Us)" : "Button Text (e.g. Visit Site)"} 
-              className={`w-full bg-white border rounded-lg px-2 py-1.5 text-xs text-gray-800 focus:outline-none shadow-sm ${
-                type === "callButton" ? "border-blue-200 focus:border-blue-400" : "border-purple-200 focus:border-purple-400"
-              }`} 
-            />
-            <div className="flex items-center gap-2">
-              <input 
-                value={type === "callButton" ? data.phoneNumber : data.url} 
-                onChange={(e) => handleDataChange(type === "callButton" ? "phoneNumber" : "url", e.target.value)} 
-                placeholder={type === "callButton" ? "Phone (+123...)" : "https://website.com"} 
-                className={`flex-1 bg-white border rounded-lg px-2 py-1.5 text-xs text-gray-800 focus:outline-none shadow-sm ${
-                  type === "callButton" ? "border-blue-200 focus:border-blue-400" : "border-purple-200 focus:border-purple-400"
-                }`} 
-              />
-            </div>
-            {type === "callButton" && <p className="text-[10px] text-blue-600 bg-blue-50 p-1 rounded">Clicking this opens the phone dialer directly.</p>}
-          </>
-        )}
-
-        {/* Dynamic Buttons Section for Message & Media */}
-        {canHaveButtons && (
-          <div className="space-y-2 border-t pt-3 mt-2">
-            <div className="flex items-center gap-2 text-xs font-bold text-gray-500 uppercase tracking-wider">
-              <MousePointerClick size={12} /> Interactive Buttons
-            </div>
-            {data.buttons?.map((btn: any) => (
-              <div key={btn.id} className="flex items-center gap-2 group/btn relative">
-                <input 
-                  value={btn.label} 
-                  onChange={(e) => handleButtonLabelChange(btn.id, e.target.value)} 
-                  placeholder="Button Text" 
-                  className="flex-1 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:border-emerald-400 shadow-sm" 
-                />
-                <button onClick={() => removeButton(btn.id)} className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover/btn:opacity-100">
-                  <X size={14} />
-                </button>
-                {/* Parallel Handle for Button - Positioned on the Right */}
-                <Handle 
-                  type="source" 
-                  position={Position.Right} 
-                  id={`btn-${btn.id}`} 
-                  className="!w-3 !h-3 !bg-emerald-500 !border-2 !border-white absolute right-[-18px] top-1/2 -translate-y-1/2"
-                />
-              </div>
-            ))}
-            <button onClick={addButton} className="text-xs font-semibold text-gray-600 hover:text-gray-900 flex items-center gap-1 transition-colors w-full justify-center border border-dashed border-gray-300 rounded-lg py-1.5 hover:bg-gray-50">
-              <Plus size={12} /> Add Button
+          
+          {/* MATCH MODE TOGGLE */}
+          <div className="flex items-center bg-gray-100 rounded-lg border border-gray-200 p-0.5 shrink-0">
+            <button
+              onClick={() => onChange(index, trigger.keyword, "contains")}
+              className={`p-1.5 rounded-md transition-colors flex items-center gap-1 ${trigger.matchMode === "contains" ? "bg-blue-500 text-white shadow-sm" : "text-gray-400 hover:text-gray-600"}`}
+              title="Contains (e.g. 'price' matches 'what is the price?')"
+            >
+              <Type size={12} />
+            </button>
+            <button
+              onClick={() => onChange(index, trigger.keyword, "exact")}
+              className={`p-1.5 rounded-md transition-colors flex items-center gap-1 ${trigger.matchMode === "exact" ? "bg-purple-500 text-white shadow-sm" : "text-gray-400 hover:text-gray-600"}`}
+              title="Exact Match (e.g. 'price' ONLY matches 'price')"
+            >
+              <Crosshair size={12} />
             </button>
           </div>
-        )}
-      </div>
-      
-      {/* Default Source Handle - Only if no dynamic buttons or specific terminal nodes */}
-      {!hasDynamicButtons && !isTerminalNode && (
-        <Handle type="source" position={Position.Bottom} id="default" className="!w-3 !h-3 !bg-gray-400 !border-2 !border-white" />
+
+          <button onClick={() => onRemove(index)} className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 shrink-0"><Trash2 size={14} /></button>
+        </div>
       )}
-      
-      {(type === "callButton" || type === "websiteButton") && (
-         <Handle type="source" position={Position.Bottom} id="default" className="!w-3 !h-3 !bg-gray-400 !border-2 !border-white" />
+    </Draggable>
+  );
+}
+
+/* ────────────────────────────────────────────
+   VISUAL FLOW NODE (RECURSIVE BRANCHING)
+   ──────────────────────────────────────────── */
+function FlowNode({ 
+  step, 
+  allSteps, 
+  onUpdateStep, 
+  onAddStep, 
+  onDeleteStep 
+}: { 
+  step: Step; 
+  allSteps: Record<string, Step>; 
+  onUpdateStep: (id: string, data: Step) => void; 
+  onAddStep: (parentStepId: string, buttonId: string) => void; 
+  onDeleteStep: (id: string) => void;
+}) {
+  const handleMsgChange = (msg: string) => {
+    onUpdateStep(step.id, { ...step, message: msg });
+  };
+
+  const handleButtonLabelChange = (btnId: string, label: string) => {
+    const updatedButtons = step.buttons.map(b => b.id === btnId ? { ...b, label } : b);
+    onUpdateStep(step.id, { ...step, buttons: updatedButtons });
+  };
+
+  const handleButtonLinkChange = (btnId: string, nextId: string | null) => {
+    if (nextId === "NEW") {
+      onAddStep(step.id, btnId);
+    } else {
+      const updatedButtons = step.buttons.map(b => b.id === btnId ? { ...b, nextStepId: nextId } : b);
+      onUpdateStep(step.id, { ...step, buttons: updatedButtons });
+    }
+  };
+
+  const addButton = () => {
+    if (step.buttons.length >= 3) return;
+    const newBtn: Button = { id: uid(), label: "", nextStepId: null };
+    onUpdateStep(step.id, { ...step, buttons: [...step.buttons, newBtn] });
+  };
+
+  const removeButton = (btnId: string) => {
+    onUpdateStep(step.id, { ...step, buttons: step.buttons.filter(b => b.id !== btnId) });
+  };
+
+  return (
+    <div className="flex flex-col items-center relative">
+      {/* The Step Card */}
+      <div className="w-72 sm:w-80 bg-white border border-gray-200 shadow-lg rounded-2xl overflow-hidden z-10 hover:shadow-xl transition-all duration-200 group">
+        <div className="p-3 sm:p-4 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-emerald-50 to-white">
+          <div className="flex items-center gap-2 text-emerald-700">
+            <MessageSquare size={14} />
+            <span className="text-xs font-bold uppercase tracking-wider">Message Step</span>
+          </div>
+          <button onClick={() => onDeleteStep(step.id)} className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"><Trash2 size={14} /></button>
+        </div>
+        
+        <div className="p-3 sm:p-4 space-y-3">
+          <textarea value={step.message} onChange={(e) => handleMsgChange(e.target.value)} placeholder="Type auto-reply message..." rows={3} className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all resize-none" />
+          
+          {/* Buttons Section */}
+          <div className="space-y-2">
+            {step.buttons.map(btn => (
+              <div key={btn.id} className="bg-blue-50/50 border border-blue-200 rounded-xl p-2.5 space-y-2 group/btn hover:border-blue-300 transition-colors">
+                <div className="flex items-center gap-2">
+                  <MousePointerClick size={14} className="text-blue-500 shrink-0" />
+                  <input value={btn.label} onChange={(e) => handleButtonLabelChange(btn.id, e.target.value)} placeholder="Button Text" className="flex-1 min-w-0 bg-white border border-blue-200 rounded-lg px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:border-blue-400 shadow-sm" />
+                  <button onClick={() => removeButton(btn.id)} className="opacity-0 group-hover/btn:opacity-100 text-gray-400 hover:text-red-500 transition-colors shrink-0"><X size={14} /></button>
+                </div>
+                <select value={btn.nextStepId || ""} onChange={(e) => handleButtonLinkChange(btn.id, e.target.value || null)} className="w-full bg-white border border-blue-200 rounded-lg px-2 py-1.5 text-[11px] text-gray-600 focus:outline-none focus:border-blue-400 shadow-sm">
+                  <option value="">✋ End Flow Here</option>
+                  <option value="NEW">➕ Create Next Step</option>
+                  {Object.values(allSteps).map(s => s.id !== step.id && (
+                    <option key={s.id} value={s.id}>🔗 Link to: &quot;{s.message.substring(0, 15)}...&quot;</option>
+                  ))}
+                </select>
+              </div>
+            ))}
+            {step.buttons.length < 3 && (
+              <button onClick={addButton} className="w-full py-2 border border-dashed border-blue-300 rounded-xl text-xs font-semibold text-blue-500 hover:bg-blue-50 transition-colors flex items-center justify-center gap-1.5 bg-blue-50/30">
+                <Plus size={12} /> Add Interactive Button
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* The Branches below the card */}
+      {step.buttons.length > 0 && (
+        <div className="flex justify-center gap-6 sm:gap-12 pt-4 relative">
+          <div className="absolute top-0 left-1/2 w-px h-4 bg-gray-300 transform -translate-x-1/2"></div>
+          {step.buttons.length > 1 && (
+            <div className="absolute top-4 left-1/4 w-1/2 h-px bg-gray-300 transform -translate-y-1/2"></div>
+          )}
+
+          {step.buttons.map(btn => (
+            <div key={btn.id} className="flex flex-col items-center relative pt-4">
+              <div className="absolute top-0 left-1/2 w-px h-4 bg-gray-300 transform -translate-x-1/2"></div>
+              <div className="px-3 sm:px-4 py-1.5 bg-blue-600 text-white rounded-full text-[11px] font-bold shadow-md border border-blue-700 mb-3 max-w-[100px] sm:max-w-[180px] truncate text-center">
+                {btn.label || "Unnamed"}
+              </div>
+              <div className="w-px h-4 bg-blue-300"></div>
+              {btn.nextStepId && allSteps[btn.nextStepId] ? (
+                <FlowNode step={allSteps[btn.nextStepId]} allSteps={allSteps} onUpdateStep={onUpdateStep} onAddStep={onAddStep} onDeleteStep={onDeleteStep} />
+              ) : (
+                <div className="w-36 sm:w-48 h-28 border-2 border-dashed border-gray-300 rounded-2xl flex flex-col items-center justify-center text-gray-400 bg-white/50 backdrop-blur-sm mt-2 p-2">
+                  <span className="text-2xl mb-1">🛑</span>
+                  <span className="text-[11px] font-semibold text-gray-500 text-center">End of Flow</span>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
-};
-
-const nodeTypes = { 
-  trigger: CustomNode, 
-  message: CustomNode, 
-  callButton: CustomNode, 
-  websiteButton: CustomNode, 
-  question: CustomNode, 
-  delay: CustomNode,
-  mediaNode: CustomNode,
-  templateNode: CustomNode,
-  linkWorkflowNode: CustomNode,
-  formNode: CustomNode
-};
+}
 
 /* ────────────────────────────────────────────
-   WORKFLOW BUILDER CANVAS (REACT FLOW)
+   WORKFLOW BUILDER FORM (INFINITE CANVAS + FULLSCREEN)
    ──────────────────────────────────────────── */
-function WorkflowCanvas({ editId, initialData, onSave, onCancel }: { editId: string | null; initialData: Workflow; onSave: (wf: Workflow) => void; onCancel: () => void }) {
-  const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const { screenToFlowPosition, fitView } = useReactFlow();
+function WorkflowForm({ editId, initialData, onSave, onCancel }: { editId: string | null; initialData: Workflow; onSave: (wf: Workflow) => void; onCancel: () => void }) {
+  const canvasRef = useRef<HTMLDivElement>(null);
   const [isFullScreen, setIsFullScreen] = useState(false);
-  const [isLocked, setIsLocked] = useState(false);
   
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [triggers, setTriggers] = useState<Trigger[]>(initialData.triggers);
+  const [steps, setSteps] = useState<Record<string, Step>>(initialData.steps);
+  const [rootStepId, setRootStepId] = useState<string>(initialData.rootStepId);
 
-  useEffect(() => {
-    const { nodes: rfNodes, edges: rfEdges } = convertDataToFlow(initialData, updateNodeData, deleteNode);
-    setNodes(rfNodes);
-    setEdges(rfEdges);
-  }, [initialData]);
-
-  const onConnect = useCallback((params: Connection) => setEdges((eds) => addEdge({ ...params, type: "deletable" }, eds)), [setEdges]);
-
-  const updateNodeData = useCallback((id: string, data: any) => {
-    setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...data } } : n)));
-  }, [setNodes]);
-
-  const deleteNode = useCallback((id: string) => {
-    setNodes((nds) => nds.filter((n) => n.id !== id));
-    setEdges((eds) => eds.filter((e) => e.source !== id && e.target !== id));
-  }, [setNodes, setEdges]);
-
-  const onDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-  }, []);
-
-  const onDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const type = event.dataTransfer.getData("application/reactflow");
-    if (!type) return;
-
-    const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-    
-    const defaultData: any = {
-      onChange: updateNodeData,
-      onDelete: deleteNode,
-      message: "",
-      buttons: [], 
+  const handleTriggerChange = (index: number, val: string, mode?: "exact" | "contains") => {
+    const newTriggers = [...triggers];
+    newTriggers[index] = { 
+      keyword: val, 
+      matchMode: mode || newTriggers[index].matchMode || "contains" 
     };
-
-    if (type === "trigger") { defaultData.keywords = [""]; defaultData.matchMode = "contains"; }
-    if (type === "callButton") { defaultData.buttonText = "Call Now"; defaultData.phoneNumber = ""; }
-    if (type === "websiteButton") { defaultData.buttonText = "Visit Website"; defaultData.url = ""; }
-    if (type === "delay") defaultData.delaySeconds = 5;
-    if (type === "mediaNode") defaultData.mediaUrl = "";
-    if (type === "templateNode") defaultData.templateName = "";
-    if (type === "linkWorkflowNode") defaultData.targetWorkflowId = "";
-    if (type === "formNode") { defaultData.formTitle = ""; defaultData.submitButtonText = "Submit"; }
-
-    const newNode = { id: uid(), type, position, data: defaultData };
-    setNodes((nds) => nds.concat(newNode));
-  }, [screenToFlowPosition, setNodes, updateNodeData, deleteNode]);
-
-  // Advanced Auto-Layout Algorithm (Tidy Tree)
-  const handleFormatLayout = useCallback(() => {
-    setNodes((prevNodes) => {
-      const childrenMap: Record<string, string[]> = {};
-      const incomingCount: Record<string, number> = {};
-      
-      prevNodes.forEach(n => { childrenMap[n.id] = []; incomingCount[n.id] = 0; });
-      edges.forEach(e => { 
-        if (childrenMap[e.source]) childrenMap[e.source].push(e.target);
-        incomingCount[e.target] = (incomingCount[e.target] || 0) + 1;
-      });
-      
-      const roots = prevNodes.filter(n => incomingCount[n.id] === 0).map(n => n.id);
-      const positions: Record<string, { x: number, y: number }> = {};
-      let currentX = 0;
-      
-      const assignPositions = (nodeId: string, depth: number) => {
-        const children = childrenMap[nodeId];
-        const myY = depth * 250; 
-        const myX = currentX;
-        
-        if (children.length === 0) {
-          positions[nodeId] = { x: myX, y: myY };
-          currentX += 380; 
-          return;
-        }
-        
-        children.forEach(child => assignPositions(child, depth + 1));
-        
-        const firstChildX = positions[children[0]].x;
-        const lastChildX = positions[children[children.length - 1]].x;
-        positions[nodeId] = { x: (firstChildX + lastChildX) / 2, y: myY };
-      };
-      
-      roots.forEach(root => assignPositions(root, 0));
-      
-      return prevNodes.map(n => ({
-        ...n,
-        position: positions[n.id] || { x: currentX + 100, y: 0 }
-      }));
-    });
-    
-    setTimeout(() => fitView({ padding: 0.3, duration: 800 }), 50);
-  }, [edges, setNodes, fitView]);
-
-  const handleSave = () => {
-    const wfData = convertFlowToData(nodes, edges);
-    onSave(wfData);
+    setTriggers(newTriggers);
   };
 
-  const isValid = nodes.some(n => n.type === "trigger" && n.data.keywords?.some((k: string) => k.trim())) && nodes.some(n => n.type !== "trigger" && n.data.message?.trim());
+  const addTrigger = () => setTriggers([...triggers, { keyword: "", matchMode: "contains" }]);
+  const removeTrigger = (index: number) => setTriggers(triggers.filter((_, i) => i !== index));
+
+  const onDragEnd = (result: DropResult) => {
+    if (!result.destination) return;
+    const { source, destination } = result;
+    if (source.index === destination.index) return;
+    const newTriggers = Array.from(triggers);
+    const [moved] = newTriggers.splice(source.index, 1);
+    newTriggers.splice(destination.index, 0, moved);
+    setTriggers(newTriggers);
+  };
+
+  const updateStep = (id: string, data: Step) => {
+    setSteps(prev => ({ ...prev, [id]: data }));
+  };
+
+  const addStep = (parentStepId: string, buttonId: string) => {
+    const newStepId = uid();
+    const newStep: Step = { id: newStepId, message: "", buttons: [] };
+    setSteps(prev => {
+      const parentStep = { ...prev[parentStepId] };
+      parentStep.buttons = parentStep.buttons.map(b => b.id === buttonId ? { ...b, nextStepId: newStepId } : b);
+      return { ...prev, [parentStepId]: parentStep, [newStepId]: newStep };
+    });
+  };
+
+  const deleteStep = (id: string) => {
+    if (id === rootStepId) return;
+    setSteps(prev => {
+      const newSteps = { ...prev };
+      delete newSteps[id];
+      Object.keys(newSteps).forEach(stepId => {
+        newSteps[stepId] = { ...newSteps[stepId], buttons: newSteps[stepId].buttons.map(b => b.nextStepId === id ? { ...b, nextStepId: null } : b) };
+      });
+      return newSteps;
+    });
+  };
+
+  const isValid = triggers.some(t => t.keyword.trim()) && steps[rootStepId]?.message.trim();
 
   return (
-    <div className={`overflow-hidden flex flex-col transition-all duration-300 ease-in-out ${
-        isFullScreen ? "fixed inset-0 z-50 bg-white" : "bg-white rounded-2xl border border-gray-200 shadow-sm relative h-[85vh]"
-      }`}
-    >
-      <div className="p-3 sm:p-4 border-b border-gray-100 bg-white z-30 flex items-center justify-between shadow-sm">
-        <div className="flex items-center gap-3">
-          <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${editId ? "bg-amber-100 text-amber-600" : "bg-emerald-100 text-emerald-600"}`}><Workflow size={16} /></div>
-          <h2 className="text-sm font-bold text-gray-900">{editId ? "Edit Workflow" : "New Workflow"}</h2>
-        </div>
+    <DragDropContext onDragEnd={onDragEnd}>
+      <div className={`overflow-hidden flex flex-col transition-all duration-300 ease-in-out ${
+          isFullScreen 
+            ? 'fixed inset-0 z-50 bg-white' 
+            : 'bg-white rounded-2xl border border-gray-200 shadow-sm relative h-[80vh]'
+        }`}
+      >
         
-        <div className="flex items-center gap-2">
-          <button onClick={handleFormatLayout} title="Auto-Format Layout" className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:bg-emerald-50 hover:text-emerald-600 transition-colors border border-gray-200">
-            <Wand2 size={16} />
-          </button>
-          <button onClick={() => fitView({ padding: 0.3, duration: 800 })} title="Fit View" className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:bg-blue-50 hover:text-blue-600 transition-colors border border-gray-200">
-            <Shrink size={16} />
-          </button>
-          <button onClick={() => setIsLocked(!isLocked)} title={isLocked ? "Unlock Canvas" : "Lock Canvas"} className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors border ${isLocked ? "bg-red-50 text-red-600 border-red-200" : "text-gray-500 hover:bg-gray-100 border-gray-200"}`}>
-            {isLocked ? <Lock size={16} /> : <Unlock size={16} />}
-          </button>
-          {editId && <button onClick={onCancel} className="px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors hidden sm:block">Cancel</button>}
-          <button onClick={() => setIsFullScreen(!isFullScreen)} className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors border border-gray-200">
-            {isFullScreen ? <Minimize size={16} /> : <Maximize size={16} />}
-          </button>
-        </div>
-      </div>
-
-      <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar for Blocks */}
-        <div className="w-48 sm:w-56 border-r border-gray-100 bg-gray-50 p-3 space-y-2 overflow-y-auto">
-          <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2 px-1">Flow Blocks</h3>
-          {[
-            { type: "trigger", label: "Trigger", icon: Zap, color: "text-amber-500 border-amber-200 bg-amber-50 hover:bg-amber-100" },
-            { type: "message", label: "Message", icon: MessageSquare, color: "text-emerald-500 border-emerald-200 bg-emerald-50 hover:bg-emerald-100" },
-            { type: "mediaNode", label: "Media / File", icon: ImageIcon, color: "text-indigo-500 border-indigo-200 bg-indigo-50 hover:bg-indigo-100" },
-            { type: "templateNode", label: "WA Template", icon: LayoutTemplate, color: "text-teal-500 border-teal-200 bg-teal-50 hover:bg-teal-100" },
-            { type: "question", label: "Capture Reply", icon: HelpCircle, color: "text-pink-500 border-pink-200 bg-pink-50 hover:bg-pink-100" },
-            { type: "formNode", label: "Create Form", icon: ClipboardList, color: "text-fuchsia-500 border-fuchsia-200 bg-fuchsia-50 hover:bg-fuchsia-100" },
-            { type: "callButton", label: "Call Action", icon: PhoneCall, color: "text-blue-500 border-blue-200 bg-blue-50 hover:bg-blue-100" },
-            { type: "websiteButton", label: "Website Link", icon: Globe, color: "text-purple-500 border-purple-200 bg-purple-50 hover:bg-purple-100" },
-            { type: "linkWorkflowNode", label: "Link Workflow", icon: Share2, color: "text-orange-500 border-orange-200 bg-orange-50 hover:bg-orange-100" },
-            { type: "delay", label: "Delay Wait", icon: Clock, color: "text-gray-500 border-gray-200 bg-gray-100 hover:bg-gray-200" },
-          ].map((block) => (
-            <div
-              key={block.type}
-              draggable
-              onDragStart={(event) => {
-                event.dataTransfer.setData("application/reactflow", block.type);
-                event.dataTransfer.effectAllowed = "move";
-              }}
-              className={`flex items-center gap-2 p-3 border rounded-xl cursor-grab transition-colors ${block.color}`}
+        {/* Floating Top Header */}
+        <div className="p-3 sm:p-4 border-b border-gray-100 bg-white z-30 flex items-center justify-between shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${editId ? "bg-amber-100 text-amber-600" : "bg-emerald-100 text-emerald-600"}`}><Workflow size={16} /></div>
+            <h2 className="text-sm font-bold text-gray-900">{editId ? "Edit Workflow" : "New Workflow"}</h2>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            {editId && (
+              <button onClick={onCancel} className="px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors hidden sm:block">
+                Cancel
+              </button>
+            )}
+            <button 
+              onClick={() => setIsFullScreen(!isFullScreen)} 
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors border border-gray-200"
+              title={isFullScreen ? "Exit Full Screen" : "Full Screen"}
             >
-              <block.icon size={16} />
-              <span className="text-xs font-semibold text-gray-700">{block.label}</span>
-            </div>
-          ))}
-          <div className="mt-4 p-3 bg-white rounded-xl border border-gray-200 text-[11px] text-gray-500 leading-relaxed">
-            <strong className="block text-gray-700 mb-1">How to use:</strong>
-            Drag blocks onto canvas. Connect the dots. If a node has buttons, the connection dots appear next to them on the right side.
+              {isFullScreen ? <Minimize size={16} /> : <Maximize size={16} />}
+            </button>
           </div>
         </div>
 
-        {/* React Flow Canvas */}
-        <div ref={reactFlowWrapper} className="flex-1 h-full">
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onDrop={onDrop}
-            onDragOver={onDragOver}
-            nodeTypes={nodeTypes}
-            edgeTypes={edgeTypes}
-            deleteKeyCode={["Backspace", "Delete"]}
-            nodesDraggable={!isLocked}
-            nodesConnectable={!isLocked}
-            elementsSelectable={!isLocked}
-            panOnDrag={!isLocked}
-            zoomOnScroll={!isLocked}
-            panOnScroll={!isLocked}
-            zoomOnDoubleClick={!isLocked}
-            fitView
-            defaultEdgeOptions={{ style: { stroke: "#9ca3af", strokeWidth: 2 }, type: "smoothstep" }}
-          >
-            <Background color="#ccc" gap={16} size={1} />
-            <Controls className="!bg-white !border !border-gray-200 !shadow-lg !rounded-lg" showInteractive={!isLocked} />
-            <MiniMap className="!bg-white !border !border-gray-200" nodeColor={(n) => n.type === "trigger" ? "#fef3c7" : n.type === "callButton" ? "#dbeafe" : n.type === "websiteButton" ? "#f3e8ff" : n.type === "mediaNode" ? "#e0e7ff" : "#d1fae5"} />
-          </ReactFlow>
+        {/* Infinite Canvas Container */}
+        <div ref={canvasRef} className="flex-1 overflow-auto bg-gray-50/80 bg-dots p-4 sm:p-8">
+          <div className="inline-flex flex-col items-center min-w-full py-4 px-4 sm:px-12">
+            
+            {/* Triggers Section */}
+            <div className="border border-amber-200/50 bg-white rounded-2xl p-4 sm:p-5 w-full max-w-md shadow-sm">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-bold text-amber-700 uppercase tracking-wider flex items-center gap-2"><Zap size={14} /> Triggers</h3>
+                <button onClick={addTrigger} className="text-xs font-semibold text-amber-600 hover:text-amber-800 flex items-center gap-1 transition-colors"><Plus size={12} /> Add</button>
+              </div>
+              
+              {/* Legend for Match Modes */}
+              <div className="flex gap-4 mb-3 px-1">
+                <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                  <div className="w-4 h-4 rounded bg-blue-500 text-white flex items-center justify-center"><Type size={8} /></div>
+                  Contains
+                </div>
+                <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                  <div className="w-4 h-4 rounded bg-purple-500 text-white flex items-center justify-center"><Crosshair size={8} /></div>
+                  Exact Match
+                </div>
+              </div>
+
+              <Droppable droppableId="triggers" type="TRIGGERS">
+                {(provided) => (
+                  <div ref={provided.innerRef} {...provided.droppableProps} className="space-y-2 min-h-[40px]">
+                    {triggers.map((trigger, index) => <TriggerItem key={`trigger-${index}`} trigger={trigger} index={index} onChange={handleTriggerChange} onRemove={removeTrigger} />)}
+                    {provided.placeholder}
+                  </div>
+                )}
+              </Droppable>
+            </div>
+
+            {/* Arrow Down */}
+            <div className="flex flex-col items-center py-2 text-gray-300">
+              <div className="w-px h-8 bg-gray-300"></div>
+              <ArrowDown size={16} className="text-gray-400" />
+            </div>
+
+            {/* Flow Steps Section */}
+            {rootStepId && steps[rootStepId] ? (
+              <FlowNode step={steps[rootStepId]} allSteps={steps} onUpdateStep={updateStep} onAddStep={addStep} onDeleteStep={deleteStep} />
+            ) : (
+              <div className="text-red-400 text-sm bg-white px-4 py-2 rounded-lg shadow">Error: Root step missing</div>
+            )}
+
+          </div>
+        </div>
+
+        {/* Floating Save Button */}
+        <div className="absolute bottom-4 sm:bottom-6 right-4 sm:right-6 z-30">
+          <button onClick={() => onSave({ _id: editId || "", triggers, steps, rootStepId })} disabled={!isValid} className="inline-flex items-center gap-2 px-5 sm:px-6 py-2.5 sm:py-3 rounded-xl text-sm font-bold text-white bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-lg shadow-emerald-200 hover:shadow-xl hover:scale-105">
+            {editId ? "Update Workflow" : "Create Workflow"}
+          </button>
         </div>
       </div>
-
-      <div className="absolute bottom-4 sm:bottom-6 right-4 sm:right-6 z-30">
-        <button onClick={handleSave} disabled={!isValid} className="inline-flex items-center gap-2 px-5 sm:px-6 py-2.5 sm:py-3 rounded-xl text-sm font-bold text-white bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-lg shadow-emerald-200 hover:shadow-xl hover:scale-105">
-          {editId ? "Update Workflow" : "Create Workflow"}
-        </button>
-      </div>
-    </div>
+    </DragDropContext>
   );
-}
-
-/* ────────────────────────────────────────────
-   DATA MAPPING UTILS (Between ReactFlow and DB)
-   ──────────────────────────────────────────── */
-function convertDataToFlow(wf: Workflow, onChange: any, onDelete: any) {
-  const nodes: Node[] = [];
-  const edges: Edge[] = [];
-  let y = 0;
-
-  const triggersByMode: Record<string, string[]> = {};
-  wf.triggers.forEach(t => {
-    if (!triggersByMode[t.matchMode]) triggersByMode[t.matchMode] = [];
-    triggersByMode[t.matchMode].push(t.keyword);
-  });
-
-  Object.keys(triggersByMode).forEach((mode, i) => {
-    const id = `trigger-${i}`;
-    nodes.push({
-      id,
-      type: "trigger",
-      position: { x: 100, y: y },
-      data: { keywords: triggersByMode[mode], matchMode: mode as any, onChange, onDelete }
-    });
-    y += 150;
-  });
-
-  const visited = new Set();
-  const placeStep = (stepId: string, x: number, yPos: number) => {
-    if (visited.has(stepId)) return;
-    visited.add(stepId);
-    const step = wf.steps[stepId];
-    
-    let type = step.nodeType || "message";
-    if (step.buttons.some(b => b.phoneNumber)) type = "callButton";
-    else if (step.buttons.some(b => b.url)) type = "websiteButton";
-    else if (step.waitType === "wait" && type === "message") type = "question";
-    
-    nodes.push({
-      id: stepId,
-      type,
-      position: { x, y: yPos },
-      data: {
-        message: step.message,
-        buttonText: type === "callButton" ? step.buttons.find(b => b.phoneNumber)?.label : type === "websiteButton" ? step.buttons.find(b => b.url)?.label : "",
-        phoneNumber: type === "callButton" ? step.buttons.find(b => b.phoneNumber)?.phoneNumber : "",
-        url: type === "websiteButton" ? step.buttons.find(b => b.url)?.url : "",
-        mediaUrl: step.metadata?.mediaUrl || "",
-        mediaType: step.metadata?.mediaType || "image",
-        templateName: step.metadata?.templateName || "",
-        targetWorkflowId: step.metadata?.targetWorkflowId || "",
-        formTitle: step.metadata?.formTitle || "",
-        submitButtonText: step.metadata?.submitButtonText || "Submit",
-        buttons: step.buttons.filter(b => !b.phoneNumber && !b.url).map(b => ({ id: b.id, label: b.label })),
-        delaySeconds: step.metadata?.delaySeconds || 5,
-        onChange, onDelete
-      }
-    });
-
-    step.buttons.forEach(btn => {
-      if (btn.nextStepId) {
-        const handleId = (type === "callButton" || type === "websiteButton") ? "default" : `btn-${btn.id}`;
-        edges.push({ 
-          id: `e-${stepId}-${btn.nextStepId}`, 
-          source: stepId, 
-          target: btn.nextStepId, 
-          sourceHandle: handleId,
-          type: "deletable" 
-        });
-        placeStep(btn.nextStepId, x + 320, yPos);
-      }
-    });
-  };
-  
-  if (wf.rootStepId) {
-    placeStep(wf.rootStepId, 400, 0);
-    if (nodes[0]?.id) {
-      edges.push({ id: `e-${nodes[0].id}-${wf.rootStepId}`, source: nodes[0].id, target: wf.rootStepId, type: "deletable" });
-    }
-  }
-
-  return { nodes, edges };
-}
-
-function convertFlowToData(nodes: Node[], edges: Edge[]): Workflow {
-  const triggers: Trigger[] = nodes
-    .filter(n => n.type === "trigger")
-    .flatMap(n => (n.data.keywords || []).filter((k: string) => k.trim()).map((kw: string) => ({ keyword: kw, matchMode: n.data.matchMode })));
-
-  const steps: Record<string, Step> = {};
-  let rootStepId = "";
-
-  const triggerToRootEdge = edges.find(e => nodes.find(n => n.id === e.source)?.type === "trigger");
-  if (triggerToRootEdge) rootStepId = triggerToRootEdge.target;
-  if (!rootStepId) {
-    const firstMsg = nodes.find(n => n.type !== "trigger" && n.type !== "delay");
-    if (firstMsg) rootStepId = firstMsg.id;
-  }
-
-  nodes.filter(n => n.type !== "trigger").forEach(n => {
-    const outgoingEdges = edges.filter(e => e.source === n.id);
-    const buttons: Button[] = [];
-    const metadata: any = {};
-
-    if (n.type === "callButton") {
-      const nextStepId = outgoingEdges[0]?.target || null;
-      buttons.push({ id: uid(), label: n.data.buttonText || "Call Now", nextStepId, phoneNumber: n.data.phoneNumber || "" });
-    } else if (n.type === "websiteButton") {
-      const nextStepId = outgoingEdges[0]?.target || null;
-      buttons.push({ id: uid(), label: n.data.buttonText || "Visit Website", nextStepId, url: n.data.url || "" });
-    } else {
-      // For Message, Question, Media - map dynamic buttons
-      (n.data.buttons || []).forEach((btn: any) => {
-        const edge = outgoingEdges.find(e => e.sourceHandle === `btn-${btn.id}`);
-        buttons.push({ id: btn.id, label: btn.label || "Button", nextStepId: edge?.target || null });
-      });
-      
-      // If no buttons but has a default outgoing edge, create a hidden 'Continue' button for DB compatibility
-      if (buttons.length === 0) {
-        const defaultEdge = outgoingEdges.find(e => !e.sourceHandle || e.sourceHandle === 'default');
-        if (defaultEdge) {
-          buttons.push({ id: uid(), label: "Continue", nextStepId: defaultEdge.target });
-        }
-      }
-    }
-
-    if (n.type === "mediaNode") {
-      metadata.mediaUrl = n.data.mediaUrl;
-      metadata.mediaType = n.data.mediaType;
-    }
-    if (n.type === "templateNode") metadata.templateName = n.data.templateName;
-    if (n.type === "linkWorkflowNode") metadata.targetWorkflowId = n.data.targetWorkflowId;
-    if (n.type === "formNode") {
-      metadata.formTitle = n.data.formTitle;
-      metadata.submitButtonText = n.data.submitButtonText;
-    }
-    if (n.type === "delay") metadata.delaySeconds = n.data.delaySeconds;
-
-    steps[n.id] = {
-      id: n.id,
-      message: n.data.message || "",
-      buttons,
-      waitType: n.type === "question" || n.type === "formNode" ? "wait" : "none",
-      nodeType: n.type,
-      metadata
-    };
-
-    if (n.type === "delay") {
-      steps[n.id].message = `Wait ${n.data.delaySeconds} seconds`;
-    }
-    if (n.type === "templateNode") {
-      steps[n.id].message = `Template: ${n.data.templateName}`;
-    }
-    if (n.type === "linkWorkflowNode") {
-      steps[n.id].message = `Link to: ${n.data.targetWorkflowId}`;
-    }
-  });
-
-  return { _id: "", triggers, steps, rootStepId };
 }
 
 /* ────────────────────────────────────────────
@@ -858,9 +397,11 @@ function WorkflowCard({ wf, onEdit, onDelete }: { wf: Workflow; onEdit: (wf: Wor
               <span className="text-[11px] text-amber-700 font-bold uppercase tracking-wider mr-1">Triggers:</span>
               {wf.triggers.map((t, i) => (
                 <span key={i} className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-semibold ${
-                  t.matchMode === "exact" ? "bg-purple-50 border-purple-200 text-purple-700" : "bg-amber-50 border-amber-200 text-amber-700"
+                  t.matchMode === "exact" 
+                    ? "bg-purple-50 border-purple-200 text-purple-700" 
+                    : "bg-amber-50 border-amber-200 text-amber-700"
                 }`}>
-                  {t.matchMode === "exact" ? <Crosshair size={10} /> : <Type size={10} />} 
+                  {t.matchMode === "exact" ? <Crosshair size={10} /> : <Zap size={10} />} 
                   {t.keyword}
                 </span>
               ))}
@@ -871,6 +412,15 @@ function WorkflowCard({ wf, onEdit, onDelete }: { wf: Workflow; onEdit: (wf: Wor
                   <MessageSquare size={14} className="text-emerald-500 mt-0.5 shrink-0" />
                   <p className="text-sm text-gray-700 leading-relaxed line-clamp-2">{rootStep.message || "No message set"}</p>
                 </div>
+                {rootStep.buttons.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {rootStep.buttons.map(b => (
+                      <span key={b.id} className="px-2 py-0.5 bg-blue-50 border border-blue-200 rounded-full text-[10px] font-semibold text-blue-700 flex items-center gap-1">
+                        <MousePointerClick size={8} /> {b.label || "Button"}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -966,6 +516,7 @@ export default function Home() {
     }
     try {
       const payload = { triggers: cleanTriggers, steps: wfData.steps, rootStepId: wfData.rootStepId };
+
       if (editId && editId !== "new") {
         await fetch("/api/workflow", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: editId, ...payload }) });
         showToast("Workflow updated!");
@@ -1009,8 +560,7 @@ export default function Home() {
       <style jsx global>{`
         @keyframes slide-in { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
         .animate-slide-in { animation: slide-in 0.3s ease-out; }
-        .react-flow__handle { width: 10px; height: 10px; background: #9ca3af; border: 2px solid white; }
-        .react-flow__handle:hover { background: #10b981; }
+        .bg-dots { background-image: radial-gradient(#d1d5db 1px, transparent 1px); background-size: 24px 24px; }
       `}</style>
 
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
@@ -1020,6 +570,7 @@ export default function Home() {
       <main className="ml-0 md:ml-64 min-h-screen flex flex-col">
         <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
           
+          {/* Responsive Header */}
           <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-gray-200 -mx-4 sm:-mx-6 px-4 sm:px-6 py-4">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div>
@@ -1039,20 +590,19 @@ export default function Home() {
           </header>
 
           {editId !== null && (
-            <ReactFlowProvider>
-              <WorkflowCanvas 
-                key={editId} 
-                editId={editId === "new" ? null : editId} 
-                initialData={editData || getEmptyWorkflow()} 
-                onSave={save} 
-                onCancel={cancelEdit} 
-              />
-            </ReactFlowProvider>
+             <WorkflowForm 
+               key={editId} 
+               editId={editId === "new" ? null : editId} 
+               initialData={editData || getEmptyWorkflow()} 
+               onSave={save} 
+               onCancel={cancelEdit} 
+             />
           )}
           
           {workflows.length > 0 && editId === null && (
             <div className="flex items-center gap-6 px-1">
               <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-emerald-400" /><span className="text-xs font-semibold text-gray-500">{workflows.length} active workflow{workflows.length !== 1 ? "s" : ""}</span></div>
+              {searchQuery && <span className="text-xs text-gray-400">{filteredWorkflows.length} results for &quot;{searchQuery}&ldquo;</span>}
             </div>
           )}
 
