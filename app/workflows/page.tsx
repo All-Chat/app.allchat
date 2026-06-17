@@ -51,11 +51,14 @@ type Trigger = { keyword: string; matchMode: "exact" | "contains" };
 type Button = { id: string; label: string; nextStepId: string | null };
 type Step = { 
   id: string; 
+  stepType?: "message" | "url_action";
   message: string; 
   buttons: Button[]; 
   position?: { x: number; y: number };
   mediaType?: "image" | "video" | "document" | "audio" | "link" | null;
   mediaUrl?: string | null;
+  urlLabel?: string;
+  url?: string;
 };
 type Workflow = {
   _id: string;
@@ -66,7 +69,6 @@ type Workflow = {
 
 const uid = () => Math.random().toString(36).substr(2, 9);
 
-// Helper to extract YouTube ID for embedding preview in the dashboard
 const getYouTubeEmbedUrl = (url: string) => {
   try {
     const urlObj = new URL(url);
@@ -213,12 +215,8 @@ const MessageNode = ({ data, id }: any) => {
     updateNode({ buttons: data.buttons.map((b: Button) => (b.id === btnId ? { ...b, label } : b)) });
   };
 
-  // FILE LIMITATIONS CONFIG
   const maxSizes: Record<string, number> = {
-    image: 2 * 1024 * 1024,     // 2MB
-    video: 10 * 1024 * 1024,    // 10MB
-    audio: 10 * 1024 * 1024,    // 10MB
-    document: 20 * 1024 * 1024  // 20MB
+    image: 2 * 1024 * 1024, video: 10 * 1024 * 1024, audio: 10 * 1024 * 1024, document: 20 * 1024 * 1024
   };
 
   const allowedTypes: Record<string, string[]> = {
@@ -297,7 +295,6 @@ const MessageNode = ({ data, id }: any) => {
     }
   };
 
-  // Extract YouTube ID for embedding preview
   const ytEmbedUrl = data.mediaType === "link" && data.mediaUrl ? getYouTubeEmbedUrl(data.mediaUrl) : null;
 
   return (
@@ -314,7 +311,6 @@ const MessageNode = ({ data, id }: any) => {
         </button>
       </div>
       
-      {/* Media Preview Area */}
       {data.mediaUrl && (
         <div 
           className="relative border-b border-gray-100 cursor-pointer group/media bg-gray-50 p-2" 
@@ -332,8 +328,6 @@ const MessageNode = ({ data, id }: any) => {
                   <span className="text-xs text-gray-600 truncate">Document URL (Click to remove)</span>
                 </div>
               )}
-              
-              {/* LINK / YOUTUBE PREVIEW */}
               {data.mediaType === "link" && (
                 <div className="w-full space-y-2">
                   {ytEmbedUrl ? (
@@ -384,8 +378,6 @@ const MessageNode = ({ data, id }: any) => {
       )}
 
       <div className="p-3 space-y-3">
-        
-        {/* Media Upload UI */}
         {!data.mediaUrl && (
           <div className="border border-dashed border-gray-200 rounded-xl p-2 space-y-2">
             <select 
@@ -414,7 +406,6 @@ const MessageNode = ({ data, id }: any) => {
                   />
                 </div>
                 
-                {/* Hide Upload/Library if it's just a text link */}
                 {data.mediaType !== "link" && (
                   <div className="flex gap-2">
                     <label className="flex-1 flex items-center justify-center gap-1 py-1.5 border border-gray-200 rounded-lg cursor-pointer text-xs text-gray-600 hover:bg-gray-50">
@@ -430,7 +421,6 @@ const MessageNode = ({ data, id }: any) => {
                   </div>
                 )}
 
-                {/* Warnings & Recommendations */}
                 {data.mediaType === "link" ? (
                   <p className="text-[9px] text-blue-600 leading-tight px-1">
                     🔗 WhatsApp will automatically generate a rich preview (thumbnail/video) for valid social media links.
@@ -446,7 +436,6 @@ const MessageNode = ({ data, id }: any) => {
                   </>
                 )}
 
-                {/* MEDIA LIBRARY DROPDOWN */}
                 {showLibrary && (
                   <div className="absolute z-10 mt-1 w-full max-h-48 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg">
                     <div className="sticky top-0 bg-white p-1 border-b border-gray-100 flex justify-between items-center">
@@ -519,7 +508,71 @@ const MessageNode = ({ data, id }: any) => {
   );
 };
 
-const nodeTypes = { trigger: TriggerNode, message: MessageNode };
+// ────────────────────────────────────────────
+// NEW: URL ACTION NODE
+// ────────────────────────────────────────────
+const URLActionNode = ({ data, id }: any) => {
+  const { setNodes, deleteElements } = useReactFlow();
+
+  const updateNode = (newData: any) => {
+    setNodes((nds: Node[]) =>
+      nds.map((n: Node) => (n.id === id ? { ...n, data: { ...n.data, ...newData } } : n))
+    );
+  };
+
+  return (
+    <div className="w-72 bg-white border border-purple-200 shadow-lg rounded-2xl overflow-hidden group">
+      <Handle type="target" position={Position.Left} className="!bg-purple-500 !w-3 !h-3 !border-2 !border-white" />
+      <Handle type="source" position={Position.Right} className="!bg-purple-500 !w-3 !h-3 !border-2 !border-white" />
+      
+      <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-purple-50 to-white">
+        <div className="flex items-center gap-2 text-purple-700">
+          <LinkIcon size={14} />
+          <span className="text-xs font-bold uppercase tracking-wider">URL Action</span>
+        </div>
+        <button onClick={() => deleteElements({ nodes: [{ id }] })} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Trash2 size={14} />
+        </button>
+      </div>
+      
+      <div className="p-3 space-y-3">
+        <textarea 
+          value={data.message} 
+          onChange={(e) => updateNode({ message: e.target.value })} 
+          placeholder="Message to show above the button..." 
+          rows={2} 
+          className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-400 transition-all resize-none" 
+        />
+        
+        <div className="space-y-2">
+          <div className="relative">
+            <MousePointerClick size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-purple-500" />
+            <input 
+              value={data.urlLabel || ""} 
+              onChange={(e) => updateNode({ urlLabel: e.target.value })} 
+              placeholder="Button Text (e.g. Visit Site)" 
+              className="w-full pl-8 pr-2 py-1.5 text-xs border border-purple-200 rounded-lg focus:outline-none focus:border-purple-400 shadow-sm bg-white text-gray-800" 
+            />
+          </div>
+          <div className="relative">
+            <LinkIcon size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-purple-500" />
+            <input 
+              value={data.url || ""} 
+              onChange={(e) => updateNode({ url: e.target.value })} 
+              placeholder="https://example.com" 
+              className="w-full pl-8 pr-2 py-1.5 text-xs border border-purple-200 rounded-lg focus:outline-none focus:border-purple-400 shadow-sm bg-white text-gray-800" 
+            />
+          </div>
+        </div>
+        <p className="text-[9px] text-gray-500 leading-tight px-1">
+          🔗 Clicking this button on WhatsApp will automatically open the URL in the user&apos;s browser.
+        </p>
+      </div>
+    </div>
+  );
+};
+
+const nodeTypes = { trigger: TriggerNode, message: MessageNode, url_action: URLActionNode };
 
 /* ────────────────────────────────────────────
    FLOW CANVAS
@@ -552,13 +605,15 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     Object.values(initialData.steps || {}).forEach((step) => {
       initNodes.push({
         id: step.id,
-        type: "message",
+        type: step.stepType || "message",
         position: step.position || { x: Math.random() * 400, y: Math.random() * 400 },
         data: { 
           message: step.message, 
           buttons: step.buttons,
           mediaUrl: step.mediaUrl || null,
-          mediaType: step.mediaType || null
+          mediaType: step.mediaType || null,
+          urlLabel: step.urlLabel,
+          url: step.url
         },
         draggable: true,
       });
@@ -620,7 +675,12 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     if (!type) return;
 
     const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-    const newNode = { id: uid(), type, position, data: { message: "", buttons: [], mediaUrl: null, mediaType: null } };
+    
+    let newData: any = { message: "" };
+    if (type === "message") newData = { message: "", buttons: [], mediaUrl: null, mediaType: null };
+    if (type === "url_action") newData = { message: "", urlLabel: "", url: "" };
+
+    const newNode = { id: uid(), type, position, data: newData };
     setNodes((nds) => nds.concat(newNode));
   }, [screenToFlowPosition, setNodes]);
 
@@ -656,14 +716,22 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     const cleanTriggers = triggers.filter((t: Trigger) => t.keyword.trim());
     
     const steps: Record<string, Step> = {};
-    nodes.filter(n => n.type === "message").forEach(n => {
-      const buttonsWithLinks = n.data.buttons.map((btn: Button) => {
+    nodes.filter(n => n.type === "message" || n.type === "url_action").forEach(n => {
+      const buttonsWithLinks = n.data.buttons ? n.data.buttons.map((btn: Button) => {
         const edge = edges.find(e => e.source === n.id && e.sourceHandle === btn.id);
         return { ...btn, nextStepId: edge ? edge.target : null };
-      });
+      }) : [];
+
       steps[n.id] = { 
-        id: n.id, message: n.data.message, buttons: buttonsWithLinks, position: n.position,
-        mediaUrl: n.data.mediaUrl, mediaType: n.data.mediaType
+        id: n.id, 
+        stepType: n.type as "message" | "url_action",
+        message: n.data.message, 
+        buttons: buttonsWithLinks, 
+        position: n.position,
+        mediaUrl: n.data.mediaUrl,
+        mediaType: n.data.mediaType,
+        urlLabel: n.data.urlLabel,
+        url: n.data.url
       };
     });
 
@@ -707,22 +775,41 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        <div className="w-48 border-r border-gray-200 bg-gray-50 p-3 hidden md:block">
-          <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Nodes</h3>
-          <div 
-            onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "message")} 
-            draggable 
-            className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-emerald-400 hover:shadow-sm transition-all"
-          >
-            <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-600 flex items-center justify-center">
-              <MessageSquare size={14} />
+        {/* UPDATED SIDEBAR */}
+        <div className="w-48 border-r border-gray-200 bg-gray-50 p-3 hidden md:block space-y-3">
+          <div>
+            <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Nodes</h3>
+            <div 
+              onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "message")} 
+              draggable 
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-emerald-400 hover:shadow-sm transition-all mb-2"
+            >
+              <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-600 flex items-center justify-center">
+                <MessageSquare size={14} />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-800">Message</p>
+                <p className="text-[10px] text-gray-400">Send text/media</p>
+              </div>
             </div>
-            <div>
-              <p className="text-xs font-semibold text-gray-800">Message</p>
-              <p className="text-[10px] text-gray-400">Drag to canvas</p>
+            
+            {/* NEW URL ACTION NODE */}
+            <div 
+              onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "url_action")} 
+              draggable 
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-purple-400 hover:shadow-sm transition-all"
+            >
+              <div className="w-8 h-8 rounded-lg bg-purple-100 text-purple-600 flex items-center justify-center">
+                <LinkIcon size={14} />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-800">URL Button</p>
+                <p className="text-[10px] text-gray-400">Open link on click</p>
+              </div>
             </div>
           </div>
-          <div className="mt-4 text-[10px] text-gray-400 leading-relaxed">
+
+          <div className="text-[10px] text-gray-400 leading-relaxed pt-2 border-t border-gray-200">
             <p>💡 <strong>Tip:</strong> Drag nodes onto the canvas. Draw wires by dragging from the dots.</p>
             <p className="mt-2">🗑️ <strong>Delete wire:</strong> Double-click the wire.</p>
             <p className="mt-2">🔗 <strong>Links:</strong> Select &quot;Link&quot; in the media dropdown to send URLs (Insta, YT, etc.).</p>
@@ -739,7 +826,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           >
             <Background gap={16} size={1} color="#e5e7eb" />
             <Controls className="!bg-white !border !border-gray-200 !shadow-lg !rounded-lg" />
-            <MiniMap className="!bg-white !border !border-gray-200" nodeColor={(n) => (n.type === 'trigger' ? '#f59e0b' : '#10b981')} />
+            <MiniMap className="!bg-white !border !border-gray-200" nodeColor={(n) => (n.type === 'trigger' ? '#f59e0b' : n.type === 'url_action' ? '#a855f7' : '#10b981')} />
           </ReactFlow>
         </div>
       </div>
@@ -833,7 +920,7 @@ export default function Home() {
     return {
       _id: "new",
       triggers: [{ keyword: "", matchMode: "contains" }],
-      steps: { [rootId]: { id: rootId, message: "", buttons: [], mediaUrl: null, mediaType: null } },
+      steps: { [rootId]: { id: rootId, stepType: "message", message: "", buttons: [], mediaUrl: null, mediaType: null } },
       rootStepId: rootId,
     };
   }, []);
@@ -853,7 +940,7 @@ export default function Home() {
     return {
       ...wf,
       triggers: (wf.triggers || [{ keyword: wf.trigger?.keyword || "" }]).map((t: any) => typeof t === 'string' ? { keyword: t, matchMode: "contains" } : { keyword: t.keyword, matchMode: t.matchMode || "contains" }),
-      steps: { [rootId]: { id: rootId, message: actions[0]?.message || "", buttons: [], mediaUrl: null, mediaType: null } },
+      steps: { [rootId]: { id: rootId, stepType: "message", message: actions[0]?.message || "", buttons: [], mediaUrl: null, mediaType: null } },
       rootStepId: rootId,
     };
   };
