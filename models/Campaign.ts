@@ -9,7 +9,24 @@ const CampaignSchema = new mongoose.Schema({
   phoneNumbers: { type: [String], required: true },
   names: { type: [String], default: [] },
   languageCode: { type: String, default: "en" },
-  reportData: { type: [Object], default: [] },
+  
+  // ==========================================
+  // 🔴 FIX: Explicitly define reportData structure so Mongoose saves tags
+  // ==========================================
+  reportData: {
+    type: [
+      {
+        phone: String,
+        name: String,
+        status: String,
+        sentWamid: String,
+        replies: [String],
+        tags: [String], // <--- This allows tags to be saved permanently!
+      }
+    ],
+    default: []
+  },
+  
   mediaUrl: { type: String, default: null },
   mediaType: { type: String, default: null },
   status: {
@@ -21,10 +38,12 @@ const CampaignSchema = new mongoose.Schema({
   totalMessages: { type: Number, default: 0 },
   sentCount: { type: Number, default: 0 },
   failedCount: { type: Number, default: 0 },
+  
   // ==========================================
   // 🔴 NEW: TOTAL AMOUNT DEDUCTED
   // ==========================================
   totalDeducted: { type: Number, default: 0 },
+  
   createdAt: { type: Date, default: Date.now },
 });
 
