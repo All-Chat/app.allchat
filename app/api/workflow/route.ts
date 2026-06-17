@@ -2,14 +2,15 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Workflow from "@/models/Workflow";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getServerSession } from "next-auth"; // ADDED
+import { authOptions } from "@/lib/auth";      // ADDED
 
-// GET ALL WORKFLOWS FOR LOGGED-IN USER
+// GET ALL WORKFLOWS
 export async function GET() {
   await connectDB();
   
   try {
+    // 1. Get the current logged-in user's ID
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
 
@@ -17,6 +18,7 @@ export async function GET() {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
     }
 
+    // 2. Fetch only workflows belonging to this user
     const workflows = await Workflow.find({ userId });
     return NextResponse.json({ workflows });
   } catch (error: any) {
@@ -32,6 +34,7 @@ export async function POST(req: Request) {
   await connectDB();
 
   try {
+    // 1. Get the current logged-in user's ID
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
 
@@ -41,6 +44,7 @@ export async function POST(req: Request) {
 
     const { triggers, steps, rootStepId } = await req.json();
 
+    // Basic validation
     if (!triggers || triggers.length === 0) {
       return NextResponse.json(
         { success: false, message: "At least one trigger is required" },
@@ -55,8 +59,9 @@ export async function POST(req: Request) {
       );
     }
 
+    // 2. Create workflow with userId attached
     const wf = await Workflow.create({
-      userId,
+      userId, // ADDED
       triggers,
       steps,
       rootStepId,
@@ -76,6 +81,7 @@ export async function PUT(req: Request) {
   await connectDB();
 
   try {
+    // 1. Get the current logged-in user's ID
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
 
@@ -92,9 +98,14 @@ export async function PUT(req: Request) {
       );
     }
 
+    // 2. Update workflow ONLY if it belongs to this user
     const updatedWf = await Workflow.findOneAndUpdate(
-      { _id: id, userId: userId },
-      { triggers, steps, rootStepId },
+      { _id: id, userId: userId }, // ADDED userId to prevent updating other users' workflows
+      { 
+        triggers, 
+        steps, 
+        rootStepId 
+      },
       { new: true, runValidators: true }
     );
 
