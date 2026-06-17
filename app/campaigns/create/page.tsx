@@ -9,7 +9,7 @@ import Sidebar from "@/components/Sidebar";
 import {
   Upload, FileSpreadsheet, Clock, Globe, CheckCircle2,
   Users, Sparkles, Send, RotateCcw, AlertCircle,
-  FileText, Film, Image as ImageIcon, Loader2, X, Link,
+  FileText, Film, Image as ImageIcon, Loader2, X, Link, Tag as TagIcon,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -17,6 +17,9 @@ import "react-toastify/dist/ReactToastify.css";
 export default function CreateCampaign() {
   const { data: session, status } = useSession();
   const [templates, setTemplates] = useState<any[]>([]);
+  const [tags, setTags] = useState<any[]>([]);
+  const [selectedTag, setSelectedTag] = useState("");
+  
   const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
   const [rawNumbers, setRawNumbers] = useState<string[]>([]);
   const [rawNames, setRawNames] = useState<string[]>([]);
@@ -51,8 +54,9 @@ export default function CreateCampaign() {
   useEffect(() => {
     if (status === "authenticated") {
       fetchTemplates();
+      fetchTags();
     } else if (status === "unauthenticated") {
-      window.location.href = "/";
+      window.location.href = "/signin";
     }
   }, [status]);
 
@@ -64,10 +68,44 @@ export default function CreateCampaign() {
     try {
       const res = await fetch("/api/campaigns/templates");
       const data = await res.json();
-      if (res.status === 401) { window.location.href = "/"; return; }
+      if (res.status === 401) { window.location.href = "/signin"; return; }
       if (data.success) setTemplates(data.templates);
     } catch (err) {
       console.error("Failed to fetch templates", err);
+    }
+  };
+
+  const fetchTags = async () => {
+    try {
+      const res = await fetch("/api/tags");
+      const data = await res.json();
+      if (data.tags) setTags(data.tags);
+    } catch (err) {
+      console.error("Failed to fetch tags", err);
+    }
+  };
+
+  const handleTagSelect = async (tagName: string) => {
+    setSelectedTag(tagName);
+    if (!tagName) return;
+    
+    try {
+      const res = await fetch(`/api/contacts?tag=${encodeURIComponent(tagName)}`);
+      const data = await res.json();
+      if (data.success && data.contacts.length > 0) {
+        const numbers = data.contacts.map((c: any) => c.phone);
+        const names = data.contacts.map((c: any) => c.name || "");
+        const { finalNumbers, finalNames } = cleanAndValidateNumbers(numbers, names);
+        setRawNumbers(finalNumbers);
+        setRawNames(finalNames);
+        toast.success(`Loaded ${finalNumbers.length} valid numbers from tag: ${tagName}`);
+      } else {
+        toast.error("No contacts found for this tag");
+        setRawNumbers([]);
+        setStats({ valid: 0, invalid: 0, duplicates: 0 });
+      }
+    } catch (err) {
+      toast.error("Error fetching contacts by tag");
     }
   };
 
@@ -308,7 +346,7 @@ export default function CreateCampaign() {
         });
       }
 
-      if (res.status === 401) { toast.error("Session expired."); setTimeout(() => window.location.href = "/", 1500); return; }
+      if (res.status === 401) { toast.error("Session expired."); setTimeout(() => window.location.href = "/signin", 1500); return; }
 
       const data = await res.json();
       if (data.success) { toast.success(isSchedule ? "Scheduled!" : "Saved!"); setTimeout(() => window.location.href = "/campaigns/list", 1000); }
@@ -323,10 +361,8 @@ export default function CreateCampaign() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-gray-900">
-      {/* Sidebar Component - Handles Mobile Subnavbar automatically */}
       <Sidebar />
 
-      {/* Main Content Area */}
       <div className="md:ml-64 p-4 sm:p-6 lg:p-10 overflow-y-auto min-h-screen">
         <div className="max-w-7xl mx-auto space-y-6 sm:space-y-10">
 
@@ -421,6 +457,21 @@ export default function CreateCampaign() {
                     <Globe className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
                     <input type="text" value={countryCode} onChange={(e) => setCountryCode(e.target.value.replace(/\D/g, ""))} className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-4 focus:ring-emerald-100 focus:border-emerald-500 focus:bg-white transition-all font-bold shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]" />
                   </div>
+                </div>
+
+                {/* TAG DROPDOWN SECTION */}
+                <div className="bg-purple-50/50 border border-purple-100 rounded-xl p-4 space-y-2">
+                  <label className="text-[11px] font-extrabold text-purple-800 uppercase tracking-widest flex items-center gap-2"><TagIcon size={14} /> Load from Tags</label>
+                  <select
+                    value={selectedTag}
+                    onChange={(e) => handleTagSelect(e.target.value)}
+                    className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-purple-100 focus:border-purple-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"
+                  >
+                    <option value="">-- Select a Tag to Load Contacts --</option>
+                    {tags.map((t) => (
+                      <option key={t._id} value={t.name}>{t.name}</option>
+                    ))}
+                  </select>
                 </div>
 
                 {uploadStep === 1 ? (
