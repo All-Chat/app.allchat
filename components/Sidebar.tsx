@@ -16,6 +16,7 @@ import {
   LineChart,
   Send,
   Menu,
+  Tag,
   X,
   Shield,
 } from "lucide-react";
@@ -53,6 +54,7 @@ export default function Sidebar() {
     { name: "Reports & Analytics", icon: LineChart, href: "/campaigns/reports" },
     { name: "Chats", icon: MessageSquare, href: "/chat" },
     { name: "Workflows", icon: Users, href: "/workflows" },
+    { name: "Tags", icon: Tag, href: "/tags" },
     { name: "Settings", icon: Settings, href: "/settings" },
   ];
 
@@ -79,7 +81,7 @@ export default function Sidebar() {
           1. MOBILE SUB-NAVBAR (Below Main Navbar)
           Only visible on small screens
           ============================================== */}
-      <div className="md:hidden sticky top-[70px] z-30 bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between shadow-sm">
+      <div className="md:hidden sticky top-[70px] z-40 bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between shadow-sm">
         <span className="font-bold text-lg text-gray-900">Dashboard</span>
         <button
           onClick={() => setIsOpen(true)}
@@ -138,7 +140,12 @@ export default function Sidebar() {
         </div>
 
         {/* Navigation Links */}
-        <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
+        {/* 
+          Added utilities to hide scrollbars: 
+          [scrollbar-width:none] for Firefox 
+          [&::-webkit-scrollbar]:hidden for Chrome/Safari/Edge 
+        */}
+        <nav className="flex-1 p-4 space-y-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {baseMenu.map((item, i) => {
             const isActive = pathname === item.href;
             
@@ -152,7 +159,7 @@ export default function Sidebar() {
                 )}
                 <Link
                   href={item.href}
-                  className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+                  className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors whitespace-nowrap ${
                     isActive
                       ? isAdminItem 
                         ? "bg-amber-50 text-amber-700 font-semibold" // Active Admin style
@@ -162,7 +169,7 @@ export default function Sidebar() {
                         : "text-gray-600 hover:bg-gray-100"         // Inactive Normal style
                   }`}
                 >
-                  <item.icon className={`w-5 h-5 ${
+                  <item.icon className={`w-5 h-5 flex-shrink-0 ${
                     isActive 
                       ? isAdminItem ? "text-amber-500" : "text-green-600" 
                       : isAdminItem ? "text-amber-400" : "text-gray-400"
