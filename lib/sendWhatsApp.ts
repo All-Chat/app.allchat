@@ -22,6 +22,9 @@ export async function sendWhatsAppMessage(
   const hasButtons = step.buttons && step.buttons.length > 0;
   const isUrlAction = step.stepType === "url_action" && step.url;
   const isCallAction = step.stepType === "call_action" && step.phoneNumber;
+  
+  // NEW: Template Message
+  const isTemplateAction = step.stepType === "template" && step.templateName;
 
   const isUrl = step.mediaUrl?.startsWith("http");
   const mediaObj = isUrl ? { link: step.mediaUrl } : { id: step.mediaUrl };
@@ -31,7 +34,28 @@ export async function sendWhatsAppMessage(
     bodyText = `${step.message || ""}\n${step.mediaUrl}`.trim();
   }
 
-  if (isUrlAction) {
+  if (isTemplateAction) {
+    payload.type = "template";
+    payload.template = {
+      name: step.templateName,
+      language: { code: step.templateLanguage || "en_US" }
+    };
+
+    // If the template has a media header and user provided media
+    if (hasMedia) {
+      payload.template.components = [
+        {
+          type: "header",
+          parameters: [
+            {
+              type: step.mediaType,
+              [step.mediaType]: mediaObj
+            }
+          ]
+        }
+      ];
+    }
+  } else if (isUrlAction) {
     payload.type = "interactive";
     payload.interactive = {
       type: "cta_url",
