@@ -4,6 +4,7 @@ import { connectDB } from "@/lib/mongodb";
 import Campaign from "@/models/Campaign";
 import ScheduledTrigger from "@/models/ScheduledTrigger";
 import User from "@/models/User";
+import Contact from "@/models/Contact"; // 🔴 NEW: Import Contact Model
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 
@@ -108,6 +109,21 @@ export async function POST(req: Request) {
     }
 
     // ==========================================
+    // 🔴 NEW: FETCH EXISTING TAGS FROM CONTACTS DB
+    // ==========================================
+    // If any of these numbers already exist in Contacts with tags (e.g. "Interested"), 
+    // we pre-fill those tags in the campaign report!
+    const existingContacts = await Contact.find({ 
+      userId, 
+      phone: { $in: phoneNumbers } 
+    }).select('phone tags');
+    
+    const contactTagsMap = new Map();
+    existingContacts.forEach(c => {
+      contactTagsMap.set(c.phone, c.tags || []);
+    });
+
+    // ==========================================
     // CREATE CAMPAIGN
     // ==========================================
     const reportData = phoneNumbers.map((phone: string, index: number) => ({
@@ -115,6 +131,7 @@ export async function POST(req: Request) {
       phone,
       status: "pending",
       replies: [],
+      tags: contactTagsMap.get(phone) || [], // 🔴 PRE-FILL TAGS HERE
     }));
 
     const newCampaign = await Campaign.create({
