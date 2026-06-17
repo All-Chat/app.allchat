@@ -251,10 +251,11 @@ export async function POST(req: Request) {
           if (latestCampaign) targetedCampaigns.push(latestCampaign);
         }
 
-        // Fetch all user tags ONCE to check against the reply
+                // Fetch all user tags ONCE to check against the reply
         let userTags: any[] = [];
         if (userId) {
-          userTags = await Tag.find({ userId }).select("name");
+          // Select the new fields so we know if it's campaign specific
+          userTags = await Tag.find({ userId }).select("name isCampaignSpecific campaignId");
         }
 
         for (const camp of targetedCampaigns) {
@@ -278,12 +279,22 @@ export async function POST(req: Request) {
               const currentTags = camp.reportData[reportIndex].tags || [];
               let detectedTags: string[] = [];
 
-              // Check if any word in the reply matches any of the user's tags
+                            // Check if any word in the reply matches any of the user's tags
               for (const t of userTags) {
                 const tagNameLower = t.name.toLowerCase();
-                // If the reply string includes the tag name
                 if (tagNameLower && lowerText.includes(tagNameLower)) {
-                  detectedTags.push(t.name); // Push the original cased tag name
+                  
+                  // 🔴 NEW: Campaign-Specific Logic
+                  if (t.isCampaignSpecific) {
+                    // If it's specific, ONLY apply if the tag's campaignId matches the current campaign's _id
+                    if (t.campaignId && t.campaignId.toString() === camp._id.toString()) {
+                      detectedTags.push(t.name);
+                    }
+                  } else {
+                    // Global tag, apply to any campaign
+                    detectedTags.push(t.name);
+                  }
+                  
                 }
               }
 
