@@ -41,6 +41,7 @@ import {
   Upload,
   Link as LinkIcon,
   Music,
+  Library,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 
@@ -169,6 +170,8 @@ const TriggerNode = ({ data, id }: any) => {
 
 const MessageNode = ({ data, id }: any) => {
   const { setNodes, deleteElements } = useReactFlow();
+  const [showLibrary, setShowLibrary] = useState(false);
+  const [libraryItems, setLibraryItems] = useState<any[]>([]);
 
   const updateNode = (newData: any) => {
     setNodes((nds: Node[]) =>
@@ -193,10 +196,7 @@ const MessageNode = ({ data, id }: any) => {
 
   // FILE LIMITATIONS CONFIG
   const maxSizes: Record<string, number> = {
-    image: 5 * 1024 * 1024, // 5MB
-    video: 16 * 1024 * 1024, // 16MB
-    audio: 16 * 1024 * 1024, // 16MB
-    document: 100 * 1024 * 1024 // 100MB
+    image: 5 * 1024 * 1024, video: 16 * 1024 * 1024, audio: 16 * 1024 * 1024, document: 100 * 1024 * 1024
   };
 
   const allowedTypes: Record<string, string[]> = {
@@ -222,9 +222,8 @@ const MessageNode = ({ data, id }: any) => {
     if (file.type.startsWith("video")) mediaType = "video";
     if (file.type.startsWith("audio")) mediaType = "audio";
 
-    // VALIDATIONS
     if (!allowedTypes[mediaType]?.includes(file.type)) {
-      alert(`Invalid file format for ${mediaType}. Please check WhatsApp allowed formats.`);
+      alert(`Invalid file format for ${mediaType}.`);
       return;
     }
     if (file.size > maxSizes[mediaType]) {
@@ -239,12 +238,8 @@ const MessageNode = ({ data, id }: any) => {
     
     try {
       const res = await fetch("/api/upload", { method: "POST", body: formData });
-      
-      // SAFELY PARSE JSON
       const text = await res.text();
-      if (!res.ok) {
-        throw new Error(text || "Upload failed");
-      }
+      if (!res.ok) throw new Error(text || "Upload failed");
       const resData = JSON.parse(text);
       
       if (resData.success && resData.url) {
@@ -256,6 +251,17 @@ const MessageNode = ({ data, id }: any) => {
       console.error("Upload failed", err);
       alert("Media upload failed: " + err.message);
       updateNode({ mediaUrl: null, mediaType: null });
+    }
+  };
+
+  const openLibrary = async () => {
+    setShowLibrary(true);
+    try {
+      const res = await fetch("/api/media");
+      const data = await res.json();
+      if (data.media) setLibraryItems(data.media);
+    } catch (err) {
+      console.error("Failed to load library", err);
     }
   };
 
@@ -300,7 +306,7 @@ const MessageNode = ({ data, id }: any) => {
                 <FileText size={24} className="text-emerald-500" />
               )}
               <span className="text-xs text-gray-600 truncate">
-                {data.mediaUrl === "UPLOADING..." ? "Uploading to WhatsApp..." : `${data.mediaType?.toUpperCase()} Uploaded to WhatsApp (Click to remove)`}
+                {data.mediaUrl === "UPLOADING..." ? "Uploading to WhatsApp..." : `${data.mediaType?.toUpperCase()} Uploaded (Click to remove)`}
               </span>
             </div>
           )}
@@ -312,24 +318,23 @@ const MessageNode = ({ data, id }: any) => {
 
       <div className="p-3 space-y-3">
         
-        {/* Media Upload UI (if no media) */}
+        {/* Media Upload UI */}
         {!data.mediaUrl && (
           <div className="border border-dashed border-gray-200 rounded-xl p-2 space-y-2">
-            <div className="flex gap-2">
-              <select 
-                value={data.mediaType || ""} 
-                onChange={(e) => updateNode({ mediaType: e.target.value || null })}
-                className="flex-1 text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-600 focus:outline-none"
-              >
-                <option value="">No Media</option>
-                <option value="image">Image (5MB)</option>
-                <option value="video">Video (16MB)</option>
-                <option value="audio">Audio (16MB)</option>
-                <option value="document">PDF / Doc (100MB)</option>
-              </select>
-            </div>
+            <select 
+              value={data.mediaType || ""} 
+              onChange={(e) => updateNode({ mediaType: e.target.value || null })}
+              className="flex-1 w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-600 focus:outline-none"
+            >
+              <option value="">No Media</option>
+              <option value="image">Image (5MB)</option>
+              <option value="video">Video (16MB)</option>
+              <option value="audio">Audio (16MB)</option>
+              <option value="document">PDF / Doc (100MB)</option>
+            </select>
+            
             {data.mediaType && (
-              <div className="space-y-2">
+              <div className="space-y-2 relative">
                 <div className="relative">
                   <LinkIcon size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
                   <input 
@@ -340,10 +345,44 @@ const MessageNode = ({ data, id }: any) => {
                     className="w-full pl-7 pr-2 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400"
                   />
                 </div>
-                <label className="flex items-center justify-center gap-1 w-full py-1.5 border border-gray-200 rounded-lg cursor-pointer text-xs text-gray-600 hover:bg-gray-50">
-                  <Upload size={12} /> Upload to WhatsApp
-                  <input type="file" className="hidden" onChange={handleFileUpload} />
-                </label>
+                
+                <div className="flex gap-2">
+                  <label className="flex-1 flex items-center justify-center gap-1 py-1.5 border border-gray-200 rounded-lg cursor-pointer text-xs text-gray-600 hover:bg-gray-50">
+                    <Upload size={12} /> Upload
+                    <input type="file" className="hidden" onChange={handleFileUpload} />
+                  </label>
+                  <button 
+                    onClick={openLibrary} 
+                    className="flex-1 flex items-center justify-center gap-1 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 hover:bg-gray-50"
+                  >
+                    <Library size={12} /> Library
+                  </button>
+                </div>
+
+                {/* MEDIA LIBRARY DROPDOWN */}
+                {showLibrary && (
+                  <div className="absolute z-10 mt-1 w-full max-h-48 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg">
+                    <div className="sticky top-0 bg-white p-1 border-b border-gray-100 flex justify-between items-center">
+                      <span className="text-[10px] font-bold text-gray-500 px-1">Select Existing Media</span>
+                      <button onClick={() => setShowLibrary(false)} className="text-gray-400 hover:text-red-500 p-0.5"><X size={10} /></button>
+                    </div>
+                    {libraryItems.length === 0 && <div className="p-2 text-[10px] text-gray-400 text-center">No media uploaded yet.</div>}
+                    {libraryItems.map(item => (
+                      <div 
+                        key={item._id} 
+                        className="p-1.5 text-[11px] hover:bg-blue-50 cursor-pointer flex items-center gap-2 border-b border-gray-50"
+                        onClick={() => {
+                          updateNode({ mediaUrl: item.mediaId, mediaType: item.type });
+                          setShowLibrary(false);
+                        }}
+                      >
+                        <FileText size={12} className="text-gray-400 shrink-0" />
+                        <span className="truncate text-gray-700">{item.filename}</span>
+                        <span className="ml-auto text-[9px] text-gray-400 uppercase">{item.type}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -443,8 +482,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         id: "e-trigger-root", 
         source: "trigger-node", 
         target: initialData.rootStepId, 
-        animated: true, 
-        type: "default", 
+        animated: true, type: "default", 
         markerEnd: { type: MarkerType.ArrowClosed, color: '#10b981' },
         style: { stroke: '#10b981', strokeWidth: 2 }
       });
@@ -455,11 +493,8 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         if (btn.nextStepId) {
           initEdges.push({
             id: `e-${step.id}-${btn.id}`,
-            source: step.id,
-            sourceHandle: btn.id,
-            target: btn.nextStepId,
-            animated: true,
-            type: "default", 
+            source: step.id, sourceHandle: btn.id, target: btn.nextStepId,
+            animated: true, type: "default", 
             markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6' },
             style: { stroke: '#3b82f6', strokeWidth: 2 }
           });
@@ -498,12 +533,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     if (!type) return;
 
     const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-    const newNode = {
-      id: uid(),
-      type,
-      position,
-      data: { message: "", buttons: [], mediaUrl: null, mediaType: null },
-    };
+    const newNode = { id: uid(), type, position, data: { message: "", buttons: [], mediaUrl: null, mediaType: null } };
     setNodes((nds) => nds.concat(newNode));
   }, [screenToFlowPosition, setNodes]);
 
@@ -519,7 +549,6 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     const layoutStep = (nodeId: string, x: number, y: number, depth: number = 0) => {
       if (visited.has(nodeId)) return;
       visited.add(nodeId);
-      
       const node = newNodes.find(n => n.id === nodeId);
       if (!node) return;
       node.position = { x, y };
@@ -528,9 +557,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
       const spacingY = 300;
       const startY = y - ((childEdges.length - 1) * spacingY) / 2;
 
-      childEdges.forEach((edge, i) => {
-        layoutStep(edge.target, x + 350, startY + i * spacingY, depth + 1);
-      });
+      childEdges.forEach((edge, i) => layoutStep(edge.target, x + 350, startY + i * spacingY, depth + 1));
     };
 
     layoutStep(rootEdge.target, 350, 0);
@@ -548,12 +575,8 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         return { ...btn, nextStepId: edge ? edge.target : null };
       });
       steps[n.id] = { 
-        id: n.id, 
-        message: n.data.message, 
-        buttons: buttonsWithLinks, 
-        position: n.position,
-        mediaUrl: n.data.mediaUrl,
-        mediaType: n.data.mediaType
+        id: n.id, message: n.data.message, buttons: buttonsWithLinks, position: n.position,
+        mediaUrl: n.data.mediaUrl, mediaType: n.data.mediaType
       };
     });
 
@@ -615,23 +638,17 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           <div className="mt-4 text-[10px] text-gray-400 leading-relaxed">
             <p>💡 <strong>Tip:</strong> Drag nodes onto the canvas. Draw wires by dragging from the dots.</p>
             <p className="mt-2">🗑️ <strong>Delete wire:</strong> Double-click the wire.</p>
-            <p className="mt-2">🖼️ <strong>Media:</strong> Add media via URL or Upload. Click media to remove it.</p>
+            <p className="mt-2">🖼️ <strong>Media:</strong> Add media via URL, Upload, or Library. Click media to remove it.</p>
           </div>
         </div>
 
         <div ref={reactFlowWrapper} className="flex-1 h-full bg-gray-50/80 bg-dots">
           <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onDrop={onDrop}
-            onDragOver={onDragOver}
-            nodeTypes={nodeTypes}
-            onEdgeDoubleClick={onEdgeDoubleClick}
-            fitView
-            deleteKeyCode={['Backspace', 'Delete']}
+            nodes={nodes} edges={edges}
+            onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+            onConnect={onConnect} onDrop={onDrop} onDragOver={onDragOver}
+            nodeTypes={nodeTypes} onEdgeDoubleClick={onEdgeDoubleClick}
+            fitView deleteKeyCode={['Backspace', 'Delete']}
           >
             <Background gap={16} size={1} color="#e5e7eb" />
             <Controls className="!bg-white !border !border-gray-200 !shadow-lg !rounded-lg" />
@@ -757,21 +774,15 @@ export default function Home() {
   const load = async () => {
     try {
       const res = await fetch("/api/workflow");
-      if (res.status === 401) {
-        window.location.href = "/signin";
-        return;
-      }
+      if (res.status === 401) { window.location.href = "/signin"; return; }
       const data = await res.json();
       setWorkflows((data.workflows || []).map(normalizeWorkflow));
     } catch { showToast("Failed to load workflows", "error"); }
   };
 
   useEffect(() => {
-    if (status === "authenticated") {
-      load();
-    } else if (status === "unauthenticated") {
-      window.location.href = "/signin";
-    }
+    if (status === "authenticated") load();
+    else if (status === "unauthenticated") window.location.href = "/signin";
   }, [status]);
 
   const startCreating = () => {
@@ -783,7 +794,6 @@ export default function Home() {
   const save = async (wfData: Workflow) => {
     try {
       const payload = { triggers: wfData.triggers, steps: wfData.steps, rootStepId: wfData.rootStepId };
-
       if (editId && editId !== "new") {
         await fetch("/api/workflow", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: editId, ...payload }) });
         showToast("Workflow updated!");
@@ -791,9 +801,7 @@ export default function Home() {
         await fetch("/api/workflow", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
         showToast("Workflow created!");
       }
-      setEditId(null);
-      setEditData(null);
-      load();
+      setEditId(null); setEditData(null); load();
     } catch { showToast("Something went wrong", "error"); }
   };
 
@@ -802,15 +810,11 @@ export default function Home() {
   };
 
   const edit = (wf: Workflow) => {
-    setEditId(wf._id);
-    setEditData(wf);
+    setEditId(wf._id); setEditData(wf);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const cancelEdit = () => {
-    setEditId(null);
-    setEditData(null);
-  };
+  const cancelEdit = () => { setEditId(null); setEditData(null); };
 
   const filteredWorkflows = workflows.filter(wf => wf.triggers.some(t => t.keyword.toLowerCase().includes(searchQuery.toLowerCase())) || Object.values(wf.steps).some(s => s.message.toLowerCase().includes(searchQuery.toLowerCase())));
 
@@ -862,8 +866,7 @@ export default function Home() {
                key={editId} 
                editId={editId === "new" ? null : editId} 
                initialData={editData || getEmptyWorkflow()} 
-               onSave={save} 
-               onCancel={cancelEdit} 
+               onSave={save} onCancel={cancelEdit} 
              />
           )}
           
