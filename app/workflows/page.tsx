@@ -41,6 +41,7 @@ import {
   Upload,
   Link as LinkIcon,
   Library,
+  PhoneCall,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 
@@ -51,7 +52,7 @@ type Trigger = { keyword: string; matchMode: "exact" | "contains" };
 type Button = { id: string; label: string; nextStepId: string | null };
 type Step = { 
   id: string; 
-  stepType?: "message" | "url_action";
+  stepType?: "message" | "url_action" | "call_action";
   message: string; 
   buttons: Button[]; 
   position?: { x: number; y: number };
@@ -59,6 +60,7 @@ type Step = {
   mediaUrl?: string | null;
   urlLabel?: string;
   url?: string;
+  phoneNumber?: string;
 };
 type Workflow = {
   _id: string;
@@ -508,9 +510,6 @@ const MessageNode = ({ data, id }: any) => {
   );
 };
 
-// ────────────────────────────────────────────
-// NEW: URL ACTION NODE
-// ────────────────────────────────────────────
 const URLActionNode = ({ data, id }: any) => {
   const { setNodes, deleteElements } = useReactFlow();
 
@@ -572,7 +571,62 @@ const URLActionNode = ({ data, id }: any) => {
   );
 };
 
-const nodeTypes = { trigger: TriggerNode, message: MessageNode, url_action: URLActionNode };
+// ────────────────────────────────────────────
+// NEW: CALL ACTION NODE
+// ────────────────────────────────────────────
+const CallActionNode = ({ data, id }: any) => {
+  const { setNodes, deleteElements } = useReactFlow();
+
+  const updateNode = (newData: any) => {
+    setNodes((nds: Node[]) =>
+      nds.map((n: Node) => (n.id === id ? { ...n, data: { ...n.data, ...newData } } : n))
+    );
+  };
+
+  return (
+    <div className="w-72 bg-white border border-rose-200 shadow-lg rounded-2xl overflow-hidden group">
+      <Handle type="target" position={Position.Left} className="!bg-rose-500 !w-3 !h-3 !border-2 !border-white" />
+      <Handle type="source" position={Position.Right} className="!bg-rose-500 !w-3 !h-3 !border-2 !border-white" />
+      
+      <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-rose-50 to-white">
+        <div className="flex items-center gap-2 text-rose-700">
+          <PhoneCall size={14} />
+          <span className="text-xs font-bold uppercase tracking-wider">Call Action</span>
+        </div>
+        <button onClick={() => deleteElements({ nodes: [{ id }] })} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Trash2 size={14} />
+        </button>
+      </div>
+      
+      <div className="p-3 space-y-3">
+        <textarea 
+          value={data.message} 
+          onChange={(e) => updateNode({ message: e.target.value })} 
+          placeholder="Message to show above the number..." 
+          rows={2} 
+          className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-400 transition-all resize-none" 
+        />
+        
+        <div className="space-y-2">
+          <div className="relative">
+            <PhoneCall size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-rose-500" />
+            <input 
+              value={data.phoneNumber || ""} 
+              onChange={(e) => updateNode({ phoneNumber: e.target.value })} 
+              placeholder="Format: +1234567890 (with country code)" 
+              className="w-full pl-8 pr-2 py-1.5 text-xs border border-rose-200 rounded-lg focus:outline-none focus:border-rose-400 shadow-sm bg-white text-gray-800" 
+            />
+          </div>
+        </div>
+        <p className="text-[9px] text-gray-500 leading-tight px-1">
+          📞 The number will be sent as a clickable link. Clicking it opens the phone dialer.
+        </p>
+      </div>
+    </div>
+  );
+};
+
+const nodeTypes = { trigger: TriggerNode, message: MessageNode, url_action: URLActionNode, call_action: CallActionNode };
 
 /* ────────────────────────────────────────────
    FLOW CANVAS
@@ -613,7 +667,8 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           mediaUrl: step.mediaUrl || null,
           mediaType: step.mediaType || null,
           urlLabel: step.urlLabel,
-          url: step.url
+          url: step.url,
+          phoneNumber: step.phoneNumber
         },
         draggable: true,
       });
@@ -679,6 +734,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     let newData: any = { message: "" };
     if (type === "message") newData = { message: "", buttons: [], mediaUrl: null, mediaType: null };
     if (type === "url_action") newData = { message: "", urlLabel: "", url: "" };
+    if (type === "call_action") newData = { message: "", phoneNumber: "" };
 
     const newNode = { id: uid(), type, position, data: newData };
     setNodes((nds) => nds.concat(newNode));
@@ -716,7 +772,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     const cleanTriggers = triggers.filter((t: Trigger) => t.keyword.trim());
     
     const steps: Record<string, Step> = {};
-    nodes.filter(n => n.type === "message" || n.type === "url_action").forEach(n => {
+    nodes.filter(n => n.type === "message" || n.type === "url_action" || n.type === "call_action").forEach(n => {
       const buttonsWithLinks = n.data.buttons ? n.data.buttons.map((btn: Button) => {
         const edge = edges.find(e => e.source === n.id && e.sourceHandle === btn.id);
         return { ...btn, nextStepId: edge ? edge.target : null };
@@ -724,14 +780,15 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
 
       steps[n.id] = { 
         id: n.id, 
-        stepType: n.type as "message" | "url_action",
+        stepType: n.type as Step["stepType"],
         message: n.data.message, 
         buttons: buttonsWithLinks, 
         position: n.position,
         mediaUrl: n.data.mediaUrl,
         mediaType: n.data.mediaType,
         urlLabel: n.data.urlLabel,
-        url: n.data.url
+        url: n.data.url,
+        phoneNumber: n.data.phoneNumber
       };
     });
 
@@ -775,10 +832,11 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* UPDATED SIDEBAR */}
+        {/* SIDEBAR */}
         <div className="w-48 border-r border-gray-200 bg-gray-50 p-3 hidden md:block space-y-3">
           <div>
             <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Nodes</h3>
+            
             <div 
               onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "message")} 
               draggable 
@@ -793,11 +851,10 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
               </div>
             </div>
             
-            {/* NEW URL ACTION NODE */}
             <div 
               onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "url_action")} 
               draggable 
-              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-purple-400 hover:shadow-sm transition-all"
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-purple-400 hover:shadow-sm transition-all mb-2"
             >
               <div className="w-8 h-8 rounded-lg bg-purple-100 text-purple-600 flex items-center justify-center">
                 <LinkIcon size={14} />
@@ -805,6 +862,21 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
               <div>
                 <p className="text-xs font-semibold text-gray-800">URL Button</p>
                 <p className="text-[10px] text-gray-400">Open link on click</p>
+              </div>
+            </div>
+
+            {/* NEW CALL ACTION */}
+            <div 
+              onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "call_action")} 
+              draggable 
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-rose-400 hover:shadow-sm transition-all"
+            >
+              <div className="w-8 h-8 rounded-lg bg-rose-100 text-rose-600 flex items-center justify-center">
+                <PhoneCall size={14} />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-800">Call Action</p>
+                <p className="text-[10px] text-gray-400">Click to call number</p>
               </div>
             </div>
           </div>
@@ -826,7 +898,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           >
             <Background gap={16} size={1} color="#e5e7eb" />
             <Controls className="!bg-white !border !border-gray-200 !shadow-lg !rounded-lg" />
-            <MiniMap className="!bg-white !border !border-gray-200" nodeColor={(n) => (n.type === 'trigger' ? '#f59e0b' : n.type === 'url_action' ? '#a855f7' : '#10b981')} />
+            <MiniMap className="!bg-white !border !border-gray-200" nodeColor={(n) => (n.type === 'trigger' ? '#f59e0b' : n.type === 'url_action' ? '#a855f7' : n.type === 'call_action' ? '#f43f5e' : '#10b981')} />
           </ReactFlow>
         </div>
       </div>
