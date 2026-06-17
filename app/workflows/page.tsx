@@ -40,7 +40,6 @@ import {
   FileText,
   Upload,
   Link as LinkIcon,
-  Music,
   Library,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
@@ -55,7 +54,7 @@ type Step = {
   message: string; 
   buttons: Button[]; 
   position?: { x: number; y: number };
-  mediaType?: "image" | "video" | "document" | "audio" | null;
+  mediaType?: "image" | "video" | "document" | "audio" | "link" | null;
   mediaUrl?: string | null;
 };
 type Workflow = {
@@ -66,6 +65,26 @@ type Workflow = {
 };
 
 const uid = () => Math.random().toString(36).substr(2, 9);
+
+// Helper to extract YouTube ID for embedding preview in the dashboard
+const getYouTubeEmbedUrl = (url: string) => {
+  try {
+    const urlObj = new URL(url);
+    if (urlObj.hostname.includes("youtu.be")) {
+      return `https://www.youtube.com/embed/${urlObj.pathname.slice(1)}`;
+    }
+    if (urlObj.hostname.includes("youtube.com")) {
+      const v = urlObj.searchParams.get("v");
+      if (v) return `https://www.youtube.com/embed/${v}`;
+      if (urlObj.pathname.includes("/embed/")) {
+        return url;
+      }
+    }
+  } catch (e) {
+    return null;
+  }
+  return null;
+};
 
 /* ────────────────────────────────────────────
    TOAST COMPONENT
@@ -196,7 +215,10 @@ const MessageNode = ({ data, id }: any) => {
 
   // FILE LIMITATIONS CONFIG
   const maxSizes: Record<string, number> = {
-    image: 5 * 1024 * 1024, video: 16 * 1024 * 1024, audio: 16 * 1024 * 1024, document: 100 * 1024 * 1024
+    image: 2 * 1024 * 1024,     // 2MB
+    video: 10 * 1024 * 1024,    // 10MB
+    audio: 10 * 1024 * 1024,    // 10MB
+    document: 20 * 1024 * 1024  // 20MB
   };
 
   const allowedTypes: Record<string, string[]> = {
@@ -254,30 +276,29 @@ const MessageNode = ({ data, id }: any) => {
     }
   };
 
-    const openLibrary = async () => {
+  const openLibrary = async () => {
     setShowLibrary(true);
-    setLibraryItems([]); // Clear existing items to show loading state
+    setLibraryItems([]);
     try {
       const res = await fetch("/api/media");
-      const text = await res.text(); // Read response as text first to prevent JSON parsing errors
-      
+      const text = await res.text();
       if (!res.ok) {
         console.error("Library API Error:", text);
-        alert("Failed to load media library. Did you create the /api/media/route.ts file?");
+        alert("Failed to load media library.");
         setShowLibrary(false);
         return;
       }
-      
       const data = JSON.parse(text);
-      if (data.media) {
-        setLibraryItems(data.media);
-      }
+      if (data.media) setLibraryItems(data.media);
     } catch (err: any) {
       console.error("Failed to load library", err);
       alert("An error occurred while fetching the media library.");
       setShowLibrary(false);
     }
   };
+
+  // Extract YouTube ID for embedding preview
+  const ytEmbedUrl = data.mediaType === "link" && data.mediaUrl ? getYouTubeEmbedUrl(data.mediaUrl) : null;
 
   return (
     <div className="w-72 bg-white border border-gray-200 shadow-lg rounded-2xl overflow-hidden group">
@@ -296,24 +317,56 @@ const MessageNode = ({ data, id }: any) => {
       {/* Media Preview Area */}
       {data.mediaUrl && (
         <div 
-          className="relative border-b border-gray-100 cursor-pointer group/media bg-gray-50 p-4 flex items-center gap-3" 
+          className="relative border-b border-gray-100 cursor-pointer group/media bg-gray-50 p-2" 
           onClick={() => updateNode({ mediaUrl: null, mediaType: null })} 
           title="Click to remove media"
         >
-          {data.mediaUrl.startsWith("http") ? (
+          {data.mediaUrl.startsWith("http") || data.mediaType === "link" ? (
             <>
               {data.mediaType === "image" && <img src={data.mediaUrl} alt="Media" className="w-full h-32 object-cover" />}
               {data.mediaType === "video" && <video src={data.mediaUrl} className="w-full h-32 object-cover" controls />}
               {data.mediaType === "audio" && <audio src={data.mediaUrl} controls className="w-full mt-2" />}
               {data.mediaType === "document" && (
-                <div className="flex items-center gap-2 w-full">
+                <div className="flex items-center gap-2 w-full p-2">
                   <FileText size={24} className="text-red-500" />
                   <span className="text-xs text-gray-600 truncate">Document URL (Click to remove)</span>
                 </div>
               )}
+              
+              {/* LINK / YOUTUBE PREVIEW */}
+              {data.mediaType === "link" && (
+                <div className="w-full space-y-2">
+                  {ytEmbedUrl ? (
+                    <div className="relative">
+                      <iframe 
+                        src={ytEmbedUrl} 
+                        className="w-full aspect-video rounded-md pointer-events-none" 
+                        frameBorder="0" 
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                        allowFullScreen
+                      ></iframe>
+                      <span className="absolute top-1 right-1 text-[9px] bg-black/70 text-white px-1.5 py-0.5 rounded">YouTube Preview (Click to remove)</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-3 w-full p-2 border border-gray-200 rounded-lg bg-white shadow-sm">
+                      <img 
+                        src={`https://www.google.com/s2/favicons?domain=${data.mediaUrl}&sz=64`} 
+                        alt="favicon" 
+                        className="w-10 h-10 rounded-md bg-gray-50 border border-gray-200 object-contain p-1"
+                        onError={(e) => { (e.target as HTMLImageElement).src = `https://placehold.co/40x40/e5e7eb/9ca3af?text=Link`; }}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-bold text-gray-800 truncate">Social Media Link</p>
+                        <p className="text-[10px] text-gray-500 truncate">{data.mediaUrl}</p>
+                      </div>
+                      <LinkIcon size={16} className="text-blue-500 shrink-0" />
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           ) : (
-            <div className="flex items-center gap-2 w-full">
+            <div className="flex items-center gap-2 w-full p-2">
               {data.mediaUrl === "UPLOADING..." ? (
                 <Loader2 size={20} className="animate-spin text-gray-400" />
               ) : (
@@ -324,7 +377,7 @@ const MessageNode = ({ data, id }: any) => {
               </span>
             </div>
           )}
-          <div className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover/media:opacity-100 transition-opacity">
+          <div className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover/media:opacity-100 transition-opacity z-10">
             <X size={12} />
           </div>
         </div>
@@ -340,11 +393,12 @@ const MessageNode = ({ data, id }: any) => {
               onChange={(e) => updateNode({ mediaType: e.target.value || null })}
               className="flex-1 w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-600 focus:outline-none"
             >
-              <option value="">No Media</option>
-              <option value="image">Image (5MB)</option>
-              <option value="video">Video (16MB)</option>
-              <option value="audio">Audio (16MB)</option>
-              <option value="document">PDF / Doc (100MB)</option>
+              <option value="">No Media / Link</option>
+              <option value="link">Link / Social Media</option>
+              <option value="image">Image (2MB)</option>
+              <option value="video">Video (10MB)</option>
+              <option value="audio">Audio (10MB)</option>
+              <option value="document">PDF / Doc (20MB)</option>
             </select>
             
             {data.mediaType && (
@@ -353,25 +407,44 @@ const MessageNode = ({ data, id }: any) => {
                   <LinkIcon size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
                   <input 
                     type="text" 
-                    placeholder="Paste Public URL" 
+                    placeholder={data.mediaType === "link" ? "Paste URL (YouTube, Insta, FB)" : "Paste Public URL (Recommended)"} 
                     value={data.mediaUrl && data.mediaUrl !== "UPLOADING..." ? data.mediaUrl : ""} 
                     onChange={(e) => updateNode({ mediaUrl: e.target.value })}
                     className="w-full pl-7 pr-2 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400"
                   />
                 </div>
                 
-                <div className="flex gap-2">
-                  <label className="flex-1 flex items-center justify-center gap-1 py-1.5 border border-gray-200 rounded-lg cursor-pointer text-xs text-gray-600 hover:bg-gray-50">
-                    <Upload size={12} /> Upload
-                    <input type="file" className="hidden" onChange={handleFileUpload} />
-                  </label>
-                  <button 
-                    onClick={openLibrary} 
-                    className="flex-1 flex items-center justify-center gap-1 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 hover:bg-gray-50"
-                  >
-                    <Library size={12} /> Library
-                  </button>
-                </div>
+                {/* Hide Upload/Library if it's just a text link */}
+                {data.mediaType !== "link" && (
+                  <div className="flex gap-2">
+                    <label className="flex-1 flex items-center justify-center gap-1 py-1.5 border border-gray-200 rounded-lg cursor-pointer text-xs text-gray-600 hover:bg-gray-50">
+                      <Upload size={12} /> Upload
+                      <input type="file" className="hidden" onChange={handleFileUpload} />
+                    </label>
+                    <button 
+                      onClick={openLibrary} 
+                      className="flex-1 flex items-center justify-center gap-1 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 hover:bg-gray-50"
+                    >
+                      <Library size={12} /> Library
+                    </button>
+                  </div>
+                )}
+
+                {/* Warnings & Recommendations */}
+                {data.mediaType === "link" ? (
+                  <p className="text-[9px] text-blue-600 leading-tight px-1">
+                    🔗 WhatsApp will automatically generate a rich preview (thumbnail/video) for valid social media links.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-[9px] text-emerald-600 leading-tight mt-1 px-1">
+                      ✅ URL is recommended (never expires).
+                    </p>
+                    <p className="text-[9px] text-amber-600 leading-tight px-1">
+                      ⚠️ Uploaded files expire on WhatsApp servers after 30 days and must be re-uploaded.
+                    </p>
+                  </>
+                )}
 
                 {/* MEDIA LIBRARY DROPDOWN */}
                 {showLibrary && (
@@ -652,7 +725,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           <div className="mt-4 text-[10px] text-gray-400 leading-relaxed">
             <p>💡 <strong>Tip:</strong> Drag nodes onto the canvas. Draw wires by dragging from the dots.</p>
             <p className="mt-2">🗑️ <strong>Delete wire:</strong> Double-click the wire.</p>
-            <p className="mt-2">🖼️ <strong>Media:</strong> Add media via URL, Upload, or Library. Click media to remove it.</p>
+            <p className="mt-2">🔗 <strong>Links:</strong> Select &quot;Link&quot; in the media dropdown to send URLs (Insta, YT, etc.).</p>
           </div>
         </div>
 
@@ -717,7 +790,7 @@ function WorkflowCard({ wf, onEdit, onDelete }: { wf: Workflow; onEdit: (wf: Wor
                 <div className="flex flex-wrap gap-2 mt-1">
                   {rootStep.mediaUrl && (
                     <span className="px-2 py-0.5 bg-gray-100 border border-gray-200 rounded-full text-[10px] font-semibold text-gray-600 flex items-center gap-1 capitalize">
-                      <FileText size={8} /> {rootStep.mediaType}
+                      {rootStep.mediaType === "link" ? <LinkIcon size={8} /> : <FileText size={8} />} {rootStep.mediaType}
                     </span>
                   )}
                   {rootStep.buttons.map(b => (
