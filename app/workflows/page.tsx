@@ -1,16 +1,27 @@
+/* eslint-disable react-hooks/set-state-in-effect */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable react-hooks/exhaustive-deps */
-/* eslint-disable react-hooks/set-state-in-effect */
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import Sidebar from "@/components/Sidebar"; 
-import {
-  DragDropContext,
-  Droppable,
-  Draggable,
-  DropResult,
-} from "@hello-pangea/dnd";
+import ReactFlow, {
+  Background,
+  Controls,
+  MiniMap,
+  useNodesState,
+  useEdgesState,
+  addEdge,
+  Handle,
+  Position,
+  Connection,
+  Edge,
+  Node,
+  useReactFlow,
+  ReactFlowProvider,
+  MarkerType,
+} from "reactflow";
+import "reactflow/dist/style.css";
 import {
   Zap,
   MessageSquare,
@@ -18,15 +29,15 @@ import {
   Trash2,
   GripVertical,
   X,
-  Workflow,
+  Workflow as WorkflowIcon,
   Check,
   MousePointerClick,
-  ArrowDown,
   Maximize,
   Minimize,
-  Crosshair,
   Type,
+  Crosshair,
   Loader2,
+  Layout,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 
@@ -35,7 +46,7 @@ import { useSession } from "next-auth/react";
    ──────────────────────────────────────────── */
 type Trigger = { keyword: string; matchMode: "exact" | "contains" };
 type Button = { id: string; label: string; nextStepId: string | null };
-type Step = { id: string; message: string; buttons: Button[] };
+type Step = { id: string; message: string; buttons: Button[]; position?: { x: number; y: number } };
 type Workflow = {
   _id: string;
   triggers: Trigger[];
@@ -68,316 +79,421 @@ function Toast({ message, type, onClose }: { message: string; type: "success" | 
 }
 
 /* ────────────────────────────────────────────
-   DRAGGABLE TRIGGER ITEM (WITH MATCH MODE)
+   REACT FLOW CUSTOM NODES
    ──────────────────────────────────────────── */
-function TriggerItem({ trigger, index, onChange, onRemove }: { trigger: Trigger; index: number; onChange: (i: number, v: string, mode?: "exact" | "contains") => void; onRemove: (i: number) => void }) {
+const TriggerNode = ({ data, id }: any) => {
+  const { setNodes } = useReactFlow();
+
+  const handleTriggerChange = (index: number, val: string, mode?: "exact" | "contains") => {
+    setNodes((nds: Node[]) =>
+      nds.map((n: Node) => {
+        if (n.id === id) {
+          const newTriggers = [...data.triggers];
+          newTriggers[index] = { keyword: val, matchMode: mode || newTriggers[index].matchMode || "contains" };
+          return { ...n, data: { ...n.data, triggers: newTriggers } };
+        }
+        return n;
+      })
+    );
+  };
+
+  const addTrigger = () => {
+    setNodes((nds: Node[]) =>
+      nds.map((n: Node) => {
+        if (n.id === id) return { ...n, data: { ...n.data, triggers: [...n.data.triggers, { keyword: "", matchMode: "contains" }] } };
+        return n;
+      })
+    );
+  };
+
+  const removeTrigger = (index: number) => {
+    setNodes((nds: Node[]) =>
+      nds.map((n: Node) => {
+        if (n.id === id) return { ...n, data: { ...n.data, triggers: n.data.triggers.filter((_: any, i: number) => i !== index) } };
+        return n;
+      })
+    );
+  };
+
   return (
-    <Draggable draggableId={`trigger-${index}`} index={index}>
-      {(provided) => (
-        <div ref={provided.innerRef} {...provided.draggableProps} className="flex items-center gap-2 group">
-          <div {...provided.dragHandleProps} className="text-gray-300 hover:text-gray-500 cursor-grab shrink-0"><GripVertical size={18} /></div>
-          <div className="flex-1 relative min-w-0">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-amber-500"><Zap size={14} /></span>
-            <input 
-              value={trigger.keyword} 
-              onChange={(e) => onChange(index, e.target.value)} 
-              placeholder="e.g. price" 
-              className="w-full pl-9 pr-4 py-2.5 bg-white border border-amber-200 rounded-xl text-sm text-gray-900 placeholder:text-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-400 transition-all shadow-sm" 
-            />
-          </div>
-          
-          {/* MATCH MODE TOGGLE */}
-          <div className="flex items-center bg-gray-100 rounded-lg border border-gray-200 p-0.5 shrink-0">
-            <button
-              onClick={() => onChange(index, trigger.keyword, "contains")}
-              className={`p-1.5 rounded-md transition-colors flex items-center gap-1 ${trigger.matchMode === "contains" ? "bg-blue-500 text-white shadow-sm" : "text-gray-400 hover:text-gray-600"}`}
-              title="Contains (e.g. 'price' matches 'what is the price?')"
-            >
-              <Type size={12} />
-            </button>
-            <button
-              onClick={() => onChange(index, trigger.keyword, "exact")}
-              className={`p-1.5 rounded-md transition-colors flex items-center gap-1 ${trigger.matchMode === "exact" ? "bg-purple-500 text-white shadow-sm" : "text-gray-400 hover:text-gray-600"}`}
-              title="Exact Match (e.g. 'price' ONLY matches 'price')"
-            >
-              <Crosshair size={12} />
-            </button>
-          </div>
-
-          <button onClick={() => onRemove(index)} className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100 shrink-0"><Trash2 size={14} /></button>
+    <div className="w-72 bg-white border border-amber-200 shadow-lg rounded-2xl overflow-hidden">
+      <Handle type="source" position={Position.Right} className="!bg-amber-500 !w-3 !h-3 !border-2 !border-white" />
+      <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-amber-50 to-white">
+        <div className="flex items-center gap-2 text-amber-700">
+          <Zap size={14} />
+          <span className="text-xs font-bold uppercase tracking-wider">Triggers</span>
         </div>
-      )}
-    </Draggable>
+        <button onClick={addTrigger} className="text-xs font-semibold text-amber-600 hover:text-amber-800 flex items-center gap-1">
+          <Plus size={12} /> Add
+        </button>
+      </div>
+      <div className="p-3 space-y-2 max-h-[300px] overflow-y-auto">
+        {data.triggers.map((trigger: Trigger, index: number) => (
+          <div key={index} className="flex items-center gap-2 group">
+            <div className="flex-1 relative min-w-0">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-amber-500"><Zap size={14} /></span>
+              <input 
+                value={trigger.keyword} 
+                onChange={(e) => handleTriggerChange(index, e.target.value)} 
+                placeholder="e.g. price" 
+                className="w-full pl-9 pr-4 py-2.5 bg-white border border-amber-200 rounded-xl text-sm text-gray-900 placeholder:text-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-400 transition-all shadow-sm" 
+              />
+            </div>
+            <div className="flex items-center bg-gray-100 rounded-lg border border-gray-200 p-0.5 shrink-0">
+              <button onClick={() => handleTriggerChange(index, trigger.keyword, "contains")} className={`p-1.5 rounded-md ${trigger.matchMode === "contains" ? "bg-blue-500 text-white" : "text-gray-400"}`}>
+                <Type size={12} />
+              </button>
+              <button onClick={() => handleTriggerChange(index, trigger.keyword, "exact")} className={`p-1.5 rounded-md ${trigger.matchMode === "exact" ? "bg-purple-500 text-white" : "text-gray-400"}`}>
+                <Crosshair size={12} />
+              </button>
+            </div>
+            <button onClick={() => removeTrigger(index)} className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 shrink-0">
+              <Trash2 size={14} />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
   );
-}
+};
 
-/* ────────────────────────────────────────────
-   VISUAL FLOW NODE (RECURSIVE BRANCHING)
-   ──────────────────────────────────────────── */
-function FlowNode({ 
-  step, 
-  allSteps, 
-  onUpdateStep, 
-  onAddStep, 
-  onDeleteStep 
-}: { 
-  step: Step; 
-  allSteps: Record<string, Step>; 
-  onUpdateStep: (id: string, data: Step) => void; 
-  onAddStep: (parentStepId: string, buttonId: string) => void; 
-  onDeleteStep: (id: string) => void;
-}) {
-  const handleMsgChange = (msg: string) => {
-    onUpdateStep(step.id, { ...step, message: msg });
+const MessageNode = ({ data, id }: any) => {
+  const { setNodes, deleteElements } = useReactFlow();
+
+  const updateNode = (newData: any) => {
+    setNodes((nds: Node[]) =>
+      nds.map((n: Node) => (n.id === id ? { ...n, data: { ...n.data, ...newData } } : n))
+    );
   };
 
-  const handleButtonLabelChange = (btnId: string, label: string) => {
-    const updatedButtons = step.buttons.map(b => b.id === btnId ? { ...b, label } : b);
-    onUpdateStep(step.id, { ...step, buttons: updatedButtons });
-  };
-
-  const handleButtonLinkChange = (btnId: string, nextId: string | null) => {
-    if (nextId === "NEW") {
-      onAddStep(step.id, btnId);
-    } else {
-      const updatedButtons = step.buttons.map(b => b.id === btnId ? { ...b, nextStepId: nextId } : b);
-      onUpdateStep(step.id, { ...step, buttons: updatedButtons });
-    }
-  };
+  const handleMsgChange = (msg: string) => updateNode({ message: msg });
 
   const addButton = () => {
-    if (step.buttons.length >= 3) return;
     const newBtn: Button = { id: uid(), label: "", nextStepId: null };
-    onUpdateStep(step.id, { ...step, buttons: [...step.buttons, newBtn] });
+    updateNode({ buttons: [...data.buttons, newBtn] });
   };
 
   const removeButton = (btnId: string) => {
-    onUpdateStep(step.id, { ...step, buttons: step.buttons.filter(b => b.id !== btnId) });
+    updateNode({ buttons: data.buttons.filter((b: Button) => b.id !== btnId) });
+  };
+
+  const handleButtonLabelChange = (btnId: string, label: string) => {
+    updateNode({ buttons: data.buttons.map((b: Button) => (b.id === btnId ? { ...b, label } : b)) });
   };
 
   return (
-    <div className="flex flex-col items-center relative">
-      {/* The Step Card */}
-      <div className="w-72 sm:w-80 bg-white border border-gray-200 shadow-lg rounded-2xl overflow-hidden z-10 hover:shadow-xl transition-all duration-200 group">
-        <div className="p-3 sm:p-4 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-emerald-50 to-white">
-          <div className="flex items-center gap-2 text-emerald-700">
-            <MessageSquare size={14} />
-            <span className="text-xs font-bold uppercase tracking-wider">Message Step</span>
+    <div className="w-72 bg-white border border-gray-200 shadow-lg rounded-2xl overflow-hidden group">
+      <Handle type="target" position={Position.Left} className="!bg-emerald-500 !w-3 !h-3 !border-2 !border-white" />
+      
+      <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-emerald-50 to-white">
+        <div className="flex items-center gap-2 text-emerald-700">
+          <MessageSquare size={14} />
+          <span className="text-xs font-bold uppercase tracking-wider">Message Step</span>
+        </div>
+        <button onClick={() => deleteElements({ nodes: [{ id }] })} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Trash2 size={14} />
+        </button>
+      </div>
+      
+      <div className="p-3 space-y-3">
+        <textarea 
+          value={data.message} 
+          onChange={(e) => handleMsgChange(e.target.value)} 
+          placeholder="Type auto-reply message..." 
+          rows={3} 
+          className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all resize-none" 
+        />
+        
+        <div className="space-y-2 relative">
+          {data.buttons.map((btn: Button) => (
+            <div key={btn.id} className="bg-blue-50/50 border border-blue-200 rounded-xl p-2.5 space-y-1 group/btn relative">
+              <Handle 
+                type="source" 
+                position={Position.Right} 
+                id={btn.id} 
+                style={{ top: '50%', right: '-12px' }} 
+                className="!bg-blue-500 !w-3 !h-3 !border-2 !border-white" 
+              />
+              <div className="flex items-center gap-2">
+                <MousePointerClick size={14} className="text-blue-500 shrink-0" />
+                <input 
+                  value={btn.label} 
+                  onChange={(e) => handleButtonLabelChange(btn.id, e.target.value)} 
+                  placeholder="Button Text" 
+                  className="flex-1 min-w-0 bg-white border border-blue-200 rounded-lg px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:border-blue-400 shadow-sm" 
+                />
+                <button onClick={() => removeButton(btn.id)} className="opacity-0 group-hover/btn:opacity-100 text-gray-400 hover:text-red-500 transition-colors shrink-0">
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
+          ))}
+          <button 
+            onClick={addButton} 
+            className="w-full py-2 border border-dashed border-blue-300 rounded-xl text-xs font-semibold text-blue-500 hover:bg-blue-50 transition-colors flex items-center justify-center gap-1.5 bg-blue-50/30"
+          >
+            <Plus size={12} /> Add Interactive Button (Unlimited)
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const nodeTypes = { trigger: TriggerNode, message: MessageNode };
+
+/* ────────────────────────────────────────────
+   FLOW CANVAS (Inner component to use hooks)
+   ──────────────────────────────────────────── */
+function FlowCanvas({ initialData, editId, onSave, onCancel }: { 
+  initialData: Workflow; 
+  editId: string | null; 
+  onSave: (wf: any) => void; 
+  onCancel: () => void;
+}) {
+  const [isFullScreen, setIsFullScreen] = useState(false);
+  const reactFlowWrapper = useRef<HTMLDivElement>(null);
+  const { screenToFlowPosition } = useReactFlow();
+
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+
+  // Initialize nodes and edges from data
+  useEffect(() => {
+    const initNodes: Node[] = [];
+    const initEdges: Edge[] = [];
+
+    // Trigger Node
+    initNodes.push({
+      id: "trigger-node",
+      type: "trigger",
+      position: { x: -250, y: 100 },
+      data: { triggers: initialData.triggers || [{ keyword: "", matchMode: "contains" }] },
+      draggable: true,
+    });
+
+    // Message Nodes
+    Object.values(initialData.steps || {}).forEach((step) => {
+      initNodes.push({
+        id: step.id,
+        type: "message",
+        position: step.position || { x: Math.random() * 400, y: Math.random() * 400 },
+        data: { message: step.message, buttons: step.buttons },
+        draggable: true,
+      });
+    });
+
+    // Edges
+    if (initialData.rootStepId) {
+      initEdges.push({ 
+        id: "e-trigger-root", 
+        source: "trigger-node", 
+        target: initialData.rootStepId, 
+        animated: true, 
+        type: "smoothstep",
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#10b981' },
+        style: { stroke: '#10b981', strokeWidth: 2 }
+      });
+    }
+
+    Object.values(initialData.steps || {}).forEach((step) => {
+      step.buttons.forEach((btn) => {
+        if (btn.nextStepId) {
+          initEdges.push({
+            id: `e-${step.id}-${btn.id}`,
+            source: step.id,
+            sourceHandle: btn.id,
+            target: btn.nextStepId,
+            animated: true,
+            type: "smoothstep",
+            markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6' },
+            style: { stroke: '#3b82f6', strokeWidth: 2 }
+          });
+        }
+      });
+    });
+
+    setNodes(initNodes);
+    setEdges(initEdges);
+  }, [initialData]);
+
+  const onConnect = useCallback((params: Connection) => {
+    // If connecting from trigger, replace existing trigger connection
+    if (params.source === "trigger-node") {
+      setEdges((eds) => eds.filter((e) => e.source !== "trigger-node").concat(addEdge({ ...params, animated: true, type: "smoothstep", style: { stroke: '#10b981', strokeWidth: 2 } }, eds)));
+    } else {
+      // If connecting from a button, remove existing connection from that specific button
+      setEdges((eds) => {
+        const filtered = eds.filter((e) => !(e.source === params.source && e.sourceHandle === params.sourceHandle));
+        return addEdge({ ...params, animated: true, type: "smoothstep", style: { stroke: '#3b82f6', strokeWidth: 2 } }, filtered);
+      });
+    }
+  }, [setEdges]);
+
+  const onDragOver = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  }, []);
+
+  const onDrop = useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    const type = event.dataTransfer.getData("application/reactflow");
+    if (!type) return;
+
+    const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    const newNode = {
+      id: uid(),
+      type,
+      position,
+      data: { message: "", buttons: [] },
+    };
+    setNodes((nds) => nds.concat(newNode));
+  }, [screenToFlowPosition, setNodes]);
+
+  // Auto-Format Layout Button
+  const formatLayout = () => {
+    const newNodes = [...nodes];
+    const triggerNode = newNodes.find(n => n.id === "trigger-node");
+    if (triggerNode) triggerNode.position = { x: 0, y: 0 };
+
+    const rootEdge = edges.find(e => e.source === "trigger-node");
+    if (!rootEdge) return;
+
+    const visited = new Set<string>();
+    const layoutStep = (nodeId: string, x: number, y: number, depth: number = 0) => {
+      if (visited.has(nodeId)) return;
+      visited.add(nodeId);
+      
+      const node = newNodes.find(n => n.id === nodeId);
+      if (!node) return;
+      node.position = { x, y };
+
+      const childEdges = edges.filter(e => e.source === nodeId);
+      const spacingY = 300;
+      const startY = y - ((childEdges.length - 1) * spacingY) / 2;
+
+      childEdges.forEach((edge, i) => {
+        layoutStep(edge.target, x + 350, startY + i * spacingY, depth + 1);
+      });
+    };
+
+    layoutStep(rootEdge.target, 350, 0);
+    setNodes(newNodes);
+  };
+
+  const handleSave = () => {
+    const triggers = nodes.find(n => n.id === "trigger-node")?.data?.triggers || [];
+    const cleanTriggers = triggers.filter((t: Trigger) => t.keyword.trim());
+    
+    const steps: Record<string, Step> = {};
+    nodes.filter(n => n.type === "message").forEach(n => {
+      const buttonsWithLinks = n.data.buttons.map((btn: Button) => {
+        const edge = edges.find(e => e.source === n.id && e.sourceHandle === btn.id);
+        return { ...btn, nextStepId: edge ? edge.target : null };
+      });
+      steps[n.id] = { id: n.id, message: n.data.message, buttons: buttonsWithLinks, position: n.position };
+    });
+
+    const rootEdge = edges.find(e => e.source === "trigger-node");
+    const rootStepId = rootEdge ? rootEdge.target : null;
+
+    if (cleanTriggers.length === 0 || !rootStepId || !steps[rootStepId]?.message.trim()) {
+      alert("Need at least one trigger and a valid root message.");
+      return;
+    }
+
+    onSave({ _id: editId || "", triggers: cleanTriggers, steps, rootStepId });
+  };
+
+  return (
+    <div className={`overflow-hidden flex flex-col transition-all duration-300 ease-in-out ${
+        isFullScreen ? 'fixed inset-0 z-50 bg-white' : 'bg-white rounded-2xl border border-gray-200 shadow-sm relative h-[80vh]'
+      }`}
+    >
+      {/* Top Header */}
+      <div className="p-3 border-b border-gray-100 bg-white z-30 flex items-center justify-between shadow-sm">
+        <div className="flex items-center gap-3">
+          <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${editId ? "bg-amber-100 text-amber-600" : "bg-emerald-100 text-emerald-600"}`}>
+            <WorkflowIcon size={16} />
           </div>
-          <button onClick={() => onDeleteStep(step.id)} className="text-gray-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"><Trash2 size={14} /></button>
+          <h2 className="text-sm font-bold text-gray-900">{editId ? "Edit Workflow" : "New Workflow"}</h2>
         </div>
         
-        <div className="p-3 sm:p-4 space-y-3">
-          <textarea value={step.message} onChange={(e) => handleMsgChange(e.target.value)} placeholder="Type auto-reply message..." rows={3} className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all resize-none" />
-          
-          {/* Buttons Section */}
-          <div className="space-y-2">
-            {step.buttons.map(btn => (
-              <div key={btn.id} className="bg-blue-50/50 border border-blue-200 rounded-xl p-2.5 space-y-2 group/btn hover:border-blue-300 transition-colors">
-                <div className="flex items-center gap-2">
-                  <MousePointerClick size={14} className="text-blue-500 shrink-0" />
-                  <input value={btn.label} onChange={(e) => handleButtonLabelChange(btn.id, e.target.value)} placeholder="Button Text" className="flex-1 min-w-0 bg-white border border-blue-200 rounded-lg px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:border-blue-400 shadow-sm" />
-                  <button onClick={() => removeButton(btn.id)} className="opacity-0 group-hover/btn:opacity-100 text-gray-400 hover:text-red-500 transition-colors shrink-0"><X size={14} /></button>
-                </div>
-                <select value={btn.nextStepId || ""} onChange={(e) => handleButtonLinkChange(btn.id, e.target.value || null)} className="w-full bg-white border border-blue-200 rounded-lg px-2 py-1.5 text-[11px] text-gray-600 focus:outline-none focus:border-blue-400 shadow-sm">
-                  <option value="">✋ End Flow Here</option>
-                  <option value="NEW">➕ Create Next Step</option>
-                  {Object.values(allSteps).map(s => s.id !== step.id && (
-                    <option key={s.id} value={s.id}>🔗 Link to: &quot;{s.message.substring(0, 15)}...&quot;</option>
-                  ))}
-                </select>
-              </div>
-            ))}
-            {step.buttons.length < 3 && (
-              <button onClick={addButton} className="w-full py-2 border border-dashed border-blue-300 rounded-xl text-xs font-semibold text-blue-500 hover:bg-blue-50 transition-colors flex items-center justify-center gap-1.5 bg-blue-50/30">
-                <Plus size={12} /> Add Interactive Button
-              </button>
-            )}
-          </div>
+        <div className="flex items-center gap-2">
+          <button onClick={formatLayout} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200">
+            <Layout size={14} /> Format
+          </button>
+          {editId && (
+            <button onClick={onCancel} className="px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors hidden sm:block">
+              Cancel
+            </button>
+          )}
+          <button onClick={() => setIsFullScreen(!isFullScreen)} className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors border border-gray-200">
+            {isFullScreen ? <Minimize size={16} /> : <Maximize size={16} />}
+          </button>
         </div>
       </div>
 
-      {/* The Branches below the card */}
-      {step.buttons.length > 0 && (
-        <div className="flex justify-center gap-6 sm:gap-12 pt-4 relative">
-          <div className="absolute top-0 left-1/2 w-px h-4 bg-gray-300 transform -translate-x-1/2"></div>
-          {step.buttons.length > 1 && (
-            <div className="absolute top-4 left-1/4 w-1/2 h-px bg-gray-300 transform -translate-y-1/2"></div>
-          )}
-
-          {step.buttons.map(btn => (
-            <div key={btn.id} className="flex flex-col items-center relative pt-4">
-              <div className="absolute top-0 left-1/2 w-px h-4 bg-gray-300 transform -translate-x-1/2"></div>
-              <div className="px-3 sm:px-4 py-1.5 bg-blue-600 text-white rounded-full text-[11px] font-bold shadow-md border border-blue-700 mb-3 max-w-[100px] sm:max-w-[180px] truncate text-center">
-                {btn.label || "Unnamed"}
-              </div>
-              <div className="w-px h-4 bg-blue-300"></div>
-              {btn.nextStepId && allSteps[btn.nextStepId] ? (
-                <FlowNode step={allSteps[btn.nextStepId]} allSteps={allSteps} onUpdateStep={onUpdateStep} onAddStep={onAddStep} onDeleteStep={onDeleteStep} />
-              ) : (
-                <div className="w-36 sm:w-48 h-28 border-2 border-dashed border-gray-300 rounded-2xl flex flex-col items-center justify-center text-gray-400 bg-white/50 backdrop-blur-sm mt-2 p-2">
-                  <span className="text-2xl mb-1">🛑</span>
-                  <span className="text-[11px] font-semibold text-gray-500 text-center">End of Flow</span>
-                </div>
-              )}
+      {/* Main Canvas Area */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Builder Sidebar */}
+        <div className="w-48 border-r border-gray-200 bg-gray-50 p-3 hidden md:block">
+          <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Nodes</h3>
+          <div 
+            onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "message")} 
+            draggable 
+            className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-emerald-400 hover:shadow-sm transition-all"
+          >
+            <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-600 flex items-center justify-center">
+              <MessageSquare size={14} />
             </div>
-          ))}
+            <div>
+              <p className="text-xs font-semibold text-gray-800">Message</p>
+              <p className="text-[10px] text-gray-400">Drag to canvas</p>
+            </div>
+          </div>
         </div>
-      )}
+
+        {/* React Flow Canvas */}
+        <div ref={reactFlowWrapper} className="flex-1 h-full bg-gray-50/80 bg-dots">
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onDrop={onDrop}
+            onDragOver={onDragOver}
+            nodeTypes={nodeTypes}
+            fitView
+            deleteKeyCode={['Backspace', 'Delete']}
+            defaultEdgeOptions={{ type: "smoothstep" }}
+          >
+            <Background gap={16} size={1} color="#e5e7eb" />
+            <Controls className="!bg-white !border !border-gray-200 !shadow-lg !rounded-lg" />
+            <MiniMap className="!bg-white !border !border-gray-200" nodeColor={(n) => (n.type === 'trigger' ? '#f59e0b' : '#10b981')} />
+          </ReactFlow>
+        </div>
+      </div>
+
+      {/* Floating Save Button */}
+      <div className="absolute bottom-4 right-4 z-30">
+        <button onClick={handleSave} className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold text-white bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 hover:shadow-xl hover:scale-105">
+          {editId ? "Update Workflow" : "Create Workflow"}
+        </button>
+      </div>
     </div>
   );
 }
 
 /* ────────────────────────────────────────────
-   WORKFLOW BUILDER FORM (INFINITE CANVAS + FULLSCREEN)
+   WORKFLOW BUILDER FORM (Provider Wrapper)
    ──────────────────────────────────────────── */
 function WorkflowForm({ editId, initialData, onSave, onCancel }: { editId: string | null; initialData: Workflow; onSave: (wf: Workflow) => void; onCancel: () => void }) {
-  const canvasRef = useRef<HTMLDivElement>(null);
-  const [isFullScreen, setIsFullScreen] = useState(false);
-  
-  const [triggers, setTriggers] = useState<Trigger[]>(initialData.triggers);
-  const [steps, setSteps] = useState<Record<string, Step>>(initialData.steps);
-  const [rootStepId, setRootStepId] = useState<string>(initialData.rootStepId);
-
-  const handleTriggerChange = (index: number, val: string, mode?: "exact" | "contains") => {
-    const newTriggers = [...triggers];
-    newTriggers[index] = { 
-      keyword: val, 
-      matchMode: mode || newTriggers[index].matchMode || "contains" 
-    };
-    setTriggers(newTriggers);
-  };
-
-  const addTrigger = () => setTriggers([...triggers, { keyword: "", matchMode: "contains" }]);
-  const removeTrigger = (index: number) => setTriggers(triggers.filter((_, i) => i !== index));
-
-  const onDragEnd = (result: DropResult) => {
-    if (!result.destination) return;
-    const { source, destination } = result;
-    if (source.index === destination.index) return;
-    const newTriggers = Array.from(triggers);
-    const [moved] = newTriggers.splice(source.index, 1);
-    newTriggers.splice(destination.index, 0, moved);
-    setTriggers(newTriggers);
-  };
-
-  const updateStep = (id: string, data: Step) => {
-    setSteps(prev => ({ ...prev, [id]: data }));
-  };
-
-  const addStep = (parentStepId: string, buttonId: string) => {
-    const newStepId = uid();
-    const newStep: Step = { id: newStepId, message: "", buttons: [] };
-    setSteps(prev => {
-      const parentStep = { ...prev[parentStepId] };
-      parentStep.buttons = parentStep.buttons.map(b => b.id === buttonId ? { ...b, nextStepId: newStepId } : b);
-      return { ...prev, [parentStepId]: parentStep, [newStepId]: newStep };
-    });
-  };
-
-  const deleteStep = (id: string) => {
-    if (id === rootStepId) return;
-    setSteps(prev => {
-      const newSteps = { ...prev };
-      delete newSteps[id];
-      Object.keys(newSteps).forEach(stepId => {
-        newSteps[stepId] = { ...newSteps[stepId], buttons: newSteps[stepId].buttons.map(b => b.nextStepId === id ? { ...b, nextStepId: null } : b) };
-      });
-      return newSteps;
-    });
-  };
-
-  const isValid = triggers.some(t => t.keyword.trim()) && steps[rootStepId]?.message.trim();
-
   return (
-    <DragDropContext onDragEnd={onDragEnd}>
-      <div className={`overflow-hidden flex flex-col transition-all duration-300 ease-in-out ${
-          isFullScreen 
-            ? 'fixed inset-0 z-50 bg-white' 
-            : 'bg-white rounded-2xl border border-gray-200 shadow-sm relative h-[80vh]'
-        }`}
-      >
-        
-        {/* Floating Top Header */}
-        <div className="p-3 sm:p-4 border-b border-gray-100 bg-white z-30 flex items-center justify-between shadow-sm">
-          <div className="flex items-center gap-3">
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${editId ? "bg-amber-100 text-amber-600" : "bg-emerald-100 text-emerald-600"}`}><Workflow size={16} /></div>
-            <h2 className="text-sm font-bold text-gray-900">{editId ? "Edit Workflow" : "New Workflow"}</h2>
-          </div>
-          
-          <div className="flex items-center gap-2">
-            {editId && (
-              <button onClick={onCancel} className="px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors hidden sm:block">
-                Cancel
-              </button>
-            )}
-            <button 
-              onClick={() => setIsFullScreen(!isFullScreen)} 
-              className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors border border-gray-200"
-              title={isFullScreen ? "Exit Full Screen" : "Full Screen"}
-            >
-              {isFullScreen ? <Minimize size={16} /> : <Maximize size={16} />}
-            </button>
-          </div>
-        </div>
-
-        {/* Infinite Canvas Container */}
-        <div ref={canvasRef} className="flex-1 overflow-auto bg-gray-50/80 bg-dots p-4 sm:p-8">
-          <div className="inline-flex flex-col items-center min-w-full py-4 px-4 sm:px-12">
-            
-            {/* Triggers Section */}
-            <div className="border border-amber-200/50 bg-white rounded-2xl p-4 sm:p-5 w-full max-w-md shadow-sm">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-xs font-bold text-amber-700 uppercase tracking-wider flex items-center gap-2"><Zap size={14} /> Triggers</h3>
-                <button onClick={addTrigger} className="text-xs font-semibold text-amber-600 hover:text-amber-800 flex items-center gap-1 transition-colors"><Plus size={12} /> Add</button>
-              </div>
-              
-              {/* Legend for Match Modes */}
-              <div className="flex gap-4 mb-3 px-1">
-                <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
-                  <div className="w-4 h-4 rounded bg-blue-500 text-white flex items-center justify-center"><Type size={8} /></div>
-                  Contains
-                </div>
-                <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
-                  <div className="w-4 h-4 rounded bg-purple-500 text-white flex items-center justify-center"><Crosshair size={8} /></div>
-                  Exact Match
-                </div>
-              </div>
-
-              <Droppable droppableId="triggers" type="TRIGGERS">
-                {(provided) => (
-                  <div ref={provided.innerRef} {...provided.droppableProps} className="space-y-2 min-h-[40px]">
-                    {triggers.map((trigger, index) => <TriggerItem key={`trigger-${index}`} trigger={trigger} index={index} onChange={handleTriggerChange} onRemove={removeTrigger} />)}
-                    {provided.placeholder}
-                  </div>
-                )}
-              </Droppable>
-            </div>
-
-            {/* Arrow Down */}
-            <div className="flex flex-col items-center py-2 text-gray-300">
-              <div className="w-px h-8 bg-gray-300"></div>
-              <ArrowDown size={16} className="text-gray-400" />
-            </div>
-
-            {/* Flow Steps Section */}
-            {rootStepId && steps[rootStepId] ? (
-              <FlowNode step={steps[rootStepId]} allSteps={steps} onUpdateStep={updateStep} onAddStep={addStep} onDeleteStep={deleteStep} />
-            ) : (
-              <div className="text-red-400 text-sm bg-white px-4 py-2 rounded-lg shadow">Error: Root step missing</div>
-            )}
-
-          </div>
-        </div>
-
-        {/* Floating Save Button */}
-        <div className="absolute bottom-4 sm:bottom-6 right-4 sm:right-6 z-30">
-          <button onClick={() => onSave({ _id: editId || "", triggers, steps, rootStepId })} disabled={!isValid} className="inline-flex items-center gap-2 px-5 sm:px-6 py-2.5 sm:py-3 rounded-xl text-sm font-bold text-white bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-lg shadow-emerald-200 hover:shadow-xl hover:scale-105">
-            {editId ? "Update Workflow" : "Create Workflow"}
-          </button>
-        </div>
-      </div>
-    </DragDropContext>
+    <ReactFlowProvider>
+      <FlowCanvas initialData={initialData} editId={editId} onSave={onSave} onCancel={onCancel} />
+    </ReactFlowProvider>
   );
 }
 
@@ -397,9 +513,7 @@ function WorkflowCard({ wf, onEdit, onDelete }: { wf: Workflow; onEdit: (wf: Wor
               <span className="text-[11px] text-amber-700 font-bold uppercase tracking-wider mr-1">Triggers:</span>
               {wf.triggers.map((t, i) => (
                 <span key={i} className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-semibold ${
-                  t.matchMode === "exact" 
-                    ? "bg-purple-50 border-purple-200 text-purple-700" 
-                    : "bg-amber-50 border-amber-200 text-amber-700"
+                  t.matchMode === "exact" ? "bg-purple-50 border-purple-200 text-purple-700" : "bg-amber-50 border-amber-200 text-amber-700"
                 }`}>
                   {t.matchMode === "exact" ? <Crosshair size={10} /> : <Zap size={10} />} 
                   {t.keyword}
@@ -510,12 +624,8 @@ export default function Home() {
   };
 
   const save = async (wfData: Workflow) => {
-    const cleanTriggers = wfData.triggers.filter(t => t.keyword.trim());
-    if (cleanTriggers.length === 0 || !wfData.steps[wfData.rootStepId]?.message.trim()) {
-      showToast("Need at least one trigger and a root message", "error"); return;
-    }
     try {
-      const payload = { triggers: cleanTriggers, steps: wfData.steps, rootStepId: wfData.rootStepId };
+      const payload = { triggers: wfData.triggers, steps: wfData.steps, rootStepId: wfData.rootStepId };
 
       if (editId && editId !== "new") {
         await fetch("/api/workflow", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: editId, ...payload }) });
@@ -561,6 +671,8 @@ export default function Home() {
         @keyframes slide-in { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
         .animate-slide-in { animation: slide-in 0.3s ease-out; }
         .bg-dots { background-image: radial-gradient(#d1d5db 1px, transparent 1px); background-size: 24px 24px; }
+        .react-flow__handle { transition: all 0.2s; }
+        .react-flow__handle:hover { transform: scale(1.2); }
       `}</style>
 
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
@@ -575,7 +687,7 @@ export default function Home() {
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div>
                 <h1 className="text-xl font-bold text-gray-900">Workflows</h1>
-                <p className="text-sm text-gray-400 mt-0.5">Visual builder for WhatsApp automations</p>
+                <p className="text-sm text-gray-400 mt-0.5">Drag, drop, and connect nodes like n8n</p>
               </div>
               <div className="flex flex-col sm:flex-row w-full sm:w-auto items-stretch sm:items-center gap-3">
                 <div className="relative flex-1 sm:flex-none">
@@ -612,7 +724,7 @@ export default function Home() {
           
           {workflows.length === 0 && editId === null && (
              <div className="flex flex-col items-center justify-center py-20 text-center">
-               <div className="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center text-gray-300 mb-4"><Workflow size={24} /></div>
+               <div className="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center text-gray-300 mb-4"><WorkflowIcon size={24} /></div>
                <h3 className="text-lg font-bold text-gray-900 mb-1">No workflows yet</h3>
                <p className="text-sm text-gray-400 max-w-xs">Create your first workflow to start auto-replying to WhatsApp messages.</p>
              </div>
