@@ -572,7 +572,7 @@ const URLActionNode = ({ data, id }: any) => {
 };
 
 // ────────────────────────────────────────────
-// NEW: CALL ACTION NODE
+// CALL ACTION NODE
 // ────────────────────────────────────────────
 const CallActionNode = ({ data, id }: any) => {
   const { setNodes, deleteElements } = useReactFlow();
@@ -602,24 +602,36 @@ const CallActionNode = ({ data, id }: any) => {
         <textarea 
           value={data.message} 
           onChange={(e) => updateNode({ message: e.target.value })} 
-          placeholder="Message to show above the number..." 
+          placeholder="Message to show above the button..." 
           rows={2} 
           className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-400 transition-all resize-none" 
         />
         
         <div className="space-y-2">
+          {/* NEW: Button Text Input */}
+          <div className="relative">
+            <MousePointerClick size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-rose-500" />
+            <input 
+              value={data.urlLabel || ""} 
+              onChange={(e) => updateNode({ urlLabel: e.target.value })} 
+              placeholder="Button Text (e.g. Call Support)" 
+              className="w-full pl-8 pr-2 py-1.5 text-xs border border-rose-200 rounded-lg focus:outline-none focus:border-rose-400 shadow-sm bg-white text-gray-800" 
+            />
+          </div>
+          
+          {/* Phone Number Input */}
           <div className="relative">
             <PhoneCall size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-rose-500" />
             <input 
               value={data.phoneNumber || ""} 
               onChange={(e) => updateNode({ phoneNumber: e.target.value })} 
-              placeholder="Format: +1234567890 (with country code)" 
+              placeholder="Format: +1234567890 (with code)" 
               className="w-full pl-8 pr-2 py-1.5 text-xs border border-rose-200 rounded-lg focus:outline-none focus:border-rose-400 shadow-sm bg-white text-gray-800" 
             />
           </div>
         </div>
         <p className="text-[9px] text-gray-500 leading-tight px-1">
-          📞 The number will be sent as a clickable link. Clicking it opens the phone dialer.
+          📞 The button text and number will be sent. Clicking the number opens the dialer.
         </p>
       </div>
     </div>
