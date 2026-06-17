@@ -1,3 +1,4 @@
+/* eslint-disable prefer-const */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export async function sendWhatsAppMessage(
@@ -17,38 +18,53 @@ export async function sendWhatsAppMessage(
     throw new Error("WhatsApp credentials are missing (not provided and not in env)");
   }
 
-  let payload: any;
+  let payload: any = {
+    messaging_product: "whatsapp",
+    to: sanitizedPhone, 
+  };
 
-  // If the step has buttons, send an Interactive Button Message
-  if (step.buttons && step.buttons.length > 0) {
-    payload = {
-      messaging_product: "whatsapp",
-      to: sanitizedPhone, 
-      type: "interactive",
-      interactive: {
-        type: "button",
-        body: { text: step.message },
-        action: {
-          buttons: step.buttons.map((btn: any) => ({
-            type: "reply",
-            reply: {
-              // IMPORTANT: Send the button's own ID!
-              // The webhook will receive this ID, find the button, and follow its nextStepId.
-              id: btn.id, 
-              title: btn.label.substring(0, 20), // WA limits button titles to 20 chars
-            },
-          })),
-        },
+  const hasMedia = step.mediaUrl && step.mediaType;
+  const hasButtons = step.buttons && step.buttons.length > 0;
+
+  // Check if the mediaUrl is a standard URL or a Meta Media ID
+  const isUrl = step.mediaUrl?.startsWith("http");
+  const mediaObj = isUrl ? { link: step.mediaUrl } : { id: step.mediaUrl };
+
+  if (hasButtons) {
+    // Send Interactive Button Message (with optional Media Header)
+    payload.type = "interactive";
+    payload.interactive = {
+      type: "button",
+      body: { text: step.message || " " }, // WhatsApp requires body text
+      action: {
+        buttons: step.buttons.map((btn: any) => ({
+          type: "reply",
+          reply: {
+            id: btn.id, 
+            title: btn.label.substring(0, 20), // WA limits button titles to 20 chars
+          },
+        })),
       },
     };
-  } else {
-    // Otherwise, send standard text message
-    payload = {
-      messaging_product: "whatsapp",
-      to: sanitizedPhone, 
-      type: "text",
-      text: { body: step.message },
+
+    // If media exists, attach it as a header
+    if (hasMedia) {
+      payload.interactive.header = {
+        type: step.mediaType,
+        [step.mediaType]: mediaObj // Automatically uses { link: "..." } or { id: "..." }
+      };
+    }
+  } else if (hasMedia) {
+    // Send Media Message with Caption (No buttons)
+    payload.type = step.mediaType;
+    payload[step.mediaType] = {
+      ...mediaObj,
+      caption: step.message || undefined, // Caption only works for image/video/document
     };
+  } else {
+    // Send standard text message
+    payload.type = "text";
+    payload.text = { body: step.message || " " };
   }
 
   // Send the API request to Meta
