@@ -42,6 +42,7 @@ import {
   Link as LinkIcon,
   Library,
   PhoneCall,
+  LayoutTemplate,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 
@@ -52,7 +53,7 @@ type Trigger = { keyword: string; matchMode: "exact" | "contains" };
 type Button = { id: string; label: string; nextStepId: string | null };
 type Step = { 
   id: string; 
-  stepType?: "message" | "url_action" | "call_action";
+  stepType?: "message" | "url_action" | "call_action" | "template";
   message: string; 
   buttons: Button[]; 
   position?: { x: number; y: number };
@@ -61,6 +62,9 @@ type Step = {
   urlLabel?: string;
   url?: string;
   phoneNumber?: string;
+  templateName?: string;
+  templateLanguage?: string;
+  templateHeaderFormat?: "IMAGE" | "VIDEO" | "DOCUMENT" | null;
 };
 type Workflow = {
   _id: string;
@@ -571,9 +575,6 @@ const URLActionNode = ({ data, id }: any) => {
   );
 };
 
-// ────────────────────────────────────────────
-// CALL ACTION NODE
-// ────────────────────────────────────────────
 const CallActionNode = ({ data, id }: any) => {
   const { setNodes, deleteElements } = useReactFlow();
 
@@ -608,7 +609,6 @@ const CallActionNode = ({ data, id }: any) => {
         />
         
         <div className="space-y-2">
-          {/* Button Text Input */}
           <div className="relative">
             <MousePointerClick size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-rose-500" />
             <input 
@@ -618,8 +618,6 @@ const CallActionNode = ({ data, id }: any) => {
               className="w-full pl-8 pr-2 py-1.5 text-xs border border-rose-200 rounded-lg focus:outline-none focus:border-rose-400 shadow-sm bg-white text-gray-800" 
             />
           </div>
-          
-          {/* Phone Number Input */}
           <div className="relative">
             <PhoneCall size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-rose-500" />
             <input 
@@ -638,7 +636,167 @@ const CallActionNode = ({ data, id }: any) => {
   );
 };
 
-const nodeTypes = { trigger: TriggerNode, message: MessageNode, url_action: URLActionNode, call_action: CallActionNode };
+// ────────────────────────────────────────────
+// NEW: TEMPLATE MESSAGE NODE
+// ────────────────────────────────────────────
+const TemplateNode = ({ data, id }: any) => {
+  const { setNodes, deleteElements } = useReactFlow();
+  const [templates, setTemplates] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const updateNode = (newData: any) => {
+    setNodes((nds: Node[]) =>
+      nds.map((n: Node) => (n.id === id ? { ...n, data: { ...n.data, ...newData } } : n))
+    );
+  };
+
+  useEffect(() => {
+    const fetchTemplates = async () => {
+      setLoading(true);
+      try {
+        const res = await fetch("/api/templates");
+        const data = await res.json();
+        if (data.templates) setTemplates(data.templates);
+      } catch (err) {
+        console.error("Failed to fetch templates", err);
+      }
+      setLoading(false);
+    };
+    fetchTemplates();
+  }, []);
+
+  const handleTemplateChange = (templateName: string) => {
+    const selected = templates.find(t => t.name === templateName);
+    if (selected) {
+      const header = selected.components?.find((c: any) => c.type === "HEADER");
+      const headerFormat = header?.format === "IMAGE" || header?.format === "VIDEO" || header?.format === "DOCUMENT" ? header.format : null;
+      
+      updateNode({ 
+        templateName: selected.name, 
+        templateLanguage: selected.language,
+        templateHeaderFormat: headerFormat,
+        mediaUrl: null,
+        mediaType: headerFormat ? headerFormat.toLowerCase() : null
+      });
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    let mediaType: "image" | "video" | "document" = "document";
+    if (file.type.startsWith("image")) mediaType = "image";
+    if (file.type.startsWith("video")) mediaType = "video";
+
+    if (data.templateHeaderFormat?.toLowerCase() !== mediaType) {
+      alert(`Template requires a ${data.templateHeaderFormat}. Please upload the correct type.`);
+      return;
+    }
+
+    updateNode({ mediaUrl: "UPLOADING..." });
+
+    const formData = new FormData();
+    formData.append("file", file);
+    
+    try {
+      const res = await fetch("/api/upload", { method: "POST", body: formData });
+      const text = await res.text();
+      if (!res.ok) throw new Error(text || "Upload failed");
+      const resData = JSON.parse(text);
+      if (resData.success && resData.url) {
+        updateNode({ mediaUrl: resData.url });
+      }
+    } catch (err: any) {
+      alert("Media upload failed: " + err.message);
+      updateNode({ mediaUrl: null });
+    }
+  };
+
+  return (
+    <div className="w-72 bg-white border border-cyan-200 shadow-lg rounded-2xl overflow-hidden group">
+      <Handle type="target" position={Position.Left} className="!bg-cyan-500 !w-3 !h-3 !border-2 !border-white" />
+      <Handle type="source" position={Position.Right} className="!bg-cyan-500 !w-3 !h-3 !border-2 !border-white" />
+      
+      <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-cyan-50 to-white">
+        <div className="flex items-center gap-2 text-cyan-700">
+          <LayoutTemplate size={14} />
+          <span className="text-xs font-bold uppercase tracking-wider">Template Message</span>
+        </div>
+        <button onClick={() => deleteElements({ nodes: [{ id }] })} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Trash2 size={14} />
+        </button>
+      </div>
+      
+      <div className="p-3 space-y-3">
+        <select 
+          value={data.templateName || ""} 
+          onChange={(e) => handleTemplateChange(e.target.value)}
+          disabled={loading}
+          className="flex-1 w-full text-xs border border-gray-200 rounded-lg px-2 py-2 bg-white text-gray-800 focus:outline-none focus:border-cyan-400 shadow-sm"
+        >
+          <option value="">{loading ? "Loading templates..." : "Select a Template"}</option>
+          {templates.map(t => (
+            <option key={t.name} value={t.name}>{t.name} ({t.language})</option>
+          ))}
+        </select>
+
+        {/* Dynamic Media Upload for Template Header */}
+        {data.templateHeaderFormat && (
+          <div className="border border-dashed border-cyan-200 rounded-xl p-2 space-y-2">
+            <p className="text-[10px] font-bold text-cyan-700 uppercase">Requires {data.templateHeaderFormat}</p>
+            
+            {!data.mediaUrl && (
+              <div className="space-y-2">
+                <div className="relative">
+                  <LinkIcon size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input 
+                    type="text" 
+                    placeholder="Paste Public URL (Recommended)" 
+                    value={data.mediaUrl && data.mediaUrl !== "UPLOADING..." ? data.mediaUrl : ""} 
+                    onChange={(e) => updateNode({ mediaUrl: e.target.value })}
+                    className="w-full pl-7 pr-2 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-cyan-400"
+                  />
+                </div>
+                <label className="flex items-center justify-center gap-1 w-full py-1.5 border border-gray-200 rounded-lg cursor-pointer text-xs text-gray-600 hover:bg-gray-50">
+                  <Upload size={12} /> Upload {data.templateHeaderFormat}
+                  <input type="file" className="hidden" onChange={handleFileUpload} />
+                </label>
+              </div>
+            )}
+
+            {data.mediaUrl && (
+              <div className="relative bg-gray-50 p-2 rounded-lg cursor-pointer" onClick={() => updateNode({ mediaUrl: null })}>
+                <div className="flex items-center gap-2 w-full">
+                  {data.mediaUrl === "UPLOADING..." ? (
+                    <Loader2 size={20} className="animate-spin text-gray-400" />
+                  ) : (
+                    <FileText size={24} className="text-cyan-500" />
+                  )}
+                  <span className="text-xs text-gray-600 truncate">
+                    {data.mediaUrl === "UPLOADING..." ? "Uploading..." : "Media Added (Click to remove)"}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        
+        <p className="text-[9px] text-gray-500 leading-tight px-1">
+          📋 Uses a pre-approved Meta template. If the template has variables, they will be sent as is.
+        </p>
+      </div>
+    </div>
+  );
+};
+
+const nodeTypes = { 
+  trigger: TriggerNode, 
+  message: MessageNode, 
+  url_action: URLActionNode, 
+  call_action: CallActionNode,
+  template: TemplateNode 
+};
 
 /* ────────────────────────────────────────────
    FLOW CANVAS
@@ -680,7 +838,10 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           mediaType: step.mediaType || null,
           urlLabel: step.urlLabel,
           url: step.url,
-          phoneNumber: step.phoneNumber
+          phoneNumber: step.phoneNumber,
+          templateName: step.templateName,
+          templateLanguage: step.templateLanguage,
+          templateHeaderFormat: step.templateHeaderFormat
         },
         draggable: true,
       });
@@ -747,6 +908,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     if (type === "message") newData = { message: "", buttons: [], mediaUrl: null, mediaType: null };
     if (type === "url_action") newData = { message: "", urlLabel: "", url: "" };
     if (type === "call_action") newData = { message: "", urlLabel: "", phoneNumber: "" };
+    if (type === "template") newData = { templateName: "", templateLanguage: "", templateHeaderFormat: null, mediaUrl: null, mediaType: null };
 
     const newNode = { id: uid(), type, position, data: newData };
     setNodes((nds) => nds.concat(newNode));
@@ -784,14 +946,14 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     const cleanTriggers = triggers.filter((t: Trigger) => t.keyword.trim());
     
     const steps: Record<string, Step> = {};
-    nodes.filter(n => n.type === "message" || n.type === "url_action" || n.type === "call_action").forEach(n => {
+    nodes.filter(n => n.type === "message" || n.type === "url_action" || n.type === "call_action" || n.type === "template").forEach(n => {
       const buttonsWithLinks = n.data.buttons ? n.data.buttons.map((btn: Button) => {
         const edge = edges.find(e => e.source === n.id && e.sourceHandle === btn.id);
         return { ...btn, nextStepId: edge ? edge.target : null };
       }) : [];
 
       // Narrow node type for Step.stepType to satisfy TypeScript
-      const stepType = n.type as "message" | "url_action" | "call_action" | undefined;
+      const stepType = n.type as "message" | "url_action" | "call_action" | "template" | undefined;
 
       steps[n.id] = {
         id: n.id,
@@ -803,15 +965,18 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         mediaType: n.data.mediaType,
         urlLabel: n.data.urlLabel,
         url: n.data.url,
-        phoneNumber: n.data.phoneNumber
+        phoneNumber: n.data.phoneNumber,
+        templateName: n.data.templateName,
+        templateLanguage: n.data.templateLanguage,
+        templateHeaderFormat: n.data.templateHeaderFormat
       };
     });
 
     const rootEdge = edges.find(e => e.source === "trigger-node");
     const rootStepId = rootEdge ? rootEdge.target : null;
 
-    if (cleanTriggers.length === 0 || !rootStepId || !steps[rootStepId]?.message.trim()) {
-      alert("Need at least one trigger and a valid root message.");
+    if (cleanTriggers.length === 0 || !rootStepId) {
+      alert("Need at least one trigger and a valid root step.");
       return;
     }
 
@@ -820,7 +985,6 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
 
   return (
     <div className={`overflow-hidden flex flex-col transition-all duration-300 ease-in-out ${
-        // FIX: Added h-screen w-screen to remove the bottom gap in full screen
         isFullScreen ? 'fixed inset-0 z-50 bg-white h-screen w-screen' : 'bg-white rounded-2xl border border-gray-200 shadow-sm relative h-[80vh]'
       }`}
     >
@@ -883,7 +1047,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
             <div 
               onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "call_action")} 
               draggable 
-              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-rose-400 hover:shadow-sm transition-all"
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-rose-400 hover:shadow-sm transition-all mb-2"
             >
               <div className="w-8 h-8 rounded-lg bg-rose-100 text-rose-600 flex items-center justify-center">
                 <PhoneCall size={14} />
@@ -891,6 +1055,21 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
               <div>
                 <p className="text-xs font-semibold text-gray-800">Call Action</p>
                 <p className="text-[10px] text-gray-400">Click to call number</p>
+              </div>
+            </div>
+
+            {/* NEW TEMPLATE MESSAGE NODE */}
+            <div 
+              onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "template")} 
+              draggable 
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-cyan-400 hover:shadow-sm transition-all"
+            >
+              <div className="w-8 h-8 rounded-lg bg-cyan-100 text-cyan-600 flex items-center justify-center">
+                <LayoutTemplate size={14} />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-800">Template</p>
+                <p className="text-[10px] text-gray-400">Approved Meta template</p>
               </div>
             </div>
           </div>
@@ -902,7 +1081,6 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           </div>
         </div>
 
-        {/* FIX: Added w-full h-full to ensure canvas fills the area properly */}
         <div ref={reactFlowWrapper} className="flex-1 h-full w-full bg-gray-50/80 bg-dots">
           <ReactFlow
             nodes={nodes} edges={edges}
@@ -913,7 +1091,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           >
             <Background gap={16} size={1} color="#e5e7eb" />
             <Controls className="!bg-white !border !border-gray-200 !shadow-lg !rounded-lg" />
-            <MiniMap className="!bg-white !border !border-gray-200" nodeColor={(n) => (n.type === 'trigger' ? '#f59e0b' : n.type === 'url_action' ? '#a855f7' : n.type === 'call_action' ? '#f43f5e' : '#10b981')} />
+            <MiniMap className="!bg-white !border !border-gray-200" nodeColor={(n) => (n.type === 'trigger' ? '#f59e0b' : n.type === 'url_action' ? '#a855f7' : n.type === 'call_action' ? '#f43f5e' : n.type === 'template' ? '#06b6d4' : '#10b981')} />
           </ReactFlow>
         </div>
       </div>
