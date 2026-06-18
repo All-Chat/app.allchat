@@ -28,7 +28,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
     }
 
-    // Prevent re-starting already running campaigns
+    // Prevent starting if already running
     if (campaign.status === "running") {
       return NextResponse.json({ success: false, message: "Campaign is already running" }, { status: 400 });
     }
@@ -49,7 +49,7 @@ export async function POST(req: Request) {
     }
 
     // ==========================================
-    // 🔴 BALANCE CHECK — BEFORE STARTING
+    // 🔴 INITIAL BALANCE CHECK — BEFORE STARTING
     // ==========================================
     const pricePerMessage = user.pricePerMessage || 0;
     const currentBalance = user.balance || 0;
@@ -69,32 +69,42 @@ export async function POST(req: Request) {
     campaign.status = "running";
     await campaign.save();
 
-    let sentCount = 0;
-    let failedCount = 0;
-    let totalDeducted = 0;
+    let sentCount = campaign.sentCount || 0;
+    let failedCount = campaign.failedCount || 0;
 
     for (let i = 0; i < campaign.phoneNumbers.length; i++) {
       const phone = campaign.phoneNumbers[i];
 
       // ==========================================
-      // 🔴 PER-MESSAGE BALANCE CHECK IN LOOP
+      // 🔴 PAUSE / STOP LOGIC
+      // Check database status on every loop to allow pause/stop
       // ==========================================
-      if (pricePerMessage > 0) {
-        const freshUser = await User.findById(userId);
-        if (!freshUser) break;
-        const freshBalance = freshUser.balance || 0;
+      const liveCampaign = await Campaign.findById(campaignId);
+      if (liveCampaign.status === "paused") {
+        console.log("⏸️ Campaign paused by user. Saving progress...");
+        campaign.status = "paused";
+        campaign.sentCount = sentCount;
+        campaign.failedCount = failedCount;
+        await campaign.save();
+        return NextResponse.json({ success: true, message: "Campaign paused", sent: sentCount });
+      }
+      if (liveCampaign.status === "completed" || liveCampaign.status === "stopped") {
+        console.log("⏹️ Campaign stopped by user.");
+        campaign.status = "completed";
+        campaign.sentCount = sentCount;
+        campaign.failedCount = failedCount;
+        await campaign.save();
+        return NextResponse.json({ success: true, message: "Campaign stopped", sent: sentCount });
+      }
+      // ==========================================
 
-        if (freshBalance < pricePerMessage) {
-          console.log(`💰 Campaign stopped: balance ran out after ${sentCount} messages`);
-          // Mark remaining as failed
-          for (let j = i; j < campaign.phoneNumbers.length; j++) {
-            if (campaign.reportData[j]) {
-              campaign.reportData[j].status = "failed";
-            }
-            failedCount++;
-          }
-          break;
-        }
+      // ==========================================
+      // 🔴 RESUME LOGIC
+      // Skip numbers that have already been processed (sent, delivered, read)
+      // ==========================================
+      const currentStatus = campaign.reportData[i]?.status;
+      if (["sent", "delivered", "read", "failed", "invalid"].includes(currentStatus)) {
+        continue; // Skip this number as it was already processed
       }
       // ==========================================
 
@@ -176,26 +186,15 @@ export async function POST(req: Request) {
           if (campaign.reportData[i]) {
             campaign.reportData[i].status = "failed";
           }
-          // 🔴 DO NOT DEDUCT FOR FAILED
+          // 🔴 DO NOT DEDUCT FOR FAILED SENDS. WEBHOOK WILL HANDLE BILLING.
         } else {
           sentCount++;
           if (campaign.reportData[i]) {
             campaign.reportData[i].status = "sent";
+            campaign.reportData[i].sentWamid = sendData.message_id || null; // Save ID for webhook matching
           }
-
-          // ==========================================
-          // 🔴 DEDUCT BALANCE ONLY FOR SUCCESSFUL SENDS
-          // ==========================================
-          if (pricePerMessage > 0) {
-            const freshUser = await User.findById(userId);
-            if (freshUser) {
-              const bal = freshUser.balance || 0;
-              freshUser.balance = Math.round((bal - pricePerMessage) * 100) / 100;
-              freshUser.balance = Math.max(freshUser.balance, 0);
-              await freshUser.save();
-              totalDeducted = Math.round((totalDeducted + pricePerMessage) * 100) / 100;
-            }
-          }
+          // 🔴 DO NOT DEDUCT BALANCE HERE. 
+          // The webhook will charge the user when the status becomes 'delivered'.
         }
 
         // Rate limit
@@ -206,7 +205,6 @@ export async function POST(req: Request) {
         if (campaign.reportData[i]) {
           campaign.reportData[i].status = "failed";
         }
-        // 🔴 DO NOT DEDUCT FOR ERRORS
       }
     }
 
@@ -215,19 +213,14 @@ export async function POST(req: Request) {
     // ==========================================
     campaign.sentCount = sentCount;
     campaign.failedCount = failedCount;
-    campaign.totalDeducted = totalDeducted;
     campaign.status = sentCount > 0 ? "completed" : "failed";
     await campaign.save();
-
-    const finalUser = await User.findById(userId);
-    const finalBalance = finalUser?.balance || 0;
 
     return NextResponse.json({
       success: true,
       sent: sentCount,
       failed: failedCount,
-      totalDeducted,
-      balance: finalBalance,
+      message: "Campaign processing complete. Billing will update dynamically via webhook.",
     });
   } catch (error: any) {
     console.error("❌ Start Campaign Error:", error);
