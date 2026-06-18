@@ -4,17 +4,24 @@
 import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
 import Sidebar from "@/components/Sidebar";
-import { Loader2, Plus, Trash2, FileText, Save, Sparkles, Type, Mail, Hash, AlignLeft, Clock, CheckCircle2, AlertCircle } from "lucide-react";
+import { Loader2, Plus, Trash2, FileText, Save, Sparkles, Type, Mail, Hash, AlignLeft, Clock, CheckCircle2, AlertCircle, Eye, Pencil, X } from "lucide-react";
 import { toast } from "react-toastify";
 
 export default function FormsPage() {
   const { status } = useSession();
   const [forms, setForms] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  
+  // Form Builder State
   const [name, setName] = useState("");
   const [fields, setFields] = useState<any[]>([]);
   const [completionMessage, setCompletionMessage] = useState("✅ Thank you! Your form has been submitted successfully.");
   const [abandonmentMessage, setAbandonmentMessage] = useState("It seems you are busy right now. We have paused the form. Click the button below whenever you are ready to start over.");
+  
+  // UI State for Edit, View, Delete
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [viewingForm, setViewingForm] = useState<any | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
   useEffect(() => {
     if (status === "authenticated") fetchForms();
@@ -51,24 +58,71 @@ export default function FormsPage() {
     setFields(fields.filter(f => f.id !== id));
   };
 
+  const resetBuilder = () => {
+    setEditingId(null);
+    setName("");
+    setFields([]);
+    setCompletionMessage("✅ Thank you! Your form has been submitted successfully.");
+    setAbandonmentMessage("It seems you are busy right now. We have paused the form. Click the button below whenever you are ready to start over.");
+  };
+
+  const handleEdit = (form: any) => {
+    setEditingId(form._id);
+    setName(form.name);
+    setFields(form.fields);
+    setCompletionMessage(form.completionMessage);
+    setAbandonmentMessage(form.abandonmentMessage);
+    setViewingForm(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      const res = await fetch(`/api/forms/${id}`, { method: "DELETE" });
+      const data = await res.json();
+      if (data.success) {
+        setForms(forms.filter(f => f._id !== id));
+        toast.success("Form deleted successfully");
+        setDeleteConfirm(null);
+      }
+    } catch (err) {
+      toast.error("Failed to delete form");
+    }
+  };
+
   const handleSave = async () => {
     if (!name || fields.length === 0) return toast.error("Add a name and at least one field");
     try {
-      const res = await fetch("/api/forms", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, fields, completionMessage, abandonmentMessage })
-      });
-      const data = await res.json();
-      if (data.success) {
-        toast.success("Form created successfully!");
-        setForms([data.form, ...forms]);
-        setName("");
-        setFields([]);
-        setCompletionMessage("✅ Thank you! Your form has been submitted successfully.");
-        setAbandonmentMessage("It seems you are busy right now. We have paused the form. Click the button below whenever you are ready to start over.");
+      if (editingId) {
+        // Update existing form
+        const res = await fetch(`/api/forms/${editingId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, fields, completionMessage, abandonmentMessage })
+        });
+        const data = await res.json();
+        if (data.success) {
+          toast.success("Form updated successfully!");
+          setForms(forms.map(f => f._id === editingId ? data.form : f));
+          resetBuilder();
+        } else {
+          toast.error(data.error || "Failed to update form");
+        }
       } else {
-        toast.error(data.error || "Failed to save form");
+        // Create new form
+        const res = await fetch("/api/forms", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, fields, completionMessage, abandonmentMessage })
+        });
+        const data = await res.json();
+        if (data.success) {
+          toast.success("Form created successfully!");
+          setForms([data.form, ...forms]);
+          resetBuilder();
+        } else {
+          toast.error(data.error || "Failed to save form");
+        }
       }
     } catch (err) { 
       toast.error("Failed to save form"); 
@@ -116,6 +170,14 @@ export default function FormsPage() {
             {/* Form Builder (Left Column) */}
             <div className="lg:col-span-3 bg-white p-5 sm:p-8 rounded-2xl sm:rounded-3xl border border-slate-100 shadow-sm space-y-6">
               
+              {/* Edit Mode Banner */}
+              {editingId && (
+                <div className="bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-xl flex items-center justify-between text-xs font-bold">
+                  <span className="flex items-center gap-2"><Pencil size={14} /> You are editing an existing form.</span>
+                  <button onClick={resetBuilder} className="bg-amber-100 hover:bg-amber-200 px-3 py-1 rounded-lg transition-colors">Cancel Edit</button>
+                </div>
+              )}
+
               <div className="space-y-2">
                 <label className="text-[11px] font-extrabold text-slate-700 uppercase tracking-widest">Form Name</label>
                 <input 
@@ -272,7 +334,7 @@ export default function FormsPage() {
                 onClick={handleSave} 
                 className="w-full p-4 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl flex items-center justify-center gap-2 hover:from-emerald-600 hover:to-teal-600 transition-all font-bold shadow-md shadow-emerald-200 hover:shadow-lg active:scale-[0.98]"
               >
-                <Save size={18} /> Save Form
+                <Save size={18} /> {editingId ? "Update Form" : "Save Form"}
               </button>
             </div>
 
@@ -291,16 +353,53 @@ export default function FormsPage() {
                   <p className="text-xs text-slate-400 mt-1 max-w-[200px] mx-auto">Start by creating your first form on the left.</p>
                 </div>
               ) : (
-                <div className="space-y-3">
+                <div className="space-y-4">
                   {forms.map(f => (
-                    <div key={f._id} className="p-4 border border-slate-200 rounded-xl flex items-center gap-3 bg-white hover:shadow-md hover:border-emerald-200 transition-all cursor-pointer group">
-                      <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 group-hover:bg-emerald-100 transition-colors">
-                        <FileText size={18} />
+                    <div key={f._id} className="p-4 border border-slate-200 rounded-xl bg-white hover:shadow-md transition-all group">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+                          <FileText size={18} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-bold text-sm text-slate-800 truncate">{f.name}</p>
+                          <p className="text-xs text-slate-400 font-medium">{f.fields.length} fields configured</p>
+                        </div>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-bold text-sm text-slate-800 truncate">{f.name}</p>
-                        <p className="text-xs text-slate-400 font-medium">{f.fields.length} fields configured</p>
+
+                      {/* Action Buttons */}
+                      <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100">
+                        <button 
+                          onClick={() => setViewingForm(f)} 
+                          className="flex-1 py-1.5 text-xs font-bold text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                        >
+                          <Eye size={12} /> View
+                        </button>
+                        <button 
+                          onClick={() => handleEdit(f)} 
+                          className="flex-1 py-1.5 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                        >
+                          <Pencil size={12} /> Edit
+                        </button>
+                        <button 
+                          onClick={() => setDeleteConfirm(f._id)} 
+                          className="flex-1 py-1.5 text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                        >
+                          <Trash2 size={12} /> Delete
+                        </button>
                       </div>
+
+                      {/* Delete Confirmation */}
+                      {deleteConfirm === f._id && (
+                        <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
+                          <p className="text-[10px] font-bold text-red-600 flex items-center gap-1.5">
+                            <AlertCircle size={12} /> Are you sure?
+                          </p>
+                          <div className="flex gap-1">
+                            <button onClick={() => setDeleteConfirm(null)} className="text-[10px] font-bold bg-white text-slate-600 px-2 py-1 rounded border border-slate-200">No</button>
+                            <button onClick={() => handleDelete(f._id)} className="text-[10px] font-bold bg-red-500 text-white px-2 py-1 rounded">Yes, Delete</button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -310,6 +409,53 @@ export default function FormsPage() {
           </div>
         </div>
       </div>
+
+      {/* View Form Modal */}
+      {viewingForm && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setViewingForm(null)}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                <FileText className="text-blue-500" /> {viewingForm.name}
+              </h3>
+              <button onClick={() => setViewingForm(null)} className="text-slate-400 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-lg transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+            
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Form Fields</p>
+              {viewingForm.fields.map((f: any, i: number) => (
+                <div key={i} className="p-3 bg-slate-50 rounded-lg border border-slate-100">
+                  <p className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                    {getFieldIcon(f.type)} {f.label} 
+                    {f.required && <span className="text-red-500 text-[10px]">*</span>}
+                  </p>
+                  <div className="flex flex-wrap gap-2 mt-2 text-[10px] text-slate-500 font-medium">
+                    <span className="bg-slate-200 px-2 py-0.5 rounded uppercase">{f.type}</span>
+                    {f.delaySeconds > 0 && (
+                      <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded flex items-center gap-1">
+                        <Clock size={10} /> {f.delaySeconds}s delay
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
+              <div className="p-3 bg-emerald-50 rounded-lg border border-emerald-100">
+                <p className="text-[10px] font-bold uppercase text-emerald-700 mb-1">Completion Message</p>
+                <p className="text-xs text-slate-700">{viewingForm.completionMessage}</p>
+              </div>
+              <div className="p-3 bg-rose-50 rounded-lg border border-rose-100">
+                <p className="text-[10px] font-bold uppercase text-rose-700 mb-1">Abandonment Message</p>
+                <p className="text-xs text-slate-700">{viewingForm.abandonmentMessage}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
