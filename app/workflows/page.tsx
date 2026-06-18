@@ -42,7 +42,7 @@ import {
   Link as LinkIcon,
   Library,
   PhoneCall,
-  Tag as TagIcon, // Added Tag Icon
+  Tag as TagIcon,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 
@@ -50,10 +50,10 @@ import { useSession } from "next-auth/react";
    TYPES
    ──────────────────────────────────────────── */
 type Trigger = { keyword: string; matchMode: "exact" | "contains" };
-type Button = { id: string; label: string; nextStepId: string | null; applyTagId?: string | null };
+type Button = { id: string; label: string; nextStepId: string | null; tagNodeId?: string | null; applyTagId?: string | null };
 type Step = { 
   id: string; 
-  stepType?: "message" | "url_action" | "call_action";
+  stepType?: "message" | "url_action" | "call_action" | "tag_node";
   message: string; 
   buttons: Button[]; 
   position?: { x: number; y: number };
@@ -62,6 +62,7 @@ type Step = {
   urlLabel?: string;
   url?: string;
   phoneNumber?: string;
+  selectedTag?: string | null; // Added for Tag Node
 };
 type Workflow = {
   _id: string;
@@ -192,9 +193,6 @@ const TriggerNode = ({ data, id }: any) => {
   );
 };
 
-// ────────────────────────────────────────────
-// NEW: TAG NODE (Fetches Tags from DB)
-// ────────────────────────────────────────────
 const TagNode = ({ data, id }: any) => {
   const { setNodes, deleteElements } = useReactFlow();
   const [tags, setTags] = useState<any[]>([]);
@@ -734,7 +732,8 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           mediaType: step.mediaType || null,
           urlLabel: step.urlLabel,
           url: step.url,
-          phoneNumber: step.phoneNumber
+          phoneNumber: step.phoneNumber,
+          selectedTag: step.selectedTag || null // LOAD TAG DATA
         },
         draggable: true,
       });
@@ -762,6 +761,15 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
             style: { stroke: '#3b82f6', strokeWidth: 2 }
           });
         }
+        if (btn.tagNodeId) {
+          initEdges.push({
+            id: `e-${step.id}-${btn.id}-tag`,
+            source: step.id, sourceHandle: btn.id, target: btn.tagNodeId,
+            animated: true, type: "default", 
+            markerEnd: { type: MarkerType.ArrowClosed, color: '#6366f1' },
+            style: { stroke: '#6366f1', strokeWidth: 2 }
+          });
+        }
       });
     });
 
@@ -769,10 +777,6 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     setEdges(initEdges);
   }, [initialData]);
 
-  // ────────────────────────────────────────────
-  // CUSTOM CONNECTION LOGIC
-  // (Allows connecting to 1 Normal Node + 1 Tag Node simultaneously)
-  // ────────────────────────────────────────────
   const onConnect = useCallback((params: Connection) => {
     const targetNode = nodes.find(n => n.id === params.target);
     const isTargetTag = targetNode?.type === 'tag_node';
@@ -786,10 +790,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
       setEdges((eds) => eds.filter((e) => e.source !== "trigger-node").concat(addEdge({ ...params, animated: true, type: "default", style: { stroke: '#10b981', strokeWidth: 2 } }, eds)));
     } else {
       setEdges((eds) => {
-        // Filter out existing edges of the SAME category (Tag vs Non-Tag) from this specific source handle
         const filtered = eds.filter(e => !(e.source === params.source && e.sourceHandle === params.sourceHandle && isSameCategory(e)));
-        
-        // Indigo color for tag edges, blue for normal edges
         const strokeColor = isTargetTag ? '#6366f1' : '#3b82f6';
         return addEdge({ ...params, animated: true, type: "default", style: { stroke: strokeColor, strokeWidth: 2 } }, filtered);
       });
@@ -855,16 +856,16 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     const cleanTriggers = triggers.filter((t: Trigger) => t.keyword.trim());
     
     const steps: Record<string, Step> = {};
-    nodes.filter(n => n.type === "message" || n.type === "url_action" || n.type === "call_action").forEach(n => {
+    
+    // INCLUDE TAG_NODE IN THE SAVED STEPS
+    nodes.filter(n => n.type === "message" || n.type === "url_action" || n.type === "call_action" || n.type === "tag_node").forEach(n => {
       const buttonsWithLinks = n.data.buttons ? n.data.buttons.map((btn: Button) => {
-        // Find the edge pointing to a standard step (Message, URL, Call)
         const targetEdge = edges.find(e => {
           if (e.source !== n.id || e.sourceHandle !== btn.id) return false;
           const targetNode = nodes.find(node => node.id === e.target);
           return targetNode && targetNode.type !== 'tag_node';
         });
 
-        // Find the edge pointing to a Tag node
         const tagEdge = edges.find(e => {
           if (e.source !== n.id || e.sourceHandle !== btn.id) return false;
           const targetNode = nodes.find(node => node.id === e.target);
@@ -876,23 +877,25 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         return { 
           ...btn, 
           nextStepId: targetEdge ? targetEdge.target : null,
-          applyTagId: tagNode ? tagNode.data.selectedTag : null // Saving the applied tag ID
+          tagNodeId: tagNode ? tagNode.id : null, // SAVE TAG NODE ID FOR RENDERING
+          applyTagId: tagNode ? tagNode.data.selectedTag : null // SAVE ACTUAL TAG ID FOR BACKEND
         };
       }) : [];
 
-      const stepType = n.type as "message" | "url_action" | "call_action" | undefined;
+      const stepType = n.type as any;
 
       steps[n.id] = {
         id: n.id,
         stepType,
-        message: n.data.message, 
+        message: n.data.message || "", 
         buttons: buttonsWithLinks, 
         position: n.position,
-        mediaUrl: n.data.mediaUrl,
-        mediaType: n.data.mediaType,
-        urlLabel: n.data.urlLabel,
-        url: n.data.url,
-        phoneNumber: n.data.phoneNumber
+        mediaUrl: n.data.mediaUrl || null,
+        mediaType: n.data.mediaType || null,
+        urlLabel: n.data.urlLabel || "",
+        url: n.data.url || "",
+        phoneNumber: n.data.phoneNumber || "",
+        selectedTag: n.data.selectedTag || null // SAVE SELECTED TAG IN STEP
       };
     });
 
@@ -982,7 +985,6 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
               </div>
             </div>
 
-            {/* NEW TAG NODE DRAGGABLE CARD */}
             <div 
               onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "tag_node")} 
               draggable 
