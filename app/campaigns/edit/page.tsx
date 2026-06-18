@@ -538,24 +538,33 @@ function EditCampaignContent() {
 
       <div className="md:ml-64 p-4 sm:p-6 lg:p-10 overflow-y-auto min-h-screen">
         <div className="max-w-7xl mx-auto space-y-6 sm:space-y-10">
-          {/* Header */}
-          <div className="relative overflow-hidden bg-gradient-to-br from-indigo-600 via-purple-500 to-pink-500 rounded-2xl sm:rounded-3xl p-6 sm:p-8 text-white shadow-2xl shadow-indigo-200">
-            <div className="absolute -top-10 -right-10 w-48 h-48 bg-white/10 rounded-full blur-2xl"></div>
-            <div className="absolute -bottom-10 -left-10 w-48 h-48 bg-white/10 rounded-full blur-2xl"></div>
-            <div className="relative flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 z-10">
-              <div>
-                <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight">Edit Campaign</h1>
-                <p className="text-indigo-100 text-xs sm:text-sm mt-2 font-medium">
-                  Modify your audience, template, or schedule before it goes live.
-                </p>
-              </div>
-              {rawNumbers.length > 0 && (
-                <div className="bg-white/20 backdrop-blur-md px-5 sm:px-8 py-2 sm:py-3 rounded-xl sm:rounded-2xl flex items-center gap-3 sm:gap-4 text-base sm:text-lg font-bold border border-white/30 shadow-sm shrink-0">
-                  <Users size={20} /> {rawNumbers.length} Contacts
-                </div>
-              )}
-            </div>
-          </div>
+          {/* Soft Light Indigo Header */}
+<div className="relative overflow-hidden bg-gradient-to-br from-[#EEF2FF] to-[#E0E7FF] rounded-2xl sm:rounded-3xl p-6 sm:p-8 border border-indigo-100 shadow-lg shadow-indigo-100/60">
+  
+  {/* Decorative background blurs */}
+  <div className="absolute -top-12 -right-12 w-56 h-56 bg-[#A5B4FC]/40 rounded-full blur-3xl"></div>
+  <div className="absolute -bottom-16 -left-10 w-40 h-40 bg-white/60 rounded-full blur-2xl"></div>
+
+  {/* Content */}
+  <div className="relative flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 z-10">
+    
+    <div>
+      <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-indigo-900">
+        Edit Campaign
+      </h1>
+      <p className="text-indigo-700/80 text-xs sm:text-sm mt-2 font-medium">
+        Modify your audience, template, or schedule before it goes live.
+      </p>
+    </div>
+
+    {/* Contacts Badge - Made vibrant to stand out on light bg */}
+    {rawNumbers.length > 0 && (
+      <div className="flex-shrink-0 bg-gradient-to-br from-indigo-500 to-purple-600 px-5 sm:px-8 py-2 sm:py-3 rounded-xl sm:rounded-2xl flex items-center gap-3 sm:gap-4 text-base sm:text-lg font-bold text-white shadow-md shadow-indigo-200/60">
+        <Users size={20} /> {rawNumbers.length} Contacts
+      </div>
+    )}
+  </div>
+</div>
 
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 sm:gap-10">
             {/* Left Column */}
