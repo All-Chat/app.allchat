@@ -22,36 +22,28 @@ import ReactFlow, {
   MarkerType,
 } from "reactflow";
 import "reactflow/dist/style.css";
+
+// UI Icons
 import {
-  Zap,
-  MessageSquare,
-  Plus,
-  Trash2,
-  X,
-  Workflow as WorkflowIcon,
-  Check,
-  MousePointerClick,
-  Maximize,
-  Minimize,
-  Type,
-  Crosshair,
-  Loader2,
-  Layout,
-  FileText,
-  Upload,
-  Link as LinkIcon,
-  Library,
-  PhoneCall,
-  Tag as TagIcon,
-  UserPlus,
-  ClipboardList, 
+  Zap, MessageSquare, Plus, Trash2, X, Workflow as WorkflowIcon,
+  Check, MousePointerClick, Maximize, Minimize, Type, Crosshair,
+  Loader2, Layout, FileText, Upload, Link as LinkIcon, Library,
+  PhoneCall, Tag as TagIcon, UserPlus, ClipboardList, 
 } from "lucide-react";
+
+// Authentication
 import { useSession } from "next-auth/react";
 
-/* ────────────────────────────────────────────
-   TYPES
-   ──────────────────────────────────────────── */
-type Trigger = { keyword: string; matchMode: "exact" | "contains" };
+/* ============================================================================
+   1. TYPES & INTERFACES
+   ----------------------------------------------------------------------------
+   Defines the shape of our Workflow data structures.
+   ============================================================================ */
+type Trigger = { 
+  keyword: string; 
+  matchMode: "exact" | "contains" 
+};
+
 type Button = { 
   id: string; 
   label: string; 
@@ -60,6 +52,7 @@ type Button = {
   applyTagId?: string | null;
   optInNodeId?: string | null;
 };
+
 type Step = { 
   id: string; 
   stepType?: "message" | "url_action" | "call_action" | "tag_node" | "opt_in_node" | "form_node";
@@ -74,6 +67,7 @@ type Step = {
   selectedTag?: string | null;
   selectedForm?: string | null;
 };
+
 type Workflow = {
   _id: string;
   triggers: Trigger[];
@@ -81,24 +75,34 @@ type Workflow = {
   rootStepId: string;
 };
 
+/* ============================================================================
+   2. UTILITY FUNCTIONS
+   ============================================================================ */
+
+// Generates a random unique ID for nodes and buttons
 const uid = () => Math.random().toString(36).substr(2, 9);
 
+// Extracts YouTube video ID and returns an embeddable URL
 const getYouTubeEmbedUrl = (url: string) => {
   try {
     const urlObj = new URL(url);
-    if (urlObj.hostname.includes("youtu.be")) return `https://www.youtube.com/embed/${urlObj.pathname.slice(1)}`;
+    if (urlObj.hostname.includes("youtu.be")) {
+      return `https://www.youtube.com/embed/${urlObj.pathname.slice(1)}`;
+    }
     if (urlObj.hostname.includes("youtube.com")) {
       const v = urlObj.searchParams.get("v");
       if (v) return `https://www.youtube.com/embed/${v}`;
       if (urlObj.pathname.includes("/embed/")) return url;
     }
-  } catch (e) { return null; }
+  } catch (e) { 
+    return null; 
+  }
   return null;
 };
 
-/* ────────────────────────────────────────────
-   TOAST COMPONENT
-   ──────────────────────────────────────────── */
+/* ============================================================================
+   3. TOAST NOTIFICATION COMPONENT
+   ============================================================================ */
 function Toast({ message, type, onClose }: { message: string; type: "success" | "error"; onClose: () => void }) {
   useEffect(() => {
     const timer = setTimeout(onClose, 3000);
@@ -118,18 +122,45 @@ function Toast({ message, type, onClose }: { message: string; type: "success" | 
   );
 }
 
-/* ────────────────────────────────────────────
-   REACT FLOW CUSTOM NODES
-   ──────────────────────────────────────────── */
+/* ============================================================================
+   4. REACT FLOW CUSTOM NODE COMPONENTS
+   ----------------------------------------------------------------------------
+   These components define how each type of node looks and behaves on the canvas.
+   ============================================================================ */
+
+/* --- Trigger Node (Starting Point) --- */
 const TriggerNode = ({ data, id }: any) => {
   const { setNodes } = useReactFlow();
 
+  // Check if "Any Message" mode is active
+  const isAnyMessage = data.triggerMode === "any" || (data.triggers?.length === 1 && data.triggers[0]?.keyword === "*");
+
+  // Switch between "Keywords" mode and "Any Message" mode
+  const handleModeChange = (mode: "keywords" | "any") => {
+    setNodes((nds: Node[]) =>
+      nds.map((n: Node) => {
+        if (n.id === id) {
+          if (mode === "any") {
+            return { ...n, data: { ...n.data, triggerMode: "any", triggers: [{ keyword: "*", matchMode: "exact" }] } };
+          } else {
+            return { ...n, data: { ...n.data, triggerMode: "keywords", triggers: n.data.triggers[0]?.keyword === "*" ? [{ keyword: "", matchMode: "contains" }] : n.data.triggers } };
+          }
+        }
+        return n;
+      })
+    );
+  };
+
+  // Handles changes to the trigger keyword or matching mode
   const handleTriggerChange = (index: number, val: string, mode?: "exact" | "contains") => {
     setNodes((nds: Node[]) =>
       nds.map((n: Node) => {
         if (n.id === id) {
           const newTriggers = [...data.triggers];
-          newTriggers[index] = { keyword: val, matchMode: mode || newTriggers[index].matchMode || "contains" };
+          newTriggers[index] = { 
+            keyword: val, 
+            matchMode: mode || newTriggers[index].matchMode || "contains" 
+          };
           return { ...n, data: { ...n.data, triggers: newTriggers } };
         }
         return n;
@@ -158,54 +189,104 @@ const TriggerNode = ({ data, id }: any) => {
   return (
     <div className="w-72 bg-white border border-amber-200 shadow-lg rounded-2xl overflow-hidden">
       <Handle type="source" position={Position.Right} className="!bg-amber-500 !w-3 !h-3 !border-2 !border-white" />
+      
       <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-amber-50 to-white">
         <div className="flex items-center gap-2 text-amber-700">
           <Zap size={14} />
           <span className="text-xs font-bold uppercase tracking-wider">Triggers</span>
         </div>
-        <button onClick={addTrigger} className="text-xs font-semibold text-amber-600 hover:text-amber-800 flex items-center gap-1">
-          <Plus size={12} /> Add
-        </button>
+        
+        {/* Toggle between Keywords and Any Message */}
+        <div className="flex items-center bg-gray-100 rounded-lg border border-gray-200 p-0.5 shrink-0">
+          <button 
+            onClick={() => handleModeChange("keywords")} 
+            className={`p-1.5 rounded-md text-[10px] font-bold transition-all ${!isAnyMessage ? "bg-amber-500 text-white shadow-sm" : "text-gray-400 hover:text-gray-600"}`}
+          >
+            Keywords
+          </button>
+          <button 
+            onClick={() => handleModeChange("any")} 
+            className={`p-1.5 rounded-md text-[10px] font-bold transition-all ${isAnyMessage ? "bg-amber-500 text-white shadow-sm" : "text-gray-400 hover:text-gray-600"}`}
+          >
+            Any Msg
+          </button>
+        </div>
       </div>
-      <div className="p-3 space-y-2 max-h-[300px] overflow-y-auto">
-        {data.triggers.map((trigger: Trigger, index: number) => (
-          <div key={index} className="flex items-center gap-2 group">
-            <div className="flex-1 relative min-w-0">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-amber-500"><Zap size={14} /></span>
-              <input 
-                value={trigger.keyword} 
-                onChange={(e) => handleTriggerChange(index, e.target.value)} 
-                placeholder="e.g. price" 
-                className="w-full pl-9 pr-4 py-2.5 bg-white border border-amber-200 rounded-xl text-sm text-gray-900 placeholder:text-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-400 transition-all shadow-sm" 
-              />
-            </div>
-            <div className="flex items-center bg-gray-100 rounded-lg border border-gray-200 p-0.5 shrink-0">
-              <button onClick={() => handleTriggerChange(index, trigger.keyword, "contains")} className={`p-1.5 rounded-md ${trigger.matchMode === "contains" ? "bg-blue-500 text-white" : "text-gray-400"}`}>
-                <Type size={12} />
+      
+      {isAnyMessage ? (
+        <div className="p-4 text-center">
+          <p className="text-xs text-amber-700 font-semibold bg-amber-50 p-3 rounded-lg border border-amber-100 flex items-center justify-center gap-2">
+            <Zap size={12} /> Workflow will trigger on <strong>ANY</strong> incoming message.
+          </p>
+        </div>
+      ) : (
+        <div className="p-3 space-y-2 max-h-[300px] overflow-y-auto">
+          {data.triggers.map((trigger: Trigger, index: number) => (
+            <div key={index} className="flex items-center gap-2 group">
+              
+              {/* Keyword Input */}
+              <div className="flex-1 relative min-w-0">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-amber-500"><Zap size={14} /></span>
+                <input 
+                  value={trigger.keyword} 
+                  onChange={(e) => handleTriggerChange(index, e.target.value)} 
+                  placeholder="e.g. price" 
+                  className="w-full pl-9 pr-4 py-2.5 bg-white border border-amber-200 rounded-xl text-sm text-gray-900 placeholder:text-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-400 transition-all shadow-sm" 
+                />
+              </div>
+
+              {/* Match Mode Toggle (Contains / Exact) */}
+              <div className="flex items-center bg-gray-100 rounded-lg border border-gray-200 p-0.5 shrink-0">
+                <button 
+                  onClick={() => handleTriggerChange(index, trigger.keyword, "contains")} 
+                  className={`p-1.5 rounded-md ${trigger.matchMode === "contains" ? "bg-blue-500 text-white" : "text-gray-400"}`}
+                >
+                  <Type size={12} />
+                </button>
+                <button 
+                  onClick={() => handleTriggerChange(index, trigger.keyword, "exact")} 
+                  className={`p-1.5 rounded-md ${trigger.matchMode === "exact" ? "bg-purple-500 text-white" : "text-gray-400"}`}
+                >
+                  <Crosshair size={12} />
+                </button>
+              </div>
+
+              {/* Delete Trigger Button */}
+              <button 
+                onClick={() => removeTrigger(index)} 
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 shrink-0"
+              >
+                <Trash2 size={14} />
               </button>
-              <button onClick={() => handleTriggerChange(index, trigger.keyword, "exact")} className={`p-1.5 rounded-md ${trigger.matchMode === "exact" ? "bg-purple-500 text-white" : "text-gray-400"}`}>
-                <Crosshair size={12} />
-              </button>
             </div>
-            <button onClick={() => removeTrigger(index)} className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 shrink-0">
-              <Trash2 size={14} />
-            </button>
-          </div>
-        ))}
-      </div>
+          ))}
+          
+          <button 
+            onClick={addTrigger} 
+            className="w-full mt-2 py-1.5 border border-dashed border-amber-300 rounded-lg text-xs font-semibold text-amber-600 hover:bg-amber-50 transition-colors flex items-center justify-center gap-1"
+          >
+            <Plus size={12} /> Add Trigger
+          </button>
+        </div>
+      )}
     </div>
   );
 };
 
+/* --- Tag Action Node --- */
 const TagNode = ({ data, id }: any) => {
   const { setNodes, deleteElements } = useReactFlow();
   const [tags, setTags] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Fetch available tags from the database
   useEffect(() => {
     fetch("/api/tags")
       .then(res => res.json())
-      .then(data => { setTags(data.tags || []); setLoading(false); })
+      .then(data => { 
+        setTags(data.tags || []); 
+        setLoading(false); 
+      })
       .catch(() => setLoading(false));
   }, []);
 
@@ -218,6 +299,7 @@ const TagNode = ({ data, id }: any) => {
   return (
     <div className="w-72 bg-white border border-indigo-200 shadow-lg rounded-2xl overflow-hidden group">
       <Handle type="target" position={Position.Left} className="!bg-indigo-500 !w-3 !h-3 !border-2 !border-white" />
+      
       <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-indigo-50 to-white">
         <div className="flex items-center gap-2 text-indigo-700">
           <TagIcon size={14} />
@@ -227,6 +309,7 @@ const TagNode = ({ data, id }: any) => {
           <Trash2 size={14} />
         </button>
       </div>
+      
       <div className="p-3 space-y-2">
         <p className="text-[9px] text-gray-500 leading-tight">
           🏷️ Applies a tag to the user instantly when they click the connected button.
@@ -252,12 +335,14 @@ const TagNode = ({ data, id }: any) => {
   );
 };
 
+/* --- Opt-In Action Node --- */
 const OptInNode = ({ id }: any) => {
   const { deleteElements } = useReactFlow();
 
   return (
     <div className="w-72 bg-white border border-orange-200 shadow-lg rounded-2xl overflow-hidden group">
       <Handle type="target" position={Position.Left} className="!bg-orange-500 !w-3 !h-3 !border-2 !border-white" />
+      
       <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-orange-50 to-white">
         <div className="flex items-center gap-2 text-orange-700">
           <UserPlus size={14} />
@@ -267,6 +352,7 @@ const OptInNode = ({ id }: any) => {
           <Trash2 size={14} />
         </button>
       </div>
+      
       <div className="p-3 space-y-2">
         <p className="text-[9px] text-gray-500 leading-tight">
           📝 Adds the user&apos;s phone number to the &quot;Opt-in Numbers&quot; list instantly when they click the connected button.
@@ -276,6 +362,7 @@ const OptInNode = ({ id }: any) => {
   );
 };
 
+/* --- Form Action Node --- */
 const FormNode = ({ data, id }: any) => {
   const { setNodes, deleteElements } = useReactFlow();
   const [forms, setForms] = useState<any[]>([]);
@@ -284,12 +371,15 @@ const FormNode = ({ data, id }: any) => {
   useEffect(() => {
     fetch("/api/forms")
       .then(res => res.json())
-      .then(data => { setForms(data.forms || []); setLoading(false); })
+      .then(data => { 
+        setForms(data.forms || []); 
+        setLoading(false); 
+      })
       .catch(() => setLoading(false));
   }, []);
 
   const updateForm = (formId: string) => {
-    setNodes((nds: Node[]) =>
+    setNodes((nds: Node[]) => 
       nds.map((n: Node) => (n.id === id ? { ...n, data: { ...n.data, selectedForm: formId } } : n))
     );
   };
@@ -297,6 +387,7 @@ const FormNode = ({ data, id }: any) => {
   return (
     <div className="w-72 bg-white border border-teal-200 shadow-lg rounded-2xl overflow-hidden group">
       <Handle type="target" position={Position.Left} className="!bg-teal-500 !w-3 !h-3 !border-2 !border-white" />
+      
       <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-teal-50 to-white">
         <div className="flex items-center gap-2 text-teal-700">
           <ClipboardList size={14} />
@@ -306,16 +397,25 @@ const FormNode = ({ data, id }: any) => {
           <Trash2 size={14} />
         </button>
       </div>
+      
       <div className="p-3 space-y-2">
         <p className="text-[9px] text-gray-500 leading-tight">
           📝 Sends a link to a custom form for the user to fill out.
         </p>
         {loading ? (
-          <div className="flex items-center gap-2 text-xs text-gray-500"><Loader2 size={12} className="animate-spin" /> Loading forms...</div>
+          <div className="flex items-center gap-2 text-xs text-gray-500">
+            <Loader2 size={12} className="animate-spin" /> Loading forms...
+          </div>
         ) : (
-          <select value={data.selectedForm || ""} onChange={(e) => updateForm(e.target.value)} className="w-full px-2 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-teal-500/20">
+          <select 
+            value={data.selectedForm || ""} 
+            onChange={(e) => updateForm(e.target.value)} 
+            className="w-full px-2 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-teal-500/20"
+          >
             <option value="">Select a form...</option>
-            {forms.map((f: any) => <option key={f._id} value={f._id}>{f.name}</option>)}
+            {forms.map((f: any) => (
+              <option key={f._id} value={f._id}>{f.name}</option>
+            ))}
           </select>
         )}
       </div>
@@ -323,11 +423,13 @@ const FormNode = ({ data, id }: any) => {
   );
 };
 
+/* --- Message Node (Core Communication Step) --- */
 const MessageNode = ({ data, id }: any) => {
   const { setNodes, deleteElements } = useReactFlow();
   const [showLibrary, setShowLibrary] = useState(false);
   const [libraryItems, setLibraryItems] = useState<any[]>([]);
 
+  // Helper function to update node data immutably
   const updateNode = (newData: any) => {
     setNodes((nds: Node[]) =>
       nds.map((n: Node) => (n.id === id ? { ...n, data: { ...n.data, ...newData } } : n))
@@ -349,8 +451,12 @@ const MessageNode = ({ data, id }: any) => {
     updateNode({ buttons: data.buttons.map((b: Button) => (b.id === btnId ? { ...b, label } : b)) });
   };
 
+  // File Upload Constants
   const maxSizes: Record<string, number> = {
-    image: 2 * 1024 * 1024, video: 10 * 1024 * 1024, audio: 10 * 1024 * 1024, document: 20 * 1024 * 1024
+    image: 2 * 1024 * 1024, 
+    video: 10 * 1024 * 1024, 
+    audio: 10 * 1024 * 1024, 
+    document: 20 * 1024 * 1024
   };
 
   const allowedTypes: Record<string, string[]> = {
@@ -371,11 +477,13 @@ const MessageNode = ({ data, id }: any) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Determine media type based on file
     let mediaType: "image" | "video" | "document" | "audio" = "document";
     if (file.type.startsWith("image")) mediaType = "image";
     if (file.type.startsWith("video")) mediaType = "video";
     if (file.type.startsWith("audio")) mediaType = "audio";
 
+    // Validate File
     if (!allowedTypes[mediaType]?.includes(file.type)) {
       alert(`Invalid file format for ${mediaType}.`);
       return;
@@ -385,8 +493,10 @@ const MessageNode = ({ data, id }: any) => {
       return;
     }
 
+    // Set uploading state
     updateNode({ mediaUrl: "UPLOADING...", mediaType });
 
+    // Upload File to API
     const formData = new FormData();
     formData.append("file", file);
     
@@ -394,8 +504,8 @@ const MessageNode = ({ data, id }: any) => {
       const res = await fetch("/api/upload", { method: "POST", body: formData });
       const text = await res.text();
       if (!res.ok) throw new Error(text || "Upload failed");
-      const resData = JSON.parse(text);
       
+      const resData = JSON.parse(text);
       if (resData.success && resData.url) {
         updateNode({ mediaUrl: resData.url, mediaType });
       } else {
@@ -435,6 +545,7 @@ const MessageNode = ({ data, id }: any) => {
     <div className="w-72 bg-white border border-gray-200 shadow-lg rounded-2xl overflow-hidden group">
       <Handle type="target" position={Position.Left} className="!bg-emerald-500 !w-3 !h-3 !border-2 !border-white" />
       
+      {/* Node Header */}
       <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-emerald-50 to-white">
         <div className="flex items-center gap-2 text-emerald-700">
           <MessageSquare size={14} />
@@ -445,6 +556,7 @@ const MessageNode = ({ data, id }: any) => {
         </button>
       </div>
       
+      {/* Media Preview Section */}
       {data.mediaUrl && (
         <div 
           className="relative border-b border-gray-100 cursor-pointer group/media bg-gray-50 p-2" 
@@ -511,7 +623,10 @@ const MessageNode = ({ data, id }: any) => {
         </div>
       )}
 
+      {/* Content & Configuration Section */}
       <div className="p-3 space-y-3">
+        
+        {/* Media Uploader / Link Input */}
         {!data.mediaUrl && (
           <div className="border border-dashed border-gray-200 rounded-xl p-2 space-y-2">
             <select 
@@ -561,15 +676,12 @@ const MessageNode = ({ data, id }: any) => {
                   </p>
                 ) : (
                   <>
-                    <p className="text-[9px] text-emerald-600 leading-tight mt-1 px-1">
-                      ✅ URL is recommended (never expires).
-                    </p>
-                    <p className="text-[9px] text-amber-600 leading-tight px-1">
-                      ⚠️ Uploaded files expire on WhatsApp servers after 30 days and must be re-uploaded.
-                    </p>
+                    <p className="text-[9px] text-emerald-600 leading-tight mt-1 px-1">✅ URL is recommended (never expires).</p>
+                    <p className="text-[9px] text-amber-600 leading-tight px-1">⚠️ Uploaded files expire on WhatsApp servers after 30 days and must be re-uploaded.</p>
                   </>
                 )}
 
+                {/* Media Library Dropdown */}
                 {showLibrary && (
                   <div className="absolute z-10 mt-1 w-full max-h-48 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg">
                     <div className="sticky top-0 bg-white p-1 border-b border-gray-100 flex justify-between items-center">
@@ -598,6 +710,7 @@ const MessageNode = ({ data, id }: any) => {
           </div>
         )}
 
+        {/* Text Message Input */}
         <textarea 
           value={data.message} 
           onChange={(e) => handleMsgChange(e.target.value)} 
@@ -606,6 +719,7 @@ const MessageNode = ({ data, id }: any) => {
           className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all resize-none" 
         />
         
+        {/* Interactive Buttons Configuration */}
         <div className="space-y-2 relative">
           {data.buttons.map((btn: Button) => (
             <div key={btn.id} className="bg-blue-50/50 border border-blue-200 rounded-xl p-2.5 space-y-1 group/btn relative">
@@ -630,6 +744,7 @@ const MessageNode = ({ data, id }: any) => {
               </div>
             </div>
           ))}
+          
           <button 
             onClick={addButton} 
             className="w-full py-2 border border-dashed border-blue-300 rounded-xl text-xs font-semibold text-blue-500 hover:bg-blue-50 transition-colors flex items-center justify-center gap-1.5 bg-blue-50/30"
@@ -642,6 +757,7 @@ const MessageNode = ({ data, id }: any) => {
   );
 };
 
+/* --- URL Action Node --- */
 const URLActionNode = ({ data, id }: any) => {
   const { setNodes, deleteElements } = useReactFlow();
 
@@ -695,6 +811,7 @@ const URLActionNode = ({ data, id }: any) => {
             />
           </div>
         </div>
+        
         <p className="text-[9px] text-gray-500 leading-tight px-1">
           🔗 Clicking this button on WhatsApp will automatically open the URL in the user&apos;s browser.
         </p>
@@ -703,6 +820,7 @@ const URLActionNode = ({ data, id }: any) => {
   );
 };
 
+/* --- Call Action Node --- */
 const CallActionNode = ({ data, id }: any) => {
   const { setNodes, deleteElements } = useReactFlow();
 
@@ -757,6 +875,7 @@ const CallActionNode = ({ data, id }: any) => {
             />
           </div>
         </div>
+        
         <p className="text-[9px] text-gray-500 leading-tight px-1">
           📞 Sends a clean WhatsApp button. Clicking it instantly opens the phone&apos;s native dialer with the number filled in.
         </p>
@@ -765,6 +884,7 @@ const CallActionNode = ({ data, id }: any) => {
   );
 };
 
+// Registry of all custom node types for React Flow
 const nodeTypes = { 
   trigger: TriggerNode, 
   message: MessageNode, 
@@ -775,9 +895,11 @@ const nodeTypes = {
   form_node: FormNode 
 };
 
-/* ────────────────────────────────────────────
-   FLOW CANVAS
-   ──────────────────────────────────────────── */
+/* ============================================================================
+   5. FLOW CANVAS COMPONENT
+   ----------------------------------------------------------------------------
+   The main interactive canvas where users build their workflows.
+   ============================================================================ */
 function FlowCanvas({ initialData, editId, onSave, onCancel }: { 
   initialData: Workflow; 
   editId: string | null; 
@@ -791,18 +913,24 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
+  // Initialize nodes and edges when workflow data changes
   useEffect(() => {
     const initNodes: Node[] = [];
     const initEdges: Edge[] = [];
+
+    // Add Trigger Node (Check if it's an "Any Message" trigger)
+    const initTriggers = initialData.triggers || [{ keyword: "", matchMode: "contains" }];
+    const isAnyMessage = initTriggers.length === 1 && initTriggers[0].keyword === "*";
 
     initNodes.push({
       id: "trigger-node",
       type: "trigger",
       position: { x: -250, y: 100 },
-      data: { triggers: initialData.triggers || [{ keyword: "", matchMode: "contains" }] },
+      data: { triggers: initTriggers, triggerMode: isAnyMessage ? "any" : "keywords" },
       draggable: true,
     });
 
+    // Add Step Nodes
     Object.values(initialData.steps || {}).forEach((step) => {
       initNodes.push({
         id: step.id,
@@ -823,24 +951,30 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
       });
     });
 
+    // Add Edge from Trigger to Root Step
     if (initialData.rootStepId) {
       initEdges.push({ 
         id: "e-trigger-root", 
         source: "trigger-node", 
         target: initialData.rootStepId, 
-        animated: true, type: "default", 
+        animated: true, 
+        type: "default", 
         markerEnd: { type: MarkerType.ArrowClosed, color: '#10b981' },
         style: { stroke: '#10b981', strokeWidth: 2 }
       });
     }
 
+    // Add Edges for Button connections
     Object.values(initialData.steps || {}).forEach((step) => {
       step.buttons.forEach((btn) => {
         if (btn.nextStepId) {
           initEdges.push({
             id: `e-${step.id}-${btn.id}`,
-            source: step.id, sourceHandle: btn.id, target: btn.nextStepId,
-            animated: true, type: "default", 
+            source: step.id, 
+            sourceHandle: btn.id, 
+            target: btn.nextStepId,
+            animated: true, 
+            type: "default", 
             markerEnd: { type: MarkerType.ArrowClosed, color: '#3b82f6' },
             style: { stroke: '#3b82f6', strokeWidth: 2 }
           });
@@ -848,8 +982,11 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         if (btn.tagNodeId) {
           initEdges.push({
             id: `e-${step.id}-${btn.id}-tag`,
-            source: step.id, sourceHandle: btn.id, target: btn.tagNodeId,
-            animated: true, type: "default", 
+            source: step.id, 
+            sourceHandle: btn.id, 
+            target: btn.tagNodeId,
+            animated: true, 
+            type: "default", 
             markerEnd: { type: MarkerType.ArrowClosed, color: '#6366f1' },
             style: { stroke: '#6366f1', strokeWidth: 2 }
           });
@@ -857,8 +994,11 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         if (btn.optInNodeId) {
           initEdges.push({
             id: `e-${step.id}-${btn.id}-optin`,
-            source: step.id, sourceHandle: btn.id, target: btn.optInNodeId,
-            animated: true, type: "default", 
+            source: step.id, 
+            sourceHandle: btn.id, 
+            target: btn.optInNodeId,
+            animated: true, 
+            type: "default", 
             markerEnd: { type: MarkerType.ArrowClosed, color: '#f97316' },
             style: { stroke: '#f97316', strokeWidth: 2 }
           });
@@ -870,6 +1010,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     setEdges(initEdges);
   }, [initialData]);
 
+  // Handle connection logic (restrict multiple connections of same category)
   const onConnect = useCallback((params: Connection) => {
     const getEdgeCategory = (type: string | undefined) => {
       if (type === 'tag_node') return 'tag';
@@ -882,8 +1023,10 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     const targetCategory = getEdgeCategory(targetNode?.type);
 
     if (params.source === "trigger-node") {
+      // Trigger can only have one outgoing connection
       setEdges((eds) => eds.filter((e) => e.source !== "trigger-node").concat(addEdge({ ...params, animated: true, type: "default", style: { stroke: '#10b981', strokeWidth: 2 } }, eds)));
     } else {
+      // Replace existing connection of the same category (e.g., replacing an old tag with a new tag)
       setEdges((eds) => {
         const filtered = eds.filter(e => {
           if (e.source === params.source && e.sourceHandle === params.sourceHandle) {
@@ -914,6 +1057,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     event.dataTransfer.dropEffect = "move";
   }, []);
 
+  // Handle drag-and-drop node creation
   const onDrop = useCallback((event: React.DragEvent) => {
     event.preventDefault();
     const type = event.dataTransfer.getData("application/reactflow");
@@ -933,6 +1077,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     setNodes((nds) => nds.concat(newNode));
   }, [screenToFlowPosition, setNodes]);
 
+  // Auto-format canvas layout
   const formatLayout = () => {
     const newNodes = [...nodes];
     const triggerNode = newNodes.find(n => n.id === "trigger-node");
@@ -960,19 +1105,23 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     setNodes(newNodes);
   };
 
+  // Map visual canvas state back to Workflow data structure for saving
   const handleSave = () => {
     const triggers = nodes.find(n => n.id === "trigger-node")?.data?.triggers || [];
     const cleanTriggers = triggers.filter((t: Trigger) => t.keyword.trim());
     
     const steps: Record<string, Step> = {};
     
-    // 🔴 FIX: Included form_node in the save filter
-    nodes.filter(n => n.type === "message" || n.type === "url_action" || n.type === "call_action" || n.type === "tag_node" || n.type === "opt_in_node" || n.type === "form_node").forEach(n => {
+    // Map all standard and action nodes
+    nodes.filter(n => 
+      n.type === "message" || n.type === "url_action" || n.type === "call_action" || 
+      n.type === "tag_node" || n.type === "opt_in_node" || n.type === "form_node"
+    ).forEach(n => {
+      // Determine button connections
       const buttonsWithLinks = n.data.buttons ? n.data.buttons.map((btn: Button) => {
         const targetEdge = edges.find(e => {
           if (e.source !== n.id || e.sourceHandle !== btn.id) return false;
           const targetNode = nodes.find(node => node.id === e.target);
-          // 🔴 FIX: Do NOT exclude form_node here, so the wire saves as nextStepId
           return targetNode && targetNode.type !== 'tag_node' && targetNode.type !== 'opt_in_node';
         });
 
@@ -1033,6 +1182,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         isFullScreen ? 'fixed inset-0 z-50 bg-white h-screen w-screen' : 'bg-white rounded-2xl border border-gray-200 shadow-sm relative h-[80vh]'
       }`}
     >
+      {/* Canvas Header / Toolbar */}
       <div className="p-3 border-b border-gray-100 bg-white z-30 flex items-center justify-between shadow-sm shrink-0">
         <div className="flex items-center gap-3">
           <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${editId ? "bg-amber-100 text-amber-600" : "bg-emerald-100 text-emerald-600"}`}>
@@ -1056,17 +1206,20 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
-        <div className="w-48 border-r border-gray-200 bg-gray-50 p-3 hidden md:block space-y-3 overflow-y-auto shrink-0">
-          <div>
-            <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Nodes</h3>
+      {/* Main Canvas Container */}
+      <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
+        
+        {/* Responsive Node Sidebar (Top bar on mobile, Left sidebar on desktop) */}
+        <div className="w-full md:w-48 border-b md:border-b-0 md:border-r border-gray-200 bg-gray-50 p-3 flex md:block space-x-2 md:space-x-0 md:space-y-3 overflow-x-auto md:overflow-y-auto shrink-0">
+          <div className="flex md:flex-col gap-2 pb-2 md:pb-0 w-full md:w-auto">
+            <h3 className="hidden md:block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Nodes</h3>
             
             <div 
               onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "message")} 
               draggable 
-              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-emerald-400 hover:shadow-sm transition-all mb-2"
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-emerald-400 hover:shadow-sm transition-all shrink-0 w-40 md:w-full"
             >
-              <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-600 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0">
                 <MessageSquare size={14} />
               </div>
               <div>
@@ -1078,9 +1231,9 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
             <div 
               onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "url_action")} 
               draggable 
-              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-purple-400 hover:shadow-sm transition-all mb-2"
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-purple-400 hover:shadow-sm transition-all shrink-0 w-40 md:w-full"
             >
-              <div className="w-8 h-8 rounded-lg bg-purple-100 text-purple-600 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-purple-100 text-purple-600 flex items-center justify-center shrink-0">
                 <LinkIcon size={14} />
               </div>
               <div>
@@ -1092,9 +1245,9 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
             <div 
               onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "call_action")} 
               draggable 
-              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-rose-400 hover:shadow-sm transition-all mb-2"
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-rose-400 hover:shadow-sm transition-all shrink-0 w-40 md:w-full"
             >
-              <div className="w-8 h-8 rounded-lg bg-rose-100 text-rose-600 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
                 <PhoneCall size={14} />
               </div>
               <div>
@@ -1106,9 +1259,9 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
             <div 
               onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "tag_node")} 
               draggable 
-              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-indigo-400 hover:shadow-sm transition-all mb-2"
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-indigo-400 hover:shadow-sm transition-all shrink-0 w-40 md:w-full"
             >
-              <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
                 <TagIcon size={14} />
               </div>
               <div>
@@ -1120,9 +1273,9 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
             <div 
               onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "opt_in_node")} 
               draggable 
-              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-orange-400 hover:shadow-sm transition-all mb-2"
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-orange-400 hover:shadow-sm transition-all shrink-0 w-40 md:w-full"
             >
-              <div className="w-8 h-8 rounded-lg bg-orange-100 text-orange-600 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-orange-100 text-orange-600 flex items-center justify-center shrink-0">
                 <UserPlus size={14} />
               </div>
               <div>
@@ -1134,9 +1287,9 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
             <div 
               onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "form_node")} 
               draggable 
-              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-teal-400 hover:shadow-sm transition-all"
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-teal-400 hover:shadow-sm transition-all shrink-0 w-40 md:w-full"
             >
-              <div className="w-8 h-8 rounded-lg bg-teal-100 text-teal-600 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-teal-100 text-teal-600 flex items-center justify-center shrink-0">
                 <ClipboardList size={14} />
               </div>
               <div>
@@ -1146,30 +1299,51 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
             </div>
           </div>
 
-          <div className="text-[10px] text-gray-400 leading-relaxed pt-2 border-t border-gray-200">
+          <div className="hidden md:block text-[10px] text-gray-400 leading-relaxed pt-2 border-t border-gray-200">
             <p>💡 <strong>Tip:</strong> Drag nodes onto the canvas. Draw wires by dragging from the dots.</p>
             <p className="mt-2">🗑️ <strong>Delete wire:</strong> Double-click the wire.</p>
             <p className="mt-2">🔗 <strong>Links:</strong> Select &quot;Link&quot; in the media dropdown to send URLs (Insta, YT, etc.).</p>
           </div>
         </div>
 
+        {/* React Flow Canvas */}
         <div ref={reactFlowWrapper} className="flex-1 h-full w-full bg-gray-50/80 bg-dots">
           <ReactFlow
-            nodes={nodes} edges={edges}
-            onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
-            onConnect={onConnect} onDrop={onDrop} onDragOver={onDragOver}
-            nodeTypes={nodeTypes} onEdgeDoubleClick={onEdgeDoubleClick}
-            fitView deleteKeyCode={['Backspace', 'Delete']}
+            nodes={nodes} 
+            edges={edges}
+            onNodesChange={onNodesChange} 
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect} 
+            onDrop={onDrop} 
+            onDragOver={onDragOver}
+            nodeTypes={nodeTypes} 
+            onEdgeDoubleClick={onEdgeDoubleClick}
+            fitView 
+            deleteKeyCode={['Backspace', 'Delete']}
           >
             <Background gap={16} size={1} color="#e5e7eb" />
             <Controls className="!bg-white !border !border-gray-200 !shadow-lg !rounded-lg" />
-            <MiniMap className="!bg-white !border !border-gray-200" nodeColor={(n) => (n.type === 'trigger' ? '#f59e0b' : n.type === 'url_action' ? '#a855f7' : n.type === 'call_action' ? '#f43f5e' : n.type === 'tag_node' ? '#6366f1' : n.type === 'opt_in_node' ? '#f97316' : n.type === 'form_node' ? '#14b8a6' : '#10b981')} />
+            <MiniMap 
+              className="!bg-white !border !border-gray-200" 
+              nodeColor={(n) => (
+                n.type === 'trigger' ? '#f59e0b' : 
+                n.type === 'url_action' ? '#a855f7' : 
+                n.type === 'call_action' ? '#f43f5e' : 
+                n.type === 'tag_node' ? '#6366f1' : 
+                n.type === 'opt_in_node' ? '#f97316' : 
+                n.type === 'form_node' ? '#14b8a6' : '#10b981'
+              )} 
+            />
           </ReactFlow>
         </div>
       </div>
 
+      {/* Save Button (Floating) */}
       <div className="absolute bottom-4 right-4 z-30">
-        <button onClick={handleSave} className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold text-white bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 hover:shadow-xl hover:scale-105">
+        <button 
+          onClick={handleSave} 
+          className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold text-white bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 hover:shadow-xl hover:scale-105"
+        >
           {editId ? "Update Workflow" : "Create Workflow"}
         </button>
       </div>
@@ -1177,7 +1351,17 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
   );
 }
 
-function WorkflowForm({ editId, initialData, onSave, onCancel }: { editId: string | null; initialData: Workflow; onSave: (wf: Workflow) => void; onCancel: () => void }) {
+/* ============================================================================
+   6. WRAPPER & CARD COMPONENTS
+   ============================================================================ */
+
+// Wraps FlowCanvas in ReactFlowProvider to provide context
+function WorkflowForm({ editId, initialData, onSave, onCancel }: { 
+  editId: string | null; 
+  initialData: Workflow; 
+  onSave: (wf: Workflow) => void; 
+  onCancel: () => void 
+}) {
   return (
     <ReactFlowProvider>
       <FlowCanvas initialData={initialData} editId={editId} onSave={onSave} onCancel={onCancel} />
@@ -1185,15 +1369,25 @@ function WorkflowForm({ editId, initialData, onSave, onCancel }: { editId: strin
   );
 }
 
-function WorkflowCard({ wf, onEdit, onDelete }: { wf: Workflow; onEdit: (wf: Workflow) => void; onDelete: (id: string) => void }) {
+// Displays a workflow summary in the dashboard list
+function WorkflowCard({ wf, onEdit, onDelete }: { 
+  wf: Workflow; 
+  onEdit: (wf: Workflow) => void; 
+  onDelete: (id: string) => void 
+}) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const rootStep = wf.steps[wf.rootStepId];
 
   return (
-    <div className="group bg-white rounded-2xl border border-gray-200 hover:border-emerald-200 hover:shadow-lg transition-all duration-200 overflow-hidden cursor-pointer" onClick={() => onEdit(wf)}>
+    <div 
+      className="group bg-white rounded-2xl border border-gray-200 hover:border-emerald-200 hover:shadow-lg transition-all duration-200 overflow-hidden cursor-pointer" 
+      onClick={() => onEdit(wf)}
+    >
       <div className="p-4 sm:p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
+            
+            {/* Triggers List (Displays "Any Message" if keyword is "*") */}
             <div className="flex items-center gap-2 mb-3 flex-wrap">
               <span className="text-[11px] text-amber-700 font-bold uppercase tracking-wider mr-1">Triggers:</span>
               {wf.triggers.map((t, i) => (
@@ -1201,10 +1395,12 @@ function WorkflowCard({ wf, onEdit, onDelete }: { wf: Workflow; onEdit: (wf: Wor
                   t.matchMode === "exact" ? "bg-purple-50 border-purple-200 text-purple-700" : "bg-amber-50 border-amber-200 text-amber-700"
                 }`}>
                   {t.matchMode === "exact" ? <Crosshair size={10} /> : <Zap size={10} />} 
-                  {t.keyword}
+                  {t.keyword === "*" ? "Any Message" : t.keyword}
                 </span>
               ))}
             </div>
+
+            {/* Root Message & Buttons Preview */}
             {rootStep && (
               <div className="space-y-2">
                 <div className="flex items-start gap-2">
@@ -1226,6 +1422,8 @@ function WorkflowCard({ wf, onEdit, onDelete }: { wf: Workflow; onEdit: (wf: Wor
               </div>
             )}
           </div>
+
+          {/* Delete Action */}
           <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
             {confirmDelete ? (
               <div className="flex items-center gap-1">
@@ -1233,7 +1431,9 @@ function WorkflowCard({ wf, onEdit, onDelete }: { wf: Workflow; onEdit: (wf: Wor
                 <button onClick={() => setConfirmDelete(false)} className="px-2.5 py-1 rounded-lg bg-gray-100 text-gray-600 text-xs font-semibold hover:bg-gray-200">Cancel</button>
               </div>
             ) : (
-              <button onClick={() => setConfirmDelete(true)} className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"><Trash2 size={14} /></button>
+              <button onClick={() => setConfirmDelete(true)} className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors">
+                <Trash2 size={14} />
+              </button>
             )}
           </div>
         </div>
@@ -1242,6 +1442,9 @@ function WorkflowCard({ wf, onEdit, onDelete }: { wf: Workflow; onEdit: (wf: Wor
   );
 }
 
+/* ============================================================================
+   7. MAIN HOME PAGE COMPONENT
+   ============================================================================ */
 export default function Home() {
   const { data: session, status } = useSession();
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
@@ -1252,23 +1455,35 @@ export default function Home() {
 
   const showToast = (message: string, type: "success" | "error" = "success") => setToast({ message, type });
 
+  // Creates a blank workflow template
   const getEmptyWorkflow = useCallback((): Workflow => {
     const rootId = uid();
     return {
       _id: "new",
       triggers: [{ keyword: "", matchMode: "contains" }],
-      steps: { [rootId]: { id: rootId, stepType: "message", message: "", buttons: [], mediaUrl: null, mediaType: null } },
+      steps: { 
+        [rootId]: { 
+          id: rootId, 
+          stepType: "message", 
+          message: "", 
+          buttons: [], 
+          mediaUrl: null, 
+          mediaType: null 
+        } 
+      },
       rootStepId: rootId,
     };
   }, []);
 
+  // Normalizes DB workflow data to ensure consistent structure
   const normalizeWorkflow = (wf: any): Workflow => {
     if (wf.steps && wf.rootStepId) {
       return {
         ...wf,
-        triggers: wf.triggers.map((t: any) => typeof t === 'string' 
-          ? { keyword: t, matchMode: "contains" } 
-          : { keyword: t.keyword, matchMode: t.matchMode || "contains" }
+        triggers: wf.triggers.map((t: any) => 
+          typeof t === 'string' 
+            ? { keyword: t, matchMode: "contains" } 
+            : { keyword: t.keyword, matchMode: t.matchMode || "contains" }
         )
       };
     }
@@ -1276,19 +1491,36 @@ export default function Home() {
     const actions = wf.actions || [];
     return {
       ...wf,
-      triggers: (wf.triggers || [{ keyword: wf.trigger?.keyword || "" }]).map((t: any) => typeof t === 'string' ? { keyword: t, matchMode: "contains" } : { keyword: t.keyword, matchMode: t.matchMode || "contains" }),
-      steps: { [rootId]: { id: rootId, stepType: "message", message: actions[0]?.message || "", buttons: [], mediaUrl: null, mediaType: null } },
+      triggers: (wf.triggers || [{ keyword: wf.trigger?.keyword || "" }]).map((t: any) => 
+        typeof t === 'string' ? { keyword: t, matchMode: "contains" } : { keyword: t.keyword, matchMode: t.matchMode || "contains" }
+      ),
+      steps: { 
+        [rootId]: { 
+          id: rootId, 
+          stepType: "message", 
+          message: actions[0]?.message || "", 
+          buttons: [], 
+          mediaUrl: null, 
+          mediaType: null 
+        } 
+      },
       rootStepId: rootId,
     };
   };
 
+  // Fetch all workflows
   const load = async () => {
     try {
       const res = await fetch("/api/workflow");
-      if (res.status === 401) { window.location.href = "/signin"; return; }
+      if (res.status === 401) { 
+        window.location.href = "/signin"; 
+        return; 
+      }
       const data = await res.json();
       setWorkflows((data.workflows || []).map(normalizeWorkflow));
-    } catch { showToast("Failed to load workflows", "error"); }
+    } catch { 
+      showToast("Failed to load workflows", "error"); 
+    }
   };
 
   useEffect(() => {
@@ -1302,33 +1534,65 @@ export default function Home() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
+  // Save (Create or Update) workflow
   const save = async (wfData: Workflow) => {
     try {
-      const payload = { triggers: wfData.triggers, steps: wfData.steps, rootStepId: wfData.rootStepId };
+      const payload = { 
+        triggers: wfData.triggers, 
+        steps: wfData.steps, 
+        rootStepId: wfData.rootStepId 
+      };
+      
       if (editId && editId !== "new") {
-        await fetch("/api/workflow", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: editId, ...payload }) });
+        await fetch("/api/workflow", { 
+          method: "PUT", 
+          headers: { "Content-Type": "application/json" }, 
+          body: JSON.stringify({ id: editId, ...payload }) 
+        });
         showToast("Workflow updated!");
       } else {
-        await fetch("/api/workflow", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        await fetch("/api/workflow", { 
+          method: "POST", 
+          headers: { "Content-Type": "application/json" }, 
+          body: JSON.stringify(payload) 
+        });
         showToast("Workflow created!");
       }
-      setEditId(null); setEditData(null); load();
-    } catch { showToast("Something went wrong", "error"); }
+      setEditId(null); 
+      setEditData(null); 
+      load();
+    } catch { 
+      showToast("Something went wrong", "error"); 
+    }
   };
 
   const remove = async (id: string) => {
-    try { await fetch(`/api/workflow/${id}`, { method: "DELETE" }); setWorkflows(prev => prev.filter(wf => wf._id !== id)); showToast("Deleted"); } catch { showToast("Delete failed", "error"); }
+    try { 
+      await fetch(`/api/workflow/${id}`, { method: "DELETE" }); 
+      setWorkflows(prev => prev.filter(wf => wf._id !== id)); 
+      showToast("Deleted"); 
+    } catch { 
+      showToast("Delete failed", "error"); 
+    }
   };
 
   const edit = (wf: Workflow) => {
-    setEditId(wf._id); setEditData(wf);
+    setEditId(wf._id); 
+    setEditData(wf);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const cancelEdit = () => { setEditId(null); setEditData(null); };
+  const cancelEdit = () => { 
+    setEditId(null); 
+    setEditData(null); 
+  };
 
-  const filteredWorkflows = workflows.filter(wf => wf.triggers.some(t => t.keyword.toLowerCase().includes(searchQuery.toLowerCase())) || Object.values(wf.steps).some(s => s.message.toLowerCase().includes(searchQuery.toLowerCase())));
+  const filteredWorkflows = workflows.filter(wf => 
+    wf.triggers.some(t => t.keyword.toLowerCase().includes(searchQuery.toLowerCase())) || 
+    Object.values(wf.steps).some(s => s.message.toLowerCase().includes(searchQuery.toLowerCase()))
+  );
 
+  // Loading State
   if (status === "loading") {
     return (
       <div className="flex min-h-screen bg-slate-50 items-center justify-center">
@@ -1340,7 +1604,10 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-gray-50">
       <style jsx global>{`
-        @keyframes slide-in { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes slide-in { 
+          from { opacity: 0; transform: translateY(-12px); } 
+          to { opacity: 1; transform: translateY(0); } 
+        }
         .animate-slide-in { animation: slide-in 0.3s ease-out; }
         .bg-dots { background-image: radial-gradient(#d1d5db 1px, transparent 1px); background-size: 24px 24px; }
         .react-flow__handle { transition: all 0.2s; }
@@ -1354,6 +1621,7 @@ export default function Home() {
       <main className="ml-0 md:ml-64 min-h-screen flex flex-col">
         <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
           
+          {/* Page Header */}
           <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-gray-200 -mx-4 sm:-mx-6 px-4 sm:px-6 py-4">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div>
@@ -1362,42 +1630,71 @@ export default function Home() {
               </div>
               <div className="flex flex-col sm:flex-row w-full sm:w-auto items-stretch sm:items-center gap-3">
                 <div className="relative flex-1 sm:flex-none">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg></span>
-                  <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search workflows…" className="w-full sm:w-64 pl-9 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all" />
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <circle cx="11" cy="11" r="8" />
+                      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                  </span>
+                  <input 
+                    value={searchQuery} 
+                    onChange={(e) => setSearchQuery(e.target.value)} 
+                    placeholder="Search workflows…" 
+                    className="w-full sm:w-64 pl-9 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all" 
+                  />
                 </div>
-                <button onClick={startCreating} className="bg-emerald-500 text-white px-4 py-2.5 rounded-xl text-sm font-semibold hover:bg-emerald-600 transition-all flex items-center justify-center gap-2 shadow-sm whitespace-nowrap">
+                <button 
+                  onClick={startCreating} 
+                  className="bg-emerald-500 text-white px-4 py-2.5 rounded-xl text-sm font-semibold hover:bg-emerald-600 transition-all flex items-center justify-center gap-2 shadow-sm whitespace-nowrap"
+                >
                   <Plus size={16} /> Create Workflow
                 </button>
               </div>
             </div>
           </header>
 
+          {/* Workflow Builder Canvas */}
           {editId !== null && (
-             <WorkflowForm 
-               key={editId} 
-               editId={editId === "new" ? null : editId} 
-               initialData={editData || getEmptyWorkflow()} 
-               onSave={save} onCancel={cancelEdit} 
-             />
+            <WorkflowForm 
+              key={editId} 
+              editId={editId === "new" ? null : editId} 
+              initialData={editData || getEmptyWorkflow()} 
+              onSave={save} 
+              onCancel={cancelEdit} 
+            />
           )}
           
+          {/* List Stats */}
           {workflows.length > 0 && editId === null && (
             <div className="flex items-center gap-6 px-1">
-              <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-emerald-400" /><span className="text-xs font-semibold text-gray-500">{workflows.length} active workflow{workflows.length !== 1 ? "s" : ""}</span></div>
-              {searchQuery && <span className="text-xs text-gray-400">{filteredWorkflows.length} results for &quot;{searchQuery}&ldquo;</span>}
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-400" /> 
+                <span className="text-xs font-semibold text-gray-500">
+                  {workflows.length} active workflow{workflows.length !== 1 ? "s" : ""}
+                </span>
+              </div>
+              {searchQuery && 
+                <span className="text-xs text-gray-400">
+                  {filteredWorkflows.length} results for &quot;{searchQuery}&ldquo;
+                </span>
+              }
             </div>
           )}
 
+          {/* Workflows Grid */}
           <div className="grid gap-4">
             {filteredWorkflows.map(wf => <WorkflowCard key={wf._id} wf={wf} onEdit={edit} onDelete={remove} />)}
           </div>
           
+          {/* Empty State */}
           {workflows.length === 0 && editId === null && (
-             <div className="flex flex-col items-center justify-center py-20 text-center">
-               <div className="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center text-gray-300 mb-4"><WorkflowIcon size={24} /></div>
-               <h3 className="text-lg font-bold text-gray-900 mb-1">No workflows yet</h3>
-               <p className="text-sm text-gray-400 max-w-xs">Create your first workflow to start auto-replying to WhatsApp messages.</p>
-             </div>
+            <div className="flex flex-col items-center justify-center py-20 text-center">
+              <div className="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center text-gray-300 mb-4">
+                <WorkflowIcon size={24} />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 mb-1">No workflows yet</h3>
+              <p className="text-sm text-gray-400 max-w-xs">Create your first workflow to start auto-replying to WhatsApp messages.</p>
+            </div>
           )}
         </div>
       </main>
