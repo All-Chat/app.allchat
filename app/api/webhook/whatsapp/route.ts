@@ -1,16 +1,13 @@
 /* ============================================================================
    WHATSAPP WEBHOOK ROUTE
    ----------------------------------------------------------------------------
-   Handles:
-   1. GET  → Webhook verification
-   2. POST → Inbound messages, status updates, workflow/form/campaign logic
+   Handles all inbound WhatsApp events and executes workflows.
    
    Key Features:
    - Dynamic billing (charge on delivered, refund on failed)
-   - Workflow engine (triggers, steps, buttons, list replies, DELAYS)
+   - Workflow engine (triggers, steps, buttons, list replies, delays)
+   - Inactivity Timers (Auto-sends reminder messages if user doesn't click)
    - Conversational forms with inactivity timers
-   - Campaign report updates & auto-tagging
-   - >3 buttons automatically handled as WhatsApp List Messages
    ============================================================================ */
 
 /* eslint-disable prefer-const */
@@ -40,9 +37,100 @@ export const runtime = "nodejs";
 const VERIFY_TOKEN = "my_secret_token";
 
 /* ============================================================================
+   GLOBAL INACTIVITY TIMERS MAP
+   ----------------------------------------------------------------------------
+   Stores active interval IDs for users waiting for a button click.
+   Key: phone_number, Value: NodeJS.Timeout
+   ============================================================================ */
+const workflowTimers = new Map<string, NodeJS.Timeout>();
+
+const clearWorkflowTimer = (phone: string) => {
+  const timerId = workflowTimers.get(phone);
+  if (timerId) {
+    clearInterval(timerId);
+    workflowTimers.delete(phone);
+  }
+};
+
+/* ============================================================================
+   HELPER: Start Workflow Inactivity Timer
+   ----------------------------------------------------------------------------
+   If the workflow has an `inactivity_node`, this sets up a recurring timer
+   that sends a reminder message if the user doesn't click a button.
+   ============================================================================ */
+const startWorkflowInactivityTimer = (
+  phone: string,
+  userId: string,
+  workflowId: string,
+  ownerUser: any
+) => {
+  // Clear any existing timer for this user
+  clearWorkflowTimer(phone);
+
+  // Use an async IIFE because we need to fetch the workflow
+  (async () => {
+    try {
+      await connectDB();
+      const wf = await Workflow.findById(workflowId);
+      if (!wf || !wf.steps) return;
+
+      // Find the inactivity node (usually there's only one)
+      const inactivityNode = Object.values(wf.steps).find(
+        (s: any) => s.stepType === "inactivity_node"
+      ) as any;
+
+      if (!inactivityNode) return;
+
+      const delaySeconds = inactivityNode.delaySeconds || 30;
+      const repeatCount = inactivityNode.repeatCount || 1;
+      const message = inactivityNode.message || "Are you still there?";
+
+      let sentCount = 0;
+
+      // Start the interval timer
+      const timerId = setInterval(async () => {
+        try {
+          // Check if the user still has an active session waiting
+          const session = await Session.findOne({ phone, userId });
+          
+          // If no session, or session moved to a form, stop the timer
+          if (!session || session.formId) {
+            clearWorkflowTimer(phone);
+            return;
+          }
+
+          if (sentCount < repeatCount) {
+            console.log(`⌛ Sending inactivity reminder ${sentCount + 1}/${repeatCount} to ${phone}`);
+            
+            await sendWhatsAppMessage(
+              phone,
+              { message, stepType: "text" },
+              ownerUser?.whatsappPhoneNumberId,
+              ownerUser?.whatsappAccessToken
+            );
+            sentCount++;
+          } else {
+            // Exhausted repeats, clear timer
+            clearWorkflowTimer(phone);
+          }
+        } catch (err) {
+          console.error("Inactivity timer execution error:", err);
+          clearWorkflowTimer(phone);
+        }
+      }, delaySeconds * 1000);
+
+      // Save timer to global map
+      workflowTimers.set(phone, timerId);
+    } catch (err) {
+      console.error("Failed to start inactivity timer:", err);
+    }
+  })();
+};
+
+/* ============================================================================
    HELPER: Start Inactivity Timer for a Form Field
    ============================================================================ */
-const startInactivityTimer = (
+const startFormInactivityTimer = (
   phone: string,
   userId: string,
   formId: string,
@@ -59,7 +147,6 @@ const startInactivityTimer = (
         await connectDB();
         const checkSession = await Session.findOne({ phone, userId });
 
-        // If user replied or moved on, stop the interval
         if (
           !checkSession ||
           !checkSession.formId ||
@@ -70,7 +157,6 @@ const startInactivityTimer = (
         }
 
         if (remindersSent < field.repeatCount) {
-          // Send reminder message
           await sendWhatsAppMessage(
             phone,
             { message: field.delayMessage, stepType: "text" },
@@ -79,7 +165,6 @@ const startInactivityTimer = (
           );
           remindersSent++;
         } else {
-          // Exhausted reminders → Send abandonment message with restart button
           clearInterval(intervalId);
 
           const abandonmentStep = {
@@ -103,19 +188,17 @@ const startInactivityTimer = (
             ownerUser?.whatsappAccessToken
           );
 
-          // Clear form data from session since they abandoned it
           checkSession.formId = null;
           checkSession.formFieldIndex = 0;
           await checkSession.save();
 
-          // Mark form response as abandoned
           await FormResponse.updateOne(
             { formId, phone, status: "incomplete" },
             { $set: { status: "abandoned" } }
           );
         }
       } catch (err) {
-        console.error("Timer error:", err);
+        console.error("Form timer error:", err);
         clearInterval(intervalId);
       }
     }, field.delaySeconds * 1000);
@@ -132,7 +215,6 @@ export async function GET(req: Request) {
     const token = url.searchParams.get("hub.verify_token");
     const challenge = url.searchParams.get("hub.challenge");
 
-    // Health check
     if (!mode && !token && !challenge) {
       return new Response("WhatsApp Webhook Endpoint is Live ✅", {
         status: 200,
@@ -140,7 +222,6 @@ export async function GET(req: Request) {
       });
     }
 
-    // Verification request from Meta
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
       return new Response(challenge || "", {
         status: 200,
@@ -179,7 +260,6 @@ export async function POST(req: Request) {
       if (ownerUser) userId = ownerUser._id.toString();
     }
 
-    // Fallback: use the most recently created user
     if (!userId) {
       ownerUser = await User.findOne().sort({ _id: -1 });
       if (ownerUser) userId = ownerUser._id.toString();
@@ -199,7 +279,6 @@ export async function POST(req: Request) {
           statusUpdate.errors?.[0]?.error_data?.details || ""
         ).toLowerCase();
 
-        // Normalize phone number format
         if (statusPhone.startsWith("whatsapp:"))
           statusPhone = statusPhone.replace("whatsapp:", "");
         statusPhone = statusPhone.replace(/\+/g, "");
@@ -224,7 +303,6 @@ export async function POST(req: Request) {
             const currentItem = camp.reportData[reportIndex];
             let finalStatus = newStatus;
 
-            // Determine if failure is due to invalid number
             if (newStatus === "failed" || newStatus === "undelivered") {
               const isInvalidNumber =
                 errorCode === 1005 ||
@@ -252,7 +330,6 @@ export async function POST(req: Request) {
               statusPriority[finalStatus] >
               (statusPriority[currentItem.status] || 0)
             ) {
-              /* ── DYNAMIC BILLING LOGIC ── */
               let balanceAdjustment = 0;
               const cost = ownerUser?.pricePerMessage || 0;
 
@@ -269,10 +346,7 @@ export async function POST(req: Request) {
               ) {
                 balanceAdjustment += cost;
                 currentItem.charged = false;
-                camp.totalDeducted = Math.max(
-                  0,
-                  (camp.totalDeducted || 0) - cost
-                );
+                camp.totalDeducted = Math.max(0, (camp.totalDeducted || 0) - cost);
               }
 
               currentItem.status = finalStatus;
@@ -283,9 +357,6 @@ export async function POST(req: Request) {
                 await User.findByIdAndUpdate(userId, {
                   $inc: { balance: balanceAdjustment },
                 });
-                console.log(
-                  `💰 Balance adjusted by ${balanceAdjustment} for ${statusPhone}`
-                );
               }
             }
           }
@@ -304,15 +375,16 @@ export async function POST(req: Request) {
 
     const message = value.messages[0];
 
-    // Normalize phone number
     let rawPhone = message.from;
     if (rawPhone.startsWith("whatsapp:"))
       rawPhone = rawPhone.replace("whatsapp:", "");
     const phone = rawPhone.replace(/\+/g, "");
 
+    // ANY inbound message from the user clears the workflow inactivity timer
+    clearWorkflowTimer(phone);
+
     const contactName = value.contacts?.[0]?.profile?.name || "Unknown";
 
-    // Parsed message data
     let lowerText = "";
     let textToSave = "";
     let buttonId: string | null = null;
@@ -341,9 +413,7 @@ export async function POST(req: Request) {
       messageType = "text";
       isButtonReply = true;
     } else if (
-      ["image", "video", "document", "audio", "sticker"].includes(
-        message.type
-      )
+      ["image", "video", "document", "audio", "sticker"].includes(message.type)
     ) {
       messageType = message.type;
       mediaId = message[message.type]?.id || null;
@@ -353,11 +423,9 @@ export async function POST(req: Request) {
         textToSave = message[message.type]?.filename || "Document.pdf";
     }
 
-    // Ignore empty messages
     if (!textToSave && !buttonId && !mediaId)
       return NextResponse.json({ success: true });
 
-    // Save inbound message to database
     await Message.create({
       userId,
       phone,
@@ -384,7 +452,6 @@ export async function POST(req: Request) {
 
         const currentField = form.fields[activeSession.formFieldIndex];
 
-        // Save the user's response for this field
         await FormResponse.findOneAndUpdate(
           { formId: form._id, phone, status: "incomplete" },
           { $set: { [`data.${currentField.label}`]: textToSave } },
@@ -394,7 +461,6 @@ export async function POST(req: Request) {
         const nextIndex = activeSession.formFieldIndex + 1;
 
         if (nextIndex < form.fields.length) {
-          // Advance to the next field
           activeSession.formFieldIndex = nextIndex;
           await activeSession.save();
 
@@ -406,8 +472,7 @@ export async function POST(req: Request) {
             ownerUser?.whatsappAccessToken
           );
 
-          // Start inactivity timer for the next field
-          startInactivityTimer(
+          startFormInactivityTimer(
             phone,
             userId!,
             form._id.toString(),
@@ -417,7 +482,6 @@ export async function POST(req: Request) {
             ownerUser
           );
         } else {
-          // Form Complete
           await FormResponse.updateOne(
             { formId: form._id, phone, status: "incomplete" },
             { $set: { status: "complete" } }
@@ -455,7 +519,6 @@ export async function POST(req: Request) {
         const contextId = message?.context?.id || null;
         const targetedCampaigns: any[] = [];
 
-        // Try to match by WhatsApp message ID first
         if (contextId) {
           const exactQuery: any = {
             "reportData.sentWamid": contextId,
@@ -466,7 +529,6 @@ export async function POST(req: Request) {
           if (exactCampaign) targetedCampaigns.push(exactCampaign);
         }
 
-        // Fallback: match by phone number (most recent campaign)
         if (targetedCampaigns.length === 0) {
           const latestQuery: any = {
             "reportData.phone": phone,
@@ -479,9 +541,11 @@ export async function POST(req: Request) {
           if (latestCampaign) targetedCampaigns.push(latestCampaign);
         }
 
-        // Load user tags for auto-detection
         let userTags: any[] = [];
-        if (userId) userTags = await Tag.find({ userId }).select("name isCampaignSpecific campaignId");
+        if (userId)
+          userTags = await Tag.find({ userId }).select(
+            "name isCampaignSpecific campaignId"
+          );
 
         for (const camp of targetedCampaigns) {
           if (!camp.reportData) continue;
@@ -501,7 +565,6 @@ export async function POST(req: Request) {
               camp.reportData[reportIndex].replies = currentReplies;
               camp.reportData[reportIndex].status = "read";
 
-              // Auto-detect tags from the reply
               const currentTags = camp.reportData[reportIndex].tags || [];
               let detectedTags: string[] = [];
 
@@ -530,7 +593,6 @@ export async function POST(req: Request) {
               camp.markModified("reportData");
               await camp.save();
 
-              // Save detected tags to global Contact/Tag records
               if (detectedTags.length > 0 && userId) {
                 try {
                   for (const dt of detectedTags) {
@@ -549,10 +611,7 @@ export async function POST(req: Request) {
                     );
                   }
                 } catch (tagErr) {
-                  console.error(
-                    "⚠️ Failed to save Contact/Tag globally:",
-                    tagErr
-                  );
+                  console.error("⚠️ Failed to save Contact/Tag globally:", tagErr);
                 }
               }
             }
@@ -564,7 +623,7 @@ export async function POST(req: Request) {
     }
 
     /* ══════════════════════════════════════════════════════════════════════════
-       SECTION E: WORKFLOW LOGIC (Button Clicks, Delays, & Triggers)
+       SECTION E: WORKFLOW LOGIC (Button Clicks, Delays, Inactivity, & Triggers)
        ══════════════════════════════════════════════════════════════════════════ */
     if (messageType === "text" || isButtonReply) {
       try {
@@ -600,7 +659,7 @@ export async function POST(req: Request) {
               ownerUser?.whatsappAccessToken
             );
 
-            startInactivityTimer(
+            startFormInactivityTimer(
               phone,
               userId!,
               formData._id.toString(),
@@ -625,7 +684,6 @@ export async function POST(req: Request) {
             if (wf && wf.steps) {
               let clickedBtn = null;
 
-              // Search all steps for the clicked button by ID
               for (const stepId in wf.steps) {
                 const step = wf.steps[stepId];
                 const btn = step.buttons?.find(
@@ -640,7 +698,6 @@ export async function POST(req: Request) {
               }
 
               if (clickedBtn) {
-                // Handle Opt-In Action
                 if (clickedBtn.optInNodeId) {
                   try {
                     const existingOpt = await OptNumber.findOne({
@@ -650,43 +707,31 @@ export async function POST(req: Request) {
                     if (!existingOpt)
                       await OptNumber.create({ userId, phoneNumber: phone });
                   } catch (optErr) {
-                    console.error(
-                      "⚠️ Failed to save opt-in number:",
-                      optErr
-                    );
+                    console.error("⚠️ Failed to save opt-in number:", optErr);
                   }
                 }
 
-                // Navigate to the next step
                 if (clickedBtn.nextStepId) {
                   let nextStep = wf.steps[clickedBtn.nextStepId];
 
                   /* ════════════════════════════════════════════════════════════
                      DELAY NODE LOGIC
-                     If the next step is a delay node, pause execution for
-                     the specified seconds, then follow its `nextStepId` 
-                     chain until a non-delay node is found.
                      ════════════════════════════════════════════════════════════ */
                   while (nextStep && nextStep.stepType === "delay_node") {
                     const delaySeconds = nextStep.delaySeconds || 0;
                     if (delaySeconds > 0) {
-                      console.log(`⏳ Delaying workflow for ${delaySeconds} seconds for ${phone}...`);
-                      // Synchronous wait (blocks the function execution)
-                      await new Promise((resolve) => setTimeout(resolve, delaySeconds * 1000));
+                      await new Promise((resolve) =>
+                        setTimeout(resolve, delaySeconds * 1000)
+                      );
                     }
-                    // Move to the next step in the chain
-                    nextStep = nextStep.nextStepId ? wf.steps[nextStep.nextStepId] : null;
+                    nextStep = nextStep.nextStepId
+                      ? wf.steps[nextStep.nextStepId]
+                      : null;
                   }
 
                   if (nextStep) {
-                    // If next step is a Form Node, start the form
-                    if (
-                      nextStep.stepType === "form_node" &&
-                      nextStep.selectedForm
-                    ) {
-                      const formData = await Form.findById(
-                        nextStep.selectedForm
-                      );
+                    if (nextStep.stepType === "form_node" && nextStep.selectedForm) {
+                      const formData = await Form.findById(nextStep.selectedForm);
                       if (formData && formData.fields.length > 0) {
                         session.formId = formData._id;
                         session.formFieldIndex = 0;
@@ -707,7 +752,7 @@ export async function POST(req: Request) {
                           ownerUser?.whatsappAccessToken
                         );
 
-                        startInactivityTimer(
+                        startFormInactivityTimer(
                           phone,
                           userId!,
                           formData._id.toString(),
@@ -721,7 +766,6 @@ export async function POST(req: Request) {
                       }
                     }
 
-                    // Otherwise, send the next step message
                     session.currentStepId = nextStep.id;
                     await session.save();
                     await sendWhatsAppMessage(
@@ -734,29 +778,35 @@ export async function POST(req: Request) {
                       userId,
                       phone,
                       text:
-                        nextStep.message ||
-                        `[${nextStep.stepType?.toUpperCase()}]`,
+                        nextStep.message || `[${nextStep.stepType?.toUpperCase()}]`,
                       direction: "out",
                       messageType: "text",
                     });
+
+                    // Start Inactivity Timer if the sent message has buttons
+                    if (nextStep.buttons && nextStep.buttons.length > 0) {
+                      startWorkflowInactivityTimer(
+                        phone,
+                        userId!,
+                        wf._id.toString(),
+                        ownerUser
+                      );
+                    }
+
                     return NextResponse.json({ success: true });
                   } else {
-                    // No valid step found after delays → end the session
                     await Session.deleteOne({ _id: session._id });
                     return NextResponse.json({ success: true });
                   }
                 } else {
-                  // No next step → end the session
                   await Session.deleteOne({ _id: session._id });
                   return NextResponse.json({ success: true });
                 }
               } else {
-                // Button not found → end session
                 await Session.deleteOne({ _id: session._id });
                 return NextResponse.json({ success: true });
               }
             } else {
-              // Workflow not found → clean up session
               await Session.deleteOne({ _id: session._id });
             }
           }
@@ -794,15 +844,17 @@ export async function POST(req: Request) {
 
           /* ════════════════════════════════════════════════════════════
              DELAY NODE LOGIC FOR TRIGGERS
-             If a trigger directly hits a delay node, resolve the chain.
              ════════════════════════════════════════════════════════════ */
           while (step && step.stepType === "delay_node") {
             const delaySeconds = step.delaySeconds || 0;
             if (delaySeconds > 0) {
-              console.log(`⏳ Trigger delayed for ${delaySeconds}s for ${phone}...`);
-              await new Promise((resolve) => setTimeout(resolve, delaySeconds * 1000));
+              await new Promise((resolve) =>
+                setTimeout(resolve, delaySeconds * 1000)
+              );
             }
-            step = step.nextStepId ? matchedWorkflow.steps[step.nextStepId] : null;
+            step = step.nextStepId
+              ? matchedWorkflow.steps[step.nextStepId]
+              : null;
           }
 
           if (
@@ -813,7 +865,6 @@ export async function POST(req: Request) {
               step.stepType === "call_action" ||
               step.stepType === "form_node")
           ) {
-            // If trigger leads to a Form Node, start the form
             if (step.stepType === "form_node" && step.selectedForm) {
               const formData = await Form.findById(step.selectedForm);
               if (formData && formData.fields.length > 0) {
@@ -844,7 +895,7 @@ export async function POST(req: Request) {
                   ownerUser?.whatsappAccessToken
                 );
 
-                startInactivityTimer(
+                startFormInactivityTimer(
                   phone,
                   userId!,
                   formData._id.toString(),
@@ -858,7 +909,6 @@ export async function POST(req: Request) {
               }
             }
 
-            // Send the matched workflow step
             await sendWhatsAppMessage(
               phone,
               step,
@@ -873,7 +923,6 @@ export async function POST(req: Request) {
               messageType: "text",
             });
 
-            // Create or update session
             await Session.findOneAndUpdate(
               { phone, userId },
               {
@@ -883,6 +932,16 @@ export async function POST(req: Request) {
               },
               { upsert: true, new: true }
             );
+
+            // Start Inactivity Timer if the trigger message has buttons
+            if (step.buttons && step.buttons.length > 0) {
+              startWorkflowInactivityTimer(
+                phone,
+                userId!,
+                matchedWorkflow._id.toString(),
+                ownerUser
+              );
+            }
           }
         }
       } catch (workflowError) {
