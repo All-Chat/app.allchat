@@ -2381,10 +2381,10 @@ export default function Home() {
   const filteredWorkflows = workflows.filter(
     (wf) =>
       wf.triggers.some((t) =>
-        t.keyword.toLowerCase().includes(searchQuery.toLowerCase())
+        t.keyword?.toLowerCase().includes(searchQuery.toLowerCase())
       ) ||
       Object.values(wf.steps).some((s) =>
-        s.message.toLowerCase().includes(searchQuery.toLowerCase())
+        s.message?.toLowerCase().includes(searchQuery.toLowerCase())
       )
   );
 
