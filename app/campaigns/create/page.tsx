@@ -10,6 +10,7 @@ import {
   Upload, FileSpreadsheet, Clock, Globe, CheckCircle2,
   Users, Sparkles, Send, RotateCcw, AlertCircle,
   FileText, Film, Image as ImageIcon, Loader2, X, Link, Tag as TagIcon,
+  Ban, // Added Ban icon for opted out numbers
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -45,7 +46,12 @@ export default function CreateCampaign() {
   const [selectedNameCol, setSelectedNameCol] = useState<string>("");
   const [uploadStep, setUploadStep] = useState(1);
   const [fileName, setFileName] = useState("");
-  const [stats, setStats] = useState({ valid: 0, invalid: 0, duplicates: 0 });
+  
+  // Added optedOut to stats
+  const [stats, setStats] = useState({ valid: 0, invalid: 0, duplicates: 0, optedOut: 0 });
+
+  // State to hold opted-out numbers from DB
+  const [optedOutNumbers, setOptedOutNumbers] = useState<string[]>([]);
 
   const [mediaInputType, setMediaInputType] = useState<"url" | "upload">("url");
   const [mediaFile, setMediaFile] = useState<File | null>(null);
@@ -55,6 +61,7 @@ export default function CreateCampaign() {
     if (status === "authenticated") {
       fetchTemplates();
       fetchTags();
+      fetchOptNumbers(); // Fetch blocklist on load
     } else if (status === "unauthenticated") {
       window.location.href = "/signin";
     }
@@ -85,6 +92,21 @@ export default function CreateCampaign() {
     }
   };
 
+  // Fetch numbers that have opted out
+  const fetchOptNumbers = async () => {
+    try {
+      const res = await fetch("/api/opt-numbers");
+      const data = await res.json();
+      if (data.numbers) {
+        // Clean them to match the format (digits only)
+        const cleaned = data.numbers.map((n: any) => String(n.phoneNumber).replace(/\D/g, ""));
+        setOptedOutNumbers(cleaned);
+      }
+    } catch (err) {
+      console.error("Failed to fetch opt-out numbers", err);
+    }
+  };
+
   const handleTagSelect = async (tagName: string) => {
     setSelectedTag(tagName);
     if (!tagName) return;
@@ -102,7 +124,7 @@ export default function CreateCampaign() {
       } else {
         toast.error("No contacts found for this tag");
         setRawNumbers([]);
-        setStats({ valid: 0, invalid: 0, duplicates: 0 });
+        setStats({ valid: 0, invalid: 0, duplicates: 0, optedOut: 0 });
       }
     } catch (err) {
       toast.error("Error fetching contacts by tag");
@@ -177,7 +199,7 @@ export default function CreateCampaign() {
 
   const cleanAndValidateNumbers = (nums: string[], names: string[]) => {
     const seen = new Set();
-    let valid = 0, invalid = 0, duplicates = 0;
+    let valid = 0, invalid = 0, duplicates = 0, optedOut = 0;
     const finalNumbers: string[] = [];
     const finalNames: string[] = [];
 
@@ -188,13 +210,19 @@ export default function CreateCampaign() {
       if (clean.startsWith("0")) clean = clean.substring(1);
       if (!clean.startsWith(countryCode)) clean = countryCode + clean;
 
+      // 🔴 CHECK IF NUMBER IS IN THE OPT-OUT LIST
+      if (optedOutNumbers.includes(clean)) {
+        optedOut++;
+        return; // Skip adding this number
+      }
+
       if (clean.length >= 7 && !isObviouslyFakePhone(clean)) {
         if (seen.has(clean)) { duplicates++; }
         else { seen.add(clean); finalNumbers.push(clean); finalNames.push(names[index] || ""); valid++; }
       } else { invalid++; }
     });
 
-    setStats({ valid, invalid, duplicates });
+    setStats({ valid, invalid, duplicates, optedOut });
     return { finalNumbers, finalNames };
   };
 
@@ -510,10 +538,18 @@ export default function CreateCampaign() {
                 </div>
 
                 {rawNumbers.length > 0 && (
-                  <div className="grid grid-cols-3 gap-2 sm:gap-4 text-center pt-2">
+                  // Changed to grid-cols-2 sm:grid-cols-4 to fit the new Opted Out card
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4 text-center pt-2">
                     <div className="bg-gradient-to-br from-emerald-50 to-white p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-emerald-100 shadow-sm hover:shadow-md transition-shadow"><p className="text-2xl sm:text-3xl font-extrabold text-emerald-600">{stats.valid}</p><p className="text-[9px] sm:text-[10px] text-emerald-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><CheckCircle2 size={10} /> Valid</p></div>
                     <div className="bg-gradient-to-br from-red-50 to-white p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-red-100 shadow-sm hover:shadow-md transition-shadow"><p className="text-2xl sm:text-3xl font-extrabold text-red-600">{stats.invalid}</p><p className="text-[9px] sm:text-[10px] text-red-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><AlertCircle size={10} /> Invalid</p></div>
                     <div className="bg-gradient-to-br from-amber-50 to-white p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-amber-100 shadow-sm hover:shadow-md transition-shadow"><p className="text-2xl sm:text-3xl font-extrabold text-amber-600">{stats.duplicates}</p><p className="text-[9px] sm:text-[10px] text-amber-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><RotateCcw size={10} /> Duplicates</p></div>
+                    {/* NEW OPTED-OUT CARD */}
+                    <div className="bg-gradient-to-br from-slate-100 to-white p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
+                      <p className="text-2xl sm:text-3xl font-extrabold text-slate-600">{stats.optedOut}</p>
+                      <p className="text-[9px] sm:text-[10px] text-slate-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1">
+                        <Ban size={10} /> Opted Out
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>
