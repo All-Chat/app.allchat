@@ -28,6 +28,7 @@ import {
   TrendingUp,
   TrendingDown,
   AlertCircle,
+  Gauge,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -61,6 +62,8 @@ export default function DashboardPage() {
     canSendMessage: true,
   });
 
+  const [whatsappLimit, setWhatsappLimit] = useState<number | string>("N/A");
+
   const fetchTemplates = async () => {
     try {
       const res = await fetch("/api/templates/list", { cache: "no-store" });
@@ -91,6 +94,10 @@ export default function DashboardPage() {
             totalSpent: data.billing.totalSpent || 0,
             canSendMessage: data.billing.canSendMessage !== false,
           });
+        }
+        // 🔴 SET WHATSAPP LIMIT FROM API
+        if (data.whatsappLimit) {
+          setWhatsappLimit(data.whatsappLimit);
         }
       }
     } catch (error) {
@@ -180,10 +187,8 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
-      {/* Sidebar Component - Handles Mobile Subnavbar automatically */}
       <Sidebar />
 
-      {/* Main Content Area */}
       <main className="md:ml-64 flex flex-col min-h-screen">
         <div className="flex-1 p-4 sm:p-6 lg:p-8 space-y-6 sm:space-y-8">
 
@@ -218,8 +223,8 @@ export default function DashboardPage() {
                     <Wallet className={`w-5 h-5 ${billingData.canSendMessage ? 'text-emerald-600' : 'text-red-600'}`} />
                   </div>
                   <div>
-                    <h2 className="font-bold text-gray-900 text-sm sm:text-base">Billing Overview</h2>
-                    <p className="text-[11px] sm:text-xs text-gray-500">Your messaging credits and usage</p>
+                    <h2 className="font-bold text-gray-900 text-sm sm:text-base">Billing & Limits Overview</h2>
+                    <p className="text-[11px] sm:text-xs text-gray-500">Your messaging credits and Meta API limits</p>
                   </div>
                 </div>
                 <Link href="/settings" className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-1 transition-colors shrink-0">
@@ -227,7 +232,7 @@ export default function DashboardPage() {
                 </Link>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
                 {/* Balance Remaining */}
                 <div className={`relative overflow-hidden p-4 sm:p-5 rounded-xl border ${
                   billingData.canSendMessage
@@ -281,13 +286,29 @@ export default function DashboardPage() {
                     </p>
                   </div>
                 </div>
+
+                {/* 🔴 WHATSAPP MESSAGING LIMIT */}
+                <div className="relative overflow-hidden p-4 sm:p-5 rounded-xl border bg-gradient-to-br from-purple-50 to-white border-purple-200">
+                  <div className="absolute -top-3 -right-3 w-16 h-16 bg-purple-100/30 rounded-full blur-xl" />
+                  <div className="relative">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-purple-600 mb-1.5 flex items-center gap-1">
+                      <Gauge size={10} /> Meta Limit (24h)
+                    </p>
+                    <p className="text-xl sm:text-2xl font-extrabold text-purple-700">
+                      {typeof whatsappLimit === 'number' ? whatsappLimit.toLocaleString() : whatsappLimit}
+                    </p>
+                    <p className="text-[10px] text-purple-500 mt-1 flex items-center gap-1 font-medium">
+                      <MessageSquare size={10} /> Business Tier
+                    </p>
+                  </div>
+                </div>
               </div>
 
               {/* Progress Bar */}
               {billingData.totalRecharged > 0 && (
                 <div className="mt-5 pt-4 border-t border-gray-100">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs text-gray-500 font-medium">Usage</span>
+                    <span className="text-xs text-gray-500 font-medium">Credit Usage</span>
                     <span className="text-xs font-bold text-gray-700">
                       {billingData.totalRecharged > 0
                         ? Math.round((billingData.totalSpent / billingData.totalRecharged) * 100)
@@ -324,7 +345,6 @@ export default function DashboardPage() {
                 </div>
               )}
 
-              {/* Zero balance warning */}
               {billingData.balance === 0 && billingData.totalRecharged === 0 && (
                 <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
@@ -422,7 +442,6 @@ export default function DashboardPage() {
                                   {tpl.status ? tpl.status.toUpperCase() : "PENDING"}
                                 </span>
                               </div>
-                              {/* Mobile status dot */}
                               <span className={`sm:hidden w-2.5 h-2.5 rounded-full ${statusConfig.dot}`}></span>
 
                               <button
