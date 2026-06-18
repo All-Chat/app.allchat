@@ -17,6 +17,7 @@ import {
   Send,
   Menu,
   Tag,
+  UserX,
   X,
   Shield,
 } from "lucide-react";
@@ -55,6 +56,7 @@ export default function Sidebar() {
     { name: "Chats", icon: MessageSquare, href: "/chat" },
     { name: "Workflows", icon: Users, href: "/workflows" },
     { name: "Tags", icon: Tag, href: "/tags" },
+    { name: "Opted-Out Numbers", icon: UserX, href: "/opt-numbers" },
     { name: "Settings", icon: Settings, href: "/settings" },
   ];
 
