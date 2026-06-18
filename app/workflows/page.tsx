@@ -4,10 +4,11 @@
    Visual canvas for building WhatsApp auto-reply workflows.
    Uses React Flow for the drag-and-drop node editor.
    
-   Key Feature:
+   Key Features:
    - When >3 buttons are added to a Message Node, they are automatically
      sent as a WhatsApp List Message (instead of Button Message).
-   - A visual "📋 List Mode" indicator appears when >3 buttons exist.
+   - Delay Node: Pauses the workflow for a specified number of seconds 
+     before proceeding to the next connected node.
    ============================================================================ */
 
 /* eslint-disable react-hooks/set-state-in-effect */
@@ -60,6 +61,7 @@ import {
   UserPlus,
   ClipboardList,
   List,
+  Clock, // Added Clock icon for Delay Node
 } from "lucide-react";
 
 // Authentication
@@ -90,7 +92,8 @@ type Step = {
     | "call_action"
     | "tag_node"
     | "opt_in_node"
-    | "form_node";
+    | "form_node"
+    | "delay_node"; // Added delay_node
   message: string;
   buttons: Button[];
   position?: { x: number; y: number };
@@ -101,7 +104,9 @@ type Step = {
   phoneNumber?: string;
   selectedTag?: string | null;
   selectedForm?: string | null;
-  listButtonText?: string; // Custom text for the list menu button (used when >3 buttons)
+  listButtonText?: string; 
+  delaySeconds?: number; // Added for Delay Node
+  nextStepId?: string | null; // Added for Delay Node chaining
 };
 
 type Workflow = {
@@ -581,14 +586,73 @@ const FormNode = ({ data, id }: any) => {
 };
 
 /* ============================================================================
+   DELAY NODE (NEW)
+   ----------------------------------------------------------------------------
+   Pauses the workflow execution for the specified number of seconds.
+   Has both Target (Left) and Source (Right) connection points.
+   ============================================================================ */
+const DelayNode = ({ data, id }: any) => {
+  const { setNodes, deleteElements } = useReactFlow();
+
+  const updateDelay = (val: string) => {
+    const num = parseInt(val, 10);
+    setNodes((nds: Node[]) =>
+      nds.map((n: Node) =>
+        n.id === id ? { ...n, data: { ...n.data, delaySeconds: isNaN(num) ? 0 : num } } : n
+      )
+    );
+  };
+
+  return (
+    <div className="w-72 bg-white border border-sky-200 shadow-lg rounded-2xl overflow-hidden group">
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="!bg-sky-500 !w-3 !h-3 !border-2 !border-white"
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="delay-out"
+        className="!bg-sky-500 !w-3 !h-3 !border-2 !border-white"
+      />
+
+      <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-sky-50 to-white">
+        <div className="flex items-center gap-2 text-sky-700">
+          <Clock size={14} />
+          <span className="text-xs font-bold uppercase tracking-wider">
+            Delay Action
+          </span>
+        </div>
+        <button
+          onClick={() => deleteElements({ nodes: [{ id }] })}
+          className="text-gray-300 hover:text-red-500 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
+        >
+          <Trash2 size={14} />
+        </button>
+      </div>
+
+      <div className="p-3 space-y-2">
+        <p className="text-[9px] text-gray-500 leading-tight">
+          ⏱️ Pauses the workflow for the specified duration before sending the next connected node.
+        </p>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min="1"
+            value={data.delaySeconds || 10}
+            onChange={(e) => updateDelay(e.target.value)}
+            className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-400 transition-all"
+          />
+          <span className="text-xs font-semibold text-gray-600">seconds</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ============================================================================
    Message Node (Core Communication Step)
-   
-   KEY CHANGE: When >3 buttons are added, the UI shows a "📋 List Mode"
-   indicator, and the backend (sendWhatsApp.ts) automatically converts
-   these buttons into a WhatsApp List Message.
-   
-   - ≤3 buttons → WhatsApp Interactive Button Message
-   - >3 buttons → WhatsApp Interactive List Message
    ============================================================================ */
 const MessageNode = ({ data, id }: any) => {
   const { setNodes, deleteElements } = useReactFlow();
@@ -744,9 +808,6 @@ const MessageNode = ({ data, id }: any) => {
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {/* ═══ LIST MODE INDICATOR ═══
-              Shows when >3 buttons are added, indicating the message
-              will be sent as a WhatsApp List instead of Buttons. */}
           {isListMode && (
             <span className="flex items-center gap-1 px-2 py-0.5 bg-purple-100 border border-purple-300 rounded-full text-[9px] font-bold text-purple-700">
               <List size={9} /> List Mode
@@ -761,8 +822,6 @@ const MessageNode = ({ data, id }: any) => {
         </div>
       </div>
 
-      {/* ═══ LIST MODE INFO BANNER ═══
-          Appears when >3 buttons to explain the automatic conversion. */}
       {isListMode && (
         <div className="px-3 py-2 bg-purple-50 border-b border-purple-100">
           <p className="text-[9px] text-purple-700 leading-tight flex items-start gap-1.5">
@@ -1010,9 +1069,6 @@ const MessageNode = ({ data, id }: any) => {
           className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all resize-none"
         />
 
-        {/* ═══ LIST BUTTON TEXT (only shown in List Mode) ═══
-            This is the text that appears on the WhatsApp list button
-            that users tap to open the list of options. */}
         {isListMode && (
           <div className="space-y-1">
             <div className="relative">
@@ -1310,6 +1366,7 @@ const nodeTypes = {
   tag_node: TagNode,
   opt_in_node: OptInNode,
   form_node: FormNode,
+  delay_node: DelayNode, // Registered new Delay Node
 };
 
 /* ============================================================================
@@ -1375,7 +1432,8 @@ function FlowCanvas({
           phoneNumber: step.phoneNumber,
           selectedTag: step.selectedTag || null,
           selectedForm: step.selectedForm || null,
-          listButtonText: step.listButtonText || "", // ← Added for list mode
+          listButtonText: step.listButtonText || "",
+          delaySeconds: step.delaySeconds || 10, // Load delay seconds
         },
         draggable: true,
       });
@@ -1394,7 +1452,7 @@ function FlowCanvas({
       });
     }
 
-    // Add Edges for Button connections
+    // Add Edges for Button connections and Delay node out-connections
     Object.values(initialData.steps || {}).forEach((step) => {
       step.buttons.forEach((btn) => {
         if (btn.nextStepId) {
@@ -1434,6 +1492,20 @@ function FlowCanvas({
           });
         }
       });
+
+      // Handle Delay Node's out connection
+      if (step.stepType === "delay_node" && step.nextStepId) {
+        initEdges.push({
+          id: `e-${step.id}-delay-out`,
+          source: step.id,
+          sourceHandle: "delay-out",
+          target: step.nextStepId,
+          animated: true,
+          type: "default",
+          markerEnd: { type: MarkerType.ArrowClosed, color: "#0ea5e9" },
+          style: { stroke: "#0ea5e9", strokeWidth: 2 },
+        });
+      }
     });
 
     setNodes(initNodes);
@@ -1488,6 +1560,8 @@ function FlowCanvas({
           if (targetCategory === "opt_in") strokeColor = "#f97316";
           if (targetCategory === "flow" && targetNode?.type === "form_node")
             strokeColor = "#14b8a6";
+          if (targetCategory === "flow" && targetNode?.type === "delay_node")
+            strokeColor = "#0ea5e9";
 
           return addEdge(
             {
@@ -1546,6 +1620,7 @@ function FlowCanvas({
       if (type === "tag_node") newData = { selectedTag: "" };
       if (type === "opt_in_node") newData = {};
       if (type === "form_node") newData = { selectedForm: "" };
+      if (type === "delay_node") newData = { delaySeconds: 10 }; // Default 10s delay
 
       const newNode = { id: uid(), type, position, data: newData };
       setNodes((nds) => nds.concat(newNode));
@@ -1580,6 +1655,7 @@ function FlowCanvas({
     if (type === "tag_node") newData = { selectedTag: "" };
     if (type === "opt_in_node") newData = {};
     if (type === "form_node") newData = { selectedForm: "" };
+    if (type === "delay_node") newData = { delaySeconds: 10 };
 
     const newNode = { id: uid(), type, position, data: newData };
     setNodes((nds) => nds.concat(newNode));
@@ -1636,7 +1712,8 @@ function FlowCanvas({
           n.type === "call_action" ||
           n.type === "tag_node" ||
           n.type === "opt_in_node" ||
-          n.type === "form_node"
+          n.type === "form_node" ||
+          n.type === "delay_node"
       )
       .forEach((n) => {
         const buttonsWithLinks = n.data.buttons
@@ -1688,7 +1765,7 @@ function FlowCanvas({
 
         const stepType = n.type as any;
 
-        steps[n.id] = {
+        const stepData: any = {
           id: n.id,
           stepType,
           message: n.data.message || "",
@@ -1701,8 +1778,31 @@ function FlowCanvas({
           phoneNumber: n.data.phoneNumber || "",
           selectedTag: n.data.selectedTag || null,
           selectedForm: n.data.selectedForm || null,
-          listButtonText: n.data.listButtonText || "", // ← Save list button text
+          listButtonText: n.data.listButtonText || "",
         };
+
+        // Handle Delay Node specific connection mapping
+        if (stepType === "delay_node") {
+          const delayTargetEdge = edges.find(
+            (e) => e.source === n.id && e.sourceHandle === "delay-out"
+          );
+          const targetNode = delayTargetEdge
+            ? nodes.find((node) => node.id === delayTargetEdge.target)
+            : null;
+
+          // Delay node can only connect to valid flow steps (message, url, call, form)
+          const validTarget =
+            targetNode &&
+            targetNode.type !== "tag_node" &&
+            targetNode.type !== "opt_in_node"
+              ? delayTargetEdge?.target
+              : null;
+
+          stepData.nextStepId = validTarget;
+          stepData.delaySeconds = n.data.delaySeconds || 10;
+        }
+
+        steps[n.id] = stepData;
       });
 
     const rootEdge = edges.find((e) => e.source === "trigger-node");
@@ -1833,6 +1933,24 @@ function FlowCanvas({
               </div>
             </div>
 
+            {/* NEW: Delay Node Sidebar Item */}
+            <div
+              onDragStart={(e) =>
+                e.dataTransfer.setData("application/reactflow", "delay_node")
+              }
+              onClick={() => handleQuickAdd("delay_node")}
+              draggable
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-sky-400 hover:shadow-sm transition-all shrink-0 w-40 md:w-full active:scale-95"
+            >
+              <div className="w-8 h-8 rounded-lg bg-sky-100 text-sky-600 flex items-center justify-center shrink-0">
+                <Clock size={14} />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-800">Delay</p>
+                <p className="text-[10px] text-gray-400">Wait X seconds</p>
+              </div>
+            </div>
+
             <div
               onDragStart={(e) =>
                 e.dataTransfer.setData("application/reactflow", "tag_node")
@@ -1908,6 +2026,10 @@ function FlowCanvas({
               📋 <strong>List Mode:</strong> Add more than 3 buttons to a
               Message node and they&apos;ll auto-convert to a WhatsApp List.
             </p>
+            <p className="mt-2">
+              ⏱️ <strong>Delay Node:</strong> Connect buttons to a delay node
+              to pause before sending the next message.
+            </p>
           </div>
         </div>
 
@@ -1946,6 +2068,8 @@ function FlowCanvas({
                   ? "#f97316"
                   : n.type === "form_node"
                   ? "#14b8a6"
+                  : n.type === "delay_node"
+                  ? "#0ea5e9"
                   : "#10b981"
               }
             />
