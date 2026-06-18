@@ -189,6 +189,11 @@ export default function TagsPage() {
       <style jsx global>{`
         @keyframes slide-in { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
         .animate-slide-in { animation: slide-in 0.3s ease-out; }
+        /* Custom slim scrollbar */
+        .slim-scroll::-webkit-scrollbar { width: 6px; }
+        .slim-scroll::-webkit-scrollbar-track { background: transparent; }
+        .slim-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        .slim-scroll::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
       `}</style>
 
       {toast && (
@@ -207,20 +212,30 @@ export default function TagsPage() {
       <main className="md:ml-64 min-h-screen flex flex-col">
         <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:p-10 space-y-6 sm:space-y-8">
           
-          {/* Premium Header */}
-          <div className="relative overflow-hidden bg-gradient-to-br from-indigo-600 via-purple-500 to-pink-500 rounded-2xl sm:rounded-3xl p-6 sm:p-8 text-white shadow-xl shadow-indigo-200">
-            <div className="absolute -top-10 -right-10 w-48 h-48 bg-white/10 rounded-full blur-2xl"></div>
-            <div className="absolute -bottom-10 -left-10 w-48 h-48 bg-white/10 rounded-full blur-2xl"></div>
-            <div className="relative z-10">
-              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight flex items-center gap-3">
-                <TagIcon size={28} />
-                Tags Management
-              </h1>
-              <p className="text-indigo-100 text-xs sm:text-sm mt-2 font-medium max-w-lg">
-                Create, edit, or delete global and campaign-specific tags to automatically organize your contacts.
-              </p>
-            </div>
-          </div>
+                   {/* Soft Light Green Header */}
+<div className="relative overflow-hidden bg-gradient-to-br from-[#E8F8EF] to-[#D1F4DE] rounded-2xl sm:rounded-3xl p-6 sm:p-8 border border-emerald-100 shadow-lg shadow-emerald-100/60">
+  
+  {/* Decorative background blurs */}
+  <div className="absolute -top-12 -right-12 w-56 h-56 bg-[#A5D6A7]/40 rounded-full blur-3xl"></div>
+  <div className="absolute -bottom-16 -left-10 w-40 h-40 bg-white/60 rounded-full blur-2xl"></div>
+
+  {/* Content */}
+  <div className="relative z-10 flex items-center gap-4 sm:gap-5">
+    {/* Icon Box - Made vibrant to stand out on light bg */}
+    <div className="flex-shrink-0 p-3 sm:p-3.5 bg-gradient-to-br from-emerald-500 to-green-600 rounded-xl sm:rounded-2xl shadow-md shadow-emerald-200/60">
+      <TagIcon size={24} className="text-white" />
+    </div>
+    
+    <div>
+      <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-emerald-900">
+        WhatsApp Tags
+      </h1>
+      <p className="text-emerald-700/80 text-xs sm:text-sm mt-1 font-medium">
+        Manage global and campaign-specific tags
+      </p>
+    </div>
+  </div>
+</div>
 
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 lg:gap-8">
             
@@ -307,8 +322,9 @@ export default function TagsPage() {
 
             {/* Right Column: Tags List */}
             <div className="lg:col-span-3">
-              <div className="bg-white p-5 sm:p-7 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow min-h-[400px]">
-                <div className="flex justify-between items-center mb-6">
+              {/* 🔴 FIX: Added flex flex-col and max-h to constrain the box height */}
+              <div className="bg-white p-5 sm:p-7 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow flex flex-col max-h-[75vh]">
+                <div className="flex justify-between items-center mb-6 shrink-0">
                   <h2 className="text-sm font-extrabold text-slate-800 uppercase tracking-widest flex items-center gap-2">
                     <TagIcon size={14} className="text-slate-500" />
                     Active Tags
@@ -327,7 +343,8 @@ export default function TagsPage() {
                     <p className="text-sm text-slate-400 max-w-xs">Create your first tag using the form on the left to start organizing your audience.</p>
                   </div>
                 ) : (
-                  <div className="flex flex-col gap-3">
+                  // 🔴 FIX: This div is now scrollable instead of the whole page
+                  <div className="flex-1 overflow-y-auto slim-scroll pr-2 space-y-3">
                     {tags.map((tag) => {
                       const isExpanded = expandedTagId === tag._id;
                       const contacts = contactsMap[tag._id] || [];
@@ -368,7 +385,7 @@ export default function TagsPage() {
                             <div className="flex items-center gap-2 shrink-0">
                               {!isDeleting ? (
                                 <>
-                                  <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-md flex items-center gap-1 hidden sm:flex">
+                                  <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-md items-center gap-1 hidden sm:flex">
                                     <Users size={10} /> {contacts.length || 0}
                                   </span>
                                   <button 
@@ -412,7 +429,8 @@ export default function TagsPage() {
                           </div>
 
                           {isExpanded && (
-                            <div className="border-t border-slate-100 bg-slate-50/50 p-4 animate-slide-in max-h-60 overflow-y-auto">
+                            // 🔴 FIX: Max height constrained to 200px so only this area scrolls
+                            <div className="border-t border-slate-100 bg-slate-50/50 p-4 animate-slide-in max-h-[200px] overflow-y-auto slim-scroll">
                               {loadingContacts && !contacts.length ? (
                                 <div className="flex justify-center items-center py-4">
                                   <Loader2 size={16} className="animate-spin text-slate-400" />
