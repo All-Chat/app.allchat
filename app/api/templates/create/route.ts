@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
@@ -12,82 +13,63 @@ const WHATSAPP_API = "https://graph.facebook.com/v25.0";
  * WhatsApp Resumable Upload API
  * Uses the USER's token and WABA ID from the database
  */
-async function tryResumableUpload(
+async function uploadWhatsAppMedia(
   token: string,
-  wabaId: string,
+  phoneNumberId: string,
   fileBuffer: Buffer,
-  fileType: string
-): Promise<{ handle: string | null; permissionMissing: boolean; error: string }> {
+  fileName: string,
+  mimeType: string
+): Promise<{ mediaId: string | null; error?: string }> {
   try {
-    const fileSize = fileBuffer.length;
+    const formData = new FormData();
 
-    console.log(`📤 Uploading to WABA ${wabaId}, file size: ${fileSize}, type: ${fileType}`);
-
-    // Step 1: Create upload session
-    const sessionRes = await fetch(`${WHATSAPP_API}/${wabaId}/uploads`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ file_length: fileSize, file_type: fileType }),
+    const arrayBuffer = fileBuffer.buffer.slice(
+      fileBuffer.byteOffset,
+      fileBuffer.byteOffset + fileBuffer.byteLength
+    );
+    const blob = new Blob([new Uint8Array(arrayBuffer as ArrayBuffer)], {
+      type: mimeType,
     });
 
-    const sessionData = await sessionRes.json();
+    formData.append("file", blob, fileName);
+    formData.append("messaging_product", "whatsapp");
 
-    if (!sessionRes.ok || sessionData.error || !sessionData.id) {
-      const errMsg = sessionData.error?.message || "Unknown error";
-      const errCode = sessionData.error?.code;
-      const errSubcode = sessionData.error?.error_subcode;
+    const response = await fetch(
+      `https://graph.facebook.com/v25.0/${phoneNumberId}/media`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      }
+    );
 
-      console.error("❌ Upload session failed:", JSON.stringify(sessionData.error || sessionData, null, 2));
+    const result = await response.json();
+
+console.log(
+  "📤 MEDIA UPLOAD RESPONSE:",
+  JSON.stringify(result, null, 2)
+);
+
+    if (!response.ok) {
+      console.error("Media Upload Error:", result);
 
       return {
-  handle: null,
-  permissionMissing: false,
-  error: JSON.stringify(sessionData),
-};
-
-      return {
-        handle: null,
-        permissionMissing: false,
-        error: errMsg,
+        mediaId: null,
+        error: result?.error?.message || "Upload failed",
       };
     }
 
-    console.log(`✅ Upload session created: ${sessionData.id}`);
-
-    // Step 2: Upload the file bytes
-    const uploadRes = await fetch(`${WHATSAPP_API}/${sessionData.id}`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        file_offset: "0",
-        "Content-Type": "application/octet-stream",
-      },
-      body: new Uint8Array(fileBuffer),
-    });
-
-    const uploadData = await uploadRes.json();
-
-    if (!uploadRes.ok || uploadData.error || !uploadData.h) {
-      const errMsg = uploadData.error?.message || "Upload failed";
-      console.error("❌ File upload failed:", errMsg);
-      return {
-        handle: null,
-        permissionMissing: false,
-        error: errMsg,
-      };
-    }
-
-    console.log(`✅ Upload succeeded, handle: ${uploadData.h}`);
-    return { handle: uploadData.h, permissionMissing: false, error: "" };
-  } catch (err) {
-    console.error("❌ Resumable Upload error:", err);
     return {
-      handle: null,
-      permissionMissing: false,
-      error: err instanceof Error ? err.message : "Unknown upload error",
+      mediaId: result.id,
+    };
+  } catch (error) {
+    console.error(error);
+
+    return {
+      mediaId: null,
+      error: error instanceof Error ? error.message : "Unknown error",
     };
   }
 }
@@ -199,8 +181,13 @@ export async function POST(req: Request) {
     // 4. HANDLE SAMPLE MEDIA
     // ==========================================
     const headerComp = components.find((c: any) => c.type === "HEADER");
-    const isMediaHeader =
-      headerComp && ["IMAGE", "VIDEO", "DOCUMENT"].includes(headerComp.format);
+    
+
+
+const isMediaHeader =
+  headerComp &&
+  ["IMAGE", "VIDEO", "DOCUMENT"].includes(headerComp.format);
+
 
     if (isMediaHeader) {
       let fileBuffer: Buffer | null = null;
@@ -250,17 +237,20 @@ export async function POST(req: Request) {
 
       // Upload to WhatsApp using the USER's token and WABA ID from DB
       if (fileBuffer) {
-        const result = await tryResumableUpload(
-          META_TOKEN,
-          WABA_ID,
-          fileBuffer,
-          fileType
-        );
+       const result = await tryResumableUpload(
+  META_TOKEN,
+  process.env.META_APP_ID!,
+  fileBuffer,
+  fileType
+);
 
         if (result.handle) {
-          headerComp.example = { header_handle: [result.handle] };
-          console.log("✅ Applied header_handle to payload");
-        } else if (result.permissionMissing) {
+  headerComp.example = {
+    header_handle: [result.handle],
+  };
+
+  console.log("✅ Applied header_handle to payload");
+} else if (result.permissionMissing) {
           return NextResponse.json(
             {
               success: false,
@@ -321,10 +311,16 @@ export async function POST(req: Request) {
       const metaComp: any = { type: comp.type.toUpperCase() };
 
       if (comp.type.toUpperCase() === "HEADER") {
-        metaComp.format = comp.format;
-        if (comp.text) metaComp.text = comp.text;
-        if (comp.example) metaComp.example = comp.example;
-      } else if (comp.type.toUpperCase() === "BODY") {
+  metaComp.format = comp.format;
+
+  if (comp.text) {
+    metaComp.text = comp.text;
+  }
+
+  if (comp.example) {
+    metaComp.example = comp.example;
+  }
+} else if (comp.type.toUpperCase() === "BODY") {
         metaComp.text = comp.text;
         if (comp.example) metaComp.example = comp.example;
       } else if (comp.type.toUpperCase() === "FOOTER") {
@@ -355,7 +351,10 @@ export async function POST(req: Request) {
     console.log(
       `📤 Creating template "${safeName}" with WABA: ${WABA_ID}, language: "${language}"`
     );
-
+console.log(
+  "📤 TEMPLATE PAYLOAD:",
+  JSON.stringify(metaPayload, null, 2)
+);
     const metaRes = await fetch(
       `${WHATSAPP_API}/${WABA_ID}/message_templates`,
       {
@@ -414,5 +413,79 @@ export async function POST(req: Request) {
       { success: false, message: err.message || "Internal server error" },
       { status: 500 }
     );
+  }
+}
+
+async function tryResumableUpload(
+  META_TOKEN: string,
+  APP_ID: string,
+  fileBuffer: Buffer,
+  fileType: string
+): Promise<{
+  permissionMissing: any; handle?: string; error?: string 
+}> {
+  try {
+    // STEP 1 - Create upload session
+    const createSession = await fetch(
+      `https://graph.facebook.com/v25.0/${APP_ID}/uploads`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${META_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          file_length: fileBuffer.length,
+          file_type: fileType,
+        }),
+      }
+    );
+
+    const sessionData = await createSession.json();
+
+    console.log("SESSION:", sessionData);
+    if (!createSession.ok) {
+  console.log("SESSION ERROR:", sessionData);
+  return {
+    permissionMissing: false,
+    error: JSON.stringify(sessionData),
+  };
+}
+
+    const uploadId = sessionData.id;
+
+    // STEP 2 - Upload binary
+    const uploadRes = await fetch(
+  `https://graph.facebook.com/v25.0/${uploadId}`,
+  {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${META_TOKEN}`,
+      file_offset: "0",
+    },
+    body: Buffer.from(fileBuffer),
+  }
+);
+
+    const uploadData = await uploadRes.json();
+
+    console.log("UPLOAD:", uploadData);
+    if (!uploadRes.ok) {
+  console.log("UPLOAD ERROR:", uploadData);
+  return {
+    permissionMissing: false,
+    error: JSON.stringify(uploadData),
+  };
+}
+
+    return {
+      permissionMissing: false,
+      handle: uploadData.h,
+    };
+  } catch (err: any) {
+    return {
+      permissionMissing: false,
+      error: err.message,
+    };
   }
 }
