@@ -1,0 +1,21 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { NextResponse } from "next/server";
+import { connectDB } from "@/lib/mongodb";
+import FormResponse from "@/models/FormResponse";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+
+export async function GET() {
+  try {
+    await connectDB();
+    const session = await getServerSession(authOptions);
+    const userId = session?.user?.id;
+    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    // Fetch all responses for this user
+    const responses = await FormResponse.find({ userId }).sort({ createdAt: -1 });
+    return NextResponse.json({ responses });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
