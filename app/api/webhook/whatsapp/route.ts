@@ -10,7 +10,8 @@ import Session from "@/models/Session";
 import Contact from "@/models/Contact";
 import Tag from "@/models/Tag";
 import OptNumber from "@/models/OptNumber";
-import Form from "@/models/Form"; // 🔴 IMPORTED FORM MODEL
+import Form from "@/models/Form";
+import FormResponse from "@/models/FormResponse"; // 🔴 IMPORTED FORM RESPONSE MODEL
 import { sendWhatsAppMessage } from "@/lib/sendWhatsApp";
 
 export const dynamic = "force-dynamic";
@@ -224,7 +225,64 @@ export async function POST(req: Request) {
     console.log(`📩 INBOUND SAVED ✔️ for ${phone}`);
 
     // ==========================================
-    // 3. CAMPAIGN REPORT UPDATE & DYNAMIC AUTO-TAGGING
+    // 3. CONVERSATIONAL FORM LOGIC (NEW)
+    // ==========================================
+    const activeSession = await Session.findOne({ phone, userId });
+    if (activeSession && activeSession.formId) {
+      try {
+        const form = await Form.findById(activeSession.formId);
+        if (!form) {
+          await Session.deleteOne({ _id: activeSession._id });
+          return NextResponse.json({ success: true });
+        }
+
+        const currentField = form.fields[activeSession.formFieldIndex];
+        
+        // Save answer to FormResponse
+        await FormResponse.findOneAndUpdate(
+          { formId: form._id, phone, status: "incomplete" },
+          { $set: { [`data.${currentField.label}`]: textToSave } },
+          { upsert: true, new: true }
+        );
+
+        const nextIndex = activeSession.formFieldIndex + 1;
+        if (nextIndex < form.fields.length) {
+          activeSession.formFieldIndex = nextIndex;
+          await activeSession.save();
+          
+          const nextField = form.fields[nextIndex];
+          await sendWhatsAppMessage(
+            phone, 
+            { message: nextField.label, stepType: "text" }, 
+            ownerUser?.whatsappPhoneNumberId, 
+            ownerUser?.whatsappAccessToken
+          );
+        } else {
+          // Form Complete
+          await FormResponse.updateOne(
+            { formId: form._id, phone, status: "incomplete" },
+            { $set: { status: "complete" } }
+          );
+          activeSession.formId = null;
+          activeSession.formFieldIndex = 0;
+          await activeSession.save();
+          
+          await sendWhatsAppMessage(
+            phone, 
+            { message: "✅ Thank you! Your form has been submitted successfully.", stepType: "text" }, 
+            ownerUser?.whatsappPhoneNumberId, 
+            ownerUser?.whatsappAccessToken
+          );
+        }
+        return NextResponse.json({ success: true });
+      } catch (formErr) {
+        console.error("⚠️ Form processing error:", formErr);
+        return NextResponse.json({ success: true });
+      }
+    }
+
+    // ==========================================
+    // 4. CAMPAIGN REPORT UPDATE & DYNAMIC AUTO-TAGGING
     // ==========================================
     if (textToSave) {
       try {
@@ -342,12 +400,13 @@ export async function POST(req: Request) {
     }
 
     // ==========================================
-    // 4. WORKFLOW LOGIC
+    // 5. WORKFLOW LOGIC
     // ==========================================
     if (messageType === "text" || isButtonReply) {
       try {
         if (isButtonReply && userId) {
-          const session = await Session.findOne({ phone, userId });
+          // Re-use activeSession fetched earlier, or fetch if it didn't exist
+          const session = activeSession || await Session.findOne({ phone, userId });
           
           if (session) {
             const wf = await Workflow.findById(session.workflowId);
@@ -385,30 +444,18 @@ export async function POST(req: Request) {
                   const nextStep = wf.steps[clickedBtn.nextStepId];
                   
                   if (nextStep) {
-                    // 🔴 NEW: HANDLE FORM NODE LOGIC
+                    // 🔴 START CONVERSATIONAL FORM
                     if (nextStep.stepType === "form_node" && nextStep.selectedForm) {
                       const formData = await Form.findById(nextStep.selectedForm);
-                      if (formData) {
-                        const formUrl = `${process.env.NEXTAUTH_URL}/f/${formData._id}`;
-                        const textMsg = `Please fill out this form: ${formUrl}`;
+                      if (formData && formData.fields.length > 0) {
+                        session.formId = formData._id;
+                        session.formFieldIndex = 0;
+                        await session.save();
                         
-                        await sendWhatsAppMessage(
-                          phone, 
-                          { message: textMsg, stepType: "text" }, 
-                          ownerUser?.whatsappPhoneNumberId, 
-                          ownerUser?.whatsappAccessToken
-                        );
+                        await FormResponse.create({ formId: formData._id, userId, phone, data: {}, status: "incomplete" });
                         
-                        await Message.create({
-                          userId,
-                          phone,
-                          text: textMsg,
-                          direction: "out",
-                          messageType: "text",
-                        });
-                        console.log(`📤 OUTBOUND WORKFLOW (Form Link) SAVED ✔️`);
-                        
-                        // Keep session active or end it depending on your flow
+                        const textMsg = `*${formData.name}*\n\n${formData.fields[0].label}`;
+                        await sendWhatsAppMessage(phone, { message: textMsg, stepType: "text" }, ownerUser?.whatsappPhoneNumberId, ownerUser?.whatsappAccessToken);
                         return NextResponse.json({ success: true });
                       }
                     }
@@ -478,38 +525,20 @@ export async function POST(req: Request) {
           
           if (step && (step.message || step.stepType === "template" || step.stepType === "url_action" || step.stepType === "call_action" || step.stepType === "form_node")) {
             
-            // 🔴 NEW: HANDLE FORM NODE LOGIC FOR TRIGGER
+            // 🔴 START CONVERSATIONAL FORM (TRIGGER)
             if (step.stepType === "form_node" && step.selectedForm) {
               const formData = await Form.findById(step.selectedForm);
-              if (formData) {
-                const formUrl = `${process.env.NEXTAUTH_URL}/f/${formData._id}`;
-                const textMsg = `Please fill out this form: ${formUrl}`;
-                
-                await sendWhatsAppMessage(
-                  phone, 
-                  { message: textMsg, stepType: "text" }, 
-                  ownerUser?.whatsappPhoneNumberId, 
-                  ownerUser?.whatsappAccessToken
-                );
-                
-                await Message.create({
-                  userId,
-                  phone,
-                  text: textMsg,
-                  direction: "out",
-                  messageType: "text",
-                });
-                console.log(`📤 OUTBOUND WORKFLOW (Form Link) SAVED ✔️`);
-
+              if (formData && formData.fields.length > 0) {
                 await Session.findOneAndUpdate(
                   { phone, userId },
-                  { 
-                    workflowId: matchedWorkflow._id, 
-                    currentStepId: step.id,
-                    updatedAt: new Date() 
-                  },
+                  { formId: formData._id, formFieldIndex: 0, workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() },
                   { upsert: true, new: true }
                 );
+                
+                await FormResponse.create({ formId: formData._id, userId, phone, data: {}, status: "incomplete" });
+                
+                const textMsg = `*${formData.name}*\n\n${formData.fields[0].label}`;
+                await sendWhatsAppMessage(phone, { message: textMsg, stepType: "text" }, ownerUser?.whatsappPhoneNumberId, ownerUser?.whatsappAccessToken);
                 return NextResponse.json({ success: true });
               }
             }
