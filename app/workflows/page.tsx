@@ -36,6 +36,8 @@ import { useSession } from "next-auth/react";
 
 /* ============================================================================
    1. TYPES & INTERFACES
+   ----------------------------------------------------------------------------
+   Defines the shape of our Workflow data structures.
    ============================================================================ */
 type Trigger = { 
   keyword: string; 
@@ -77,8 +79,10 @@ type Workflow = {
    2. UTILITY FUNCTIONS
    ============================================================================ */
 
+// Generates a random unique ID for nodes and buttons
 const uid = () => Math.random().toString(36).substr(2, 9);
 
+// Extracts YouTube video ID and returns an embeddable URL
 const getYouTubeEmbedUrl = (url: string) => {
   try {
     const urlObj = new URL(url);
@@ -120,14 +124,19 @@ function Toast({ message, type, onClose }: { message: string; type: "success" | 
 
 /* ============================================================================
    4. REACT FLOW CUSTOM NODE COMPONENTS
+   ----------------------------------------------------------------------------
+   These components define how each type of node looks and behaves on the canvas.
+   Note: The 'deleteElements' function from useReactFlow is used to delete nodes.
    ============================================================================ */
 
 /* --- Trigger Node (Starting Point) --- */
 const TriggerNode = ({ data, id }: any) => {
   const { setNodes } = useReactFlow();
 
+  // Check if "Any Message" mode is active
   const isAnyMessage = data.triggerMode === "any" || (data.triggers?.length === 1 && data.triggers[0]?.keyword === "*");
 
+  // Switch between "Keywords" mode and "Any Message" mode
   const handleModeChange = (mode: "keywords" | "any") => {
     setNodes((nds: Node[]) =>
       nds.map((n: Node) => {
@@ -143,6 +152,7 @@ const TriggerNode = ({ data, id }: any) => {
     );
   };
 
+  // Handles changes to the trigger keyword or matching mode
   const handleTriggerChange = (index: number, val: string, mode?: "exact" | "contains") => {
     setNodes((nds: Node[]) =>
       nds.map((n: Node) => {
@@ -187,6 +197,7 @@ const TriggerNode = ({ data, id }: any) => {
           <span className="text-xs font-bold uppercase tracking-wider">Triggers</span>
         </div>
         
+        {/* Toggle between Keywords and Any Message */}
         <div className="flex items-center bg-gray-100 rounded-lg border border-gray-200 p-0.5 shrink-0">
           <button 
             onClick={() => handleModeChange("keywords")} 
@@ -214,6 +225,7 @@ const TriggerNode = ({ data, id }: any) => {
           {data.triggers.map((trigger: Trigger, index: number) => (
             <div key={index} className="flex items-center gap-2 group">
               
+              {/* Keyword Input */}
               <div className="flex-1 relative min-w-0">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-amber-500"><Zap size={14} /></span>
                 <input 
@@ -224,6 +236,7 @@ const TriggerNode = ({ data, id }: any) => {
                 />
               </div>
 
+              {/* Match Mode Toggle (Contains / Exact) */}
               <div className="flex items-center bg-gray-100 rounded-lg border border-gray-200 p-0.5 shrink-0">
                 <button 
                   onClick={() => handleTriggerChange(index, trigger.keyword, "contains")} 
@@ -239,6 +252,7 @@ const TriggerNode = ({ data, id }: any) => {
                 </button>
               </div>
 
+              {/* Delete Trigger Button */}
               <button 
                 onClick={() => removeTrigger(index)} 
                 className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 shrink-0"
@@ -266,6 +280,7 @@ const TagNode = ({ data, id }: any) => {
   const [tags, setTags] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Fetch available tags from the database
   useEffect(() => {
     fetch("/api/tags")
       .then(res => res.json())
@@ -291,7 +306,11 @@ const TagNode = ({ data, id }: any) => {
           <TagIcon size={14} />
           <span className="text-xs font-bold uppercase tracking-wider">Tag Action</span>
         </div>
-        <button onClick={() => deleteElements({ nodes: [{ id }] })} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+        {/* Delete Node Button (Always visible on mobile, hover on desktop) */}
+        <button 
+          onClick={() => deleteElements({ nodes: [{ id }] })} 
+          className="text-gray-300 hover:text-red-500 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
+        >
           <Trash2 size={14} />
         </button>
       </div>
@@ -334,7 +353,11 @@ const OptInNode = ({ id }: any) => {
           <UserPlus size={14} />
           <span className="text-xs font-bold uppercase tracking-wider">Opt-in Action</span>
         </div>
-        <button onClick={() => deleteElements({ nodes: [{ id }] })} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+        {/* Delete Node Button */}
+        <button 
+          onClick={() => deleteElements({ nodes: [{ id }] })} 
+          className="text-gray-300 hover:text-red-500 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
+        >
           <Trash2 size={14} />
         </button>
       </div>
@@ -379,7 +402,11 @@ const FormNode = ({ data, id }: any) => {
           <ClipboardList size={14} />
           <span className="text-xs font-bold uppercase tracking-wider">Form Action</span>
         </div>
-        <button onClick={() => deleteElements({ nodes: [{ id }] })} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+        {/* Delete Node Button */}
+        <button 
+          onClick={() => deleteElements({ nodes: [{ id }] })} 
+          className="text-gray-300 hover:text-red-500 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
+        >
           <Trash2 size={14} />
         </button>
       </div>
@@ -415,6 +442,7 @@ const MessageNode = ({ data, id }: any) => {
   const [showLibrary, setShowLibrary] = useState(false);
   const [libraryItems, setLibraryItems] = useState<any[]>([]);
 
+  // Helper function to update node data immutably
   const updateNode = (newData: any) => {
     setNodes((nds: Node[]) =>
       nds.map((n: Node) => (n.id === id ? { ...n, data: { ...n.data, ...newData } } : n))
@@ -436,6 +464,7 @@ const MessageNode = ({ data, id }: any) => {
     updateNode({ buttons: data.buttons.map((b: Button) => (b.id === btnId ? { ...b, label } : b)) });
   };
 
+  // File Upload Constants
   const maxSizes: Record<string, number> = {
     image: 2 * 1024 * 1024, 
     video: 10 * 1024 * 1024, 
@@ -461,11 +490,13 @@ const MessageNode = ({ data, id }: any) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Determine media type based on file
     let mediaType: "image" | "video" | "document" | "audio" = "document";
     if (file.type.startsWith("image")) mediaType = "image";
     if (file.type.startsWith("video")) mediaType = "video";
     if (file.type.startsWith("audio")) mediaType = "audio";
 
+    // Validate File
     if (!allowedTypes[mediaType]?.includes(file.type)) {
       alert(`Invalid file format for ${mediaType}.`);
       return;
@@ -475,8 +506,10 @@ const MessageNode = ({ data, id }: any) => {
       return;
     }
 
+    // Set uploading state
     updateNode({ mediaUrl: "UPLOADING...", mediaType });
 
+    // Upload File to API
     const formData = new FormData();
     formData.append("file", file);
     
@@ -525,16 +558,22 @@ const MessageNode = ({ data, id }: any) => {
     <div className="w-72 bg-white border border-gray-200 shadow-lg rounded-2xl overflow-hidden group">
       <Handle type="target" position={Position.Left} className="!bg-emerald-500 !w-3 !h-3 !border-2 !border-white" />
       
+      {/* Node Header */}
       <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-emerald-50 to-white">
         <div className="flex items-center gap-2 text-emerald-700">
           <MessageSquare size={14} />
           <span className="text-xs font-bold uppercase tracking-wider">Message Step</span>
         </div>
-        <button onClick={() => deleteElements({ nodes: [{ id }] })} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+        {/* Delete Node Button */}
+        <button 
+          onClick={() => deleteElements({ nodes: [{ id }] })} 
+          className="text-gray-300 hover:text-red-500 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
+        >
           <Trash2 size={14} />
         </button>
       </div>
       
+      {/* Media Preview Section */}
       {data.mediaUrl && (
         <div 
           className="relative border-b border-gray-100 cursor-pointer group/media bg-gray-50 p-2" 
@@ -601,8 +640,10 @@ const MessageNode = ({ data, id }: any) => {
         </div>
       )}
 
+      {/* Content & Configuration Section */}
       <div className="p-3 space-y-3">
         
+        {/* Media Uploader / Link Input */}
         {!data.mediaUrl && (
           <div className="border border-dashed border-gray-200 rounded-xl p-2 space-y-2">
             <select 
@@ -657,6 +698,7 @@ const MessageNode = ({ data, id }: any) => {
                   </>
                 )}
 
+                {/* Media Library Dropdown */}
                 {showLibrary && (
                   <div className="absolute z-10 mt-1 w-full max-h-48 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg">
                     <div className="sticky top-0 bg-white p-1 border-b border-gray-100 flex justify-between items-center">
@@ -685,6 +727,7 @@ const MessageNode = ({ data, id }: any) => {
           </div>
         )}
 
+        {/* Text Message Input */}
         <textarea 
           value={data.message} 
           onChange={(e) => handleMsgChange(e.target.value)} 
@@ -693,6 +736,7 @@ const MessageNode = ({ data, id }: any) => {
           className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all resize-none" 
         />
         
+        {/* Interactive Buttons Configuration */}
         <div className="space-y-2 relative">
           {data.buttons.map((btn: Button) => (
             <div key={btn.id} className="bg-blue-50/50 border border-blue-200 rounded-xl p-2.5 space-y-1 group/btn relative">
@@ -750,7 +794,11 @@ const URLActionNode = ({ data, id }: any) => {
           <LinkIcon size={14} />
           <span className="text-xs font-bold uppercase tracking-wider">URL Action</span>
         </div>
-        <button onClick={() => deleteElements({ nodes: [{ id }] })} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+        {/* Delete Node Button */}
+        <button 
+          onClick={() => deleteElements({ nodes: [{ id }] })} 
+          className="text-gray-300 hover:text-red-500 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
+        >
           <Trash2 size={14} />
         </button>
       </div>
@@ -813,7 +861,11 @@ const CallActionNode = ({ data, id }: any) => {
           <PhoneCall size={14} />
           <span className="text-xs font-bold uppercase tracking-wider">Call Action</span>
         </div>
-        <button onClick={() => deleteElements({ nodes: [{ id }] })} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+        {/* Delete Node Button */}
+        <button 
+          onClick={() => deleteElements({ nodes: [{ id }] })} 
+          className="text-gray-300 hover:text-red-500 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"
+        >
           <Trash2 size={14} />
         </button>
       </div>
@@ -857,6 +909,7 @@ const CallActionNode = ({ data, id }: any) => {
   );
 };
 
+// Registry of all custom node types for React Flow
 const nodeTypes = { 
   trigger: TriggerNode, 
   message: MessageNode, 
@@ -869,6 +922,8 @@ const nodeTypes = {
 
 /* ============================================================================
    5. FLOW CANVAS COMPONENT
+   ----------------------------------------------------------------------------
+   The main interactive canvas where users build their workflows.
    ============================================================================ */
 function FlowCanvas({ initialData, editId, onSave, onCancel }: { 
   initialData: Workflow; 
@@ -883,10 +938,12 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
+  // Initialize nodes and edges when workflow data changes
   useEffect(() => {
     const initNodes: Node[] = [];
     const initEdges: Edge[] = [];
 
+    // Add Trigger Node (Check if it's an "Any Message" trigger)
     const initTriggers = initialData.triggers || [{ keyword: "", matchMode: "contains" }];
     const isAnyMessage = initTriggers.length === 1 && initTriggers[0].keyword === "*";
 
@@ -898,6 +955,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
       draggable: true,
     });
 
+    // Add Step Nodes
     Object.values(initialData.steps || {}).forEach((step) => {
       initNodes.push({
         id: step.id,
@@ -918,6 +976,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
       });
     });
 
+    // Add Edge from Trigger to Root Step
     if (initialData.rootStepId) {
       initEdges.push({ 
         id: "e-trigger-root", 
@@ -930,6 +989,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
       });
     }
 
+    // Add Edges for Button connections
     Object.values(initialData.steps || {}).forEach((step) => {
       step.buttons.forEach((btn) => {
         if (btn.nextStepId) {
@@ -975,11 +1035,12 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     setEdges(initEdges);
   }, [initialData]);
 
+  // Handle connection logic (restrict multiple connections of same category)
   const onConnect = useCallback((params: Connection) => {
     const getEdgeCategory = (type: string | undefined) => {
       if (type === 'tag_node') return 'tag';
       if (type === 'opt_in_node') return 'opt_in';
-      if (type === 'form_node') return 'flow';
+      if (type === 'form_node') return 'flow'; // Form is part of the main flow
       return 'flow'; 
     };
 
@@ -987,8 +1048,10 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     const targetCategory = getEdgeCategory(targetNode?.type);
 
     if (params.source === "trigger-node") {
+      // Trigger can only have one outgoing connection
       setEdges((eds) => eds.filter((e) => e.source !== "trigger-node").concat(addEdge({ ...params, animated: true, type: "default", style: { stroke: '#10b981', strokeWidth: 2 } }, eds)));
     } else {
+      // Replace existing connection of the same category (e.g., replacing an old tag with a new tag)
       setEdges((eds) => {
         const filtered = eds.filter(e => {
           if (e.source === params.source && e.sourceHandle === params.sourceHandle) {
@@ -1009,6 +1072,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     }
   }, [nodes, setEdges]);
 
+  // Delete edge on double click
   const onEdgeDoubleClick = useCallback((event: React.MouseEvent, edge: Edge) => {
     event.stopPropagation();
     setEdges((eds) => eds.filter((e) => e.id !== edge.id));
@@ -1019,6 +1083,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     event.dataTransfer.dropEffect = "move";
   }, []);
 
+  // Handle drag-and-drop node creation
   const onDrop = useCallback((event: React.DragEvent) => {
     event.preventDefault();
     const type = event.dataTransfer.getData("application/reactflow");
@@ -1062,6 +1127,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     setNodes((nds) => nds.concat(newNode));
   };
 
+  // Auto-format canvas layout
   const formatLayout = () => {
     const newNodes = [...nodes];
     const triggerNode = newNodes.find(n => n.id === "trigger-node");
@@ -1089,16 +1155,19 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     setNodes(newNodes);
   };
 
+  // Map visual canvas state back to Workflow data structure for saving
   const handleSave = () => {
     const triggers = nodes.find(n => n.id === "trigger-node")?.data?.triggers || [];
     const cleanTriggers = triggers.filter((t: Trigger) => t.keyword.trim());
     
     const steps: Record<string, Step> = {};
     
+    // Map all standard and action nodes
     nodes.filter(n => 
       n.type === "message" || n.type === "url_action" || n.type === "call_action" || 
       n.type === "tag_node" || n.type === "opt_in_node" || n.type === "form_node"
     ).forEach(n => {
+      // Determine button connections
       const buttonsWithLinks = n.data.buttons ? n.data.buttons.map((btn: Button) => {
         const targetEdge = edges.find(e => {
           if (e.source !== n.id || e.sourceHandle !== btn.id) return false;
@@ -1290,6 +1359,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           <div className="hidden md:block text-[10px] text-gray-400 leading-relaxed pt-2 border-t border-gray-200">
             <p>💡 <strong>Tip:</strong> Drag nodes onto the canvas, or tap to add on mobile.</p>
             <p className="mt-2">🗑️ <strong>Delete wire:</strong> Double-click the wire.</p>
+            <p className="mt-2">🗑️ <strong>Delete node:</strong> Click the trash icon on the node.</p>
             <p className="mt-2">🔗 <strong>Links:</strong> Select &quot;Link&quot; in the media dropdown to send URLs (Insta, YT, etc.).</p>
           </div>
         </div>
@@ -1307,7 +1377,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
             nodeTypes={nodeTypes} 
             onEdgeDoubleClick={onEdgeDoubleClick}
             fitView 
-            deleteKeyCode={['Backspace', 'Delete']}
+            deleteKeyCode={['Backspace', 'Delete']} // Allows deleting selected nodes with keyboard
           >
             <Background gap={16} size={1} color="#e5e7eb" />
             <Controls className="!bg-white !border !border-gray-200 !shadow-lg !rounded-lg" />
@@ -1343,6 +1413,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
    6. WRAPPER & CARD COMPONENTS
    ============================================================================ */
 
+// Wraps FlowCanvas in ReactFlowProvider to provide context
 function WorkflowForm({ editId, initialData, onSave, onCancel }: { 
   editId: string | null; 
   initialData: Workflow; 
@@ -1356,6 +1427,7 @@ function WorkflowForm({ editId, initialData, onSave, onCancel }: {
   );
 }
 
+// Displays a workflow summary in the dashboard list
 function WorkflowCard({ wf, onEdit, onDelete }: { 
   wf: Workflow; 
   onEdit: (wf: Workflow) => void; 
@@ -1373,7 +1445,7 @@ function WorkflowCard({ wf, onEdit, onDelete }: {
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
             
-            {/* Triggers List */}
+            {/* Triggers List (Displays "Any Message" if keyword is "*") */}
             <div className="flex items-center gap-2 mb-3 flex-wrap">
               <span className="text-[11px] text-amber-700 font-bold uppercase tracking-wider mr-1">Triggers:</span>
               {wf.triggers.map((t, i) => (
@@ -1441,6 +1513,7 @@ export default function Home() {
 
   const showToast = (message: string, type: "success" | "error" = "success") => setToast({ message, type });
 
+  // Creates a blank workflow template
   const getEmptyWorkflow = useCallback((): Workflow => {
     const rootId = uid();
     return {
@@ -1460,6 +1533,7 @@ export default function Home() {
     };
   }, []);
 
+  // Normalizes DB workflow data to ensure consistent structure
   const normalizeWorkflow = (wf: any): Workflow => {
     if (wf.steps && wf.rootStepId) {
       return {
@@ -1492,6 +1566,7 @@ export default function Home() {
     };
   };
 
+  // Fetch all workflows
   const load = async () => {
     try {
       const res = await fetch("/api/workflow");
@@ -1517,6 +1592,7 @@ export default function Home() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
+  // Save (Create or Update) workflow
   const save = async (wfData: Workflow) => {
     try {
       const payload = { 
@@ -1574,6 +1650,7 @@ export default function Home() {
     Object.values(wf.steps).some(s => s.message.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
+  // Loading State
   if (status === "loading") {
     return (
       <div className="flex min-h-screen bg-slate-50 items-center justify-center">
@@ -1602,6 +1679,7 @@ export default function Home() {
       <main className="ml-0 md:ml-64 min-h-screen flex flex-col">
         <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
           
+          {/* Page Header */}
           <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-gray-200 -mx-4 sm:-mx-6 px-4 sm:px-6 py-4">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div>
@@ -1633,6 +1711,7 @@ export default function Home() {
             </div>
           </header>
 
+          {/* Workflow Builder Canvas */}
           {editId !== null && (
             <WorkflowForm 
               key={editId} 
@@ -1643,6 +1722,7 @@ export default function Home() {
             />
           )}
           
+          {/* List Stats */}
           {workflows.length > 0 && editId === null && (
             <div className="flex items-center gap-6 px-1">
               <div className="flex items-center gap-2">
@@ -1659,10 +1739,12 @@ export default function Home() {
             </div>
           )}
 
+          {/* Workflows Grid */}
           <div className="grid gap-4">
             {filteredWorkflows.map(wf => <WorkflowCard key={wf._id} wf={wf} onEdit={edit} onDelete={remove} />)}
           </div>
           
+          {/* Empty State */}
           {workflows.length === 0 && editId === null && (
             <div className="flex flex-col items-center justify-center py-20 text-center">
               <div className="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center text-gray-300 mb-4">
