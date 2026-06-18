@@ -8,14 +8,14 @@ import Sidebar from "@/components/Sidebar";
 import {
   Play, Clock, CheckCircle, Loader2, XCircle, FileText, Trash2, Eye, X,
   Pencil, RotateCcw, Send, BarChart3, Zap, Users, CheckCheck, AlertTriangle,
-  Search, Filter, Radio, Wallet, AlertCircle,
+  Search, Filter, Radio, Wallet, AlertCircle, Pause, Square,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 
-type ReportItem = { status: string; replies?: string[]; reply?: string | null };
+type ReportItem = { status: string; replies?: string[]; reply?: string | null; charged?: boolean };
 type Campaign = {
   [x: string]: any;
   _id: string;
@@ -28,7 +28,7 @@ type Campaign = {
   mediaUrl: string;
   mediaType: string;
   languageCode: string;
-  status: "saved" | "scheduled" | "running" | "completed" | "failed";
+  status: "saved" | "scheduled" | "running" | "paused" | "completed" | "failed";
   totalMessages: number;
   sentCount: number;
   failedCount: number;
@@ -64,6 +64,7 @@ export default function CampaignList() {
   const { data: session, status } = useSession();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [startingId, setStartingId] = useState<string | null>(null);
+  const [actionId, setActionId] = useState<string | null>(null); // For pause/resume/stop loading
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [viewCampaign, setViewCampaign] = useState<Campaign | null>(null);
   const [quickPhone, setQuickPhone] = useState("");
@@ -131,7 +132,7 @@ export default function CampaignList() {
       toast.error("Insufficient balance. Please recharge your account.");
       return;
     }
-    if (!confirm("Start this campaign now? Balance will be deducted for each successful delivery.")) return;
+    if (!confirm("Start this campaign now? Balance will be deducted dynamically for each successful delivery.")) return;
     setStartingId(id);
     try {
       const res = await fetch("/api/campaigns/start", {
@@ -152,8 +153,7 @@ export default function CampaignList() {
       const data = await res.json();
 
       if (data.success) {
-        const deductionNote = data.totalDeducted > 0 ? ` • Spent: ${formatINR(data.totalDeducted)}` : "";
-        toast.success(`Campaign started! Sent: ${data.sent}${deductionNote}`);
+        toast.success(`Campaign started! Sending in progress...`);
         fetchBilling();
         loadCampaigns();
       } else {
@@ -167,12 +167,35 @@ export default function CampaignList() {
     }
   };
 
+  // Pause, Resume, and Stop Functions
+  const handleCampaignAction = async (id: string, action: "pause" | "resume" | "stop") => {
+    setActionId(id);
+    try {
+      const res = await fetch(`/api/campaigns/${action}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ campaignId: id }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success(`Campaign ${action}d successfully!`);
+        loadCampaigns();
+      } else {
+        toast.error(data.message || `Failed to ${action} campaign`);
+      }
+    } catch (err) {
+      toast.error(`Error trying to ${action} campaign`);
+    } finally {
+      setActionId(null);
+    }
+  };
+
   const rerunCampaign = async (id: string) => {
     if (!canSendMessage) {
       toast.error("Insufficient balance. Please recharge your account.");
       return;
     }
-    if (!confirm("Rerun this campaign? Balance will be deducted for each successful delivery.")) return;
+    if (!confirm("Rerun this campaign? Balance will be deducted dynamically.")) return;
     setStartingId(id);
     try {
       const campaign = campaigns.find(c => c._id === id);
@@ -214,8 +237,7 @@ export default function CampaignList() {
 
       const data = await startRes.json();
       if (data.success) {
-        const deductionNote = data.totalDeducted > 0 ? ` • Spent: ${formatINR(data.totalDeducted)}` : "";
-        toast.success(`Rerun started! Sent: ${data.sent}${deductionNote}`);
+        toast.success(`Rerun started! Sending in progress...`);
         fetchBilling();
         loadCampaigns();
       } else {
@@ -297,6 +319,7 @@ export default function CampaignList() {
     saved: { bg: "bg-gray-100", text: "text-gray-700", border: "border-gray-200", icon: <FileText size={12} /> },
     scheduled: { bg: "bg-indigo-50", text: "text-indigo-700", border: "border-indigo-200", icon: <Clock size={12} /> },
     running: { bg: "bg-amber-50", text: "text-amber-700", border: "border-amber-200", icon: <Loader2 size={12} className="animate-spin" /> },
+    paused: { bg: "bg-blue-50", text: "text-blue-700", border: "border-blue-200", icon: <Pause size={12} /> },
     completed: { bg: "bg-emerald-50", text: "text-emerald-700", border: "border-emerald-200", icon: <CheckCircle size={12} /> },
     failed: { bg: "bg-red-50", text: "text-red-700", border: "border-red-200", icon: <XCircle size={12} /> },
   };
@@ -309,7 +332,6 @@ export default function CampaignList() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-gray-900">
-      {/* Sidebar Component - Renders Mobile Subnavbar & Desktop Sidebar */}
       <Sidebar />
 
       {/* View Campaign Modal */}
@@ -463,6 +485,7 @@ export default function CampaignList() {
                 <option value="saved">Drafts</option>
                 <option value="scheduled">Scheduled</option>
                 <option value="running">Running</option>
+                <option value="paused">Paused</option>
                 <option value="completed">Completed</option>
                 <option value="failed">Failed</option>
               </select>
@@ -508,14 +531,44 @@ export default function CampaignList() {
                         )}
                       </div>
                       
-                      {/* Action Buttons - Visible on mobile, hover-reveal on desktop */}
-                      <div className="flex items-center gap-1.5 sm:ml-4 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity w-full sm:w-auto justify-end">
+                      {/* Action Buttons */}
+                      <div className="flex items-center gap-1.5 sm:ml-4 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity w-full sm:w-auto justify-end flex-wrap">
                         <button onClick={() => setViewCampaign(c)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Details">
                           <Eye size={16} />
                         </button>
                         <button onClick={() => router.push(`/campaigns/edit?id=${c._id}`)} className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors" title="Edit">
                           <Pencil size={16} />
                         </button>
+
+                        {c.status === "running" && (
+                          <button
+                            onClick={() => handleCampaignAction(c._id, "pause")}
+                            disabled={actionId === c._id}
+                            className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-blue-500 text-white hover:bg-blue-600 transition-all shadow-sm"
+                          >
+                            {actionId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Pause size={12} />} Pause
+                          </button>
+                        )}
+
+                        {c.status === "paused" && (
+                          <>
+                            <button
+                              onClick={() => handleCampaignAction(c._id, "resume")}
+                              disabled={actionId === c._id}
+                              className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-emerald-500 text-white hover:bg-emerald-600 transition-all shadow-sm"
+                            >
+                              {actionId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Resume
+                            </button>
+                            <button
+                              onClick={() => handleCampaignAction(c._id, "stop")}
+                              disabled={actionId === c._id}
+                              className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-red-500 text-white hover:bg-red-600 transition-all shadow-sm"
+                            >
+                              {actionId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Square size={12} />} Stop
+                            </button>
+                          </>
+                        )}
+
                         {isCompleted && (
                           <button
                             onClick={() => rerunCampaign(c._id)}
@@ -528,6 +581,7 @@ export default function CampaignList() {
                             {startingId === c._id ? <Loader2 size={16} className="animate-spin" /> : <RotateCcw size={16} />}
                           </button>
                         )}
+                        
                         {c.status === "saved" && (
                           <button
                             onClick={() => startCampaign(c._id)}
@@ -540,6 +594,7 @@ export default function CampaignList() {
                             {!canSendMessage ? "No Balance" : "Start"}
                           </button>
                         )}
+                        
                         {c.status !== "running" && (
                           <button onClick={() => deleteCampaign(c._id)} disabled={deletingId === c._id} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Delete">
                             {deletingId === c._id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
@@ -550,7 +605,7 @@ export default function CampaignList() {
 
                     {/* Stats Row */}
                     <div className={`grid gap-2 sm:gap-3 text-center grid-cols-2 sm:grid-cols-3 md:grid-cols-5 ${
-                      isCompleted && amountSpent > 0 ? 'lg:grid-cols-6' : ''
+                      amountSpent > 0 ? 'lg:grid-cols-6' : ''
                     }`}>
                       <div className="bg-slate-50 p-2 rounded-xl border border-slate-100">
                         <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Total</p>
@@ -569,7 +624,7 @@ export default function CampaignList() {
                         <p className="font-bold text-orange-700 text-sm mt-0.5">{liveStats.failedInvalid}</p>
                       </div>
 
-                      {isCompleted && amountSpent > 0 && (
+                      {amountSpent > 0 && (
                         <div className="bg-blue-50 p-2 rounded-xl border border-blue-100 col-span-2 sm:col-span-1">
                           <p className="text-[9px] text-blue-600 font-bold uppercase tracking-wider flex items-center justify-center gap-0.5">
                             <Wallet size={8} /> Spent
@@ -598,16 +653,16 @@ export default function CampaignList() {
                       </div>
                     )}
 
-                    {isCompleted && amountSpent > 0 && (
+                    {amountSpent > 0 && (
                       <div className="mt-3 flex items-center gap-2 text-xs">
                         <Wallet size={12} className="text-blue-500" />
-                        <span className="text-slate-500">Amount spent:</span>
+                        <span className="text-slate-500">Amount spent (Dynamic):</span>
                         <span className="font-bold text-blue-700">{formatINR(amountSpent)}</span>
                         <span className="text-slate-400">({c.sentCount} delivered)</span>
                       </div>
                     )}
 
-                    {c.status === "completed" && amountSpent === 0 && c.sentCount > 0 && (
+                    {isCompleted && amountSpent === 0 && c.sentCount > 0 && (
                       <div className="mt-3 flex items-center gap-2 text-xs">
                         <CheckCircle size={12} className="text-emerald-500" />
                         <span className="text-slate-500">Completed — {c.sentCount} messages delivered</span>
