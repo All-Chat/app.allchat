@@ -366,22 +366,33 @@ export default function CreateCampaign() {
       <div className="md:ml-64 p-4 sm:p-6 lg:p-10 overflow-y-auto min-h-screen">
         <div className="max-w-7xl mx-auto space-y-6 sm:space-y-10">
 
-          {/* Header */}
-          <div className="relative overflow-hidden bg-gradient-to-br from-emerald-600 via-teal-500 to-cyan-500 rounded-2xl sm:rounded-3xl p-6 sm:p-8 text-white shadow-2xl shadow-emerald-200">
-            <div className="absolute -top-10 -right-10 w-48 h-48 bg-white/10 rounded-full blur-2xl"></div>
-            <div className="absolute -bottom-10 -left-10 w-48 h-48 bg-white/10 rounded-full blur-2xl"></div>
-            <div className="relative flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 z-10">
-              <div>
-                <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight">Create Campaign</h1>
-                <p className="text-emerald-100 text-xs sm:text-sm mt-2 font-medium">Set up your audience and broadcast WhatsApp messages instantly.</p>
-              </div>
-              {rawNumbers.length > 0 && (
-                <div className="bg-white/20 backdrop-blur-md px-5 sm:px-8 py-2 sm:py-3 rounded-xl sm:rounded-2xl flex items-center gap-3 sm:gap-4 text-base sm:text-lg font-bold border border-white/30 shadow-sm shrink-0">
-                  <Users size={20} /> {rawNumbers.length} Contacts
-                </div>
-              )}
-            </div>
-          </div>
+          {/* Soft Light Blue Header */}
+<div className="relative overflow-hidden bg-gradient-to-br from-[#EFF6FF] to-[#DBEAFE] rounded-2xl sm:rounded-3xl p-6 sm:p-8 border border-blue-100 shadow-lg shadow-blue-100/60">
+  
+  {/* Decorative background blurs */}
+  <div className="absolute -top-12 -right-12 w-56 h-56 bg-[#93C5FD]/40 rounded-full blur-3xl"></div>
+  <div className="absolute -bottom-16 -left-10 w-40 h-40 bg-white/60 rounded-full blur-2xl"></div>
+
+  {/* Content */}
+  <div className="relative flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 z-10">
+    
+    <div>
+      <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-blue-900">
+        Create Campaign
+      </h1>
+      <p className="text-blue-700/80 text-xs sm:text-sm mt-2 font-medium">
+        Set up your audience and broadcast WhatsApp messages instantly.
+      </p>
+    </div>
+
+    {/* Contacts Badge - Made vibrant to stand out on light bg */}
+    {rawNumbers.length > 0 && (
+      <div className="flex-shrink-0 bg-gradient-to-br from-blue-500 to-sky-600 px-5 sm:px-8 py-2 sm:py-3 rounded-xl sm:rounded-2xl flex items-center gap-3 sm:gap-4 text-base sm:text-lg font-bold text-white shadow-md shadow-blue-200/60">
+        <Users size={20} /> {rawNumbers.length} Contacts
+      </div>
+    )}
+  </div>
+</div>
 
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 sm:gap-10">
             {/* Left Column */}
