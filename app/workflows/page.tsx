@@ -42,8 +42,21 @@ import {
   Link as LinkIcon,
   Library,
   PhoneCall,
+  Tag,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
+
+/* ────────────────────────────────────────────
+   MOCK EXISTING TAGS
+   ──────────────────────────────────────────── */
+const EXISTING_TAGS = [
+  "Lead",
+  "VIP Customer",
+  "Newsletter",
+  "Support Ticket",
+  "Blocked",
+  "Interested"
+];
 
 /* ────────────────────────────────────────────
    TYPES
@@ -52,7 +65,7 @@ type Trigger = { keyword: string; matchMode: "exact" | "contains" };
 type Button = { id: string; label: string; nextStepId: string | null };
 type Step = { 
   id: string; 
-  stepType?: "message" | "url_action" | "call_action";
+  stepType?: "message" | "url_action" | "call_action" | "tag_node";
   message: string; 
   buttons: Button[]; 
   position?: { x: number; y: number };
@@ -61,6 +74,7 @@ type Step = {
   urlLabel?: string;
   url?: string;
   phoneNumber?: string;
+  tagName?: string; // Added for Tag Node
 };
 type Workflow = {
   _id: string;
@@ -638,7 +652,72 @@ const CallActionNode = ({ data, id }: any) => {
   );
 };
 
-const nodeTypes = { trigger: TriggerNode, message: MessageNode, url_action: URLActionNode, call_action: CallActionNode };
+/* ────────────────────────────────────────────
+   TAG NODE (NEW)
+   ──────────────────────────────────────────── */
+const TagNode = ({ data, id }: any) => {
+  const { setNodes, deleteElements } = useReactFlow();
+
+  const updateNode = (newData: any) => {
+    setNodes((nds: Node[]) =>
+      nds.map((n: Node) => (n.id === id ? { ...n, data: { ...n.data, ...newData } } : n))
+    );
+  };
+
+  return (
+    <div className="w-64 bg-white border border-indigo-200 shadow-lg rounded-2xl overflow-hidden group">
+      <Handle type="target" position={Position.Left} className="!bg-indigo-500 !w-3 !h-3 !border-2 !border-white" />
+      
+      <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-indigo-50 to-white">
+        <div className="flex items-center gap-2 text-indigo-700">
+          <Tag size={14} />
+          <span className="text-xs font-bold uppercase tracking-wider">Add Tag</span>
+        </div>
+        <button onClick={() => deleteElements({ nodes: [{ id }] })} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Trash2 size={14} />
+        </button>
+      </div>
+      
+      <div className="p-3 space-y-3">
+        <p className="text-[10px] text-gray-500 leading-tight px-1">
+          Connect a button to this node to add the user to the selected tag.
+        </p>
+
+        <div className="space-y-2">
+          <div className="relative">
+            <select 
+              value={data.tagName || ""} 
+              onChange={(e) => updateNode({ tagName: e.target.value })} 
+              className="w-full pl-3 pr-8 py-2.5 bg-white border border-indigo-200 rounded-xl text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400 shadow-sm appearance-none cursor-pointer"
+            >
+              <option value="" disabled>Select a Tag...</option>
+              {EXISTING_TAGS.map(tag => (
+                <option key={tag} value={tag}>{tag}</option>
+              ))}
+            </select>
+            <Tag size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-indigo-400 pointer-events-none" />
+          </div>
+        </div>
+        
+        {data.tagName && (
+          <div className="flex items-center gap-2 px-2 py-1.5 bg-indigo-50 rounded-lg border border-indigo-100">
+            <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
+            <span className="text-xs font-semibold text-indigo-700">User will be added to:</span>
+            <span className="text-xs font-bold text-indigo-900 bg-white px-2 py-0.5 rounded shadow-sm border border-indigo-200">{data.tagName}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const nodeTypes = { 
+  trigger: TriggerNode, 
+  message: MessageNode, 
+  url_action: URLActionNode, 
+  call_action: CallActionNode,
+  tag_node: TagNode 
+};
 
 /* ────────────────────────────────────────────
    FLOW CANVAS
@@ -680,7 +759,8 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           mediaType: step.mediaType || null,
           urlLabel: step.urlLabel,
           url: step.url,
-          phoneNumber: step.phoneNumber
+          phoneNumber: step.phoneNumber,
+          tagName: step.tagName || null
         },
         draggable: true,
       });
@@ -719,12 +799,31 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     if (params.source === "trigger-node") {
       setEdges((eds) => eds.filter((e) => e.source !== "trigger-node").concat(addEdge({ ...params, animated: true, type: "default", style: { stroke: '#10b981', strokeWidth: 2 } }, eds)));
     } else {
+      // Connection Logic: Check if target is a Tag Node
+      const targetNode = nodes.find(n => n.id === params.target);
+      const isTagTarget = targetNode?.type === 'tag_node';
+
       setEdges((eds) => {
-        const filtered = eds.filter((e) => !(e.source === params.source && e.sourceHandle === params.sourceHandle));
+        let filtered = eds;
+        
+        if (!isTagTarget) {
+          // Standard Node: Replace existing connection (1-to-1 flow)
+          filtered = eds.filter((e) => !(e.source === params.source && e.sourceHandle === params.sourceHandle));
+        } else {
+          // Tag Node: Do NOT filter existing connections (Add to tag + Continue flow)
+          // But prevent duplicate exact edges
+          const exists = eds.some(e => 
+            e.source === params.source && 
+            e.sourceHandle === params.sourceHandle && 
+            e.target === params.target
+          );
+          if (exists) return eds;
+        }
+
         return addEdge({ ...params, animated: true, type: "default", style: { stroke: '#3b82f6', strokeWidth: 2 } }, filtered);
       });
     }
-  }, [setEdges]);
+  }, [setEdges, nodes]);
 
   const onEdgeDoubleClick = useCallback((event: React.MouseEvent, edge: Edge) => {
     event.stopPropagation();
@@ -747,6 +846,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     if (type === "message") newData = { message: "", buttons: [], mediaUrl: null, mediaType: null };
     if (type === "url_action") newData = { message: "", urlLabel: "", url: "" };
     if (type === "call_action") newData = { message: "", urlLabel: "", phoneNumber: "" };
+    if (type === "tag_node") newData = { tagName: "" }; // Initialize Tag Node
 
     const newNode = { id: uid(), type, position, data: newData };
     setNodes((nds) => nds.concat(newNode));
@@ -784,14 +884,20 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     const cleanTriggers = triggers.filter((t: Trigger) => t.keyword.trim());
     
     const steps: Record<string, Step> = {};
-    nodes.filter(n => n.type === "message" || n.type === "url_action" || n.type === "call_action").forEach(n => {
+    nodes.filter(n => n.type === "message" || n.type === "url_action" || n.type === "call_action" || n.type === "tag_node").forEach(n => {
       const buttonsWithLinks = n.data.buttons ? n.data.buttons.map((btn: Button) => {
-        const edge = edges.find(e => e.source === n.id && e.sourceHandle === btn.id);
-        return { ...btn, nextStepId: edge ? edge.target : null };
+        const btnEdges = edges.filter(e => e.source === n.id && e.sourceHandle === btn.id);
+        const flowEdge = btnEdges.find(e => {
+           const target = nodes.find(node => node.id === e.target);
+           return target?.type !== 'tag_node';
+        });
+        return { 
+          ...btn, 
+          nextStepId: flowEdge ? flowEdge.target : null 
+        };
       }) : [];
 
-      // Narrow node type for Step.stepType to satisfy TypeScript
-      const stepType = n.type as "message" | "url_action" | "call_action" | undefined;
+      const stepType = n.type as "message" | "url_action" | "call_action" | "tag_node" | undefined;
 
       steps[n.id] = {
         id: n.id,
@@ -803,7 +909,8 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         mediaType: n.data.mediaType,
         urlLabel: n.data.urlLabel,
         url: n.data.url,
-        phoneNumber: n.data.phoneNumber
+        phoneNumber: n.data.phoneNumber,
+        tagName: n.data.tagName
       };
     });
 
@@ -820,7 +927,6 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
 
   return (
     <div className={`overflow-hidden flex flex-col transition-all duration-300 ease-in-out ${
-        // FIX: Added h-screen w-screen to remove the bottom gap in full screen
         isFullScreen ? 'fixed inset-0 z-50 bg-white h-screen w-screen' : 'bg-white rounded-2xl border border-gray-200 shadow-sm relative h-[80vh]'
       }`}
     >
@@ -847,8 +953,56 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         </div>
       </div>
 
+      {/* MOBILE TOP BAR (Horizontal Scroll) */}
+      <div className="md:hidden w-full border-b border-gray-200 bg-white p-2 flex gap-2 overflow-x-auto whitespace-nowrap shrink-0 z-20 shadow-sm no-scrollbar">
+        <div 
+          onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "message")} 
+          draggable 
+          className="min-w-[120px] flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-lg cursor-grab active:cursor-grabbing hover:border-emerald-400 hover:shadow-sm transition-all"
+        >
+          <div className="w-6 h-6 rounded bg-emerald-100 text-emerald-600 flex items-center justify-center shrink-0">
+            <MessageSquare size={12} />
+          </div>
+          <span className="text-xs font-medium text-gray-700">Message</span>
+        </div>
+
+        <div 
+          onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "url_action")} 
+          draggable 
+          className="min-w-[120px] flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-lg cursor-grab active:cursor-grabbing hover:border-purple-400 hover:shadow-sm transition-all"
+        >
+          <div className="w-6 h-6 rounded bg-purple-100 text-purple-600 flex items-center justify-center shrink-0">
+            <LinkIcon size={12} />
+          </div>
+          <span className="text-xs font-medium text-gray-700">URL</span>
+        </div>
+
+        <div 
+          onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "call_action")} 
+          draggable 
+          className="min-w-[120px] flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-lg cursor-grab active:cursor-grabbing hover:border-rose-400 hover:shadow-sm transition-all"
+        >
+          <div className="w-6 h-6 rounded bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+            <PhoneCall size={12} />
+          </div>
+          <span className="text-xs font-medium text-gray-700">Call</span>
+        </div>
+
+        <div 
+          onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "tag_node")} 
+          draggable 
+          className="min-w-[120px] flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-lg cursor-grab active:cursor-grabbing hover:border-indigo-400 hover:shadow-sm transition-all"
+        >
+          <div className="w-6 h-6 rounded bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
+            <Tag size={12} />
+          </div>
+          <span className="text-xs font-medium text-gray-700">Tag</span>
+        </div>
+      </div>
+
       <div className="flex flex-1 overflow-hidden">
-        <div className="w-48 border-r border-gray-200 bg-gray-50 p-3 hidden md:block space-y-3 overflow-y-auto shrink-0">
+        {/* DESKTOP SIDEBAR */}
+        <div className="hidden md:flex flex-col w-48 border-r border-gray-200 bg-gray-50 p-3 space-y-3 overflow-y-auto shrink-0">
           <div>
             <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Nodes</h3>
             
@@ -883,7 +1037,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
             <div 
               onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "call_action")} 
               draggable 
-              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-rose-400 hover:shadow-sm transition-all"
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-rose-400 hover:shadow-sm transition-all mb-2"
             >
               <div className="w-8 h-8 rounded-lg bg-rose-100 text-rose-600 flex items-center justify-center">
                 <PhoneCall size={14} />
@@ -891,6 +1045,20 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
               <div>
                 <p className="text-xs font-semibold text-gray-800">Call Action</p>
                 <p className="text-[10px] text-gray-400">Click to call number</p>
+              </div>
+            </div>
+
+            <div 
+              onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "tag_node")} 
+              draggable 
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-indigo-400 hover:shadow-sm transition-all"
+            >
+              <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center">
+                <Tag size={14} />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-800">Add Tag</p>
+                <p className="text-[10px] text-gray-400">Label user</p>
               </div>
             </div>
           </div>
@@ -902,7 +1070,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           </div>
         </div>
 
-        {/* FIX: Added w-full h-full to ensure canvas fills the area properly */}
+        {/* Canvas Area */}
         <div ref={reactFlowWrapper} className="flex-1 h-full w-full bg-gray-50/80 bg-dots">
           <ReactFlow
             nodes={nodes} edges={edges}
@@ -913,7 +1081,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           >
             <Background gap={16} size={1} color="#e5e7eb" />
             <Controls className="!bg-white !border !border-gray-200 !shadow-lg !rounded-lg" />
-            <MiniMap className="!bg-white !border !border-gray-200" nodeColor={(n) => (n.type === 'trigger' ? '#f59e0b' : n.type === 'url_action' ? '#a855f7' : n.type === 'call_action' ? '#f43f5e' : '#10b981')} />
+            <MiniMap className="!bg-white !border !border-gray-200" nodeColor={(n) => (n.type === 'trigger' ? '#f59e0b' : n.type === 'url_action' ? '#a855f7' : n.type === 'call_action' ? '#f43f5e' : n.type === 'tag_node' ? '#6366f1' : '#10b981')} />
           </ReactFlow>
         </div>
       </div>
@@ -1082,75 +1250,74 @@ export default function Home() {
   if (status === "loading") {
     return (
       <div className="flex min-h-screen bg-slate-50 items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-emerald-600" />
+        <Loader2 className="animate-spin text-emerald-500" size={32} />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <style jsx global>{`
-        @keyframes slide-in { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
-        .animate-slide-in { animation: slide-in 0.3s ease-out; }
-        .bg-dots { background-image: radial-gradient(#d1d5db 1px, transparent 1px); background-size: 24px 24px; }
-        .react-flow__handle { transition: all 0.2s; }
-        .react-flow__handle:hover { transform: scale(1.2); }
-      `}</style>
-
-      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+    <>
+    <Sidebar/>
+    <main className="min-h-screen bg-slate-50 pb-20 ml-50">
       
-      <Sidebar />
+      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+        
 
-      <main className="ml-0 md:ml-64 min-h-screen flex flex-col">
-        <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
-          
-          <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-gray-200 -mx-4 sm:-mx-6 px-4 sm:px-6 py-4">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-              <div>
-                <h1 className="text-xl font-bold text-gray-900">Workflows</h1>
-                <p className="text-sm text-gray-400 mt-0.5">Drag, drop, and connect nodes like n8n</p>
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
+        {/* Header */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Workflows</h1>
+            <p className="text-gray-500 text-sm mt-1">Manage your automated WhatsApp sequences</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="relative group">
+              <input 
+                type="text" 
+                placeholder="Search workflows..." 
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm w-64 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all shadow-sm"
+              />
+              <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-emerald-500 transition-colors">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
               </div>
-              <div className="flex flex-col sm:flex-row w-full sm:w-auto items-stretch sm:items-center gap-3">
-                <div className="relative flex-1 sm:flex-none">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg></span>
-                  <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search workflows…" className="w-full sm:w-64 pl-9 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all" />
+            </div>
+            <button 
+              onClick={startCreating}
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold rounded-xl shadow-lg shadow-emerald-200 transition-all active:scale-95"
+            >
+              <Plus size={18} /> New Workflow
+            </button>
+          </div>
+        </div>
+
+        {/* Editor Area */}
+        {editId && editData ? (
+          <WorkflowForm editId={editId} initialData={editData} onSave={save} onCancel={cancelEdit} />
+        ) : (
+          /* Grid */
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredWorkflows.length === 0 ? (
+              <div className="col-span-full py-12 flex flex-col items-center justify-center text-center bg-white border-2 border-dashed border-gray-200 rounded-3xl">
+                <div className="w-16 h-16 bg-gray-50 rounded-2xl flex items-center justify-center mb-4">
+                  <WorkflowIcon size={32} className="text-gray-300" />
                 </div>
-                <button onClick={startCreating} className="bg-emerald-500 text-white px-4 py-2.5 rounded-xl text-sm font-semibold hover:bg-emerald-600 transition-all flex items-center justify-center gap-2 shadow-sm whitespace-nowrap">
-                  <Plus size={16} /> Create Workflow
+                <h3 className="text-gray-900 font-semibold text-lg">No workflows found</h3>
+                <p className="text-gray-500 text-sm mt-1 max-w-xs mx-auto">Get started by creating your first automated response flow.</p>
+                <button onClick={startCreating} className="mt-6 px-6 py-2.5 bg-gray-900 text-white text-sm font-medium rounded-xl hover:bg-gray-800 transition-colors">
+                  Create Workflow
                 </button>
               </div>
-            </div>
-          </header>
-
-          {editId !== null && (
-             <WorkflowForm 
-               key={editId} 
-               editId={editId === "new" ? null : editId} 
-               initialData={editData || getEmptyWorkflow()} 
-               onSave={save} onCancel={cancelEdit} 
-             />
-          )}
-          
-          {workflows.length > 0 && editId === null && (
-            <div className="flex items-center gap-6 px-1">
-              <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-emerald-400" /><span className="text-xs font-semibold text-gray-500">{workflows.length} active workflow{workflows.length !== 1 ? "s" : ""}</span></div>
-              {searchQuery && <span className="text-xs text-gray-400">{filteredWorkflows.length} results for &quot;{searchQuery}&ldquo;</span>}
-            </div>
-          )}
-
-          <div className="grid gap-4">
-            {filteredWorkflows.map(wf => <WorkflowCard key={wf._id} wf={wf} onEdit={edit} onDelete={remove} />)}
+            ) : (
+              filteredWorkflows.map((wf) => (
+                <WorkflowCard key={wf._id} wf={wf} onEdit={edit} onDelete={remove} />
+              ))
+            )}
           </div>
-          
-          {workflows.length === 0 && editId === null && (
-             <div className="flex flex-col items-center justify-center py-20 text-center">
-               <div className="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center text-gray-300 mb-4"><WorkflowIcon size={24} /></div>
-               <h3 className="text-lg font-bold text-gray-900 mb-1">No workflows yet</h3>
-               <p className="text-sm text-gray-400 max-w-xs">Create your first workflow to start auto-replying to WhatsApp messages.</p>
-             </div>
-          )}
-        </div>
-      </main>
-    </div>
+        )}
+      </div>
+    </main>
+    </>
   );
 }
