@@ -9,6 +9,7 @@ import User from "@/models/User";
 import Session from "@/models/Session";
 import Contact from "@/models/Contact";
 import Tag from "@/models/Tag";
+import OptNumber from "@/models/OptNumber"; // 🔴 IMPORTED OPT-NUMBER MODEL
 import { sendWhatsAppMessage } from "@/lib/sendWhatsApp";
 
 export const dynamic = "force-dynamic";
@@ -251,10 +252,9 @@ export async function POST(req: Request) {
           if (latestCampaign) targetedCampaigns.push(latestCampaign);
         }
 
-                // Fetch all user tags ONCE to check against the reply
+        // Fetch all user tags ONCE to check against the reply
         let userTags: any[] = [];
         if (userId) {
-          // Select the new fields so we know if it's campaign specific
           userTags = await Tag.find({ userId }).select("name isCampaignSpecific campaignId");
         }
 
@@ -279,22 +279,18 @@ export async function POST(req: Request) {
               const currentTags = camp.reportData[reportIndex].tags || [];
               let detectedTags: string[] = [];
 
-                            // Check if any word in the reply matches any of the user's tags
+              // Check if any word in the reply matches any of the user's tags
               for (const t of userTags) {
                 const tagNameLower = t.name.toLowerCase();
                 if (tagNameLower && lowerText.includes(tagNameLower)) {
                   
-                  // 🔴 NEW: Campaign-Specific Logic
                   if (t.isCampaignSpecific) {
-                    // If it's specific, ONLY apply if the tag's campaignId matches the current campaign's _id
                     if (t.campaignId && t.campaignId.toString() === camp._id.toString()) {
                       detectedTags.push(t.name);
                     }
                   } else {
-                    // Global tag, apply to any campaign
                     detectedTags.push(t.name);
                   }
-                  
                 }
               }
 
@@ -316,7 +312,6 @@ export async function POST(req: Request) {
               if (detectedTags.length > 0 && userId) {
                 try {
                   for (const dt of detectedTags) {
-                    // Tag already exists since we fetched from DB, but safe to upsert
                     await Tag.findOneAndUpdate(
                       { userId, name: dt },
                       { $setOnInsert: { userId, name: dt } },
@@ -370,28 +365,48 @@ export async function POST(req: Request) {
                 }
               }
 
-              if (clickedBtn && clickedBtn.nextStepId) {
-                const nextStep = wf.steps[clickedBtn.nextStepId];
+              if (clickedBtn) {
                 
-                if (nextStep) {
-                  session.currentStepId = nextStep.id;
-                  await session.save();
+                // 🔴 NEW: CHECK IF BUTTON HAS OPT-IN NODE CONNECTED & SAVE NUMBER
+                if (clickedBtn.optInNodeId) {
+                  try {
+                    const existingOpt = await OptNumber.findOne({ userId, phoneNumber: phone });
+                    if (!existingOpt) {
+                      await OptNumber.create({ userId, phoneNumber: phone });
+                      console.log(`📝 Opt-in number saved automatically: ${phone}`);
+                    }
+                  } catch (optErr) {
+                    console.error("⚠️ Failed to save opt-in number:", optErr);
+                  }
+                }
 
-                  await sendWhatsAppMessage(
-                    phone, 
-                    nextStep, 
-                    ownerUser?.whatsappPhoneNumberId, 
-                    ownerUser?.whatsappAccessToken
-                  );
+                if (clickedBtn.nextStepId) {
+                  const nextStep = wf.steps[clickedBtn.nextStepId];
                   
-                  await Message.create({
-                    userId,
-                    phone,
-                    text: nextStep.message || `[${nextStep.stepType?.toUpperCase()}]`,
-                    direction: "out",
-                    messageType: "text",
-                  });
-                  console.log(`📤 OUTBOUND WORKFLOW (Next Step) SAVED ✔️`);
+                  if (nextStep) {
+                    session.currentStepId = nextStep.id;
+                    await session.save();
+
+                    await sendWhatsAppMessage(
+                      phone, 
+                      nextStep, 
+                      ownerUser?.whatsappPhoneNumberId, 
+                      ownerUser?.whatsappAccessToken
+                    );
+                    
+                    await Message.create({
+                      userId,
+                      phone,
+                      text: nextStep.message || `[${nextStep.stepType?.toUpperCase()}]`,
+                      direction: "out",
+                      messageType: "text",
+                    });
+                    console.log(`📤 OUTBOUND WORKFLOW (Next Step) SAVED ✔️`);
+                    return NextResponse.json({ success: true });
+                  }
+                } else {
+                  await Session.deleteOne({ _id: session._id });
+                  console.log(`🛑 Workflow ended for ${phone}`);
                   return NextResponse.json({ success: true });
                 }
               } else {
