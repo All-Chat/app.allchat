@@ -43,7 +43,8 @@ import {
   Library,
   PhoneCall,
   Tag as TagIcon,
-  UserPlus, // Added for OptIn Node
+  UserPlus,
+  ClipboardList, 
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 
@@ -61,7 +62,7 @@ type Button = {
 };
 type Step = { 
   id: string; 
-  stepType?: "message" | "url_action" | "call_action" | "tag_node" | "opt_in_node";
+  stepType?: "message" | "url_action" | "call_action" | "tag_node" | "opt_in_node" | "form_node";
   message: string; 
   buttons: Button[]; 
   position?: { x: number; y: number };
@@ -71,6 +72,7 @@ type Step = {
   url?: string;
   phoneNumber?: string;
   selectedTag?: string | null;
+  selectedForm?: string | null;
 };
 type Workflow = {
   _id: string;
@@ -250,9 +252,6 @@ const TagNode = ({ data, id }: any) => {
   );
 };
 
-// ────────────────────────────────────────────
-// NEW: OPT-IN NODE
-// ────────────────────────────────────────────
 const OptInNode = ({ id }: any) => {
   const { deleteElements } = useReactFlow();
 
@@ -272,6 +271,53 @@ const OptInNode = ({ id }: any) => {
         <p className="text-[9px] text-gray-500 leading-tight">
           📝 Adds the user&apos;s phone number to the &quot;Opt-in Numbers&quot; list instantly when they click the connected button.
         </p>
+      </div>
+    </div>
+  );
+};
+
+const FormNode = ({ data, id }: any) => {
+  const { setNodes, deleteElements } = useReactFlow();
+  const [forms, setForms] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/forms")
+      .then(res => res.json())
+      .then(data => { setForms(data.forms || []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+
+  const updateForm = (formId: string) => {
+    setNodes((nds: Node[]) =>
+      nds.map((n: Node) => (n.id === id ? { ...n, data: { ...n.data, selectedForm: formId } } : n))
+    );
+  };
+
+  return (
+    <div className="w-72 bg-white border border-teal-200 shadow-lg rounded-2xl overflow-hidden group">
+      <Handle type="target" position={Position.Left} className="!bg-teal-500 !w-3 !h-3 !border-2 !border-white" />
+      <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-teal-50 to-white">
+        <div className="flex items-center gap-2 text-teal-700">
+          <ClipboardList size={14} />
+          <span className="text-xs font-bold uppercase tracking-wider">Form Action</span>
+        </div>
+        <button onClick={() => deleteElements({ nodes: [{ id }] })} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Trash2 size={14} />
+        </button>
+      </div>
+      <div className="p-3 space-y-2">
+        <p className="text-[9px] text-gray-500 leading-tight">
+          📝 Sends a link to a custom form for the user to fill out.
+        </p>
+        {loading ? (
+          <div className="flex items-center gap-2 text-xs text-gray-500"><Loader2 size={12} className="animate-spin" /> Loading forms...</div>
+        ) : (
+          <select value={data.selectedForm || ""} onChange={(e) => updateForm(e.target.value)} className="w-full px-2 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-teal-500/20">
+            <option value="">Select a form...</option>
+            {forms.map((f: any) => <option key={f._id} value={f._id}>{f.name}</option>)}
+          </select>
+        )}
       </div>
     </div>
   );
@@ -725,7 +771,8 @@ const nodeTypes = {
   url_action: URLActionNode, 
   call_action: CallActionNode, 
   tag_node: TagNode,
-  opt_in_node: OptInNode 
+  opt_in_node: OptInNode,
+  form_node: FormNode 
 };
 
 /* ────────────────────────────────────────────
@@ -769,7 +816,8 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           urlLabel: step.urlLabel,
           url: step.url,
           phoneNumber: step.phoneNumber,
-          selectedTag: step.selectedTag || null 
+          selectedTag: step.selectedTag || null,
+          selectedForm: step.selectedForm || null 
         },
         draggable: true,
       });
@@ -822,12 +870,12 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     setEdges(initEdges);
   }, [initialData]);
 
-  // Updated Connection Logic (1 Flow + 1 Tag + 1 OptIn)
   const onConnect = useCallback((params: Connection) => {
     const getEdgeCategory = (type: string | undefined) => {
       if (type === 'tag_node') return 'tag';
       if (type === 'opt_in_node') return 'opt_in';
-      return 'flow'; // message, url_action, call_action
+      if (type === 'form_node') return 'flow'; // Form is part of the main flow
+      return 'flow'; 
     };
 
     const targetNode = nodes.find(n => n.id === params.target);
@@ -837,7 +885,6 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
       setEdges((eds) => eds.filter((e) => e.source !== "trigger-node").concat(addEdge({ ...params, animated: true, type: "default", style: { stroke: '#10b981', strokeWidth: 2 } }, eds)));
     } else {
       setEdges((eds) => {
-        // Filter out existing edges of the SAME category from this specific source handle
         const filtered = eds.filter(e => {
           if (e.source === params.source && e.sourceHandle === params.sourceHandle) {
             const existingTarget = nodes.find(n => n.id === e.target);
@@ -847,9 +894,10 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           return true;
         });
 
-        let strokeColor = '#3b82f6'; // Flow
+        let strokeColor = '#3b82f6'; 
         if (targetCategory === 'tag') strokeColor = '#6366f1';
         if (targetCategory === 'opt_in') strokeColor = '#f97316';
+        if (targetCategory === 'flow' && targetNode?.type === 'form_node') strokeColor = '#14b8a6';
 
         return addEdge({ ...params, animated: true, type: "default", style: { stroke: strokeColor, strokeWidth: 2 } }, filtered);
       });
@@ -878,7 +926,8 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     if (type === "url_action") newData = { message: "", urlLabel: "", url: "" };
     if (type === "call_action") newData = { message: "", urlLabel: "", phoneNumber: "" };
     if (type === "tag_node") newData = { selectedTag: "" };
-    if (type === "opt_in_node") newData = {}; // No extra data needed
+    if (type === "opt_in_node") newData = {};
+    if (type === "form_node") newData = { selectedForm: "" };
 
     const newNode = { id: uid(), type, position, data: newData };
     setNodes((nds) => nds.concat(newNode));
@@ -917,12 +966,13 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     
     const steps: Record<string, Step> = {};
     
-    // Save all standard and action nodes
-    nodes.filter(n => n.type === "message" || n.type === "url_action" || n.type === "call_action" || n.type === "tag_node" || n.type === "opt_in_node").forEach(n => {
+    // 🔴 FIX: Included form_node in the save filter
+    nodes.filter(n => n.type === "message" || n.type === "url_action" || n.type === "call_action" || n.type === "tag_node" || n.type === "opt_in_node" || n.type === "form_node").forEach(n => {
       const buttonsWithLinks = n.data.buttons ? n.data.buttons.map((btn: Button) => {
         const targetEdge = edges.find(e => {
           if (e.source !== n.id || e.sourceHandle !== btn.id) return false;
           const targetNode = nodes.find(node => node.id === e.target);
+          // 🔴 FIX: Do NOT exclude form_node here, so the wire saves as nextStepId
           return targetNode && targetNode.type !== 'tag_node' && targetNode.type !== 'opt_in_node';
         });
 
@@ -962,7 +1012,8 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         urlLabel: n.data.urlLabel || "",
         url: n.data.url || "",
         phoneNumber: n.data.phoneNumber || "",
-        selectedTag: n.data.selectedTag || null 
+        selectedTag: n.data.selectedTag || null,
+        selectedForm: n.data.selectedForm || null 
       };
     });
 
@@ -1066,11 +1117,10 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
               </div>
             </div>
 
-            {/* NEW OPT-IN NODE DRAGGABLE CARD */}
             <div 
               onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "opt_in_node")} 
               draggable 
-              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-orange-400 hover:shadow-sm transition-all"
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-orange-400 hover:shadow-sm transition-all mb-2"
             >
               <div className="w-8 h-8 rounded-lg bg-orange-100 text-orange-600 flex items-center justify-center">
                 <UserPlus size={14} />
@@ -1078,6 +1128,20 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
               <div>
                 <p className="text-xs font-semibold text-gray-800">Opt-in Action</p>
                 <p className="text-[10px] text-gray-400">Save user&apos;s number</p>
+              </div>
+            </div>
+
+            <div 
+              onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "form_node")} 
+              draggable 
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-teal-400 hover:shadow-sm transition-all"
+            >
+              <div className="w-8 h-8 rounded-lg bg-teal-100 text-teal-600 flex items-center justify-center">
+                <ClipboardList size={14} />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-800">Form Action</p>
+                <p className="text-[10px] text-gray-400">Send custom form link</p>
               </div>
             </div>
           </div>
@@ -1099,7 +1163,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           >
             <Background gap={16} size={1} color="#e5e7eb" />
             <Controls className="!bg-white !border !border-gray-200 !shadow-lg !rounded-lg" />
-            <MiniMap className="!bg-white !border !border-gray-200" nodeColor={(n) => (n.type === 'trigger' ? '#f59e0b' : n.type === 'url_action' ? '#a855f7' : n.type === 'call_action' ? '#f43f5e' : n.type === 'tag_node' ? '#6366f1' : n.type === 'opt_in_node' ? '#f97316' : '#10b981')} />
+            <MiniMap className="!bg-white !border !border-gray-200" nodeColor={(n) => (n.type === 'trigger' ? '#f59e0b' : n.type === 'url_action' ? '#a855f7' : n.type === 'call_action' ? '#f43f5e' : n.type === 'tag_node' ? '#6366f1' : n.type === 'opt_in_node' ? '#f97316' : n.type === 'form_node' ? '#14b8a6' : '#10b981')} />
           </ReactFlow>
         </div>
       </div>
