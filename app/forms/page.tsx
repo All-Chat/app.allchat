@@ -4,10 +4,7 @@
 import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
 import Sidebar from "@/components/Sidebar";
-import { 
-  Loader2, Plus, Trash2, FileText, Save, Sparkles, Type, Mail, Hash, AlignLeft, 
-  Eye, Pencil, X, AlertCircle 
-} from "lucide-react";
+import { Loader2, Plus, Trash2, FileText, Save, Sparkles, Type, Mail, Hash, AlignLeft, Clock, CheckCircle2, AlertCircle } from "lucide-react";
 import { toast } from "react-toastify";
 
 export default function FormsPage() {
@@ -16,10 +13,8 @@ export default function FormsPage() {
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState("");
   const [fields, setFields] = useState<any[]>([]);
-  
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [viewingForm, setViewingForm] = useState<any | null>(null);
-  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [completionMessage, setCompletionMessage] = useState("✅ Thank you! Your form has been submitted successfully.");
+  const [abandonmentMessage, setAbandonmentMessage] = useState("It seems you are busy right now. We have paused the form. Click the button below whenever you are ready to start over.");
 
   useEffect(() => {
     if (status === "authenticated") fetchForms();
@@ -36,7 +31,16 @@ export default function FormsPage() {
   };
 
   const addField = () => {
-    setFields([...fields, { id: Math.random().toString(36).substr(2, 9), label: "", type: "text", required: false, options: [] }]);
+    setFields([...fields, { 
+      id: Math.random().toString(36).substr(2, 9), 
+      label: "", 
+      type: "text", 
+      required: false, 
+      options: [],
+      delayMessage: "",
+      delaySeconds: 0,
+      repeatCount: 0
+    }]);
   };
 
   const updateField = (id: string, key: string, value: any) => {
@@ -47,68 +51,24 @@ export default function FormsPage() {
     setFields(fields.filter(f => f.id !== id));
   };
 
-  const handleCancelEdit = () => {
-    setEditingId(null);
-    setName("");
-    setFields([]);
-  };
-
-  const handleEdit = (form: any) => {
-    setEditingId(form._id);
-    setName(form.name);
-    setFields(form.fields);
-    setViewingForm(null);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
-
-  const handleDelete = async (id: string) => {
-    try {
-      const res = await fetch(`/api/forms/${id}`, { method: "DELETE" });
-      const data = await res.json();
-      if (data.success) {
-        setForms(forms.filter(f => f._id !== id));
-        toast.success("Form deleted successfully");
-        setDeleteConfirm(null);
-      }
-    } catch (err) {
-      toast.error("Failed to delete form");
-    }
-  };
-
   const handleSave = async () => {
     if (!name || fields.length === 0) return toast.error("Add a name and at least one field");
     try {
-      if (editingId) {
-        // Update existing form
-        const res = await fetch(`/api/forms/${editingId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, fields })
-        });
-        const data = await res.json();
-        if (data.success) {
-          toast.success("Form updated successfully!");
-          setForms(forms.map(f => f._id === editingId ? data.form : f));
-          handleCancelEdit();
-        } else {
-          toast.error(data.error || "Failed to update form");
-        }
+      const res = await fetch("/api/forms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, fields, completionMessage, abandonmentMessage })
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success("Form created successfully!");
+        setForms([data.form, ...forms]);
+        setName("");
+        setFields([]);
+        setCompletionMessage("✅ Thank you! Your form has been submitted successfully.");
+        setAbandonmentMessage("It seems you are busy right now. We have paused the form. Click the button below whenever you are ready to start over.");
       } else {
-        // Create new form
-        const res = await fetch("/api/forms", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, fields })
-        });
-        const data = await res.json();
-        if (data.success) {
-          toast.success("Form created successfully!");
-          setForms([data.form, ...forms]);
-          setName("");
-          setFields([]);
-        } else {
-          toast.error(data.error || "Failed to save form");
-        }
+        toast.error(data.error || "Failed to save form");
       }
     } catch (err) { 
       toast.error("Failed to save form"); 
@@ -146,7 +106,7 @@ export default function FormsPage() {
               </div>
               <div>
                 <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-emerald-900">Form Builder</h1>
-                <p className="text-emerald-700/80 text-xs sm:text-sm mt-1 font-medium">Create custom forms to collect user data directly in WhatsApp chats.</p>
+                <p className="text-emerald-700/80 text-xs sm:text-sm mt-1 font-medium">Create custom conversational forms with smart reminders.</p>
               </div>
             </div>
           </div>
@@ -156,13 +116,6 @@ export default function FormsPage() {
             {/* Form Builder (Left Column) */}
             <div className="lg:col-span-3 bg-white p-5 sm:p-8 rounded-2xl sm:rounded-3xl border border-slate-100 shadow-sm space-y-6">
               
-              {editingId && (
-                <div className="bg-amber-50 border border-amber-200 text-amber-700 p-3 rounded-xl flex items-center justify-between text-xs font-bold">
-                  <span className="flex items-center gap-2"><Pencil size={14} /> Editing existing form</span>
-                  <button onClick={handleCancelEdit} className="bg-amber-100 hover:bg-amber-200 px-3 py-1 rounded-lg transition-colors">Cancel Edit</button>
-                </div>
-              )}
-
               <div className="space-y-2">
                 <label className="text-[11px] font-extrabold text-slate-700 uppercase tracking-widest">Form Name</label>
                 <input 
@@ -213,7 +166,7 @@ export default function FormsPage() {
                       </div>
                     </div>
                     
-                    <div className="flex gap-3 items-center pl-1">
+                    <div className="flex gap-3 items-center pl-1 mb-4">
                       <select 
                         value={field.type} 
                         onChange={(e) => updateField(field.id, "type", e.target.value)} 
@@ -235,6 +188,46 @@ export default function FormsPage() {
                         Required
                       </label>
                     </div>
+
+                    {/* Delay & Reminder Settings */}
+                    <div className="mt-4 p-3 bg-amber-50/50 border border-amber-100 rounded-xl space-y-3">
+                      <div className="flex items-center gap-2 text-amber-700">
+                        <Clock size={12} />
+                        <span className="text-[10px] font-extrabold uppercase tracking-wider">Inactivity Reminder</span>
+                      </div>
+                      
+                      <input 
+                        type="text" 
+                        value={field.delayMessage} 
+                        onChange={(e) => updateField(field.id, "delayMessage", e.target.value)} 
+                        placeholder="Reminder message (e.g. Are you still there?)" 
+                        className="w-full px-3 py-2 bg-white border border-amber-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-amber-100 focus:border-amber-400 transition-all" 
+                      />
+
+                      <div className="flex gap-2">
+                        <div className="flex-1">
+                          <label className="text-[9px] font-bold text-amber-600 uppercase">Delay (Secs)</label>
+                          <input 
+                            type="number" 
+                            value={field.delaySeconds || ""} 
+                            onChange={(e) => updateField(field.id, "delaySeconds", parseInt(e.target.value) || 0)} 
+                            placeholder="e.g. 10" 
+                            className="w-full px-2 py-1.5 bg-white border border-amber-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-amber-100 focus:border-amber-400" 
+                          />
+                        </div>
+                        <div className="flex-1">
+                          <label className="text-[9px] font-bold text-amber-600 uppercase">Repeat Count</label>
+                          <input 
+                            type="number" 
+                            value={field.repeatCount || ""} 
+                            onChange={(e) => updateField(field.id, "repeatCount", parseInt(e.target.value) || 0)} 
+                            placeholder="e.g. 2" 
+                            className="w-full px-2 py-1.5 bg-white border border-amber-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-amber-100 focus:border-amber-400" 
+                          />
+                        </div>
+                      </div>
+                    </div>
+
                   </div>
                 ))}
 
@@ -246,11 +239,40 @@ export default function FormsPage() {
                 </button>
               </div>
 
+              {/* Completion & Abandonment Messages */}
+              <div className="space-y-4 pt-4 border-t border-slate-100">
+                
+                <div className="space-y-2">
+                  <label className="text-[11px] font-extrabold text-slate-700 uppercase tracking-widest flex items-center gap-2">
+                    <CheckCircle2 size={12} className="text-emerald-500" /> Completion Message
+                  </label>
+                  <textarea 
+                    value={completionMessage} 
+                    onChange={(e) => setCompletionMessage(e.target.value)} 
+                    rows={2}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:ring-4 focus:ring-emerald-100 focus:border-emerald-500 focus:bg-white transition-all resize-none" 
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[11px] font-extrabold text-slate-700 uppercase tracking-widest flex items-center gap-2">
+                    <AlertCircle size={12} className="text-rose-500" /> Abandonment Message (Sent with Restart Button)
+                  </label>
+                  <textarea 
+                    value={abandonmentMessage} 
+                    onChange={(e) => setAbandonmentMessage(e.target.value)} 
+                    rows={3}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:ring-4 focus:ring-rose-100 focus:border-rose-500 focus:bg-white transition-all resize-none" 
+                  />
+                </div>
+
+              </div>
+
               <button 
                 onClick={handleSave} 
                 className="w-full p-4 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl flex items-center justify-center gap-2 hover:from-emerald-600 hover:to-teal-600 transition-all font-bold shadow-md shadow-emerald-200 hover:shadow-lg active:scale-[0.98]"
               >
-                <Save size={18} /> {editingId ? "Update Form" : "Save Form"}
+                <Save size={18} /> Save Form
               </button>
             </div>
 
@@ -271,49 +293,14 @@ export default function FormsPage() {
               ) : (
                 <div className="space-y-3">
                   {forms.map(f => (
-                    <div key={f._id} className="p-4 border border-slate-200 rounded-xl bg-white hover:shadow-md hover:border-emerald-200 transition-all group">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
-                          <FileText size={18} />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="font-bold text-sm text-slate-800 truncate">{f.name}</p>
-                          <p className="text-xs text-slate-400 font-medium">{f.fields.length} fields configured</p>
-                        </div>
+                    <div key={f._id} className="p-4 border border-slate-200 rounded-xl flex items-center gap-3 bg-white hover:shadow-md hover:border-emerald-200 transition-all cursor-pointer group">
+                      <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 group-hover:bg-emerald-100 transition-colors">
+                        <FileText size={18} />
                       </div>
-                      
-                      {/* Action Buttons */}
-                      <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100">
-                        <button 
-                          onClick={() => setViewingForm(f)} 
-                          className="flex-1 py-1.5 text-xs font-bold text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-lg transition-colors flex items-center justify-center gap-1.5"
-                        >
-                          <Eye size={12} /> View
-                        </button>
-                        <button 
-                          onClick={() => handleEdit(f)} 
-                          className="flex-1 py-1.5 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors flex items-center justify-center gap-1.5"
-                        >
-                          <Pencil size={12} /> Edit
-                        </button>
-                        <button 
-                          onClick={() => setDeleteConfirm(f._id)} 
-                          className="flex-1 py-1.5 text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg transition-colors flex items-center justify-center gap-1.5"
-                        >
-                          <Trash2 size={12} /> Delete
-                        </button>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-bold text-sm text-slate-800 truncate">{f.name}</p>
+                        <p className="text-xs text-slate-400 font-medium">{f.fields.length} fields configured</p>
                       </div>
-
-                      {/* Delete Confirmation */}
-                      {deleteConfirm === f._id && (
-                        <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
-                          <p className="text-[10px] font-bold text-red-600 flex items-center gap-1.5"><AlertCircle size={12} /> Sure?</p>
-                          <div className="flex gap-1">
-                            <button onClick={() => setDeleteConfirm(null)} className="text-[10px] font-bold bg-white text-slate-600 px-2 py-1 rounded border border-slate-200">No</button>
-                            <button onClick={() => handleDelete(f._id)} className="text-[10px] font-bold bg-red-500 text-white px-2 py-1 rounded">Yes, Delete</button>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   ))}
                 </div>
@@ -323,35 +310,6 @@ export default function FormsPage() {
           </div>
         </div>
       </div>
-
-      {/* View Form Modal */}
-      {viewingForm && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setViewingForm(null)}>
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                <FileText className="text-blue-500" /> {viewingForm.name}
-              </h3>
-              <button onClick={() => setViewingForm(null)} className="text-slate-400 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-lg transition-colors">
-                <X size={20} />
-              </button>
-            </div>
-            
-            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2">
-              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Form Preview</p>
-              {viewingForm.fields.map((f: any, i: number) => (
-                <div key={i} className="p-3 bg-slate-50 rounded-lg border border-slate-100">
-                  <p className="text-sm font-bold text-slate-700 flex items-center gap-2">
-                    {getFieldIcon(f.type)} {f.label} 
-                    {f.required && <span className="text-red-500 text-[10px]">*</span>}
-                  </p>
-                  <p className="text-[10px] text-slate-400 mt-1 uppercase font-bold">{f.type}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
