@@ -7,11 +7,10 @@
    
    Key Features:
    - Dynamic billing (charge on delivered, refund on failed)
-   - Workflow engine (triggers, steps, buttons, list replies)
+   - Workflow engine (triggers, steps, buttons, list replies, DELAYS)
    - Conversational forms with inactivity timers
    - Campaign report updates & auto-tagging
    - >3 buttons automatically handled as WhatsApp List Messages
-     (see sendWhatsApp.ts for the conversion logic)
    ============================================================================ */
 
 /* eslint-disable prefer-const */
@@ -42,10 +41,6 @@ const VERIFY_TOKEN = "my_secret_token";
 
 /* ============================================================================
    HELPER: Start Inactivity Timer for a Form Field
-   
-   If a user doesn't respond within `field.delaySeconds`, a reminder
-   is sent. After `field.repeatCount` reminders, the form is abandoned
-   and a restart button is offered.
    ============================================================================ */
 const startInactivityTimer = (
   phone: string,
@@ -129,9 +124,6 @@ const startInactivityTimer = (
 
 /* ============================================================================
    1. WEBHOOK VERIFICATION (GET REQUEST)
-   
-   Meta sends a GET request to verify the webhook endpoint.
-   We respond with the challenge token if the verify_token matches.
    ============================================================================ */
 export async function GET(req: Request) {
   try {
@@ -140,7 +132,7 @@ export async function GET(req: Request) {
     const token = url.searchParams.get("hub.verify_token");
     const challenge = url.searchParams.get("hub.challenge");
 
-    // Health check (no params → just confirm endpoint is live)
+    // Health check
     if (!mode && !token && !challenge) {
       return new Response("WhatsApp Webhook Endpoint is Live ✅", {
         status: 200,
@@ -165,10 +157,6 @@ export async function GET(req: Request) {
 
 /* ============================================================================
    2. WEBHOOK RECEIVER (POST REQUEST)
-   
-   Main entry point for all inbound WhatsApp events:
-   - Message status updates (sent, delivered, read, failed)
-   - Inbound messages (text, interactive, media)
    ============================================================================ */
 export async function POST(req: Request) {
   try {
@@ -179,8 +167,7 @@ export async function POST(req: Request) {
 
     await connectDB();
 
-    /* ── IDENTIFY USER ──
-       Match the incoming phone_number_id to a user in our database */
+    /* ── IDENTIFY USER ── */
     const metadataPhoneNumberId = value?.metadata?.phone_number_id;
     let userId: string | null = null;
     let ownerUser: any = null;
@@ -200,10 +187,6 @@ export async function POST(req: Request) {
 
     /* ══════════════════════════════════════════════════════════════════════════
        SECTION A: HANDLE MESSAGE STATUSES & DYNAMIC BILLING
-       
-       Process delivery/read/failed status updates from WhatsApp.
-       - Delivered/Read → Charge the user's wallet
-       - Failed/Invalid → Refund if previously charged
        ══════════════════════════════════════════════════════════════════════════ */
     if (value.statuses && value.statuses.length > 0) {
       try {
@@ -256,7 +239,6 @@ export async function POST(req: Request) {
               finalStatus = isInvalidNumber ? "invalid" : "failed";
             }
 
-            // Priority logic: Only upgrade status (read > delivered > sent > invalid > failed > pending)
             const statusPriority: any = {
               read: 5,
               delivered: 4,
@@ -274,7 +256,6 @@ export async function POST(req: Request) {
               let balanceAdjustment = 0;
               const cost = ownerUser?.pricePerMessage || 0;
 
-              // If delivered/read and NOT charged yet → CHARGE
               if (
                 (finalStatus === "delivered" || finalStatus === "read") &&
                 !currentItem.charged
@@ -282,9 +263,7 @@ export async function POST(req: Request) {
                 balanceAdjustment -= cost;
                 currentItem.charged = true;
                 camp.totalDeducted = (camp.totalDeducted || 0) + cost;
-              }
-              // If failed/invalid and WAS charged → REFUND
-              else if (
+              } else if (
                 (finalStatus === "failed" || finalStatus === "invalid") &&
                 currentItem.charged
               ) {
@@ -300,7 +279,6 @@ export async function POST(req: Request) {
               camp.markModified("reportData");
               await camp.save();
 
-              // Apply balance adjustment to User Wallet
               if (balanceAdjustment !== 0 && userId) {
                 await User.findByIdAndUpdate(userId, {
                   $inc: { balance: balanceAdjustment },
@@ -321,11 +299,6 @@ export async function POST(req: Request) {
 
     /* ══════════════════════════════════════════════════════════════════════════
        SECTION B: HANDLE INBOUND MESSAGES
-       
-       Parse incoming messages from WhatsApp users, including:
-       - Text messages
-       - Interactive replies (button clicks & list selections)
-       - Media messages (image, video, audio, document, sticker)
        ══════════════════════════════════════════════════════════════════════════ */
     if (!value?.messages?.length) return NextResponse.json({ success: true });
 
@@ -353,8 +326,6 @@ export async function POST(req: Request) {
       textToSave = message.text.body.trim();
       messageType = "text";
     } else if (message.type === "interactive") {
-      // Handles BOTH button_reply AND list_reply
-      // When >3 buttons are sent as a list, the response comes as list_reply
       const buttonReply =
         message.interactive?.button_reply || message.interactive?.list_reply;
       textToSave = buttonReply?.title?.trim() || buttonReply?.id?.trim() || "";
@@ -400,9 +371,6 @@ export async function POST(req: Request) {
 
     /* ══════════════════════════════════════════════════════════════════════════
        SECTION C: CONVERSATIONAL FORM LOGIC
-       
-       If the user has an active form session, capture their response
-       and advance to the next field (or complete the form).
        ══════════════════════════════════════════════════════════════════════════ */
     const activeSession = await Session.findOne({ phone, userId });
 
@@ -481,10 +449,6 @@ export async function POST(req: Request) {
 
     /* ══════════════════════════════════════════════════════════════════════════
        SECTION D: CAMPAIGN REPORT UPDATE & DYNAMIC AUTO-TAGGING
-       
-       Match the inbound reply to the corresponding campaign and:
-       - Record the reply in the campaign report
-       - Auto-detect and apply tags based on keyword matching
        ══════════════════════════════════════════════════════════════════════════ */
     if (textToSave) {
       try {
@@ -600,16 +564,7 @@ export async function POST(req: Request) {
     }
 
     /* ══════════════════════════════════════════════════════════════════════════
-       SECTION E: WORKFLOW LOGIC (Button Clicks & Triggers)
-       
-       Handles:
-       1. Form restart button clicks
-       2. Workflow step button clicks (including list reply selections)
-       3. Workflow trigger keyword matching
-       
-       Note: Both button_reply and list_reply are handled identically
-       here because the button ID is the same regardless of whether
-       the button was in a Button Message or a List Message.
+       SECTION E: WORKFLOW LOGIC (Button Clicks, Delays, & Triggers)
        ══════════════════════════════════════════════════════════════════════════ */
     if (messageType === "text" || isButtonReply) {
       try {
@@ -619,7 +574,6 @@ export async function POST(req: Request) {
           const formData = await Form.findById(formId);
 
           if (formData && formData.fields.length > 0) {
-            // Reset session and start form over
             await Session.findOneAndUpdate(
               { phone, userId },
               {
@@ -630,7 +584,6 @@ export async function POST(req: Request) {
               { upsert: true, new: true }
             );
 
-            // Create a fresh response entry
             await FormResponse.create({
               formId: formData._id,
               userId,
@@ -647,7 +600,6 @@ export async function POST(req: Request) {
               ownerUser?.whatsappAccessToken
             );
 
-            // Start timer for the first field again
             startInactivityTimer(
               phone,
               userId!,
@@ -662,10 +614,7 @@ export async function POST(req: Request) {
           }
         }
 
-        /* ── Handle Workflow Step Button Clicks ──
-           This handles BOTH button_reply (≤3 buttons) and
-           list_reply (>3 buttons) because the button ID
-           remains the same in both formats. */
+        /* ── Handle Workflow Step Button Clicks ── */
         if (isButtonReply && userId) {
           const session =
             activeSession || (await Session.findOne({ phone, userId }));
@@ -710,7 +659,25 @@ export async function POST(req: Request) {
 
                 // Navigate to the next step
                 if (clickedBtn.nextStepId) {
-                  const nextStep = wf.steps[clickedBtn.nextStepId];
+                  let nextStep = wf.steps[clickedBtn.nextStepId];
+
+                  /* ════════════════════════════════════════════════════════════
+                     DELAY NODE LOGIC
+                     If the next step is a delay node, pause execution for
+                     the specified seconds, then follow its `nextStepId` 
+                     chain until a non-delay node is found.
+                     ════════════════════════════════════════════════════════════ */
+                  while (nextStep && nextStep.stepType === "delay_node") {
+                    const delaySeconds = nextStep.delaySeconds || 0;
+                    if (delaySeconds > 0) {
+                      console.log(`⏳ Delaying workflow for ${delaySeconds} seconds for ${phone}...`);
+                      // Synchronous wait (blocks the function execution)
+                      await new Promise((resolve) => setTimeout(resolve, delaySeconds * 1000));
+                    }
+                    // Move to the next step in the chain
+                    nextStep = nextStep.nextStepId ? wf.steps[nextStep.nextStepId] : null;
+                  }
+
                   if (nextStep) {
                     // If next step is a Form Node, start the form
                     if (
@@ -754,7 +721,7 @@ export async function POST(req: Request) {
                       }
                     }
 
-                    // Otherwise, send the next step
+                    // Otherwise, send the next step message
                     session.currentStepId = nextStep.id;
                     await session.save();
                     await sendWhatsAppMessage(
@@ -772,6 +739,10 @@ export async function POST(req: Request) {
                       direction: "out",
                       messageType: "text",
                     });
+                    return NextResponse.json({ success: true });
+                  } else {
+                    // No valid step found after delays → end the session
+                    await Session.deleteOne({ _id: session._id });
                     return NextResponse.json({ success: true });
                   }
                 } else {
@@ -791,8 +762,7 @@ export async function POST(req: Request) {
           }
         }
 
-        /* ── Handle Workflow Triggers ──
-           Check if the incoming message matches any workflow's trigger keywords. */
+        /* ── Handle Workflow Triggers ── */
         const workflowQuery: any = {};
         if (userId) workflowQuery.userId = userId;
         const workflows = await Workflow.find(workflowQuery);
@@ -820,7 +790,21 @@ export async function POST(req: Request) {
         }
 
         if (matchedWorkflow && matchedStepId) {
-          const step = matchedWorkflow.steps?.[matchedStepId];
+          let step = matchedWorkflow.steps?.[matchedStepId];
+
+          /* ════════════════════════════════════════════════════════════
+             DELAY NODE LOGIC FOR TRIGGERS
+             If a trigger directly hits a delay node, resolve the chain.
+             ════════════════════════════════════════════════════════════ */
+          while (step && step.stepType === "delay_node") {
+            const delaySeconds = step.delaySeconds || 0;
+            if (delaySeconds > 0) {
+              console.log(`⏳ Trigger delayed for ${delaySeconds}s for ${phone}...`);
+              await new Promise((resolve) => setTimeout(resolve, delaySeconds * 1000));
+            }
+            step = step.nextStepId ? matchedWorkflow.steps[step.nextStepId] : null;
+          }
+
           if (
             step &&
             (step.message ||
