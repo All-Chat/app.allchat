@@ -21,7 +21,8 @@ export default function FormResponsesPage() {
         fetch("/api/forms/responses").then(r => r.json())
       ]).then(([formsData, resData]) => {
         setForms(formsData.forms || []);
-        setResponses(resData.responses || []);
+        // 🔴 FILTER OUT INCOMPLETE FORMS
+        setResponses((resData.responses || []).filter((r: any) => r.status === "complete"));
         setLoading(false);
       }).catch(() => setLoading(false));
     }
