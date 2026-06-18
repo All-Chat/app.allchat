@@ -18,7 +18,9 @@ import {
   Menu,
   Tag,
   UserX,
+  ClipboardList,
   X,
+  FilePlus,
   Shield,
 } from "lucide-react";
 import { useSession, signOut } from "next-auth/react"; // Added useSession
@@ -57,6 +59,8 @@ export default function Sidebar() {
     { name: "Workflows", icon: Users, href: "/workflows" },
     { name: "Tags", icon: Tag, href: "/tags" },
     { name: "Opted-Out Numbers", icon: UserX, href: "/opt-numbers" },
+    { name: "Create Form", icon: FilePlus, href: "/forms" },
+    { name: "Form Responses", icon: ClipboardList, href: "/forms/responses" },
     { name: "Settings", icon: Settings, href: "/settings" },
   ];
 
