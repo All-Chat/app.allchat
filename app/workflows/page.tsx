@@ -43,6 +43,7 @@ import {
   Library,
   PhoneCall,
   Tag as TagIcon,
+  UserPlus, // Added for OptIn Node
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 
@@ -50,10 +51,17 @@ import { useSession } from "next-auth/react";
    TYPES
    ──────────────────────────────────────────── */
 type Trigger = { keyword: string; matchMode: "exact" | "contains" };
-type Button = { id: string; label: string; nextStepId: string | null; tagNodeId?: string | null; applyTagId?: string | null };
+type Button = { 
+  id: string; 
+  label: string; 
+  nextStepId: string | null; 
+  tagNodeId?: string | null; 
+  applyTagId?: string | null;
+  optInNodeId?: string | null;
+};
 type Step = { 
   id: string; 
-  stepType?: "message" | "url_action" | "call_action" | "tag_node";
+  stepType?: "message" | "url_action" | "call_action" | "tag_node" | "opt_in_node";
   message: string; 
   buttons: Button[]; 
   position?: { x: number; y: number };
@@ -62,7 +70,7 @@ type Step = {
   urlLabel?: string;
   url?: string;
   phoneNumber?: string;
-  selectedTag?: string | null; // Added for Tag Node
+  selectedTag?: string | null;
 };
 type Workflow = {
   _id: string;
@@ -76,19 +84,13 @@ const uid = () => Math.random().toString(36).substr(2, 9);
 const getYouTubeEmbedUrl = (url: string) => {
   try {
     const urlObj = new URL(url);
-    if (urlObj.hostname.includes("youtu.be")) {
-      return `https://www.youtube.com/embed/${urlObj.pathname.slice(1)}`;
-    }
+    if (urlObj.hostname.includes("youtu.be")) return `https://www.youtube.com/embed/${urlObj.pathname.slice(1)}`;
     if (urlObj.hostname.includes("youtube.com")) {
       const v = urlObj.searchParams.get("v");
       if (v) return `https://www.youtube.com/embed/${v}`;
-      if (urlObj.pathname.includes("/embed/")) {
-        return url;
-      }
+      if (urlObj.pathname.includes("/embed/")) return url;
     }
-  } catch (e) {
-    return null;
-  }
+  } catch (e) { return null; }
   return null;
 };
 
@@ -243,6 +245,33 @@ const TagNode = ({ data, id }: any) => {
             ))}
           </select>
         )}
+      </div>
+    </div>
+  );
+};
+
+// ────────────────────────────────────────────
+// NEW: OPT-IN NODE
+// ────────────────────────────────────────────
+const OptInNode = ({ id }: any) => {
+  const { deleteElements } = useReactFlow();
+
+  return (
+    <div className="w-72 bg-white border border-orange-200 shadow-lg rounded-2xl overflow-hidden group">
+      <Handle type="target" position={Position.Left} className="!bg-orange-500 !w-3 !h-3 !border-2 !border-white" />
+      <div className="p-3 border-b border-gray-100 flex justify-between items-center bg-gradient-to-r from-orange-50 to-white">
+        <div className="flex items-center gap-2 text-orange-700">
+          <UserPlus size={14} />
+          <span className="text-xs font-bold uppercase tracking-wider">Opt-in Action</span>
+        </div>
+        <button onClick={() => deleteElements({ nodes: [{ id }] })} className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Trash2 size={14} />
+        </button>
+      </div>
+      <div className="p-3 space-y-2">
+        <p className="text-[9px] text-gray-500 leading-tight">
+          📝 Adds the user&apos;s phone number to the &quot;Opt-in Numbers&quot; list instantly when they click the connected button.
+        </p>
       </div>
     </div>
   );
@@ -690,7 +719,14 @@ const CallActionNode = ({ data, id }: any) => {
   );
 };
 
-const nodeTypes = { trigger: TriggerNode, message: MessageNode, url_action: URLActionNode, call_action: CallActionNode, tag_node: TagNode };
+const nodeTypes = { 
+  trigger: TriggerNode, 
+  message: MessageNode, 
+  url_action: URLActionNode, 
+  call_action: CallActionNode, 
+  tag_node: TagNode,
+  opt_in_node: OptInNode 
+};
 
 /* ────────────────────────────────────────────
    FLOW CANVAS
@@ -733,7 +769,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           urlLabel: step.urlLabel,
           url: step.url,
           phoneNumber: step.phoneNumber,
-          selectedTag: step.selectedTag || null // LOAD TAG DATA
+          selectedTag: step.selectedTag || null 
         },
         draggable: true,
       });
@@ -770,6 +806,15 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
             style: { stroke: '#6366f1', strokeWidth: 2 }
           });
         }
+        if (btn.optInNodeId) {
+          initEdges.push({
+            id: `e-${step.id}-${btn.id}-optin`,
+            source: step.id, sourceHandle: btn.id, target: btn.optInNodeId,
+            animated: true, type: "default", 
+            markerEnd: { type: MarkerType.ArrowClosed, color: '#f97316' },
+            style: { stroke: '#f97316', strokeWidth: 2 }
+          });
+        }
       });
     });
 
@@ -777,21 +822,35 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     setEdges(initEdges);
   }, [initialData]);
 
+  // Updated Connection Logic (1 Flow + 1 Tag + 1 OptIn)
   const onConnect = useCallback((params: Connection) => {
-    const targetNode = nodes.find(n => n.id === params.target);
-    const isTargetTag = targetNode?.type === 'tag_node';
-
-    const isSameCategory = (edge: Edge) => {
-      const tNode = nodes.find(n => n.id === edge.target);
-      return (tNode?.type === 'tag_node') === isTargetTag;
+    const getEdgeCategory = (type: string | undefined) => {
+      if (type === 'tag_node') return 'tag';
+      if (type === 'opt_in_node') return 'opt_in';
+      return 'flow'; // message, url_action, call_action
     };
+
+    const targetNode = nodes.find(n => n.id === params.target);
+    const targetCategory = getEdgeCategory(targetNode?.type);
 
     if (params.source === "trigger-node") {
       setEdges((eds) => eds.filter((e) => e.source !== "trigger-node").concat(addEdge({ ...params, animated: true, type: "default", style: { stroke: '#10b981', strokeWidth: 2 } }, eds)));
     } else {
       setEdges((eds) => {
-        const filtered = eds.filter(e => !(e.source === params.source && e.sourceHandle === params.sourceHandle && isSameCategory(e)));
-        const strokeColor = isTargetTag ? '#6366f1' : '#3b82f6';
+        // Filter out existing edges of the SAME category from this specific source handle
+        const filtered = eds.filter(e => {
+          if (e.source === params.source && e.sourceHandle === params.sourceHandle) {
+            const existingTarget = nodes.find(n => n.id === e.target);
+            const existingCategory = getEdgeCategory(existingTarget?.type);
+            return existingCategory !== targetCategory;
+          }
+          return true;
+        });
+
+        let strokeColor = '#3b82f6'; // Flow
+        if (targetCategory === 'tag') strokeColor = '#6366f1';
+        if (targetCategory === 'opt_in') strokeColor = '#f97316';
+
         return addEdge({ ...params, animated: true, type: "default", style: { stroke: strokeColor, strokeWidth: 2 } }, filtered);
       });
     }
@@ -819,6 +878,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     if (type === "url_action") newData = { message: "", urlLabel: "", url: "" };
     if (type === "call_action") newData = { message: "", urlLabel: "", phoneNumber: "" };
     if (type === "tag_node") newData = { selectedTag: "" };
+    if (type === "opt_in_node") newData = {}; // No extra data needed
 
     const newNode = { id: uid(), type, position, data: newData };
     setNodes((nds) => nds.concat(newNode));
@@ -857,13 +917,13 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
     
     const steps: Record<string, Step> = {};
     
-    // INCLUDE TAG_NODE IN THE SAVED STEPS
-    nodes.filter(n => n.type === "message" || n.type === "url_action" || n.type === "call_action" || n.type === "tag_node").forEach(n => {
+    // Save all standard and action nodes
+    nodes.filter(n => n.type === "message" || n.type === "url_action" || n.type === "call_action" || n.type === "tag_node" || n.type === "opt_in_node").forEach(n => {
       const buttonsWithLinks = n.data.buttons ? n.data.buttons.map((btn: Button) => {
         const targetEdge = edges.find(e => {
           if (e.source !== n.id || e.sourceHandle !== btn.id) return false;
           const targetNode = nodes.find(node => node.id === e.target);
-          return targetNode && targetNode.type !== 'tag_node';
+          return targetNode && targetNode.type !== 'tag_node' && targetNode.type !== 'opt_in_node';
         });
 
         const tagEdge = edges.find(e => {
@@ -872,13 +932,20 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           return targetNode && targetNode.type === 'tag_node';
         });
 
+        const optInEdge = edges.find(e => {
+          if (e.source !== n.id || e.sourceHandle !== btn.id) return false;
+          const targetNode = nodes.find(node => node.id === e.target);
+          return targetNode && targetNode.type === 'opt_in_node';
+        });
+
         const tagNode = tagEdge ? nodes.find(node => node.id === tagEdge.target) : null;
 
         return { 
           ...btn, 
           nextStepId: targetEdge ? targetEdge.target : null,
-          tagNodeId: tagNode ? tagNode.id : null, // SAVE TAG NODE ID FOR RENDERING
-          applyTagId: tagNode ? tagNode.data.selectedTag : null // SAVE ACTUAL TAG ID FOR BACKEND
+          tagNodeId: tagNode ? tagNode.id : null, 
+          applyTagId: tagNode ? tagNode.data.selectedTag : null,
+          optInNodeId: optInEdge ? optInEdge.target : null
         };
       }) : [];
 
@@ -895,7 +962,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
         urlLabel: n.data.urlLabel || "",
         url: n.data.url || "",
         phoneNumber: n.data.phoneNumber || "",
-        selectedTag: n.data.selectedTag || null // SAVE SELECTED TAG IN STEP
+        selectedTag: n.data.selectedTag || null 
       };
     });
 
@@ -988,7 +1055,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
             <div 
               onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "tag_node")} 
               draggable 
-              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-indigo-400 hover:shadow-sm transition-all"
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-indigo-400 hover:shadow-sm transition-all mb-2"
             >
               <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center">
                 <TagIcon size={14} />
@@ -996,6 +1063,21 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
               <div>
                 <p className="text-xs font-semibold text-gray-800">Tag Action</p>
                 <p className="text-[10px] text-gray-400">Apply tag to user</p>
+              </div>
+            </div>
+
+            {/* NEW OPT-IN NODE DRAGGABLE CARD */}
+            <div 
+              onDragStart={(e) => e.dataTransfer.setData("application/reactflow", "opt_in_node")} 
+              draggable 
+              className="flex items-center gap-2 p-2.5 bg-white border border-gray-200 rounded-xl cursor-grab hover:border-orange-400 hover:shadow-sm transition-all"
+            >
+              <div className="w-8 h-8 rounded-lg bg-orange-100 text-orange-600 flex items-center justify-center">
+                <UserPlus size={14} />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-800">Opt-in Action</p>
+                <p className="text-[10px] text-gray-400">Save user&apos;s number</p>
               </div>
             </div>
           </div>
@@ -1017,7 +1099,7 @@ function FlowCanvas({ initialData, editId, onSave, onCancel }: {
           >
             <Background gap={16} size={1} color="#e5e7eb" />
             <Controls className="!bg-white !border !border-gray-200 !shadow-lg !rounded-lg" />
-            <MiniMap className="!bg-white !border !border-gray-200" nodeColor={(n) => (n.type === 'trigger' ? '#f59e0b' : n.type === 'url_action' ? '#a855f7' : n.type === 'call_action' ? '#f43f5e' : n.type === 'tag_node' ? '#6366f1' : '#10b981')} />
+            <MiniMap className="!bg-white !border !border-gray-200" nodeColor={(n) => (n.type === 'trigger' ? '#f59e0b' : n.type === 'url_action' ? '#a855f7' : n.type === 'call_action' ? '#f43f5e' : n.type === 'tag_node' ? '#6366f1' : n.type === 'opt_in_node' ? '#f97316' : '#10b981')} />
           </ReactFlow>
         </div>
       </div>
