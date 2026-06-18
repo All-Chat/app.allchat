@@ -141,7 +141,7 @@ export async function POST(req: Request) {
       if (ownerUser) userId = ownerUser._id.toString();
     }
 
-    // --- 1. HANDLE MESSAGE STATUSES ---
+    // --- 1. HANDLE MESSAGE STATUSES & DYNAMIC BILLING ---
     if (value.statuses && value.statuses.length > 0) {
       try {
         const statusUpdate = value.statuses[0];
@@ -155,7 +155,7 @@ export async function POST(req: Request) {
         statusPhone = statusPhone.replace(/\+/g, "");
 
         if (statusPhone && newStatus) {
-          const campaignQuery: any = { "reportData.phone": statusPhone, status: { $in: ["running", "completed"] } };
+          const campaignQuery: any = { "reportData.phone": statusPhone, status: { $in: ["running", "paused", "completed"] } };
           if (userId) campaignQuery.userId = userId;
 
           const campaigns = await Campaign.find(campaignQuery);
@@ -176,18 +176,38 @@ export async function POST(req: Request) {
                 finalStatus = isInvalidNumber ? "invalid" : "failed";
               }
 
-              let shouldUpdate = false;
-              if (finalStatus === "failed" || finalStatus === "invalid") {
-                shouldUpdate = true;
-              } else {
-                const statusPriority: any = { read: 5, delivered: 4, sent: 3, invalid: 2, failed: 1, pending: 0 };
-                if (statusPriority[finalStatus] > (statusPriority[currentItem.status] || 0)) shouldUpdate = true;
-              }
+              // Priority logic: Only upgrade status
+              const statusPriority: any = { read: 5, delivered: 4, sent: 3, invalid: 2, failed: 1, pending: 0 };
+              if (statusPriority[finalStatus] > (statusPriority[currentItem.status] || 0)) {
+                
+                // ==========================================
+                // 🔴 DYNAMIC BILLING LOGIC
+                // ==========================================
+                let balanceAdjustment = 0;
+                const cost = ownerUser?.pricePerMessage || 0;
 
-              if (shouldUpdate) {
-                camp.reportData[reportIndex].status = finalStatus;
+                // If delivered/read and NOT charged yet -> CHARGE
+                if ((finalStatus === "delivered" || finalStatus === "read") && !currentItem.charged) {
+                  balanceAdjustment -= cost;
+                  currentItem.charged = true;
+                  camp.totalDeducted = (camp.totalDeducted || 0) + cost;
+                } 
+                // If failed/invalid and WAS charged -> REFUND
+                else if ((finalStatus === "failed" || finalStatus === "invalid") && currentItem.charged) {
+                  balanceAdjustment += cost;
+                  currentItem.charged = false;
+                  camp.totalDeducted = Math.max(0, (camp.totalDeducted || 0) - cost);
+                }
+
+                currentItem.status = finalStatus;
                 camp.markModified("reportData");
                 await camp.save();
+
+                // Apply balance adjustment to User Wallet
+                if (balanceAdjustment !== 0 && userId) {
+                  await User.findByIdAndUpdate(userId, { $inc: { balance: balanceAdjustment } });
+                  console.log(`💰 Balance adjusted by ${balanceAdjustment} for ${statusPhone}`);
+                }
               }
             }
           }
