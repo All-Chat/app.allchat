@@ -9,7 +9,8 @@ import User from "@/models/User";
 import Session from "@/models/Session";
 import Contact from "@/models/Contact";
 import Tag from "@/models/Tag";
-import OptNumber from "@/models/OptNumber"; // 🔴 IMPORTED OPT-NUMBER MODEL
+import OptNumber from "@/models/OptNumber";
+import Form from "@/models/Form"; // 🔴 IMPORTED FORM MODEL
 import { sendWhatsAppMessage } from "@/lib/sendWhatsApp";
 
 export const dynamic = "force-dynamic";
@@ -367,7 +368,7 @@ export async function POST(req: Request) {
 
               if (clickedBtn) {
                 
-                // 🔴 NEW: CHECK IF BUTTON HAS OPT-IN NODE CONNECTED & SAVE NUMBER
+                // 🔴 CHECK IF BUTTON HAS OPT-IN NODE CONNECTED & SAVE NUMBER
                 if (clickedBtn.optInNodeId) {
                   try {
                     const existingOpt = await OptNumber.findOne({ userId, phoneNumber: phone });
@@ -384,6 +385,34 @@ export async function POST(req: Request) {
                   const nextStep = wf.steps[clickedBtn.nextStepId];
                   
                   if (nextStep) {
+                    // 🔴 NEW: HANDLE FORM NODE LOGIC
+                    if (nextStep.stepType === "form_node" && nextStep.selectedForm) {
+                      const formData = await Form.findById(nextStep.selectedForm);
+                      if (formData) {
+                        const formUrl = `${process.env.NEXTAUTH_URL}/f/${formData._id}`;
+                        const textMsg = `Please fill out this form: ${formUrl}`;
+                        
+                        await sendWhatsAppMessage(
+                          phone, 
+                          { message: textMsg, stepType: "text" }, 
+                          ownerUser?.whatsappPhoneNumberId, 
+                          ownerUser?.whatsappAccessToken
+                        );
+                        
+                        await Message.create({
+                          userId,
+                          phone,
+                          text: textMsg,
+                          direction: "out",
+                          messageType: "text",
+                        });
+                        console.log(`📤 OUTBOUND WORKFLOW (Form Link) SAVED ✔️`);
+                        
+                        // Keep session active or end it depending on your flow
+                        return NextResponse.json({ success: true });
+                      }
+                    }
+
                     session.currentStepId = nextStep.id;
                     await session.save();
 
@@ -447,7 +476,44 @@ export async function POST(req: Request) {
         if (matchedWorkflow && matchedStepId) {
           const step = matchedWorkflow.steps?.[matchedStepId];
           
-          if (step && (step.message || step.stepType === "template" || step.stepType === "url_action" || step.stepType === "call_action")) {
+          if (step && (step.message || step.stepType === "template" || step.stepType === "url_action" || step.stepType === "call_action" || step.stepType === "form_node")) {
+            
+            // 🔴 NEW: HANDLE FORM NODE LOGIC FOR TRIGGER
+            if (step.stepType === "form_node" && step.selectedForm) {
+              const formData = await Form.findById(step.selectedForm);
+              if (formData) {
+                const formUrl = `${process.env.NEXTAUTH_URL}/f/${formData._id}`;
+                const textMsg = `Please fill out this form: ${formUrl}`;
+                
+                await sendWhatsAppMessage(
+                  phone, 
+                  { message: textMsg, stepType: "text" }, 
+                  ownerUser?.whatsappPhoneNumberId, 
+                  ownerUser?.whatsappAccessToken
+                );
+                
+                await Message.create({
+                  userId,
+                  phone,
+                  text: textMsg,
+                  direction: "out",
+                  messageType: "text",
+                });
+                console.log(`📤 OUTBOUND WORKFLOW (Form Link) SAVED ✔️`);
+
+                await Session.findOneAndUpdate(
+                  { phone, userId },
+                  { 
+                    workflowId: matchedWorkflow._id, 
+                    currentStepId: step.id,
+                    updatedAt: new Date() 
+                  },
+                  { upsert: true, new: true }
+                );
+                return NextResponse.json({ success: true });
+              }
+            }
+
             await sendWhatsAppMessage(
               phone, 
               step, 
