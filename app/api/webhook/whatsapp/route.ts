@@ -1,3 +1,19 @@
+/* ============================================================================
+   WHATSAPP WEBHOOK ROUTE
+   ----------------------------------------------------------------------------
+   Handles:
+   1. GET  → Webhook verification
+   2. POST → Inbound messages, status updates, workflow/form/campaign logic
+   
+   Key Features:
+   - Dynamic billing (charge on delivered, refund on failed)
+   - Workflow engine (triggers, steps, buttons, list replies)
+   - Conversational forms with inactivity timers
+   - Campaign report updates & auto-tagging
+   - >3 buttons automatically handled as WhatsApp List Messages
+     (see sendWhatsApp.ts for the conversion logic)
+   ============================================================================ */
+
 /* eslint-disable prefer-const */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -21,20 +37,39 @@ import { sendWhatsAppMessage } from "@/lib/sendWhatsApp";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
 const VERIFY_TOKEN = "my_secret_token";
 
-// Helper function to start inactivity timer for a form field
-const startInactivityTimer = (phone: string, userId: string, formId: string, fieldIndex: number, field: any, form: any, ownerUser: any) => {
+/* ============================================================================
+   HELPER: Start Inactivity Timer for a Form Field
+   
+   If a user doesn't respond within `field.delaySeconds`, a reminder
+   is sent. After `field.repeatCount` reminders, the form is abandoned
+   and a restart button is offered.
+   ============================================================================ */
+const startInactivityTimer = (
+  phone: string,
+  userId: string,
+  formId: string,
+  fieldIndex: number,
+  field: any,
+  form: any,
+  ownerUser: any
+) => {
   if (field.delaySeconds > 0 && field.repeatCount > 0 && field.delayMessage) {
     let remindersSent = 0;
-    
+
     const intervalId = setInterval(async () => {
       try {
         await connectDB();
         const checkSession = await Session.findOne({ phone, userId });
-        
+
         // If user replied or moved on, stop the interval
-        if (!checkSession || !checkSession.formId || checkSession.formFieldIndex !== fieldIndex) {
+        if (
+          !checkSession ||
+          !checkSession.formId ||
+          checkSession.formFieldIndex !== fieldIndex
+        ) {
           clearInterval(intervalId);
           return;
         }
@@ -42,26 +77,34 @@ const startInactivityTimer = (phone: string, userId: string, formId: string, fie
         if (remindersSent < field.repeatCount) {
           // Send reminder message
           await sendWhatsAppMessage(
-            phone, 
-            { message: field.delayMessage, stepType: "text" }, 
-            ownerUser?.whatsappPhoneNumberId, 
+            phone,
+            { message: field.delayMessage, stepType: "text" },
+            ownerUser?.whatsappPhoneNumberId,
             ownerUser?.whatsappAccessToken
           );
           remindersSent++;
         } else {
-          // Exhausted reminders -> Send abandonment message with restart button
+          // Exhausted reminders → Send abandonment message with restart button
           clearInterval(intervalId);
-          
+
           const abandonmentStep = {
-            message: form.abandonmentMessage || "It seems you are busy right now. We have paused the form. Click the button below whenever you are ready to start over.",
+            message:
+              form.abandonmentMessage ||
+              "It seems you are busy right now. We have paused the form. Click the button below whenever you are ready to start over.",
             stepType: "message",
-            buttons: [{ id: `restart_form_${formId}`, label: "🔄 Restart Form", nextStepId: null }]
+            buttons: [
+              {
+                id: `restart_form_${formId}`,
+                label: "🔄 Restart Form",
+                nextStepId: null,
+              },
+            ],
           };
-          
+
           await sendWhatsAppMessage(
-            phone, 
-            abandonmentStep, 
-            ownerUser?.whatsappPhoneNumberId, 
+            phone,
+            abandonmentStep,
+            ownerUser?.whatsappPhoneNumberId,
             ownerUser?.whatsappAccessToken
           );
 
@@ -86,6 +129,9 @@ const startInactivityTimer = (phone: string, userId: string, formId: string, fie
 
 /* ============================================================================
    1. WEBHOOK VERIFICATION (GET REQUEST)
+   
+   Meta sends a GET request to verify the webhook endpoint.
+   We respond with the challenge token if the verify_token matches.
    ============================================================================ */
 export async function GET(req: Request) {
   try {
@@ -94,6 +140,7 @@ export async function GET(req: Request) {
     const token = url.searchParams.get("hub.verify_token");
     const challenge = url.searchParams.get("hub.challenge");
 
+    // Health check (no params → just confirm endpoint is live)
     if (!mode && !token && !challenge) {
       return new Response("WhatsApp Webhook Endpoint is Live ✅", {
         status: 200,
@@ -101,6 +148,7 @@ export async function GET(req: Request) {
       });
     }
 
+    // Verification request from Meta
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
       return new Response(challenge || "", {
         status: 200,
@@ -110,12 +158,17 @@ export async function GET(req: Request) {
 
     return new Response("Forbidden", { status: 403 });
   } catch (err) {
+    console.error("GET webhook error:", err);
     return new Response("Error", { status: 500 });
   }
 }
 
 /* ============================================================================
    2. WEBHOOK RECEIVER (POST REQUEST)
+   
+   Main entry point for all inbound WhatsApp events:
+   - Message status updates (sent, delivered, read, failed)
+   - Inbound messages (text, interactive, media)
    ============================================================================ */
 export async function POST(req: Request) {
   try {
@@ -126,22 +179,32 @@ export async function POST(req: Request) {
 
     await connectDB();
 
-    // --- IDENTIFY USER ---
+    /* ── IDENTIFY USER ──
+       Match the incoming phone_number_id to a user in our database */
     const metadataPhoneNumberId = value?.metadata?.phone_number_id;
     let userId: string | null = null;
     let ownerUser: any = null;
 
     if (metadataPhoneNumberId) {
-      ownerUser = await User.findOne({ whatsappPhoneNumberId: metadataPhoneNumberId });
+      ownerUser = await User.findOne({
+        whatsappPhoneNumberId: metadataPhoneNumberId,
+      });
       if (ownerUser) userId = ownerUser._id.toString();
     }
 
+    // Fallback: use the most recently created user
     if (!userId) {
       ownerUser = await User.findOne().sort({ _id: -1 });
       if (ownerUser) userId = ownerUser._id.toString();
     }
 
-    // --- 1. HANDLE MESSAGE STATUSES & DYNAMIC BILLING ---
+    /* ══════════════════════════════════════════════════════════════════════════
+       SECTION A: HANDLE MESSAGE STATUSES & DYNAMIC BILLING
+       
+       Process delivery/read/failed status updates from WhatsApp.
+       - Delivered/Read → Charge the user's wallet
+       - Failed/Invalid → Refund if previously charged
+       ══════════════════════════════════════════════════════════════════════════ */
     if (value.statuses && value.statuses.length > 0) {
       try {
         const statusUpdate = value.statuses[0];
@@ -149,65 +212,102 @@ export async function POST(req: Request) {
         const newStatus = statusUpdate.status;
         const errorCode = statusUpdate.errors?.[0]?.code;
         const errorSubcode = statusUpdate.errors?.[0]?.error_subcode;
-        const errorDetails = String(statusUpdate.errors?.[0]?.error_data?.details || "").toLowerCase();
+        const errorDetails = String(
+          statusUpdate.errors?.[0]?.error_data?.details || ""
+        ).toLowerCase();
 
-        if (statusPhone.startsWith("whatsapp:")) statusPhone = statusPhone.replace("whatsapp:", "");
+        // Normalize phone number format
+        if (statusPhone.startsWith("whatsapp:"))
+          statusPhone = statusPhone.replace("whatsapp:", "");
         statusPhone = statusPhone.replace(/\+/g, "");
 
         if (statusPhone && newStatus) {
-          const campaignQuery: any = { "reportData.phone": statusPhone, status: { $in: ["running", "paused", "completed"] } };
+          const campaignQuery: any = {
+            "reportData.phone": statusPhone,
+            status: { $in: ["running", "paused", "completed"] },
+          };
           if (userId) campaignQuery.userId = userId;
 
           const campaigns = await Campaign.find(campaignQuery);
 
           for (const camp of campaigns) {
             if (!camp.reportData) continue;
-            const reportIndex = camp.reportData.findIndex((r: any) => r.phone === statusPhone);
-            if (reportIndex !== -1) {
-              const currentItem = camp.reportData[reportIndex];
-              let finalStatus = newStatus;
 
-              if (newStatus === "failed" || newStatus === "undelivered") {
-                const isInvalidNumber =
-                  errorCode === 1005 || errorCode === 1001 || errorCode === 1006 ||
-                  errorSubcode === 1005 || errorSubcode === 1001 ||
-                  errorDetails.includes("not registered") || errorDetails.includes("invalid") ||
-                  errorDetails.includes("not a whatsapp user") || errorDetails.includes("unable to find");
-                finalStatus = isInvalidNumber ? "invalid" : "failed";
+            const reportIndex = camp.reportData.findIndex(
+              (r: any) => r.phone === statusPhone
+            );
+            if (reportIndex === -1) continue;
+
+            const currentItem = camp.reportData[reportIndex];
+            let finalStatus = newStatus;
+
+            // Determine if failure is due to invalid number
+            if (newStatus === "failed" || newStatus === "undelivered") {
+              const isInvalidNumber =
+                errorCode === 1005 ||
+                errorCode === 1001 ||
+                errorCode === 1006 ||
+                errorSubcode === 1005 ||
+                errorSubcode === 1001 ||
+                errorDetails.includes("not registered") ||
+                errorDetails.includes("invalid") ||
+                errorDetails.includes("not a whatsapp user") ||
+                errorDetails.includes("unable to find");
+              finalStatus = isInvalidNumber ? "invalid" : "failed";
+            }
+
+            // Priority logic: Only upgrade status (read > delivered > sent > invalid > failed > pending)
+            const statusPriority: any = {
+              read: 5,
+              delivered: 4,
+              sent: 3,
+              invalid: 2,
+              failed: 1,
+              pending: 0,
+            };
+
+            if (
+              statusPriority[finalStatus] >
+              (statusPriority[currentItem.status] || 0)
+            ) {
+              /* ── DYNAMIC BILLING LOGIC ── */
+              let balanceAdjustment = 0;
+              const cost = ownerUser?.pricePerMessage || 0;
+
+              // If delivered/read and NOT charged yet → CHARGE
+              if (
+                (finalStatus === "delivered" || finalStatus === "read") &&
+                !currentItem.charged
+              ) {
+                balanceAdjustment -= cost;
+                currentItem.charged = true;
+                camp.totalDeducted = (camp.totalDeducted || 0) + cost;
+              }
+              // If failed/invalid and WAS charged → REFUND
+              else if (
+                (finalStatus === "failed" || finalStatus === "invalid") &&
+                currentItem.charged
+              ) {
+                balanceAdjustment += cost;
+                currentItem.charged = false;
+                camp.totalDeducted = Math.max(
+                  0,
+                  (camp.totalDeducted || 0) - cost
+                );
               }
 
-              // Priority logic: Only upgrade status
-              const statusPriority: any = { read: 5, delivered: 4, sent: 3, invalid: 2, failed: 1, pending: 0 };
-              if (statusPriority[finalStatus] > (statusPriority[currentItem.status] || 0)) {
-                
-                // ==========================================
-                // 🔴 DYNAMIC BILLING LOGIC
-                // ==========================================
-                let balanceAdjustment = 0;
-                const cost = ownerUser?.pricePerMessage || 0;
+              currentItem.status = finalStatus;
+              camp.markModified("reportData");
+              await camp.save();
 
-                // If delivered/read and NOT charged yet -> CHARGE
-                if ((finalStatus === "delivered" || finalStatus === "read") && !currentItem.charged) {
-                  balanceAdjustment -= cost;
-                  currentItem.charged = true;
-                  camp.totalDeducted = (camp.totalDeducted || 0) + cost;
-                } 
-                // If failed/invalid and WAS charged -> REFUND
-                else if ((finalStatus === "failed" || finalStatus === "invalid") && currentItem.charged) {
-                  balanceAdjustment += cost;
-                  currentItem.charged = false;
-                  camp.totalDeducted = Math.max(0, (camp.totalDeducted || 0) - cost);
-                }
-
-                currentItem.status = finalStatus;
-                camp.markModified("reportData");
-                await camp.save();
-
-                // Apply balance adjustment to User Wallet
-                if (balanceAdjustment !== 0 && userId) {
-                  await User.findByIdAndUpdate(userId, { $inc: { balance: balanceAdjustment } });
-                  console.log(`💰 Balance adjusted by ${balanceAdjustment} for ${statusPhone}`);
-                }
+              // Apply balance adjustment to User Wallet
+              if (balanceAdjustment !== 0 && userId) {
+                await User.findByIdAndUpdate(userId, {
+                  $inc: { balance: balanceAdjustment },
+                });
+                console.log(
+                  `💰 Balance adjusted by ${balanceAdjustment} for ${statusPhone}`
+                );
               }
             }
           }
@@ -215,20 +315,31 @@ export async function POST(req: Request) {
       } catch (statusErr) {
         console.error("⚠️ Status Update Error:", statusErr);
       }
+
       return NextResponse.json({ success: true });
     }
 
-    // --- 2. HANDLE INBOUND MESSAGES ---
+    /* ══════════════════════════════════════════════════════════════════════════
+       SECTION B: HANDLE INBOUND MESSAGES
+       
+       Parse incoming messages from WhatsApp users, including:
+       - Text messages
+       - Interactive replies (button clicks & list selections)
+       - Media messages (image, video, audio, document, sticker)
+       ══════════════════════════════════════════════════════════════════════════ */
     if (!value?.messages?.length) return NextResponse.json({ success: true });
 
     const message = value.messages[0];
 
+    // Normalize phone number
     let rawPhone = message.from;
-    if (rawPhone.startsWith("whatsapp:")) rawPhone = rawPhone.replace("whatsapp:", "");
+    if (rawPhone.startsWith("whatsapp:"))
+      rawPhone = rawPhone.replace("whatsapp:", "");
     const phone = rawPhone.replace(/\+/g, "");
 
     const contactName = value.contacts?.[0]?.profile?.name || "Unknown";
 
+    // Parsed message data
     let lowerText = "";
     let textToSave = "";
     let buttonId: string | null = null;
@@ -236,41 +347,65 @@ export async function POST(req: Request) {
     let mediaId = null;
     let isButtonReply = false;
 
+    /* ── Parse message by type ── */
     if (message.type === "text") {
       lowerText = message.text?.body?.toLowerCase().trim() || "";
       textToSave = message.text.body.trim();
       messageType = "text";
     } else if (message.type === "interactive") {
-      const buttonReply = message.interactive?.button_reply || message.interactive?.list_reply;
+      // Handles BOTH button_reply AND list_reply
+      // When >3 buttons are sent as a list, the response comes as list_reply
+      const buttonReply =
+        message.interactive?.button_reply || message.interactive?.list_reply;
       textToSave = buttonReply?.title?.trim() || buttonReply?.id?.trim() || "";
       lowerText = textToSave.toLowerCase();
       buttonId = buttonReply?.id || null;
       messageType = "text";
       isButtonReply = true;
     } else if (message.type === "button") {
-      textToSave = message.button?.text?.trim() || message.button?.payload?.trim() || "";
+      textToSave =
+        message.button?.text?.trim() || message.button?.payload?.trim() || "";
       lowerText = textToSave.toLowerCase();
       buttonId = message.button?.payload || null;
       messageType = "text";
       isButtonReply = true;
-    } else if (["image", "video", "document", "audio", "sticker"].includes(message.type)) {
+    } else if (
+      ["image", "video", "document", "audio", "sticker"].includes(
+        message.type
+      )
+    ) {
       messageType = message.type;
       mediaId = message[message.type]?.id || null;
       textToSave = message[message.type]?.caption || "";
       lowerText = textToSave.toLowerCase().trim();
-      if (message.type === "document") textToSave = message[message.type]?.filename || "Document.pdf";
+      if (message.type === "document")
+        textToSave = message[message.type]?.filename || "Document.pdf";
     }
 
-    if (!textToSave && !buttonId && !mediaId) return NextResponse.json({ success: true });
+    // Ignore empty messages
+    if (!textToSave && !buttonId && !mediaId)
+      return NextResponse.json({ success: true });
 
+    // Save inbound message to database
     await Message.create({
-      userId, phone, text: textToSave, direction: "in", messageType,
-      mediaUrl: mediaId, whatsappMessageId: message.id || null, contactName: contactName,
+      userId,
+      phone,
+      text: textToSave,
+      direction: "in",
+      messageType,
+      mediaUrl: mediaId,
+      whatsappMessageId: message.id || null,
+      contactName: contactName,
     });
 
-    // --- 3. CONVERSATIONAL FORM LOGIC ---
+    /* ══════════════════════════════════════════════════════════════════════════
+       SECTION C: CONVERSATIONAL FORM LOGIC
+       
+       If the user has an active form session, capture their response
+       and advance to the next field (or complete the form).
+       ══════════════════════════════════════════════════════════════════════════ */
     const activeSession = await Session.findOne({ phone, userId });
-    
+
     if (activeSession && activeSession.formId) {
       try {
         const form = await Form.findById(activeSession.formId);
@@ -280,7 +415,8 @@ export async function POST(req: Request) {
         }
 
         const currentField = form.fields[activeSession.formFieldIndex];
-        
+
+        // Save the user's response for this field
         await FormResponse.findOneAndUpdate(
           { formId: form._id, phone, status: "incomplete" },
           { $set: { [`data.${currentField.label}`]: textToSave } },
@@ -288,41 +424,54 @@ export async function POST(req: Request) {
         );
 
         const nextIndex = activeSession.formFieldIndex + 1;
-        
+
         if (nextIndex < form.fields.length) {
+          // Advance to the next field
           activeSession.formFieldIndex = nextIndex;
           await activeSession.save();
-          
+
           const nextField = form.fields[nextIndex];
           await sendWhatsAppMessage(
-            phone, 
-            { message: nextField.label, stepType: "text" }, 
-            ownerUser?.whatsappPhoneNumberId, 
+            phone,
+            { message: nextField.label, stepType: "text" },
+            ownerUser?.whatsappPhoneNumberId,
             ownerUser?.whatsappAccessToken
           );
 
           // Start inactivity timer for the next field
-          startInactivityTimer(phone, userId!, form._id.toString(), nextIndex, nextField, form, ownerUser);
-
+          startInactivityTimer(
+            phone,
+            userId!,
+            form._id.toString(),
+            nextIndex,
+            nextField,
+            form,
+            ownerUser
+          );
         } else {
           // Form Complete
           await FormResponse.updateOne(
             { formId: form._id, phone, status: "incomplete" },
             { $set: { status: "complete" } }
           );
-          
+
           activeSession.formId = null;
           activeSession.formFieldIndex = 0;
           await activeSession.save();
-          
+
           await sendWhatsAppMessage(
-            phone, 
-            { message: form.completionMessage || "✅ Thank you! Your form has been submitted successfully.", stepType: "text" }, 
-            ownerUser?.whatsappPhoneNumberId, 
+            phone,
+            {
+              message:
+                form.completionMessage ||
+                "✅ Thank you! Your form has been submitted successfully.",
+              stepType: "text",
+            },
+            ownerUser?.whatsappPhoneNumberId,
             ownerUser?.whatsappAccessToken
           );
         }
-        
+
         return NextResponse.json({ success: true });
       } catch (formErr) {
         console.error("⚠️ Form processing error:", formErr);
@@ -330,33 +479,56 @@ export async function POST(req: Request) {
       }
     }
 
-    // --- 4. CAMPAIGN REPORT UPDATE & DYNAMIC AUTO-TAGGING ---
+    /* ══════════════════════════════════════════════════════════════════════════
+       SECTION D: CAMPAIGN REPORT UPDATE & DYNAMIC AUTO-TAGGING
+       
+       Match the inbound reply to the corresponding campaign and:
+       - Record the reply in the campaign report
+       - Auto-detect and apply tags based on keyword matching
+       ══════════════════════════════════════════════════════════════════════════ */
     if (textToSave) {
       try {
         const contextId = message?.context?.id || null;
         const targetedCampaigns: any[] = [];
 
+        // Try to match by WhatsApp message ID first
         if (contextId) {
-          const exactQuery: any = { "reportData.sentWamid": contextId, status: { $in: ["running", "completed"] } };
+          const exactQuery: any = {
+            "reportData.sentWamid": contextId,
+            status: { $in: ["running", "completed"] },
+          };
           if (userId) exactQuery.userId = userId;
           const exactCampaign = await Campaign.findOne(exactQuery);
           if (exactCampaign) targetedCampaigns.push(exactCampaign);
         }
 
+        // Fallback: match by phone number (most recent campaign)
         if (targetedCampaigns.length === 0) {
-          const latestQuery: any = { "reportData.phone": phone, status: { $in: ["running", "completed"] } };
+          const latestQuery: any = {
+            "reportData.phone": phone,
+            status: { $in: ["running", "completed"] },
+          };
           if (userId) latestQuery.userId = userId;
-          const latestCampaign = await Campaign.findOne(latestQuery).sort({ createdAt: -1 });
+          const latestCampaign = await Campaign.findOne(latestQuery).sort({
+            createdAt: -1,
+          });
           if (latestCampaign) targetedCampaigns.push(latestCampaign);
         }
 
+        // Load user tags for auto-detection
         let userTags: any[] = [];
         if (userId) userTags = await Tag.find({ userId }).select("name isCampaignSpecific campaignId");
 
         for (const camp of targetedCampaigns) {
           if (!camp.reportData) continue;
-          let reportIndex = contextId ? camp.reportData.findIndex((r: any) => r.sentWamid === contextId) : -1;
-          if (reportIndex === -1) reportIndex = camp.reportData.findIndex((r: any) => r.phone === phone);
+
+          let reportIndex = contextId
+            ? camp.reportData.findIndex((r: any) => r.sentWamid === contextId)
+            : -1;
+          if (reportIndex === -1)
+            reportIndex = camp.reportData.findIndex(
+              (r: any) => r.phone === phone
+            );
 
           if (reportIndex !== -1) {
             const currentReplies = camp.reportData[reportIndex].replies || [];
@@ -364,7 +536,8 @@ export async function POST(req: Request) {
               currentReplies.push(textToSave);
               camp.reportData[reportIndex].replies = currentReplies;
               camp.reportData[reportIndex].status = "read";
-              
+
+              // Auto-detect tags from the reply
               const currentTags = camp.reportData[reportIndex].tags || [];
               let detectedTags: string[] = [];
 
@@ -372,7 +545,11 @@ export async function POST(req: Request) {
                 const tagNameLower = t.name.toLowerCase();
                 if (tagNameLower && lowerText.includes(tagNameLower)) {
                   if (t.isCampaignSpecific) {
-                    if (t.campaignId && t.campaignId.toString() === camp._id.toString()) detectedTags.push(t.name);
+                    if (
+                      t.campaignId &&
+                      t.campaignId.toString() === camp._id.toString()
+                    )
+                      detectedTags.push(t.name);
                   } else {
                     detectedTags.push(t.name);
                   }
@@ -389,116 +566,233 @@ export async function POST(req: Request) {
               camp.markModified("reportData");
               await camp.save();
 
+              // Save detected tags to global Contact/Tag records
               if (detectedTags.length > 0 && userId) {
                 try {
                   for (const dt of detectedTags) {
-                    await Tag.findOneAndUpdate({ userId, name: dt }, { $setOnInsert: { userId, name: dt } }, { upsert: true, new: true });
-                    await Contact.findOneAndUpdate({ userId, phone }, { $setOnInsert: { userId, phone, name: contactName }, $addToSet: { tags: dt } }, { upsert: true, new: true });
+                    await Tag.findOneAndUpdate(
+                      { userId, name: dt },
+                      { $setOnInsert: { userId, name: dt } },
+                      { upsert: true, new: true }
+                    );
+                    await Contact.findOneAndUpdate(
+                      { userId, phone },
+                      {
+                        $setOnInsert: { userId, phone, name: contactName },
+                        $addToSet: { tags: dt },
+                      },
+                      { upsert: true, new: true }
+                    );
                   }
-                } catch (tagErr) { console.error("⚠️ Failed to save Contact/Tag globally:", tagErr); }
+                } catch (tagErr) {
+                  console.error(
+                    "⚠️ Failed to save Contact/Tag globally:",
+                    tagErr
+                  );
+                }
               }
             }
           }
         }
-      } catch (reportErr) { console.error("⚠️ Campaign Report Update Failed:", reportErr); }
+      } catch (reportErr) {
+        console.error("⚠️ Campaign Report Update Failed:", reportErr);
+      }
     }
 
-    // --- 5. WORKFLOW LOGIC (Button Clicks & Triggers) ---
+    /* ══════════════════════════════════════════════════════════════════════════
+       SECTION E: WORKFLOW LOGIC (Button Clicks & Triggers)
+       
+       Handles:
+       1. Form restart button clicks
+       2. Workflow step button clicks (including list reply selections)
+       3. Workflow trigger keyword matching
+       
+       Note: Both button_reply and list_reply are handled identically
+       here because the button ID is the same regardless of whether
+       the button was in a Button Message or a List Message.
+       ══════════════════════════════════════════════════════════════════════════ */
     if (messageType === "text" || isButtonReply) {
       try {
-        // Handle Form Restart Button Click
+        /* ── Handle Form Restart Button Click ── */
         if (isButtonReply && buttonId && buttonId.startsWith("restart_form_")) {
           const formId = buttonId.replace("restart_form_", "");
           const formData = await Form.findById(formId);
-          
+
           if (formData && formData.fields.length > 0) {
             // Reset session and start form over
             await Session.findOneAndUpdate(
               { phone, userId },
-              { formId: formData._id, formFieldIndex: 0, updatedAt: new Date() },
+              {
+                formId: formData._id,
+                formFieldIndex: 0,
+                updatedAt: new Date(),
+              },
               { upsert: true, new: true }
             );
-            
+
             // Create a fresh response entry
-            await FormResponse.create({ formId: formData._id, userId, phone, data: {}, status: "incomplete" });
-            
+            await FormResponse.create({
+              formId: formData._id,
+              userId,
+              phone,
+              data: {},
+              status: "incomplete",
+            });
+
             const textMsg = `*${formData.name}*\n\n${formData.fields[0].label}`;
-            await sendWhatsAppMessage(phone, { message: textMsg, stepType: "text" }, ownerUser?.whatsappPhoneNumberId, ownerUser?.whatsappAccessToken);
+            await sendWhatsAppMessage(
+              phone,
+              { message: textMsg, stepType: "text" },
+              ownerUser?.whatsappPhoneNumberId,
+              ownerUser?.whatsappAccessToken
+            );
 
             // Start timer for the first field again
-            startInactivityTimer(phone, userId!, formData._id.toString(), 0, formData.fields[0], formData, ownerUser);
-            
+            startInactivityTimer(
+              phone,
+              userId!,
+              formData._id.toString(),
+              0,
+              formData.fields[0],
+              formData,
+              ownerUser
+            );
+
             return NextResponse.json({ success: true });
           }
         }
 
-        // Handle Workflow Button Clicks
+        /* ── Handle Workflow Step Button Clicks ──
+           This handles BOTH button_reply (≤3 buttons) and
+           list_reply (>3 buttons) because the button ID
+           remains the same in both formats. */
         if (isButtonReply && userId) {
-          const session = activeSession || await Session.findOne({ phone, userId });
-          
+          const session =
+            activeSession || (await Session.findOne({ phone, userId }));
+
           if (session) {
             const wf = await Workflow.findById(session.workflowId);
-            
+
             if (wf && wf.steps) {
               let clickedBtn = null;
 
+              // Search all steps for the clicked button by ID
               for (const stepId in wf.steps) {
                 const step = wf.steps[stepId];
-                const btn = step.buttons?.find((b: any) => b.id === buttonId || b.label?.toLowerCase() === lowerText);
-                if (btn) { clickedBtn = btn; break; }
+                const btn = step.buttons?.find(
+                  (b: any) =>
+                    b.id === buttonId ||
+                    b.label?.toLowerCase() === lowerText
+                );
+                if (btn) {
+                  clickedBtn = btn;
+                  break;
+                }
               }
 
               if (clickedBtn) {
+                // Handle Opt-In Action
                 if (clickedBtn.optInNodeId) {
                   try {
-                    const existingOpt = await OptNumber.findOne({ userId, phoneNumber: phone });
-                    if (!existingOpt) await OptNumber.create({ userId, phoneNumber: phone });
-                  } catch (optErr) { console.error("⚠️ Failed to save opt-in number:", optErr); }
+                    const existingOpt = await OptNumber.findOne({
+                      userId,
+                      phoneNumber: phone,
+                    });
+                    if (!existingOpt)
+                      await OptNumber.create({ userId, phoneNumber: phone });
+                  } catch (optErr) {
+                    console.error(
+                      "⚠️ Failed to save opt-in number:",
+                      optErr
+                    );
+                  }
                 }
 
+                // Navigate to the next step
                 if (clickedBtn.nextStepId) {
                   const nextStep = wf.steps[clickedBtn.nextStepId];
                   if (nextStep) {
-                    
-                    if (nextStep.stepType === "form_node" && nextStep.selectedForm) {
-                      const formData = await Form.findById(nextStep.selectedForm);
+                    // If next step is a Form Node, start the form
+                    if (
+                      nextStep.stepType === "form_node" &&
+                      nextStep.selectedForm
+                    ) {
+                      const formData = await Form.findById(
+                        nextStep.selectedForm
+                      );
                       if (formData && formData.fields.length > 0) {
                         session.formId = formData._id;
                         session.formFieldIndex = 0;
                         await session.save();
-                        await FormResponse.create({ formId: formData._id, userId, phone, data: {}, status: "incomplete" });
-                        
+                        await FormResponse.create({
+                          formId: formData._id,
+                          userId,
+                          phone,
+                          data: {},
+                          status: "incomplete",
+                        });
+
                         const textMsg = `*${formData.name}*\n\n${formData.fields[0].label}`;
-                        await sendWhatsAppMessage(phone, { message: textMsg, stepType: "text" }, ownerUser?.whatsappPhoneNumberId, ownerUser?.whatsappAccessToken);
-                        
-                        // Start timer for the first field
-                        startInactivityTimer(phone, userId!, formData._id.toString(), 0, formData.fields[0], formData, ownerUser);
-                        
+                        await sendWhatsAppMessage(
+                          phone,
+                          { message: textMsg, stepType: "text" },
+                          ownerUser?.whatsappPhoneNumberId,
+                          ownerUser?.whatsappAccessToken
+                        );
+
+                        startInactivityTimer(
+                          phone,
+                          userId!,
+                          formData._id.toString(),
+                          0,
+                          formData.fields[0],
+                          formData,
+                          ownerUser
+                        );
+
                         return NextResponse.json({ success: true });
                       }
                     }
 
+                    // Otherwise, send the next step
                     session.currentStepId = nextStep.id;
                     await session.save();
-                    await sendWhatsAppMessage(phone, nextStep, ownerUser?.whatsappPhoneNumberId, ownerUser?.whatsappAccessToken);
-                    await Message.create({ userId, phone, text: nextStep.message || `[${nextStep.stepType?.toUpperCase()}]`, direction: "out", messageType: "text" });
+                    await sendWhatsAppMessage(
+                      phone,
+                      nextStep,
+                      ownerUser?.whatsappPhoneNumberId,
+                      ownerUser?.whatsappAccessToken
+                    );
+                    await Message.create({
+                      userId,
+                      phone,
+                      text:
+                        nextStep.message ||
+                        `[${nextStep.stepType?.toUpperCase()}]`,
+                      direction: "out",
+                      messageType: "text",
+                    });
                     return NextResponse.json({ success: true });
                   }
                 } else {
+                  // No next step → end the session
                   await Session.deleteOne({ _id: session._id });
                   return NextResponse.json({ success: true });
                 }
               } else {
+                // Button not found → end session
                 await Session.deleteOne({ _id: session._id });
                 return NextResponse.json({ success: true });
               }
             } else {
+              // Workflow not found → clean up session
               await Session.deleteOne({ _id: session._id });
             }
           }
         }
 
-        // Handle Workflow Triggers
+        /* ── Handle Workflow Triggers ──
+           Check if the incoming message matches any workflow's trigger keywords. */
         const workflowQuery: any = {};
         if (userId) workflowQuery.userId = userId;
         const workflows = await Workflow.find(workflowQuery);
@@ -506,7 +800,7 @@ export async function POST(req: Request) {
         let matchedStepId: string | null = null;
         let matchedWorkflow: any = null;
 
-        const checkText = isButtonReply ? (textToSave || "") : lowerText;
+        const checkText = isButtonReply ? textToSave || "" : lowerText;
 
         for (const wf of workflows) {
           const hasMatch = wf.triggers?.some((t: any) => {
@@ -517,7 +811,7 @@ export async function POST(req: Request) {
             if (mode === "contains") return checkText.includes(triggerKeyword);
             return false;
           });
-          
+
           if (hasMatch) {
             matchedWorkflow = wf;
             matchedStepId = wf.rootStepId;
@@ -527,34 +821,82 @@ export async function POST(req: Request) {
 
         if (matchedWorkflow && matchedStepId) {
           const step = matchedWorkflow.steps?.[matchedStepId];
-          if (step && (step.message || step.stepType === "template" || step.stepType === "url_action" || step.stepType === "call_action" || step.stepType === "form_node")) {
-            
+          if (
+            step &&
+            (step.message ||
+              step.stepType === "template" ||
+              step.stepType === "url_action" ||
+              step.stepType === "call_action" ||
+              step.stepType === "form_node")
+          ) {
+            // If trigger leads to a Form Node, start the form
             if (step.stepType === "form_node" && step.selectedForm) {
               const formData = await Form.findById(step.selectedForm);
               if (formData && formData.fields.length > 0) {
                 await Session.findOneAndUpdate(
                   { phone, userId },
-                  { formId: formData._id, formFieldIndex: 0, workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() },
+                  {
+                    formId: formData._id,
+                    formFieldIndex: 0,
+                    workflowId: matchedWorkflow._id,
+                    currentStepId: step.id,
+                    updatedAt: new Date(),
+                  },
                   { upsert: true, new: true }
                 );
-                await FormResponse.create({ formId: formData._id, userId, phone, data: {}, status: "incomplete" });
-                
-                const textMsg = `*${formData.name}*\n\n${formData.fields[0].label}`;
-                await sendWhatsAppMessage(phone, { message: textMsg, stepType: "text" }, ownerUser?.whatsappPhoneNumberId, ownerUser?.whatsappAccessToken);
+                await FormResponse.create({
+                  formId: formData._id,
+                  userId,
+                  phone,
+                  data: {},
+                  status: "incomplete",
+                });
 
-                // Start timer for the first field
-                startInactivityTimer(phone, userId!, formData._id.toString(), 0, formData.fields[0], formData, ownerUser);
-                
+                const textMsg = `*${formData.name}*\n\n${formData.fields[0].label}`;
+                await sendWhatsAppMessage(
+                  phone,
+                  { message: textMsg, stepType: "text" },
+                  ownerUser?.whatsappPhoneNumberId,
+                  ownerUser?.whatsappAccessToken
+                );
+
+                startInactivityTimer(
+                  phone,
+                  userId!,
+                  formData._id.toString(),
+                  0,
+                  formData.fields[0],
+                  formData,
+                  ownerUser
+                );
+
                 return NextResponse.json({ success: true });
               }
             }
 
-            await sendWhatsAppMessage(phone, step, ownerUser?.whatsappPhoneNumberId, ownerUser?.whatsappAccessToken);
-            await Message.create({ userId, phone, text: step.message || `[${step.stepType?.toUpperCase()}]`, direction: "out", messageType: "text" });
+            // Send the matched workflow step
+            await sendWhatsAppMessage(
+              phone,
+              step,
+              ownerUser?.whatsappPhoneNumberId,
+              ownerUser?.whatsappAccessToken
+            );
+            await Message.create({
+              userId,
+              phone,
+              text: step.message || `[${step.stepType?.toUpperCase()}]`,
+              direction: "out",
+              messageType: "text",
+            });
 
+            // Create or update session
             await Session.findOneAndUpdate(
               { phone, userId },
-              { workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() },
+              {
+                workflowId: matchedWorkflow._id,
+                currentStepId: step.id,
+                updatedAt: new Date(),
+              },
               { upsert: true, new: true }
             );
           }
@@ -565,9 +907,11 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({ success: true });
-    
   } catch (error: any) {
     console.error("❌ WEBHOOK CRASH:", error);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: error.message },
+      { status: 500 }
+    );
   }
 }
