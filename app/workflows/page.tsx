@@ -61,9 +61,10 @@ import {
   UserPlus,
   ClipboardList,
   List,
-    Clock,
+  Clock,
   Hourglass, // Added for Inactivity Node
   Gauge, AlertTriangle, Infinity as InfinityIcon, // ✅ LIMIT ADDED
+  Pause, // ✅ ADDED FOR DEACTIVATION
 } from "lucide-react";
 
 // Authentication
@@ -118,6 +119,7 @@ type Workflow = {
   triggers: Trigger[];
   steps: Record<string, Step>;
   rootStepId: string;
+  active?: boolean; // ✅ ADDED FOR DEACTIVATION
 };
 
 /* ============================================================================
@@ -2109,10 +2111,12 @@ function WorkflowCard({
   wf,
   onEdit,
   onDelete,
+  onToggleActive,
 }: {
   wf: Workflow;
   onEdit: (wf: Workflow) => void;
   onDelete: (id: string) => void;
+  onToggleActive: (id: string, currentActive: boolean) => void; // ✅ ADDED
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const rootStep = wf.steps[wf.rootStepId];
@@ -2121,9 +2125,16 @@ function WorkflowCard({
     (s) => s.buttons && s.buttons.length > 3
   );
 
+  // Treat undefined as active (true) by default
+  const isActive = wf.active !== false;
+
   return (
     <div
-      className="group bg-white rounded-2xl border border-gray-200 hover:border-emerald-200 hover:shadow-lg transition-all duration-200 overflow-hidden cursor-pointer"
+      className={`group bg-white rounded-2xl border transition-all duration-200 overflow-hidden cursor-pointer ${
+        isActive 
+          ? "border-gray-200 hover:border-emerald-200 hover:shadow-lg" 
+          : "border-gray-200 opacity-60 hover:opacity-100"
+      }`}
       onClick={() => onEdit(wf)}
     >
       <div className="p-4 sm:p-5">
@@ -2146,6 +2157,11 @@ function WorkflowCard({
                   {t.keyword === "*" ? "Any Message" : t.keyword}
                 </span>
               ))}
+              {!isActive && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-semibold bg-gray-100 border-gray-200 text-gray-500">
+                  <Pause size={10} /> Inactive
+                </span>
+              )}
             </div>
 
             {rootStep && (
@@ -2214,12 +2230,26 @@ function WorkflowCard({
                 </button>
               </div>
             ) : (
-              <button
-                onClick={() => setConfirmDelete(true)}
-                className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
-              >
-                <Trash2 size={14} />
-              </button>
+              <div className="flex items-center gap-1">
+                {/* ✅ ADDED: Activate/Deactivate Button */}
+                <button
+                  onClick={() => onToggleActive(wf._id, isActive)}
+                  className={`w-8 h-8 rounded-xl flex items-center justify-center transition-colors ${
+                    isActive
+                      ? "text-emerald-600 hover:bg-gray-50"
+                      : "text-gray-400 hover:text-emerald-600 hover:bg-emerald-50"
+                  }`}
+                  title={isActive ? "Deactivate Workflow" : "Activate Workflow"}
+                >
+                  {isActive ? <Pause size={14} /> : <Zap size={14} />}
+                </button>
+                <button
+                  onClick={() => setConfirmDelete(true)}
+                  className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -2275,6 +2305,7 @@ export default function Home() {
     if (wf.steps && wf.rootStepId) {
       return {
         ...wf,
+        active: wf.active !== false, // Normalize active state
         triggers: wf.triggers.map((t: any) =>
           typeof t === "string"
             ? { keyword: t, matchMode: "contains" }
@@ -2286,6 +2317,7 @@ export default function Home() {
     const actions = wf.actions || [];
     return {
       ...wf,
+      active: wf.active !== false,
       triggers: (
         wf.triggers || [{ keyword: wf.trigger?.keyword || "" }]
       ).map((t: any) =>
@@ -2355,7 +2387,7 @@ export default function Home() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-    const save = async (wfData: Workflow) => {
+  const save = async (wfData: Workflow) => {
     try {
       const payload = { triggers: wfData.triggers, steps: wfData.steps, rootStepId: wfData.rootStepId };
 
@@ -2399,6 +2431,33 @@ export default function Home() {
       load(); // ✅ LIMIT ADDED: Refresh limits after deletion
     } catch {
       showToast("Delete failed", "error");
+    }
+  };
+
+  // ✅ ADDED: Toggle workflow active state
+  const toggleActive = async (id: string, currentActive: boolean) => {
+    const actionText = currentActive ? "Deactivated" : "Activated";
+    try {
+      // Optimistic UI update
+      setWorkflows((prev) =>
+        prev.map((wf) =>
+          wf._id === id ? { ...wf, active: !currentActive } : wf
+        )
+      );
+
+      const res = await fetch("/api/workflow", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, active: !currentActive }),
+      });
+
+      if (!res.ok) throw new Error("Failed to update status");
+      
+      showToast(`Workflow ${actionText}`);
+      load(); // Sync with backend
+    } catch (err) {
+      showToast("Failed to toggle workflow", "error");
+      load(); // Revert on failure
     }
   };
 
@@ -2461,7 +2520,7 @@ export default function Home() {
         <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
           <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-gray-200 -mx-4 sm:-mx-6 px-4 sm:px-6 py-4">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3">
                 <div>
                   <h1 className="text-xl font-bold text-gray-900">Workflows</h1>
                   <p className="text-sm text-gray-400 mt-0.5">Drag, drop, and connect nodes like n8n</p>
@@ -2500,7 +2559,7 @@ export default function Home() {
                   {isAtLimit ? <AlertTriangle size={16} /> : <Plus size={16} />} {isAtLimit ? "Limit Reached" : "Create Workflow"}
                 </button>
               </div>
-                        </div>
+            </div>
 
             {/* ✅ LIMIT ADDED: Warning Bar */}
             {isLimitActive && (
@@ -2555,7 +2614,13 @@ export default function Home() {
 
           <div className="grid gap-4">
             {filteredWorkflows.map((wf) => (
-              <WorkflowCard key={wf._id} wf={wf} onEdit={edit} onDelete={remove} />
+              <WorkflowCard 
+                key={wf._id} 
+                wf={wf} 
+                onEdit={edit} 
+                onDelete={remove}
+                onToggleActive={toggleActive} // ✅ ADDED
+              />
             ))}
           </div>
 
