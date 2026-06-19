@@ -7,7 +7,7 @@ import User from "@/models/User";
 import Contact from "@/models/Contact";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { checkLimit, incrementUsage } from "@/lib/limits"; // ✅ LIMIT ADDED
+import { checkLimit, incrementUsage } from "@/lib/limits";
 
 export async function POST(req: Request) {
   try {
@@ -20,7 +20,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
     }
 
-    // ✅ LIMIT ADDED: Check campaign creation limit
     const limitCheck = await checkLimit(userId, "campaigns");
     if (!limitCheck.allowed) {
       return NextResponse.json(
@@ -52,24 +51,28 @@ export async function POST(req: Request) {
       body.name = formData.get("name");
       body.templateName = formData.get("templateName");
       body.templateCategory = formData.get("templateCategory");
+      
+      // ✅ EXTRACT NEW VARIABLE FIELDS
       body.variables = JSON.parse((formData.get("variables") as string) || "[]");
+      body.mappedVariables = JSON.parse((formData.get("mappedVariables") as string) || "[]");
+      body.generateOtp = JSON.parse((formData.get("generateOtp") as string) || "false");
+      body.otpLength = JSON.parse((formData.get("otpLength") as string) || "0");
+      
       body.phoneNumbers = JSON.parse((formData.get("phoneNumbers") as string) || "[]");
       body.names = JSON.parse((formData.get("names") as string) || "[]");
       body.mediaUrl = (formData.get("mediaUrl") as string) || "";
       body.mediaType = (formData.get("mediaType") as string) || "";
       body.languageCode = (formData.get("languageCode") as string) || "en";
-      body.scheduledAt =
-        formData.get("scheduledAt") === "null" || !formData.get("scheduledAt")
-          ? null
-          : (formData.get("scheduledAt") as string);
+      body.scheduledAt = JSON.parse((formData.get("scheduledAt") as string) || "null");
+      
       mediaFile = formData.get("file") as File | null;
     } else {
       body = await req.json();
     }
 
     const {
-      name, templateName, templateCategory, variables, phoneNumbers, names,
-      mediaUrl, mediaType, languageCode, scheduledAt,
+      name, templateName, templateCategory, variables, mappedVariables, generateOtp, otpLength,
+      phoneNumbers, names, mediaUrl, mediaType, languageCode, scheduledAt,
     } = body;
 
     if (!name || !templateName || !phoneNumbers || phoneNumbers.length === 0) {
@@ -159,6 +162,9 @@ export async function POST(req: Request) {
       templateName,
       templateCategory,
       variables,
+      mappedVariables, // ✅ SAVE MAPPED VARIABLES
+      generateOtp,     // ✅ SAVE OTP FLAG
+      otpLength,       // ✅ SAVE OTP LENGTH
       phoneNumbers,
       names: names || [],
       mediaUrl: finalMediaUrl,
@@ -181,7 +187,6 @@ export async function POST(req: Request) {
       });
     }
 
-    // ✅ LIMIT ADDED: Increment campaign usage after successful creation
     await incrementUsage(userId, "campaigns");
 
     return NextResponse.json({ success: true, campaign: newCampaign });
