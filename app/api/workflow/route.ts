@@ -75,8 +75,15 @@ export async function POST(req: Request) {
       );
     }
 
+    // ==========================================
+    // 🔴 MULTI-TENANT DATA ISOLATION
+    // ==========================================
+    const tenantId = (session?.user as any)?.parentTenantId || (session?.user as any)?.tenantId || null;
+
     const wf = await Workflow.create({
       userId,
+      tenantId, // ✅ ATTACH TENANT ID FOR AGGREGATED VIEWS
+      createdBy: userId, // ✅ TRACK WHO CREATED IT
       triggers,
       steps,
       rootStepId,
