@@ -4,9 +4,10 @@ import { connectDB } from "@/lib/mongodb";
 import Campaign from "@/models/Campaign";
 import ScheduledTrigger from "@/models/ScheduledTrigger";
 import User from "@/models/User";
-import Contact from "@/models/Contact"; // 🔴 NEW: Import Contact Model
+import Contact from "@/models/Contact";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { checkLimit, incrementUsage } from "@/lib/limits"; // ✅ LIMIT ADDED
 
 export async function POST(req: Request) {
   try {
@@ -17,6 +18,26 @@ export async function POST(req: Request) {
 
     if (!userId) {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+    }
+
+    // ✅ LIMIT ADDED: Check campaign creation limit
+    const limitCheck = await checkLimit(userId, "campaigns");
+    if (!limitCheck.allowed) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: `Campaign limit reached. You have used ${limitCheck.currentUsage}/${limitCheck.limit} campaigns per ${limitCheck.period}. Contact admin to increase your limit.`,
+          limitExceeded: true,
+          limitInfo: {
+            resource: "campaigns",
+            currentUsage: limitCheck.currentUsage,
+            limit: limitCheck.limit,
+            period: limitCheck.period,
+            remaining: limitCheck.remaining,
+          },
+        },
+        { status: 429 }
+      );
     }
 
     // ==========================================
@@ -109,10 +130,8 @@ export async function POST(req: Request) {
     }
 
     // ==========================================
-    // 🔴 NEW: FETCH EXISTING TAGS FROM CONTACTS DB
+    // FETCH EXISTING TAGS FROM CONTACTS DB
     // ==========================================
-    // If any of these numbers already exist in Contacts with tags (e.g. "Interested"), 
-    // we pre-fill those tags in the campaign report!
     const existingContacts = await Contact.find({ 
       userId, 
       phone: { $in: phoneNumbers } 
@@ -131,7 +150,7 @@ export async function POST(req: Request) {
       phone,
       status: "pending",
       replies: [],
-      tags: contactTagsMap.get(phone) || [], // 🔴 PRE-FILL TAGS HERE
+      tags: contactTagsMap.get(phone) || [],
     }));
 
     const newCampaign = await Campaign.create({
@@ -161,6 +180,9 @@ export async function POST(req: Request) {
         processed: false,
       });
     }
+
+    // ✅ LIMIT ADDED: Increment campaign usage after successful creation
+    await incrementUsage(userId, "campaigns");
 
     return NextResponse.json({ success: true, campaign: newCampaign });
   } catch (error: any) {
