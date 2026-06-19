@@ -7,6 +7,7 @@ import Campaign from "@/models/Campaign";
 import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { getMinPrice } from "@/lib/billing";
 
 export async function GET() {
   try {
@@ -19,6 +20,7 @@ export async function GET() {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
     }
 
+    // Stats are scoped to the logged-in user (Sub-user sees their own campaigns/chats)
     const totalChats = (await Message.distinct("phone", { userId })).length;
     const totalWorkflows = await Workflow.countDocuments({ userId });
     const totalCampaigns = await Campaign.countDocuments({ userId });
@@ -51,16 +53,32 @@ export async function GET() {
       };
     });
 
-    const user = await User.findById(userId).select("balance totalRecharged pricePerMessage whatsappAccessToken whatsappPhoneNumberId");
-    const balance = user?.balance || 0;
-    const totalRecharged = user?.totalRecharged || 0;
+    // Fetch the logged-in user (needed for WhatsApp credentials)
+    const user = await User.findById(userId).select("balance totalRecharged pricePerMessage whatsappAccessToken whatsappPhoneNumberId parentTenantId");
+
+    // ==========================================
+    // 🔴 SHARED WALLET LOGIC
+    // ==========================================
+    // If sub-user, fetch the parent tenant for billing info
+    let billingUser = user;
+    if (user?.parentTenantId) {
+      const parent = await User.findOne({ tenantId: user.parentTenantId }).select("balance totalRecharged priceMarketing priceUtility priceAuthentication");
+      if (parent) {
+        billingUser = parent;
+      }
+    }
+
+    const balance = billingUser?.balance || 0;
+    const totalRecharged = billingUser?.totalRecharged || 0;
     const totalSpent = Math.round((totalRecharged - balance) * 100) / 100;
-    const pricePerMessage = user?.pricePerMessage || 0;
-    const canSendMessage = pricePerMessage === 0 || balance >= pricePerMessage;
+    
+    const minPrice = getMinPrice(billingUser);
+    const canSendMessage = minPrice === 0 || balance >= minPrice;
 
     // ==========================================
     // ✅ FETCH WHATSAPP PHONE NUMBER DETAILS FROM META
     // ==========================================
+    // Note: We use the logged-in user's credentials (user), not billingUser
     let phoneDetails: any = {
       displayPhoneNumber: "Not Configured",
       verifiedName: "Add Credentials in Settings",
