@@ -8,7 +8,7 @@ import Sidebar from "@/components/Sidebar";
 import {
   Send, Phone, FileText, Loader2, AlertCircle,
   Image, Video, Upload, X, Variable, Wallet,
-  Gauge, Infinity as InfinityIcon, // ✅ LIMIT ADDED
+  Gauge, Infinity as InfinityIcon, 
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -35,6 +35,9 @@ export default function SendMessagePage() {
   const isLimitActive = testMessageLimit && testMessageLimit.limit.period !== "unlimited" && testMessageLimit.limit.max !== -1;
   const usagePercent = isLimitActive ? Math.min(100, Math.round(((testMessageLimit?.usage?.count || 0) / testMessageLimit.limit.max) * 100)) : 0;
   const isAtLimit = isLimitActive && !testMessageLimit.allowed;
+
+  // Check if sub-user to customize messaging
+  const parentTenantName = (session?.user as any)?.parentTenantName;
 
   const formatINR = (amount: number) =>
     new Intl.NumberFormat("en-IN", {
@@ -94,7 +97,7 @@ export default function SendMessagePage() {
     if (status === "authenticated") {
       fetchTemplates();
       fetchBilling();
-      fetchLimits(); // ✅ LIMIT ADDED
+      fetchLimits(); 
     } else if (status === "unauthenticated") {
       window.location.href = "/signin";
     }
@@ -153,7 +156,6 @@ export default function SendMessagePage() {
         setHeaderMediaType("none");
       }
       
-      // ✅ FIX: Auth templates always require 1 variable for the OTP code, even if body text isn't saved locally
       if (template.category === "AUTHENTICATION") {
         setVariables([""]);
       } else {
@@ -213,10 +215,10 @@ export default function SendMessagePage() {
       return;
     }
     if (!canSendMessage) {
-      toast.error("Insufficient balance. Please recharge your account to send messages.");
+      toast.error(`Insufficient balance. ${parentTenantName ? `Please contact ${parentTenantName} to recharge.` : "Please recharge your account to send messages."}`);
       return;
     }
-    if (isAtLimit) { // ✅ LIMIT ADDED
+    if (isAtLimit) { 
       toast.error("Test message limit reached. Contact admin to increase your limit.");
       return;
     }
@@ -257,7 +259,6 @@ export default function SendMessagePage() {
         return;
       }
 
-      // ✅ LIMIT ADDED: Handle 429 limit exceeded
       if (res.status === 429) {
         const data429 = await res.json();
         toast.error(data429.message || "Test message limit reached", { autoClose: 8000 });
@@ -282,7 +283,7 @@ export default function SendMessagePage() {
       toast.success("Message sent successfully! 🚀");
 
       fetchBilling();
-      fetchLimits(); // ✅ LIMIT ADDED: Refresh limits after sending
+      fetchLimits(); 
 
       setPhone("");
       setSelectedTemplate(null);
@@ -394,8 +395,8 @@ export default function SendMessagePage() {
               <div>
                 <p className="text-sm font-semibold text-red-800">Insufficient Balance</p>
                 <p className="text-xs text-red-600 mt-0.5">
-                  You cannot send messages. Please contact your administrator to recharge your account.
-                  Go to <a href="/settings" className="underline font-medium">Settings</a> to check your balance.
+                  You cannot send messages. {parentTenantName ? `Please contact your tenant administrator (${parentTenantName}) to recharge the account.` : "Please contact your administrator to recharge your account."}
+                  {!parentTenantName && <> Go to <a href="/settings" className="underline font-medium">Settings</a> to check your balance.</>}
                 </p>
               </div>
             </div>
@@ -429,7 +430,7 @@ export default function SendMessagePage() {
                   placeholder="e.g. 919876543210"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
-                  disabled={isAtLimit} // ✅ LIMIT ADDED
+                  disabled={isAtLimit} 
                   className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition shadow-sm text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                 />
                 <p className="text-[11px] sm:text-xs text-gray-400 mt-2 flex items-center gap-1">
@@ -453,7 +454,7 @@ export default function SendMessagePage() {
                   <select
                     value={dropdownValue}
                     onChange={(e) => handleTemplateChange(e.target.value)}
-                    disabled={isAtLimit} // ✅ LIMIT ADDED
+                    disabled={isAtLimit} 
                     className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition appearance-none cursor-pointer shadow-sm text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <option value="" disabled>
@@ -578,7 +579,7 @@ export default function SendMessagePage() {
                         placeholder={selectedTemplate.category === "AUTHENTICATION" ? "Enter OTP Code (e.g. 1234)" : `Variable {{${i + 1}}}`}
                         value={v}
                         onChange={(e) => handleVariableChange(i, e.target.value)}
-                        disabled={isAtLimit} // ✅ LIMIT ADDED
+                        disabled={isAtLimit} 
                         className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition shadow-sm text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                       />
                     ))}
@@ -590,7 +591,7 @@ export default function SendMessagePage() {
               <div className="pt-2 sm:pt-4">
                 <button
                   onClick={sendMessage}
-                  disabled={sending || loading || templates.length === 0 || !canSendMessage || isAtLimit} // ✅ LIMIT ADDED
+                  disabled={sending || loading || templates.length === 0 || !canSendMessage || isAtLimit} 
                   className={`w-full flex items-center justify-center gap-2 px-4 sm:px-6 py-3.5 sm:py-4 font-bold rounded-xl shadow-lg transition-all duration-300 hover:shadow-xl hover:shadow-green-500/20 disabled:opacity-60 disabled:cursor-not-allowed text-sm sm:text-base ${
                     isAtLimit
                       ? "bg-slate-400 text-white"
@@ -602,7 +603,7 @@ export default function SendMessagePage() {
                       <Loader2 className="w-5 h-5 animate-spin" />
                       Sending Message...
                     </>
-                  ) : isAtLimit ? ( // ✅ LIMIT ADDED
+                  ) : isAtLimit ? ( 
                     <>
                       <AlertCircle className="w-5 h-5" />
                       Limit Reached — Contact Admin
