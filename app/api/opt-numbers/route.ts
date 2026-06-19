@@ -57,7 +57,17 @@ export async function POST(req: Request) {
     const existing = await OptNumber.findOne({ userId, phoneNumber: phoneNumber.trim() });
     if (existing) return NextResponse.json({ error: "Number already exists" }, { status: 400 });
 
-    const optNumber = await OptNumber.create({ userId, phoneNumber: phoneNumber.trim() });
+    // ==========================================
+    // 🔴 MULTI-TENANT DATA ISOLATION
+    // ==========================================
+    const tenantId = (session.user as any)?.parentTenantId || (session.user as any)?.tenantId || null;
+
+    const optNumber = await OptNumber.create({ 
+      userId, 
+      tenantId, // ✅ ATTACH TENANT ID FOR AGGREGATED VIEWS
+      createdBy: userId, // ✅ TRACK WHO CREATED IT
+      phoneNumber: phoneNumber.trim() 
+    });
 
     // ✅ INCREMENT USAGE AFTER SUCCESSFUL CREATION
     await incrementUsage(userId, "optNumbers");
