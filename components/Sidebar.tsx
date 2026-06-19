@@ -1,40 +1,111 @@
 /* eslint-disable react-hooks/immutability */
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable react-hooks/set-state-in-effect */
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  MessagesSquare,
-  LayoutDashboard,
-  Users,
+  LayoutGrid,
+  MessageCircle,
+  LayoutTemplate,
+  FlaskConical,
   Megaphone,
-  Settings,
-  Rocket,
-  FileText,
-  LineChart,
-  Send,
+  PlusCircle,
+  ListChecks,
+  BarChart3,
+  Workflow,
+  GitBranch,
+  Tags,
+  BookUser,
+  Ban,
+  FormInput,
+  ClipboardCheck,
+  Cog,
+  ShieldCheck,
   Menu,
-  Tag,
-  UserX,
-  ClipboardList,
   X,
-  FilePlus,
-  Shield,
   ChevronDown,
-  Bot,
+  MessagesSquare,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 
+// ==========================================
+// 📐 TYPES & DATA STRUCTURES
+// ==========================================
+type IconType = React.ComponentType<{ className?: string }>;
+
+interface NavLink {
+  name: string;
+  icon: IconType;
+  href: string;
+}
+
+interface NavCategory {
+  title: string;
+  icon: IconType;
+  items: NavLink[];
+}
+
+const topLinks: NavLink[] = [
+  { name: "Overview", icon: LayoutGrid, href: "/dashboard" },
+];
+
+const categories: NavCategory[] = [
+  {
+    title: "Messaging",
+    icon: MessagesSquare,
+    items: [
+      { name: "Chats", icon: MessageCircle, href: "/chat" },
+      { name: "Templates", icon: LayoutTemplate, href: "/dashboard/templates" },
+      { name: "Send Test Message", icon: FlaskConical, href: "/send-message" },
+    ],
+  },
+  {
+    title: "Campaigns",
+    icon: Megaphone,
+    items: [
+      { name: "Create Campaign", icon: PlusCircle, href: "/campaigns/create" },
+      { name: "Campaign Lists", icon: ListChecks, href: "/campaigns/list" },
+      { name: "Reports & Analytics", icon: BarChart3, href: "/campaigns/reports" },
+    ],
+  },
+  {
+    title: "Automation",
+    icon: Workflow,
+    items: [
+      { name: "Workflows", icon: GitBranch, href: "/workflows" },
+      { name: "Tags", icon: Tags, href: "/tags" },
+    ],
+  },
+  {
+    title: "Contacts",
+    icon: BookUser,
+    items: [
+      { name: "Opted-Out Numbers", icon: Ban, href: "/opt-numbers" },
+      { name: "Create Form", icon: FormInput, href: "/forms" },
+      { name: "Form Responses", icon: ClipboardCheck, href: "/forms/responses" },
+    ],
+  },
+];
+
+const bottomLinks: NavLink[] = [
+  { name: "Settings", icon: Cog, href: "/settings" },
+];
+
+// ==========================================
+// 🧩 SIDEBAR COMPONENT
+// ==========================================
 export default function Sidebar() {
   const pathname = usePathname();
   const { data: session } = useSession();
+  
   const [mounted, setMounted] = useState(false);
-  const [isOpen, setIsOpen] = useState(false); // Controls mobile drawer
-  const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({}); // Controls dropdown states
-  // eslint-disable-next-line react-hooks/set-state-in-effect
+  const [isOpen, setIsOpen] = useState(false);
+  const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({});
+  
+  const navRef = useRef<HTMLElement>(null);
+
   useEffect(() => setMounted(true), []);
 
   // Load saved dropdown states from local storage on mount
@@ -56,20 +127,51 @@ export default function Sidebar() {
 
   // Ensure the active category stays open even on refresh
   useEffect(() => {
-    categories.forEach((cat) => {
-      const isActive = cat.items.some((item) => pathname === item.href);
-      if (isActive) {
-        setOpenCategories((prev) => {
-          if (prev[cat.title]) return prev;
-          return { ...prev, [cat.title]: true };
-        });
-      }
-    });
+    const activeCat = categories.find((cat) =>
+      cat.items.some((item) => item.href === pathname)
+    );
+
+    if (activeCat) {
+      setOpenCategories((prev) => {
+        // If the active category is already open, don't change state
+        if (prev[activeCat.title]) return prev;
+        // Otherwise, open the active category and close others (Accordion)
+        return { [activeCat.title]: true };
+      });
+    }
   }, [pathname]);
 
+  // Restore scroll position on mount and route change
+  useEffect(() => {
+    if (navRef.current) {
+      const savedScroll = localStorage.getItem("sidebarScrollTop");
+      if (savedScroll) {
+        // Use requestAnimationFrame to wait for the DOM to fully render 
+        // dropdowns before applying the scroll position
+        requestAnimationFrame(() => {
+          if (navRef.current) {
+            const maxScroll = navRef.current.scrollHeight - navRef.current.clientHeight;
+            const targetScroll = Math.min(parseInt(savedScroll, 10), maxScroll);
+            navRef.current.scrollTop = targetScroll > 0 ? targetScroll : 0;
+          }
+        });
+      }
+    }
+  }, [pathname, openCategories]);
+
+  // Save scroll position continuously
+  const handleScroll = () => {
+    if (navRef.current) {
+      localStorage.setItem("sidebarScrollTop", String(navRef.current.scrollTop));
+    }
+  };
+
+  // Toggle dropdown (Accordion behavior: close others when opening a new one)
   const toggleCategory = (title: string) => {
     setOpenCategories((prev) => {
-      const newState = { ...prev, [title]: !prev[title] };
+      const isCurrentlyOpen = prev[title];
+      // If it's open, close it. If it's closed, open it and close everything else.
+      const newState = isCurrentlyOpen ? {} : { [title]: true };
       localStorage.setItem("sidebarOpenCategories", JSON.stringify(newState));
       return newState;
     });
@@ -80,73 +182,31 @@ export default function Sidebar() {
   // ==========================================
   const isTRLAdmin = session?.user?.email === "TRL" || session?.user?.name === "TRL";
 
-  // Data Structure for Links
-  const topLinks = [
-    { name: "Overview", icon: LayoutDashboard, href: "/dashboard" },
-  ];
-
-  const categories = [
-    {
-      title: "Messaging",
-      icon: MessagesSquare,
-      items: [
-        { name: "Chats", icon: MessagesSquare, href: "/chat" },
-        { name: "Templates", icon: FileText, href: "/dashboard/templates" },
-        { name: "Send Test Message", icon: Send, href: "/send-message" },
-      ],
-    },
-    {
-      title: "Campaigns",
-      icon: Megaphone,
-      items: [
-        { name: "Create Campaign", icon: Rocket, href: "/campaigns/create" },
-        { name: "Campaign Lists", icon: Megaphone, href: "/campaigns/list" },
-        { name: "Reports & Analytics", icon: LineChart, href: "/campaigns/reports" },
-      ],
-    },
-    {
-      title: "Automation",
-      icon: Bot,
-      items: [
-        { name: "Workflows", icon: Users, href: "/workflows" },
-        { name: "Tags", icon: Tag, href: "/tags" },
-      ],
-    },
-    {
-      title: "Contacts",
-      icon: Users,
-      items: [
-        { name: "Opted-Out Numbers", icon: UserX, href: "/opt-numbers" },
-        { name: "Create Form", icon: FilePlus, href: "/forms" },
-        { name: "Form Responses", icon: ClipboardList, href: "/forms/responses" },
-      ],
-    },
-  ];
-
-  const bottomLinks = [
-    { name: "Settings", icon: Settings, href: "/settings" },
-  ];
-
   if (!mounted) return null;
 
   // Helper function to render standard links
-  const renderLink = (item: { name: any; icon: any; href: any; }) => {
+  const renderLink = (item: NavLink) => {
     const isActive = pathname === item.href;
     return (
       <Link
         href={item.href}
-        className={`flex items-center gap-3 py-2.5 rounded-lg transition-all duration-200 whitespace-nowrap ${
+        className={`relative flex items-center gap-3 py-2.5 px-4 rounded-lg transition-all duration-200 whitespace-nowrap group focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-1 ${
           isActive
             ? "bg-green-50 text-green-700 font-semibold shadow-sm"
             : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
         }`}
       >
+        {/* Active Indicator Bar */}
+        {isActive && (
+          <span className="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-1.5 bg-green-600 rounded-r-full" />
+        )}
+        
         <item.icon
           className={`w-[18px] h-[18px] flex-shrink-0 transition-colors ${
-            isActive ? "text-green-600" : "text-gray-400"
+            isActive ? "text-green-600" : "text-gray-400 group-hover:text-gray-600"
           }`}
         />
-        {item.name}
+        <span className="text-sm font-medium">{item.name}</span>
       </Link>
     );
   };
@@ -160,7 +220,7 @@ export default function Sidebar() {
         <span className="font-bold text-lg text-gray-900">Dashboard</span>
         <button
           onClick={() => setIsOpen(true)}
-          className="p-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+          className="p-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500"
           aria-label="Open Menu"
         >
           <Menu className="w-6 h-6" />
@@ -172,7 +232,7 @@ export default function Sidebar() {
           ============================================== */}
       {isOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/40 md:hidden transition-opacity"
+          className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm md:hidden transition-opacity"
           onClick={() => setIsOpen(false)}
         />
       )}
@@ -192,16 +252,18 @@ export default function Sidebar() {
       >
         {/* Logo & Mobile Close Button */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
-          <Link href="/dashboard" className="flex items-center gap-2">
-            <div className="p-2 bg-gradient-to-tr from-green-500 to-emerald-400 rounded-xl shadow-md">
+          <Link href="/dashboard" className="flex items-center gap-2 group">
+            <div className="p-2 bg-gradient-to-tr from-green-500 to-emerald-400 rounded-xl shadow-md shadow-green-500/20 transition-transform group-hover:scale-105">
               <MessagesSquare className="w-5 h-5 text-white" />
             </div>
-            <span className="text-xl font-bold text-gray-900 tracking-tight">All Chat CRM</span>
+            <span className="text-xl font-bold text-gray-900 tracking-tight">
+              All Chat CRM
+            </span>
           </Link>
           
           <button
             onClick={() => setIsOpen(false)}
-            className="md:hidden p-1 text-gray-500 hover:text-gray-900 rounded-lg hover:bg-gray-100 transition-colors"
+            className="md:hidden p-1 text-gray-500 hover:text-gray-900 rounded-lg hover:bg-gray-100 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500"
             aria-label="Close Menu"
           >
             <X className="w-6 h-6" />
@@ -209,8 +271,11 @@ export default function Sidebar() {
         </div>
 
         {/* Navigation Links */}
-        <nav className="flex-1 p-4 space-y-2 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          
+        <nav
+          ref={navRef}
+          onScroll={handleScroll}
+          className="flex-1 p-4 space-y-2 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
           {/* Top Single Links (Overview) */}
           <div className="space-y-1 mb-2">
             {topLinks.map((item, i) => (
@@ -227,7 +292,8 @@ export default function Sidebar() {
               <div key={cat.title} className="mt-3">
                 <button
                   onClick={() => toggleCategory(cat.title)}
-                  className={`w-full flex items-center justify-between px-4 py-2.5 rounded-lg transition-colors group ${
+                  aria-expanded={isCatOpen}
+                  className={`w-full flex items-center justify-between px-4 py-2.5 rounded-lg transition-colors group focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500 ${
                     isCatActive ? "bg-gray-50" : "hover:bg-gray-50"
                   }`}
                 >
@@ -257,7 +323,7 @@ export default function Sidebar() {
                   }`}
                 >
                   <div className="overflow-hidden">
-                    <div className="space-y-1 pl-3 border-l border-gray-100 ml-4 mt-1">
+                    <div className="space-y-1 pl-4 border-l border-gray-100 ml-4 mt-1">
                       {cat.items.map((item, i) => (
                         <div key={i}>{renderLink(item)}</div>
                       ))}
@@ -281,13 +347,13 @@ export default function Sidebar() {
           <div className="p-4 border-t border-gray-200">
             <Link
               href="/admin/billing"
-              className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors whitespace-nowrap shadow-sm border ${
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors whitespace-nowrap shadow-sm border focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
                 pathname === "/admin/billing"
                   ? "bg-amber-50 text-amber-700 font-semibold border-amber-100"
                   : "bg-white text-amber-600 hover:bg-amber-50 border-gray-100"
               }`}
             >
-              <Shield
+              <ShieldCheck
                 className={`w-5 h-5 flex-shrink-0 ${
                   pathname === "/admin/billing" ? "text-amber-500" : "text-amber-400"
                 }`}
@@ -296,7 +362,6 @@ export default function Sidebar() {
             </Link>
           </div>
         )}
-
       </aside>
     </>
   );
