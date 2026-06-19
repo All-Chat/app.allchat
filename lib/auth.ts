@@ -2,11 +2,10 @@
 import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import User from "@/models/User";
-import { connectDB } from "@/lib/mongodb"; // Make sure this is imported!
+import { connectDB } from "@/lib/mongodb";
 
 export const authOptions: NextAuthOptions = {
   providers: [
-    // --- Standard Credentials Provider ---
     CredentialsProvider({
       name: "Credentials",
       credentials: {
@@ -18,70 +17,66 @@ export const authOptions: NextAuthOptions = {
           throw new Error("CredentialsSignin"); 
         }
 
-        await connectDB(); // <--- THIS IS CRITICAL! It must be here.
-        
+        await connectDB();
         const user = await User.findOne({ name: credentials.name });
-        if (!user) {
-          throw new Error("CredentialsSignin"); // Generic error to prevent user enumeration
-        }
+        if (!user) throw new Error("CredentialsSignin");
 
-        // Plain text comparison
-        if (user.password !== credentials.password) {
-          throw new Error("CredentialsSignin"); 
-        }
+        if (user.password !== credentials.password) throw new Error("CredentialsSignin"); 
 
-        // --- Account Status Checks ---
-        // User model uses `accountStatus` with values like "active" | "expired" | "suspended"
-        if ((user as any).accountStatus === "suspended" || (user as any).accountStatus === "SUSPENDED") {
-          throw new Error("ACCOUNT_SUSPENDED");
-        }
+        if ((user as any).accountStatus === "suspended") throw new Error("ACCOUNT_SUSPENDED");
 
-        // Assuming your User model has a `planExpiry` date (or nullable)
-        // Treat any past date as expired. Handle null/undefined as not expired.
         if (user.planExpiry) {
           const expiry = new Date(user.planExpiry);
-          if (!isNaN(expiry.getTime()) && expiry < new Date()) {
-            throw new Error("PLAN_EXPIRED");
-          }
+          if (!isNaN(expiry.getTime()) && expiry < new Date()) throw new Error("PLAN_EXPIRED");
+        }
+
+        // Fetch Parent Tenant Name if Sub-User
+        let parentTenantName = null;
+        if (user.parentTenantId) {
+          const parent = await User.findOne({ tenantId: user.parentTenantId }).select("name").lean();
+          if (parent) parentTenantName = parent.name;
         }
 
         return {
           id: user._id.toString(),
           name: user.name,
-        };
+          isTenant: user.isTenant,
+          tenantId: user.tenantId,
+          parentTenantId: user.parentTenantId,
+          parentTenantName: parentTenantName, // Added to session
+        } as any;
       },
     }),
-
-    // --- Admin Impersonate Provider ---
     {
       id: "admin-impersonate",
       name: "Admin Impersonate",
       type: "credentials",
       credentials: {},
-      async authorize(credentials) {
-        // This is handled by the API route redirect
-        // The session is created server-side
-        return null;
-      },
+      async authorize() { return null; },
     },
   ],
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
         token.id = user.id;
+        (token as any).isTenant = (user as any).isTenant;
+        (token as any).tenantId = (user as any).tenantId;
+        (token as any).parentTenantId = (user as any).parentTenantId;
+        (token as any).parentTenantName = (user as any).parentTenantName;
       }
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
-        session.user.id = token.id;
+        (session.user as any).id = token.id;
+        (session.user as any).isTenant = (token as any).isTenant;
+        (session.user as any).tenantId = (token as any).tenantId;
+        (session.user as any).parentTenantId = (token as any).parentTenantId;
+        (session.user as any).parentTenantName = (token as any).parentTenantName;
       }
       return session;
     },
   },
-  session: {
-    strategy: "jwt",
-    maxAge: 30 * 24 * 60 * 60,
-  },
+  session: { strategy: "jwt", maxAge: 30 * 24 * 60 * 60 },
   secret: process.env.NEXTAUTH_SECRET,
 };
