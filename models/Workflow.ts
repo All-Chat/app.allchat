@@ -21,8 +21,6 @@ const WorkflowSchema = new mongoose.Schema({
       },
     },
   ],
-  // Using Mixed type allows us to save the dynamic Record<string, Step> structure 
-  // including the new `position: { x, y }` coordinates for the React Flow canvas.
   steps: {
     type: mongoose.Schema.Types.Mixed,
     default: {},
@@ -30,6 +28,11 @@ const WorkflowSchema = new mongoose.Schema({
   rootStepId: {
     type: String,
     required: true,
+  },
+  // ✅ ADDED: Active field for deactivation/activation
+  active: {
+    type: Boolean,
+    default: true,
   },
 });
 
