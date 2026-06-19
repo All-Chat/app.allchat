@@ -5,7 +5,7 @@ import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getPriceForCategory } from "@/lib/billing";
-import { checkLimit, incrementUsage } from "@/lib/limits"; // ✅ LIMIT ADDED
+import { checkLimit, incrementUsage } from "@/lib/limits";
 
 export async function POST(req: Request) {
   try {
@@ -64,7 +64,7 @@ export async function POST(req: Request) {
     let headerMediaType: string;
     let file: File | null = null;
     let mediaUrl: string | null = null;
-    let category: string = "MARKETING"; // default
+    let category: string = "MARKETING";
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await req.formData();
@@ -185,7 +185,6 @@ export async function POST(req: Request) {
 
     if (headerMediaType !== "none") {
       const type = headerMediaType;
-
       let mediaObj = null;
       if (uploadedMediaId) {
         mediaObj = { id: uploadedMediaId };
@@ -217,24 +216,20 @@ export async function POST(req: Request) {
     // ==========================================
     // 6. Send Template Message
     // ==========================================
-    const templatePayload = {
-      name: templateName,
-      language: {
-        code: languageCode,
-      },
-      components,
-    };
-
-    const messagePayload = {
+    const buildPayload = (comps: any[]) => ({
       messaging_product: "whatsapp",
       to: sanitizedPhone,
       type: "template",
-      template: templatePayload,
-    };
+      template: {
+        name: templateName,
+        language: { code: languageCode },
+        components: comps,
+      },
+    });
 
-    console.log(`📋 Full payload:`, JSON.stringify(templatePayload, null, 2));
+    console.log(`📋 Full payload:`, JSON.stringify(buildPayload(components).template, null, 2));
 
-    const response = await fetch(
+    let response = await fetch(
       `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
       {
         method: "POST",
@@ -242,11 +237,48 @@ export async function POST(req: Request) {
           Authorization: `Bearer ${ACCESS_TOKEN}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(messagePayload),
+        body: JSON.stringify(buildPayload(components)),
       }
     );
 
-    const data = await response.json();
+    let data = await response.json();
+
+    // ==========================================
+    // ✅ DYNAMIC RETRY FOR AUTHENTICATION URL BUTTONS
+    // ==========================================
+    // If the template is AUTHENTICATION and Meta complains about a missing URL button parameter,
+    // we retry the request by injecting the OTP code as the button parameter.
+    if (!response.ok && data.error?.code === 131008 && category === "AUTHENTICATION" && variables.length > 0) {
+      console.log("⚠️ Auth template requires URL button parameter. Retrying with button parameter...");
+      
+      components.push({
+        type: "button",
+        sub_type: "url",
+        index: 0,
+        parameters: [
+          {
+            type: "text",
+            text: variables[0], // Inject the OTP code into the button URL
+          },
+        ],
+      });
+
+      console.log(`📋 Retry payload:`, JSON.stringify(buildPayload(components).template, null, 2));
+
+      response = await fetch(
+        `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${ACCESS_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(buildPayload(components)),
+        }
+      );
+
+      data = await response.json();
+    }
 
     if (!response.ok) {
       console.error("❌ WhatsApp Template Error:", JSON.stringify(data, null, 2));
