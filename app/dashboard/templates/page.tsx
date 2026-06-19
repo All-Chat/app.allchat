@@ -44,12 +44,15 @@ export default function TemplatesPage() {
   const usagePercent = isLimitActive ? Math.min(100, Math.round(((templateLimit?.usage?.count || 0) / templateLimit.limit.max) * 100)) : 0;
   const isAtLimit = isLimitActive && !templateLimit.allowed;
 
+  const isAuthTemplate = category === "AUTHENTICATION";
+
   const bodyVariables = useMemo(() => {
+    if (isAuthTemplate) return [1]; // Auth templates always have {{1}} for the code
     const matches = bodyText.match(/\{\{(\d+)\}\}/g);
     if (!matches) return [];
     const uniqueNums = [...new Set(matches.map((m) => parseInt(m.replace(/\D/g, ""))))];
     return uniqueNums.sort((a, b) => a - b);
-  }, [bodyText]);
+  }, [bodyText, isAuthTemplate]);
 
   const [bodyExamples, setBodyExamples] = useState<Record<number, string>>({});
 
@@ -90,6 +93,19 @@ export default function TemplatesPage() {
     }
   };
 
+  const handleCategoryChange = (cat: string) => {
+    setCategory(cat);
+    if (cat === "AUTHENTICATION") {
+      setHeaderType("none");
+      setHeaderText("");
+      setSampleFile(null);
+      setSampleUrl("");
+      setBodyText("");
+      setBodyExamples({});
+      setButtons([]);
+    }
+  };
+
   const addButton = (type: ButtonType) => {
     if (buttons.length >= 3) { toast.error("Max 3 buttons allowed"); return; }
     setButtons([...buttons, { id: uid(), type, text: "" }]);
@@ -112,20 +128,23 @@ export default function TemplatesPage() {
 
   const createTemplate = async () => {
     if (!name) { toast.error("Template name is required"); return; }
-    if (!bodyText) { toast.error("Body text is required"); return; }
-    if (headerType === "text" && !headerText) { toast.error("Please enter header text"); return; }
-    if (isMediaHeader && sampleSource === "upload" && !sampleFile) { toast.error("Please upload a sample media file"); return; }
-    if (isMediaHeader && sampleSource === "url" && !sampleUrl.trim()) { toast.error("Please provide a sample media URL"); return; }
-    if (isMediaHeader && sampleSource === "url" && sampleUrl.trim()) {
-      try { new URL(sampleUrl.trim()); } catch { toast.error("Please enter a valid URL (include https://)"); return; }
-    }
-    for (const varNum of bodyVariables) {
-      if (!bodyExamples[varNum]?.trim()) { toast.error(`Please provide a sample value for {{${varNum}}}`); return; }
-    }
-    for (const btn of buttons) {
-      if (!btn.text.trim()) { toast.error("All buttons must have label text"); return; }
-      if (btn.type === "URL" && !btn.url?.trim()) { toast.error("URL buttons must have a URL"); return; }
-      if (btn.type === "PHONE_NUMBER" && !btn.phone?.trim()) { toast.error("Phone buttons must have a phone number"); return; }
+    
+    if (!isAuthTemplate) {
+      if (!bodyText) { toast.error("Body text is required"); return; }
+      if (headerType === "text" && !headerText) { toast.error("Please enter header text"); return; }
+      if (isMediaHeader && sampleSource === "upload" && !sampleFile) { toast.error("Please upload a sample media file"); return; }
+      if (isMediaHeader && sampleSource === "url" && !sampleUrl.trim()) { toast.error("Please provide a sample media URL"); return; }
+      if (isMediaHeader && sampleSource === "url" && sampleUrl.trim()) {
+        try { new URL(sampleUrl.trim()); } catch { toast.error("Please enter a valid URL (include https://)"); return; }
+      }
+      for (const varNum of bodyVariables) {
+        if (!bodyExamples[varNum]?.trim()) { toast.error(`Please provide a sample value for {{${varNum}}}`); return; }
+      }
+      for (const btn of buttons) {
+        if (!btn.text.trim()) { toast.error("All buttons must have label text"); return; }
+        if (btn.type === "URL" && !btn.url?.trim()) { toast.error("URL buttons must have a URL"); return; }
+        if (btn.type === "PHONE_NUMBER" && !btn.phone?.trim()) { toast.error("Phone buttons must have a phone number"); return; }
+      }
     }
 
     setSubmitting(true);
@@ -133,31 +152,42 @@ export default function TemplatesPage() {
     try {
       const components: any[] = [];
 
-      if (headerType !== "none") {
-        const headerComp: any = { type: "HEADER", format: headerType.toUpperCase() };
-        if (headerType === "text") headerComp.text = headerText;
-        components.push(headerComp);
-      }
+      if (isAuthTemplate) {
+        // For Authentication, backend auto-injects Body and OTP Button. 
+        // We only need to send Footer if code expiration is specified.
+        if (footerText) {
+          const mins = parseInt(footerText, 10);
+          if (!isNaN(mins) && mins > 0) {
+            components.push({ type: "FOOTER", code_expiration_minutes: mins });
+          }
+        }
+      } else {
+        if (headerType !== "none") {
+          const headerComp: any = { type: "HEADER", format: headerType.toUpperCase() };
+          if (headerType === "text") headerComp.text = headerText;
+          components.push(headerComp);
+        }
 
-      const bodyComp: any = { type: "BODY", text: bodyText };
-      if (bodyVariables.length > 0) {
-        const exampleValues = bodyVariables.map((v) => bodyExamples[v] || `sample_${v}`);
-        bodyComp.example = { body_text: [exampleValues] };
-      }
-      components.push(bodyComp);
+        const bodyComp: any = { type: "BODY", text: bodyText };
+        if (bodyVariables.length > 0) {
+          const exampleValues = bodyVariables.map((v) => bodyExamples[v] || `sample_${v}`);
+          bodyComp.example = { body_text: [exampleValues] };
+        }
+        components.push(bodyComp);
 
-      if (footerText) components.push({ type: "FOOTER", text: footerText });
+        if (footerText) components.push({ type: "FOOTER", text: footerText });
 
-      if (buttons.length > 0) {
-        components.push({
-          type: "BUTTONS",
-          buttons: buttons.map((b) => {
-            const btn: any = { type: b.type, text: b.text };
-            if (b.type === "URL") btn.url = b.url;
-            if (b.type === "PHONE_NUMBER") btn.phone_number = b.phone;
-            return btn;
-          }),
-        });
+        if (buttons.length > 0) {
+          components.push({
+            type: "BUTTONS",
+            buttons: buttons.map((b) => {
+              const btn: any = { type: b.type, text: b.text };
+              if (b.type === "URL") btn.url = b.url;
+              if (b.type === "PHONE_NUMBER") btn.phone_number = b.phone;
+              return btn;
+            }),
+          });
+        }
       }
 
       const formData = new FormData();
@@ -167,10 +197,10 @@ export default function TemplatesPage() {
       formData.append("components", JSON.stringify(components));
       formData.append("sampleSource", sampleSource);
 
-      if (isMediaHeader && sampleSource === "upload" && sampleFile) {
+      if (!isAuthTemplate && isMediaHeader && sampleSource === "upload" && sampleFile) {
         formData.append("sampleFile", sampleFile);
       }
-      if (isMediaHeader && sampleSource === "url" && sampleUrl.trim()) {
+      if (!isAuthTemplate && isMediaHeader && sampleSource === "url" && sampleUrl.trim()) {
         formData.append("sampleUrl", sampleUrl.trim());
       }
 
@@ -345,7 +375,7 @@ export default function TemplatesPage() {
                   </div>
                   <div className="sm:col-span-2">
                     <label className="text-xs font-bold text-gray-800 mb-2 block">Category</label>
-                    <select className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition text-sm" value={category} onChange={(e) => setCategory(e.target.value)} disabled={isAtLimit}>
+                    <select className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition text-sm" value={category} onChange={(e) => handleCategoryChange(e.target.value)} disabled={isAtLimit}>
                       <option>MARKETING</option><option>UTILITY</option><option>AUTHENTICATION</option>
                     </select>
                   </div>
@@ -367,154 +397,190 @@ export default function TemplatesPage() {
                 </div>
               </div>
 
-              {/* Header */}
-              <div className="bg-white border border-gray-200 rounded-2xl p-4 sm:p-5 shadow-sm">
-                <h3 className="text-xs font-bold text-gray-800 mb-3">Header (Optional)</h3>
-                <div className="flex gap-2 mb-4 flex-wrap">
-                  {[
-                    { id: "none", label: "None", icon: Type },
-                    { id: "text", label: "Text", icon: Type },
-                    { id: "image", label: "Image", icon: Image },
-                    { id: "video", label: "Video", icon: Video },
-                    { id: "document", label: "PDF", icon: FileText },
-                  ].map((t) => (
-                    <button
-                      key={t.id}
-                      onClick={() => {
-                        setHeaderType(t.id as HeaderType);
-                        setHeaderText("");
-                        setSampleFile(null);
-                        setSampleUrl("");
-                      }}
-                      disabled={isAtLimit}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
-                        headerType === t.id
-                          ? "bg-emerald-50 border-emerald-500 text-emerald-700"
-                          : "border-gray-100 text-gray-500 hover:bg-gray-50"
-                      } ${isAtLimit ? "opacity-50 cursor-not-allowed" : ""}`}
-                    >
-                      <t.icon size={14} /> {t.label}
-                    </button>
-                  ))}
-                </div>
-
-                {headerType === "text" && (
-                  <input className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition text-sm" placeholder="Header text..." value={headerText} onChange={(e) => setHeaderText(e.target.value)} disabled={isAtLimit} />
-                )}
-
-                {isMediaHeader && (
-                  <div className="space-y-3">
-                    <div className="flex items-start gap-2 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
-                      <AlertTriangle size={14} className="text-blue-500 shrink-0 mt-0.5" />
-                      <p className="text-[10px] text-blue-700">
-                        Media headers require the <code className="bg-blue-100 px-1 rounded font-mono">whatsapp_business_management</code> permission on your Meta token. If you don&apos;t have it, the template will be created as text-only.
-                      </p>
-                    </div>
-
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => { setSampleSource("upload"); setSampleUrl(""); }}
-                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${sampleSource === "upload" ? "bg-blue-50 border-blue-400 text-blue-700" : "border-gray-100 text-gray-500 hover:bg-gray-50"}`}
-                      >
-                        <Upload size={12} /> Upload
-                      </button>
-                      <button
-                        onClick={() => { setSampleSource("url"); setSampleFile(null); }}
-                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${sampleSource === "url" ? "bg-blue-50 border-blue-400 text-blue-700" : "border-gray-100 text-gray-500 hover:bg-gray-50"}`}
-                      >
-                        <Globe size={12} /> URL
-                      </button>
-                    </div>
-
-                    {sampleSource === "upload" && (
-                      <label className="block">
-                        <div className={`relative border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-colors ${sampleFile ? "border-emerald-300 bg-emerald-50/50" : "border-gray-200 hover:border-emerald-300 hover:bg-emerald-50/30"}`}>
-                          <input key={sampleFile ? 'has-file' : 'no-file'} type="file" accept={acceptTypes[headerType]} onChange={handleSampleFileChange} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
-                          {sampleFile ? (
-                            <div className="flex items-center justify-center gap-2">
-                              <span className="text-xs font-medium text-emerald-700 truncate">{sampleFile.name}</span>
-                              <span className="text-[10px] text-gray-400">({(sampleFile.size / 1024).toFixed(0)}KB)</span>
-                              <button onClick={(e) => { e.preventDefault(); setSampleFile(null); }} className="text-gray-400 hover:text-red-500"><X size={14} /></button>
-                            </div>
-                          ) : (
-                            <div>
-                              <Upload size={20} className="mx-auto text-gray-400 mb-1" />
-                              <p className="text-xs text-gray-500">Click to upload sample {headerType}</p>
-                              <p className="text-[10px] text-gray-400 mt-0.5">Max 5MB</p>
-                            </div>
-                          )}
-                        </div>
-                      </label>
-                    )}
-
-                    {sampleSource === "url" && (
-                      <div>
-                        <input className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition text-sm" placeholder="https://example.com/sample-image.jpg" value={sampleUrl} onChange={(e) => setSampleUrl(e.target.value)} />
-                        <p className="text-[10px] text-gray-400 mt-1.5">Paste a publicly accessible URL.</p>
-                      </div>
-                    )}
+              {/* Auth Template Info Box */}
+              {isAuthTemplate && (
+                <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 text-xs text-blue-800 flex items-start gap-2">
+                  <AlertTriangle size={16} className="text-blue-500 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold">Authentication Template Rules</p>
+                    <p className="mt-1">Meta automatically generates the body text (e.g., &quot;1234 is your verification code...&quot;). The mandatory OTP &quot;Copy Code&quot; button is also added automatically. You only need to specify the code expiration below (optional).</p>
                   </div>
-                )}
-              </div>
-
-              {/* Body */}
-              <div className="bg-white border border-gray-200 rounded-2xl p-4 sm:p-5 shadow-sm">
-                <h3 className="text-xs font-bold text-gray-800 mb-3">Body</h3>
-                <textarea
-                  className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 h-28 transition resize-none text-sm"
-                  placeholder="Write your message here... (use {{1}} for variables)"
-                  value={bodyText}
-                  onChange={(e) => setBodyText(e.target.value)}
-                  maxLength={1024}
-                  disabled={isAtLimit}
-                />
-                <div className="flex justify-between mt-1.5 px-1">
-                  <p className="text-[10px] text-gray-400">Variables: {"{{1}}"}</p>
-                  <p className="text-[10px] text-gray-400">{bodyText.length} / 1024</p>
                 </div>
-                {bodyVariables.length > 0 && (
-                  <div className="mt-3 space-y-2">
-                    <p className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-1.5">
-                      ⚠️ Meta requires sample values for all variables
-                    </p>
-                    {bodyVariables.map((varNum) => (
-                      <div key={varNum} className="flex items-center gap-2">
-                        <span className="text-xs font-mono text-gray-500 w-10 shrink-0">{"{{" + varNum + "}}"}</span>
-                        <input className="flex-1 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition min-w-0" placeholder={`Sample value`} value={bodyExamples[varNum] || ""} onChange={(e) => setBodyExamples((prev) => ({ ...prev, [varNum]: e.target.value }))} disabled={isAtLimit} />
-                      </div>
+              )}
+
+              {/* Header */}
+              {!isAuthTemplate && (
+                <div className="bg-white border border-gray-200 rounded-2xl p-4 sm:p-5 shadow-sm">
+                  <h3 className="text-xs font-bold text-gray-800 mb-3">Header (Optional)</h3>
+                  <div className="flex gap-2 mb-4 flex-wrap">
+                    {[
+                      { id: "none", label: "None", icon: Type },
+                      { id: "text", label: "Text", icon: Type },
+                      { id: "image", label: "Image", icon: Image },
+                      { id: "video", label: "Video", icon: Video },
+                      { id: "document", label: "PDF", icon: FileText },
+                    ].map((t) => (
+                      <button
+                        key={t.id}
+                        onClick={() => {
+                          setHeaderType(t.id as HeaderType);
+                          setHeaderText("");
+                          setSampleFile(null);
+                          setSampleUrl("");
+                        }}
+                        disabled={isAtLimit}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
+                          headerType === t.id
+                            ? "bg-emerald-50 border-emerald-500 text-emerald-700"
+                            : "border-gray-100 text-gray-500 hover:bg-gray-50"
+                        } ${isAtLimit ? "opacity-50 cursor-not-allowed" : ""}`}
+                      >
+                        <t.icon size={14} /> {t.label}
+                      </button>
                     ))}
                   </div>
-                )}
-              </div>
 
-              {/* Footer */}
+                  {headerType === "text" && (
+                    <input className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition text-sm" placeholder="Header text..." value={headerText} onChange={(e) => setHeaderText(e.target.value)} disabled={isAtLimit} />
+                  )}
+
+                  {isMediaHeader && (
+                    <div className="space-y-3">
+                      <div className="flex items-start gap-2 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+                        <AlertTriangle size={14} className="text-blue-500 shrink-0 mt-0.5" />
+                        <p className="text-[10px] text-blue-700">
+                          Media headers require the <code className="bg-blue-100 px-1 rounded font-mono">whatsapp_business_management</code> permission on your Meta token. If you don&apos;t have it, the template will be created as text-only.
+                        </p>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => { setSampleSource("upload"); setSampleUrl(""); }}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${sampleSource === "upload" ? "bg-blue-50 border-blue-400 text-blue-700" : "border-gray-100 text-gray-500 hover:bg-gray-50"}`}
+                        >
+                          <Upload size={12} /> Upload
+                        </button>
+                        <button
+                          onClick={() => { setSampleSource("url"); setSampleFile(null); }}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${sampleSource === "url" ? "bg-blue-50 border-blue-400 text-blue-700" : "border-gray-100 text-gray-500 hover:bg-gray-50"}`}
+                        >
+                          <Globe size={12} /> URL
+                        </button>
+                      </div>
+
+                      {sampleSource === "upload" && (
+                        <label className="block">
+                          <div className={`relative border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-colors ${sampleFile ? "border-emerald-300 bg-emerald-50/50" : "border-gray-200 hover:border-emerald-300 hover:bg-emerald-50/30"}`}>
+                            <input key={sampleFile ? 'has-file' : 'no-file'} type="file" accept={acceptTypes[headerType]} onChange={handleSampleFileChange} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                            {sampleFile ? (
+                              <div className="flex items-center justify-center gap-2">
+                                <span className="text-xs font-medium text-emerald-700 truncate">{sampleFile.name}</span>
+                                <span className="text-[10px] text-gray-400">({(sampleFile.size / 1024).toFixed(0)}KB)</span>
+                                <button onClick={(e) => { e.preventDefault(); setSampleFile(null); }} className="text-gray-400 hover:text-red-500"><X size={14} /></button>
+                              </div>
+                            ) : (
+                              <div>
+                                <Upload size={20} className="mx-auto text-gray-400 mb-1" />
+                                <p className="text-xs text-gray-500">Click to upload sample {headerType}</p>
+                                <p className="text-[10px] text-gray-400 mt-0.5">Max 5MB</p>
+                              </div>
+                            )}
+                          </div>
+                        </label>
+                      )}
+
+                      {sampleSource === "url" && (
+                        <div>
+                          <input className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition text-sm" placeholder="https://example.com/sample-image.jpg" value={sampleUrl} onChange={(e) => setSampleUrl(e.target.value)} />
+                          <p className="text-[10px] text-gray-400 mt-1.5">Paste a publicly accessible URL.</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Body - Hidden for Auth */}
+              {!isAuthTemplate && (
+                <div className="bg-white border border-gray-200 rounded-2xl p-4 sm:p-5 shadow-sm">
+                  <h3 className="text-xs font-bold text-gray-800 mb-3">Body</h3>
+                  <textarea
+                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 h-28 transition resize-none text-sm"
+                    placeholder="Write your message here... (use {{1}} for variables)"
+                    value={bodyText}
+                    onChange={(e) => setBodyText(e.target.value)}
+                    maxLength={1024}
+                    disabled={isAtLimit}
+                  />
+                  <div className="flex justify-between mt-1.5 px-1">
+                    <p className="text-[10px] text-gray-400">Variables: {"{{1}}"}</p>
+                    <p className="text-[10px] text-gray-400">{bodyText.length} / 1024</p>
+                  </div>
+                  {bodyVariables.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      <p className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-1.5">
+                        ⚠️ Meta requires sample values for all variables
+                      </p>
+                      {bodyVariables.map((varNum) => (
+                        <div key={varNum} className="flex items-center gap-2">
+                          <span className="text-xs font-mono text-gray-500 w-10 shrink-0">{"{{" + varNum + "}}"}</span>
+                          <input className="flex-1 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition min-w-0" placeholder={`Sample value`} value={bodyExamples[varNum] || ""} onChange={(e) => setBodyExamples((prev) => ({ ...prev, [varNum]: e.target.value }))} disabled={isAtLimit} />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Footer / Expiration */}
               <div className="bg-white border border-gray-200 rounded-2xl p-4 sm:p-5 shadow-sm">
-                <h3 className="text-xs font-bold text-gray-800 mb-3">Footer (Optional)</h3>
-                <input className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition text-sm" placeholder="e.g. Reply STOP to unsubscribe" value={footerText} onChange={(e) => setFooterText(e.target.value)} disabled={isAtLimit} />
+                <h3 className="text-xs font-bold text-gray-800 mb-3">
+                  {isAuthTemplate ? "Code Expiration (Optional)" : "Footer (Optional)"}
+                </h3>
+                <input 
+                  type={isAuthTemplate ? "number" : "text"}
+                  min={isAuthTemplate ? "1" : undefined}
+                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition text-sm" 
+                  placeholder={isAuthTemplate ? "e.g. 5 (minutes)" : "e.g. Reply STOP to unsubscribe"} 
+                  value={footerText} 
+                  onChange={(e) => setFooterText(e.target.value)} 
+                  disabled={isAtLimit} 
+                />
               </div>
 
               {/* Buttons */}
               <div className="bg-white border border-gray-200 rounded-2xl p-4 sm:p-5 shadow-sm">
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-3 gap-3">
-                  <h3 className="text-xs font-bold text-gray-800">Buttons (Max 3)</h3>
-                  <div className="flex gap-2 flex-wrap">
-                    <button onClick={() => addButton("QUICK_REPLY")} disabled={isAtLimit} className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-medium hover:bg-gray-100 transition disabled:opacity-50"><MousePointerClick size={10} /> Reply</button>
-                    <button onClick={() => addButton("URL")} disabled={isAtLimit} className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-medium hover:bg-gray-100 transition disabled:opacity-50"><ExternalLink size={10} /> URL</button>
-                    <button onClick={() => addButton("PHONE_NUMBER")} disabled={isAtLimit} className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-medium hover:bg-gray-100 transition disabled:opacity-50"><Phone size={10} /> Call</button>
-                  </div>
+                  <h3 className="text-xs font-bold text-gray-800">Buttons {isAuthTemplate ? "" : "(Max 3)"}</h3>
+                  {!isAuthTemplate && (
+                    <div className="flex gap-2 flex-wrap">
+                      <button onClick={() => addButton("QUICK_REPLY")} disabled={isAtLimit} className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-medium hover:bg-gray-100 transition disabled:opacity-50"><MousePointerClick size={10} /> Reply</button>
+                      <button onClick={() => addButton("URL")} disabled={isAtLimit} className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-medium hover:bg-gray-100 transition disabled:opacity-50"><ExternalLink size={10} /> URL</button>
+                      <button onClick={() => addButton("PHONE_NUMBER")} disabled={isAtLimit} className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-medium hover:bg-gray-100 transition disabled:opacity-50"><Phone size={10} /> Call</button>
+                    </div>
+                  )}
                 </div>
                 <div className="space-y-2">
-                  {buttons.map((btn) => (
-                    <div key={btn.id} className="bg-gray-50 border border-gray-200 rounded-xl p-2.5 flex items-start gap-2">
-                      <div className="flex-1 space-y-1.5 min-w-0">
-                        <input className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" placeholder="Button Label" value={btn.text} onChange={(e) => updateButton(btn.id, { text: e.target.value })} disabled={isAtLimit} />
-                        {btn.type === "URL" && <input className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" placeholder="https://example.com" value={btn.url || ""} onChange={(e) => updateButton(btn.id, { url: e.target.value })} disabled={isAtLimit} />}
-                        {btn.type === "PHONE_NUMBER" && <input className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" placeholder="+1234567890" value={btn.phone || ""} onChange={(e) => updateButton(btn.id, { phone: e.target.value })} disabled={isAtLimit} />}
-                      </div>
-                      <button onClick={() => removeButton(btn.id)} className="text-gray-300 hover:text-red-500 transition mt-1.5 shrink-0"><Trash2 size={14} /></button>
+                  {isAuthTemplate ? (
+                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-2.5 flex items-center gap-2 text-xs text-gray-600">
+                      <MousePointerClick size={14} className="text-blue-600" />
+                      OTP Button (&quot;Copy Code&quot;) is automatically added by Meta requirements.
                     </div>
-                  ))}
-                  {buttons.length === 0 && <p className="text-[10px] text-gray-400 text-center py-2">No buttons added.</p>}
+                  ) : (
+                    <>
+                      {buttons.map((btn) => (
+                        <div key={btn.id} className="bg-gray-50 border border-gray-200 rounded-xl p-2.5 flex items-start gap-2">
+                          <div className="flex-1 space-y-1.5 min-w-0">
+                            <input className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" placeholder="Button Label" value={btn.text} onChange={(e) => updateButton(btn.id, { text: e.target.value })} disabled={isAtLimit} />
+                            {btn.type === "URL" && <input className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" placeholder="https://example.com" value={btn.url || ""} onChange={(e) => updateButton(btn.id, { url: e.target.value })} disabled={isAtLimit} />}
+                            {btn.type === "PHONE_NUMBER" && <input className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" placeholder="+1234567890" value={btn.phone || ""} onChange={(e) => updateButton(btn.id, { phone: e.target.value })} disabled={isAtLimit} />}
+                          </div>
+                          <button onClick={() => removeButton(btn.id)} className="text-gray-300 hover:text-red-500 transition mt-1.5 shrink-0"><Trash2 size={14} /></button>
+                        </div>
+                      ))}
+                      {buttons.length === 0 && <p className="text-[10px] text-gray-400 text-center py-2">No buttons added.</p>}
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -545,27 +611,33 @@ export default function TemplatesPage() {
             <div className="flex-1 p-3 overflow-y-auto space-y-2" style={{ backgroundImage: "url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png')" }}>
               <div className="flex justify-end">
                 <div className="max-w-[90%] bg-[#D9FDD3] rounded-t-xl rounded-l-xl rounded-br-sm shadow-sm overflow-hidden">
-                  {headerType === "image" && (
+                  
+                  {!isAuthTemplate && headerType === "image" && (
                     <div className="w-full h-40 bg-gray-200 flex flex-col items-center justify-center gap-2 overflow-hidden">
                       {sampleFile ? <img src={URL.createObjectURL(sampleFile)} alt="Preview" className="w-full h-full object-cover" /> : sampleUrl ? <img src={sampleUrl} alt="Preview" className="w-full h-full object-cover" /> : <><Image size={32} className="text-gray-400" /><span className="text-[10px] text-gray-500 font-medium">Image Header</span></>}
                     </div>
                   )}
-                  {headerType === "video" && (
+                  {!isAuthTemplate && headerType === "video" && (
                     <div className="relative w-full h-40 bg-gray-200 flex flex-col items-center justify-center gap-2 overflow-hidden">
                       {sampleFile ? <video src={URL.createObjectURL(sampleFile)} className="w-full h-full object-cover" /> : <><Video size={32} className="text-gray-400" /><span className="text-[10px] text-gray-500 font-medium">Video Header</span></>}
                     </div>
                   )}
-                  {headerType === "document" && (
+                  {!isAuthTemplate && headerType === "document" && (
                     <div className="w-full h-24 bg-gray-200 flex flex-col items-center justify-center gap-2">
                       <FileText size={32} className="text-gray-400" /><span className="text-[10px] text-gray-500 font-medium">PDF Document</span>
                     </div>
                   )}
+                  
                   <div className="p-2">
-                    {headerType === "text" && headerText && <p className="font-bold text-[13px] text-gray-900 mb-1">{headerText}</p>}
+                    {!isAuthTemplate && headerType === "text" && headerText && <p className="font-bold text-[13px] text-gray-900 mb-1">{headerText}</p>}
                     <p className="text-[12px] text-gray-900 whitespace-pre-wrap">
-                      {bodyText ? bodyText.replace(/\{\{(\d+)\}\}/g, (_, num) => bodyExamples[parseInt(num)] || `{{${num}}}`) : "Your message body here..."}
+                      {isAuthTemplate ? (
+                        `${bodyExamples[1] || "1234"} is your verification code. For your security, do not share this code.`
+                      ) : (
+                        bodyText ? bodyText.replace(/\{\{(\d+)\}\}/g, (_, num) => bodyExamples[parseInt(num)] || `{{${num}}}`) : "Your message body here..."
+                      )}
                     </p>
-                    {footerText && <p className="text-[10px] text-gray-500 mt-1">{footerText}</p>}
+                    {footerText && <p className="text-[10px] text-gray-500 mt-1">{isAuthTemplate ? `This code expires in ${footerText} minutes.` : footerText}</p>}
                     <div className="flex justify-end items-center gap-1 mt-1">
                       <span className="text-[9px] text-gray-500">12:00 PM</span>
                       <span className="text-blue-500 text-[9px]">✓✓</span>
@@ -573,10 +645,17 @@ export default function TemplatesPage() {
                   </div>
                 </div>
               </div>
-              {buttons.length > 0 && (
-                <div className="flex justify-end">
-                  <div className="max-w-[90%] bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100">
-                    {buttons.map((btn) => (
+              
+              <div className="flex justify-end">
+                <div className="max-w-[90%] bg-white rounded-xl shadow-sm overflow-hidden border border-gray-100">
+                  {isAuthTemplate ? (
+                    <div className="px-3 py-2 text-center border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition cursor-pointer">
+                      <span className="text-[11px] font-medium text-blue-600 flex items-center justify-center gap-1.5">
+                        <MousePointerClick size={12} /> Copy Code
+                      </span>
+                    </div>
+                  ) : (
+                    buttons.map((btn) => (
                       <div key={btn.id} className="px-3 py-2 text-center border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition cursor-pointer">
                         <span className="text-[11px] font-medium text-blue-600 flex items-center justify-center gap-1.5">
                           {btn.type === "QUICK_REPLY" && <MousePointerClick size={12} />}
@@ -585,10 +664,10 @@ export default function TemplatesPage() {
                           {btn.text || "Button"}
                         </span>
                       </div>
-                    ))}
-                  </div>
+                    ))
+                  )}
                 </div>
-              )}
+              </div>
             </div>
           </div>
         </div>
