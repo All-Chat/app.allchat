@@ -184,12 +184,12 @@ export async function POST(req: Request) {
     }
 
     /* ══════════════════════════════════════════════════════════════════════════
-       SECTION A: HANDLE MESSAGE STATUSES & DYNAMIC BILLING (STRICTLY ON DELIVERED)
+       SECTION A: HANDLE MESSAGE STATUSES & DYNAMIC BILLING (WAMID MATCH)
        ══════════════════════════════════════════════════════════════════════════ */
     if (value.statuses && value.statuses.length > 0) {
       try {
         const statusUpdate = value.statuses[0];
-        const wamid = statusUpdate.id; // MUST MATCH BY WAMID TO PREVENT DOUBLE CHARGING
+        const wamid = statusUpdate.id; // 🔴 MUST MATCH BY WAMID TO PREVENT DOUBLE CHARGING
         
         let statusPhone = statusUpdate.recipient_id;
         const newStatus = statusUpdate.status;
@@ -233,6 +233,7 @@ export async function POST(req: Request) {
 
             if (statusPriority[finalStatus] > (statusPriority[currentItem.status] || 0)) {
               let balanceAdjustment = 0;
+              // 🔴 GET EXACT CATEGORY PRICE
               const cost = ownerUser ? getPriceForCategory(ownerUser, camp.templateCategory || "MARKETING") : 0;
 
               // 🔴 ONLY DEDUCT IF STATUS IS DELIVERED (OR READ) AND HAS NOT BEEN CHARGED YET
