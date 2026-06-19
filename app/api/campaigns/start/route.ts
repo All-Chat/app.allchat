@@ -72,6 +72,7 @@ export async function POST(req: Request) {
 
     let sentCount = campaign.sentCount || 0;
     let failedCount = campaign.failedCount || 0;
+    let totalDeducted = campaign.totalDeducted || 0;
 
     for (let i = 0; i < campaign.phoneNumbers.length; i++) {
       const phone = campaign.phoneNumbers[i];
@@ -82,6 +83,8 @@ export async function POST(req: Request) {
         campaign.status = "paused";
         campaign.sentCount = sentCount;
         campaign.failedCount = failedCount;
+        campaign.totalDeducted = totalDeducted;
+        await user.save(); // Save deducted balance
         await campaign.save();
         return NextResponse.json({ success: true, message: "Campaign paused", sent: sentCount });
       }
@@ -90,6 +93,8 @@ export async function POST(req: Request) {
         campaign.status = "completed";
         campaign.sentCount = sentCount;
         campaign.failedCount = failedCount;
+        campaign.totalDeducted = totalDeducted;
+        await user.save(); // Save deducted balance
         await campaign.save();
         return NextResponse.json({ success: true, message: "Campaign stopped", sent: sentCount });
       }
@@ -166,8 +171,16 @@ export async function POST(req: Request) {
           sentCount++;
           if (campaign.reportData[i]) {
             campaign.reportData[i].status = "sent";
-            campaign.reportData[i].sentWamid = sendData.message_id || null; // Save WAMID
-            campaign.reportData[i].charged = false; // Explicitly set to false. Webhook will charge on 'delivered'
+            // 🔴 CRITICAL FIX: Meta returns messages[0].id, NOT message_id. This fixes the delivered status tracking!
+            campaign.reportData[i].sentWamid = sendData?.messages?.[0]?.id || null; 
+            campaign.reportData[i].charged = true; // Mark as charged immediately
+          }
+          
+          // 🔴 CHARGE BALANCE IMMEDIATELY UPON SUCCESSFUL SEND
+          if (messagePrice > 0) {
+            user.balance = Math.round((user.balance - messagePrice) * 100) / 100;
+            if (user.balance < 0) user.balance = 0;
+            totalDeducted = Math.round((totalDeducted + messagePrice) * 100) / 100;
           }
         }
 
@@ -183,14 +196,17 @@ export async function POST(req: Request) {
 
     campaign.sentCount = sentCount;
     campaign.failedCount = failedCount;
+    campaign.totalDeducted = totalDeducted;
     campaign.status = sentCount > 0 ? "completed" : "failed";
+    
+    await user.save(); // Save final user balance
     await campaign.save();
 
     return NextResponse.json({
       success: true,
       sent: sentCount,
       failed: failedCount,
-      message: "Campaign processing complete. Billing will update dynamically via webhook on delivery.",
+      message: "Campaign processing complete. Balance deducted dynamically.",
     });
   } catch (error: any) {
     console.error("❌ Start Campaign Error:", error);
