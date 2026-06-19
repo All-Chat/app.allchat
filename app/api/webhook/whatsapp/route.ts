@@ -4,7 +4,7 @@
    Handles all inbound WhatsApp events and executes workflows.
    
    Key Features:
-   - Dynamic billing refunds (refund on failed if charged during campaign start)
+   - Dynamic billing (charge on delivered, refund on failed)
    - Workflow engine (triggers, steps, buttons, list replies, delays)
    - Inactivity Timers (Auto-sends reminder messages if user doesn't click)
    - Conversational forms with inactivity timers
@@ -30,7 +30,7 @@ import FormResponse from "@/models/FormResponse";
 
 // Utilities
 import { sendWhatsAppMessage } from "@/lib/sendWhatsApp";
-import { getPriceForCategory } from "@/lib/billing"; // NEW: Category pricing helper
+import { getPriceForCategory } from "@/lib/billing"; // 🔴 NEW: Category pricing helper
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -253,11 +253,13 @@ export async function POST(req: Request) {
     }
 
     /* ══════════════════════════════════════════════════════════════════════════
-       SECTION A: HANDLE MESSAGE STATUSES & DYNAMIC BILLING REFUNDS
+       SECTION A: HANDLE MESSAGE STATUSES & DYNAMIC BILLING (WAMID MATCH)
        ══════════════════════════════════════════════════════════════════════════ */
     if (value.statuses && value.statuses.length > 0) {
       try {
         const statusUpdate = value.statuses[0];
+        const wamid = statusUpdate.id; // 🔴 THE EXACT WHATSAPP MESSAGE ID
+        
         let statusPhone = statusUpdate.recipient_id;
         const newStatus = statusUpdate.status;
         const errorCode = statusUpdate.errors?.[0]?.code;
@@ -270,9 +272,10 @@ export async function POST(req: Request) {
           statusPhone = statusPhone.replace("whatsapp:", "");
         statusPhone = statusPhone.replace(/\+/g, "");
 
-        if (statusPhone && newStatus) {
+        if (wamid && statusPhone && newStatus) {
+          // 🔴 ONLY FIND THE CAMPAIGN THAT HAS THIS EXACT MESSAGE ID
           const campaignQuery: any = {
-            "reportData.phone": statusPhone,
+            "reportData.sentWamid": wamid,
             status: { $in: ["running", "paused", "completed"] },
           };
           if (userId) campaignQuery.userId = userId;
@@ -282,8 +285,9 @@ export async function POST(req: Request) {
           for (const camp of campaigns) {
             if (!camp.reportData) continue;
 
+            // Find the exact report item by WAMID
             const reportIndex = camp.reportData.findIndex(
-              (r: any) => r.phone === statusPhone
+              (r: any) => r.sentWamid === wamid
             );
             if (reportIndex === -1) continue;
 
@@ -318,12 +322,9 @@ export async function POST(req: Request) {
               (statusPriority[currentItem.status] || 0)
             ) {
               let balanceAdjustment = 0;
-              
-              // 🔴 NEW: Get exact category price for potential refund
+              // 🔴 NEW: Get exact category price for deduction/refund
               const cost = ownerUser ? getPriceForCategory(ownerUser, camp.templateCategory || "MARKETING") : 0;
 
-              // Since start/route.ts already charges on 'sent' (setting charged=true),
-              // this deduction block will be safely skipped for campaign messages.
               if (
                 (finalStatus === "delivered" || finalStatus === "read") &&
                 !currentItem.charged
@@ -335,7 +336,6 @@ export async function POST(req: Request) {
                 (finalStatus === "failed" || finalStatus === "invalid") &&
                 currentItem.charged
               ) {
-                // 🔴 REFUND: If it was charged during campaign start but failed, refund the exact amount
                 balanceAdjustment += cost;
                 currentItem.charged = false;
                 camp.totalDeducted = Math.max(0, (camp.totalDeducted || 0) - cost);
@@ -706,6 +706,9 @@ export async function POST(req: Request) {
                 if (clickedBtn.nextStepId) {
                   let nextStep = wf.steps[clickedBtn.nextStepId];
 
+                  /* ════════════════════════════════════════════════════════════
+                     DELAY NODE LOGIC
+                     ════════════════════════════════════════════════════════════ */
                   while (nextStep && nextStep.stepType === "delay_node") {
                     const delaySeconds = nextStep.delaySeconds || 0;
                     if (delaySeconds > 0) {
@@ -772,6 +775,7 @@ export async function POST(req: Request) {
                       messageType: "text",
                     });
 
+                    // Start Inactivity Timer if the sent message has buttons
                     if (nextStep.buttons && nextStep.buttons.length > 0) {
                       startWorkflowInactivityTimer(
                         phone,
@@ -830,6 +834,9 @@ export async function POST(req: Request) {
         if (matchedWorkflow && matchedStepId) {
           let step = matchedWorkflow.steps?.[matchedStepId];
 
+          /* ════════════════════════════════════════════════════════════
+             DELAY NODE LOGIC FOR TRIGGERS
+             ════════════════════════════════════════════════════════════ */
           while (step && step.stepType === "delay_node") {
             const delaySeconds = step.delaySeconds || 0;
             if (delaySeconds > 0) {
@@ -918,6 +925,7 @@ export async function POST(req: Request) {
               { upsert: true, new: true }
             );
 
+            // Start Inactivity Timer if the trigger message has buttons
             if (step.buttons && step.buttons.length > 0) {
               startWorkflowInactivityTimer(
                 phone,
