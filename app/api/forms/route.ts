@@ -49,8 +49,15 @@ export async function POST(req: Request) {
     const { name, fields, completionMessage, abandonmentMessage } = await req.json();
     if (!name || !fields) return NextResponse.json({ error: "Missing data" }, { status: 400 });
 
+    // ==========================================
+    // 🔴 MULTI-TENANT DATA ISOLATION
+    // ==========================================
+    const tenantId = (session.user as any)?.parentTenantId || (session.user as any)?.tenantId || null;
+
     const form = await Form.create({
       userId,
+      tenantId, // ✅ ATTACH TENANT ID FOR AGGREGATED VIEWS
+      createdBy: userId, // ✅ TRACK WHO CREATED IT
       name,
       fields,
       completionMessage: completionMessage || "✅ Thank you! Your form has been submitted successfully.",
