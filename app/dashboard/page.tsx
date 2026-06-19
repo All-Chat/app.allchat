@@ -176,6 +176,7 @@ export default function DashboardPage() {
   };
 
   const userName = session?.user?.name || "";
+  const parentTenantName = (session?.user as any)?.parentTenantName;
 
   const stats = [
     { title: "Total Chats", value: (statsData.totalChats ?? 0).toLocaleString(), icon: MessageSquare, color: "text-blue-600", bg: "bg-blue-50", link: "/chat" },
@@ -206,6 +207,11 @@ export default function DashboardPage() {
             <div>
               <h1 className="text-xl sm:text-2xl font-bold text-gray-900">
                 {userName ? `Hi, ${userName}` : "Dashboard"}
+                {parentTenantName && (
+                  <span className="text-sm font-medium text-slate-500 ml-2">
+                    (Sub-user of {parentTenantName})
+                  </span>
+                )}
               </h1>
               <p className="text-xs sm:text-sm text-gray-500 mt-0.5">
                 Welcome back! Here&apos;s your overview.
@@ -320,7 +326,9 @@ export default function DashboardPage() {
                   </div>
                   <div>
                     <h2 className="font-bold text-gray-900 text-sm sm:text-base">Billing Overview</h2>
-                    <p className="text-[11px] sm:text-xs text-gray-500">Your messaging credits and usage</p>
+                    <p className="text-[11px] sm:text-xs text-gray-500">
+                      {parentTenantName ? `Shared wallet managed by ${parentTenantName}` : "Your messaging credits and usage"}
+                    </p>
                   </div>
                 </div>
                 <Link href="/settings" className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-1 transition-colors shrink-0">
