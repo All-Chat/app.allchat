@@ -73,7 +73,6 @@ export async function POST(req: Request) {
 
     let sentCount = campaign.sentCount || 0;
     let failedCount = campaign.failedCount || 0;
-    let totalDeducted = campaign.totalDeducted || 0;
 
     for (let i = 0; i < campaign.phoneNumbers.length; i++) {
       const phone = campaign.phoneNumbers[i];
@@ -87,8 +86,6 @@ export async function POST(req: Request) {
         campaign.status = "paused";
         campaign.sentCount = sentCount;
         campaign.failedCount = failedCount;
-        campaign.totalDeducted = totalDeducted;
-        await user.save(); // Save deducted balance
         await campaign.save();
         return NextResponse.json({ success: true, message: "Campaign paused", sent: sentCount });
       }
@@ -97,8 +94,6 @@ export async function POST(req: Request) {
         campaign.status = "completed";
         campaign.sentCount = sentCount;
         campaign.failedCount = failedCount;
-        campaign.totalDeducted = totalDeducted;
-        await user.save(); // Save deducted balance
         await campaign.save();
         return NextResponse.json({ success: true, message: "Campaign stopped", sent: sentCount });
       }
@@ -191,27 +186,13 @@ export async function POST(req: Request) {
           if (campaign.reportData[i]) {
             campaign.reportData[i].status = "failed";
           }
-          // DO NOT DEDUCT FOR FAILED SENDS
         } else {
           sentCount++;
           if (campaign.reportData[i]) {
             campaign.reportData[i].status = "sent";
             campaign.reportData[i].sentWamid = sendData.message_id || null;
+            campaign.reportData[i].charged = false; // 🔴 ADD THIS LINE
           }
-          
-          // ==========================================
-          // 🔴 DEDUCT BALANCE HERE BASED ON CATEGORY
-          // ==========================================
-          if (messagePrice > 0) {
-            user.balance = Math.round((user.balance - messagePrice) * 100) / 100;
-            if (user.balance < 0) user.balance = 0;
-            
-            totalDeducted = Math.round((totalDeducted + messagePrice) * 100) / 100;
-            if (campaign.reportData[i]) {
-              campaign.reportData[i].charged = true;
-            }
-          }
-          // ==========================================
         }
 
         // Rate limit
@@ -230,17 +211,14 @@ export async function POST(req: Request) {
     // ==========================================
     campaign.sentCount = sentCount;
     campaign.failedCount = failedCount;
-    campaign.totalDeducted = totalDeducted;
     campaign.status = sentCount > 0 ? "completed" : "failed";
-    
-    await user.save(); // Save final user balance
     await campaign.save();
 
     return NextResponse.json({
       success: true,
       sent: sentCount,
       failed: failedCount,
-      message: "Campaign processing complete. Billing deducted dynamically based on category.",
+      message: "Campaign processing complete. Billing will update dynamically via webhook based on category.",
     });
   } catch (error: any) {
     console.error("❌ Start Campaign Error:", error);
