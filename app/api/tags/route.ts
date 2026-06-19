@@ -69,8 +69,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Tag already exists" }, { status: 400 });
     }
 
+    // ==========================================
+    // 🔴 MULTI-TENANT DATA ISOLATION
+    // ==========================================
+    const tenantId = (session.user as any)?.parentTenantId || (session.user as any)?.tenantId || null;
+
     const tag = await Tag.create({
       userId,
+      tenantId, // ✅ ATTACH TENANT ID FOR AGGREGATED VIEWS
+      createdBy: userId, // ✅ TRACK WHO CREATED IT
       name: name.trim(),
       isCampaignSpecific: isCampaignSpecific || false,
       campaignId: isCampaignSpecific ? campaignId : null,
