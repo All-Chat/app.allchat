@@ -29,7 +29,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
     }
 
-    // Prevent starting if already running
     if (campaign.status === "running") {
       return NextResponse.json({ success: false, message: "Campaign is already running" }, { status: 400 });
     }
@@ -49,9 +48,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // ==========================================
-    // 🔴 CATEGORY-BASED INITIAL BALANCE CHECK
-    // ==========================================
+    // ONLY CHECK BALANCE HERE. DO NOT DEDUCT.
     const category = campaign.templateCategory || "MARKETING";
     const messagePrice = getPriceForCategory(user, category);
     const currentBalance = user.balance || 0;
@@ -65,7 +62,6 @@ export async function POST(req: Request) {
         { status: 402 }
       );
     }
-    // ==========================================
 
     // Mark as running
     campaign.status = "running";
@@ -77,9 +73,6 @@ export async function POST(req: Request) {
     for (let i = 0; i < campaign.phoneNumbers.length; i++) {
       const phone = campaign.phoneNumbers[i];
 
-      // ==========================================
-      // 🔴 PAUSE / STOP LOGIC
-      // ==========================================
       const liveCampaign = await Campaign.findById(campaignId);
       if (liveCampaign.status === "paused") {
         console.log("⏸️ Campaign paused by user. Saving progress...");
@@ -97,16 +90,11 @@ export async function POST(req: Request) {
         await campaign.save();
         return NextResponse.json({ success: true, message: "Campaign stopped", sent: sentCount });
       }
-      // ==========================================
 
-      // ==========================================
-      // 🔴 RESUME LOGIC
-      // ==========================================
       const currentStatus = campaign.reportData[i]?.status;
       if (["sent", "delivered", "read", "failed", "invalid"].includes(currentStatus)) {
-        continue; // Skip this number as it was already processed
+        continue; 
       }
-      // ==========================================
 
       try {
         const templatePayload: any = {
@@ -191,11 +179,10 @@ export async function POST(req: Request) {
           if (campaign.reportData[i]) {
             campaign.reportData[i].status = "sent";
             campaign.reportData[i].sentWamid = sendData.message_id || null;
-            campaign.reportData[i].charged = false; // 🔴 ADD THIS LINE
+            campaign.reportData[i].charged = false; // EXPLICITLY SET TO FALSE. WEBHOOK WILL CHARGE ON DELIVERED
           }
         }
 
-        // Rate limit
         await new Promise((r) => setTimeout(r, 50));
       } catch (err: any) {
         console.error(`❌ Send error for ${phone}:`, err.message);
@@ -206,9 +193,6 @@ export async function POST(req: Request) {
       }
     }
 
-    // ==========================================
-    // SAVE FINAL CAMPAIGN STATE
-    // ==========================================
     campaign.sentCount = sentCount;
     campaign.failedCount = failedCount;
     campaign.status = sentCount > 0 ? "completed" : "failed";
@@ -218,7 +202,7 @@ export async function POST(req: Request) {
       success: true,
       sent: sentCount,
       failed: failedCount,
-      message: "Campaign processing complete. Billing will update dynamically via webhook based on category.",
+      message: "Campaign processing complete. Billing will update dynamically via webhook on delivery.",
     });
   } catch (error: any) {
     console.error("❌ Start Campaign Error:", error);
