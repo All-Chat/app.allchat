@@ -19,7 +19,6 @@ export async function POST(req: Request) {
     }
 
     const { campaignId } = await req.json();
-
     if (!campaignId) {
       return NextResponse.json({ success: false, message: "Campaign ID required" }, { status: 400 });
     }
@@ -34,39 +33,20 @@ export async function POST(req: Request) {
     }
 
     const user = await User.findById(userId);
-    if (!user) {
-      return NextResponse.json({ success: false, message: "User not found" }, { status: 404 });
-    }
+    if (!user) return NextResponse.json({ success: false, message: "User not found" }, { status: 404 });
 
     const token = user.whatsappAccessToken || process.env.META_ACCESS_TOKEN;
     const phoneNumberId = user.whatsappPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
+    if (!token || !phoneNumberId) return NextResponse.json({ success: false, message: "WhatsApp credentials not configured" }, { status: 400 });
 
-    if (!token || !phoneNumberId) {
-      return NextResponse.json(
-        { success: false, message: "WhatsApp credentials not configured" },
-        { status: 400 }
-      );
-    }
-
-    // ==========================================
-    // 🔴 CATEGORY-BASED INITIAL BALANCE CHECK
-    // ==========================================
     const category = campaign.templateCategory || "MARKETING";
     const messagePrice = getPriceForCategory(user, category);
     const currentBalance = user.balance || 0;
 
     if (messagePrice > 0 && currentBalance < messagePrice) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: `Insufficient balance for ${category} messages. Required: ₹${messagePrice}, Available: ₹${currentBalance}. Please recharge your account.`,
-        },
-        { status: 402 }
-      );
+      return NextResponse.json({ success: false, message: `Insufficient balance. Required: ₹${messagePrice}, Available: ₹${currentBalance}.` }, { status: 402 });
     }
-    // ==========================================
 
-    // Mark as running
     campaign.status = "running";
     await campaign.save();
 
@@ -74,7 +54,6 @@ export async function POST(req: Request) {
     let failedCount = campaign.failedCount || 0;
     let totalDeducted = campaign.totalDeducted || 0;
 
-    // 🔴 WORKER PROCESS FUNCTION
     const workerProcess = async (phone: string, campaignDoc: any, i: number, token: string, phoneNumberId: string) => {
       const currentStatus = campaignDoc.reportData[i]?.status;
       if (["sent", "delivered", "read", "failed", "invalid"].includes(currentStatus)) {
@@ -82,6 +61,34 @@ export async function POST(req: Request) {
       }
 
       try {
+        let currentVariables: string[] = [];
+
+        // ✅ DYNAMIC VARIABLE RESOLUTION WITH AUTH FALLBACK
+        if (campaignDoc.templateCategory === "AUTHENTICATION") {
+          // Auth templates MUST have a code. If generateOtp is true OR variables are missing, generate securely.
+          if (campaignDoc.generateOtp || currentVariables.length === 0) {
+            const len = campaignDoc.otpLength || 4;
+            const min = Math.pow(10, len - 1);
+            const max = Math.pow(10, len) - 1;
+            const otp = Math.floor(Math.random() * (max - min + 1) + min).toString();
+            currentVariables = [otp];
+          } else if (campaignDoc.mappedVariables?.[i]?.length > 0) {
+            currentVariables = campaignDoc.mappedVariables[i];
+          } else {
+            currentVariables = campaignDoc.variables || [];
+          }
+        } else {
+          // Non-Auth templates
+          if (campaignDoc.mappedVariables?.[i]?.length > 0) {
+            currentVariables = campaignDoc.mappedVariables[i];
+          } else {
+            currentVariables = campaignDoc.variables || [];
+          }
+        }
+
+        // ✅ FILTER OUT EMPTY STRINGS TO PREVENT META API ERROR
+        currentVariables = currentVariables.filter(v => v && String(v).trim() !== "");
+
         const templatePayload: any = {
           name: campaignDoc.templateName,
           language: { code: campaignDoc.languageCode || "en" },
@@ -105,10 +112,10 @@ export async function POST(req: Request) {
           });
         }
 
-        if (campaignDoc.variables && campaignDoc.variables.length > 0) {
+        if (currentVariables.length > 0) {
           templatePayload.components.push({
             type: "body",
-            parameters: campaignDoc.variables.map((v: string) => ({ type: "text", text: v || "" })),
+            parameters: currentVariables.map((v: string) => ({ type: "text", text: v })),
           });
         }
 
@@ -119,13 +126,48 @@ export async function POST(req: Request) {
           template: templatePayload,
         };
 
-        const sendRes = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+        let sendRes = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
           body: JSON.stringify(messagePayload),
         });
 
-        const sendData = await sendRes.json();
+        let sendData = await sendRes.json();
+
+        // ✅ DYNAMIC RETRY FOR AUTHENTICATION URL BUTTONS
+        if (sendData.error?.code === 131008 && campaignDoc.templateCategory === "AUTHENTICATION" && currentVariables.length > 0) {
+          console.log(`⚠️ Auth template requires URL button parameter for ${phone}. Retrying...`);
+          
+          const retryPayload = {
+            messaging_product: "whatsapp",
+            to: phone,
+            type: "template",
+            template: {
+              name: campaignDoc.templateName,
+              language: { code: campaignDoc.languageCode || "en" },
+              components: [
+                {
+                  type: "body",
+                  parameters: currentVariables.map((v: string) => ({ type: "text", text: v })),
+                },
+                {
+                  type: "button",
+                  sub_type: "url",
+                  index: 0,
+                  parameters: [{ type: "text", text: currentVariables[0] }],
+                },
+              ],
+            },
+          };
+
+          sendRes = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify(retryPayload),
+          });
+
+          sendData = await sendRes.json();
+        }
 
         if (sendData.error) {
           console.error(`❌ Send error for ${phone}:`, sendData.error.message);
@@ -139,10 +181,8 @@ export async function POST(req: Request) {
       }
     };
 
-    // 🔴 QUEUE SYSTEM WITH 4 WORKERS
     let index = 0;
     while (index < campaign.phoneNumbers.length) {
-      // Check pause/stop
       const liveCampaign = await Campaign.findById(campaignId);
       if (liveCampaign.status === "paused") {
         campaign.status = "paused";
@@ -166,7 +206,6 @@ export async function POST(req: Request) {
       const workerPromises = [];
       const batchIndices: any[] = [];
 
-      // Batch 4 numbers at a time
       for (let w = 0; w < 4; w++) {
         if (index < campaign.phoneNumbers.length) {
           batchIndices.push(index);
@@ -196,18 +235,14 @@ export async function POST(req: Request) {
         }
       });
 
-      // Deduct balance for the batch
       if (batchDeducted > 0) {
         user.balance = Math.round((user.balance - batchDeducted) * 100) / 100;
         if (user.balance < 0) user.balance = 0;
         totalDeducted = Math.round((totalDeducted + batchDeducted) * 100) / 100;
       }
 
-      // Save progress
       await user.save();
       await campaign.save();
-      
-      // Small delay to prevent CPU overload
       await new Promise((r) => setTimeout(r, 50));
     }
 
