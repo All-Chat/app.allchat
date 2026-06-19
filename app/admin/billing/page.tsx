@@ -12,7 +12,7 @@ import {
   Timer, Infinity as InfinityIcon, AlertTriangle, BadgeCheck,
   User, Lock, Megaphone, Wrench, ShieldCheck,
   Tag, GitBranch, FileText, Send, UserPlus, ClipboardList,
-  RotateCcw, Gauge, Package, Trash2,
+  RotateCcw, Gauge, Package, Trash2, Check,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -105,6 +105,10 @@ export default function AdminBillingPage() {
   const [creatingUser, setCreatingUser] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
+  // Settings Requests State
+  const [requests, setRequests] = useState<any[]>([]);
+  const [processingReqId, setProcessingReqId] = useState<string | null>(null);
+
   const [saving, setSaving] = useState<string | null>(null);
 
   const formatINR = (amount: number) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", minimumFractionDigits: 2 }).format(amount);
@@ -129,7 +133,7 @@ export default function AdminBillingPage() {
     try {
       const res = await fetch("/api/admin/billing", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: adminKey }) });
       const data = await res.json();
-      if (data.success) { setIsVerified(true); toast.success("Admin verified!"); fetchUsers(); } else toast.error("Invalid admin key");
+      if (data.success) { setIsVerified(true); toast.success("Admin verified!"); fetchUsers(); fetchRequests(); } else toast.error("Invalid admin key");
     } catch { toast.error("Verification failed"); } finally { setVerifying(false); }
   };
 
@@ -140,6 +144,14 @@ export default function AdminBillingPage() {
       const data = await res.json();
       if (data.success) setUsers(data.users); else toast.error("Failed to fetch users");
     } catch { toast.error("Error fetching users"); } finally { setLoading(false); }
+  };
+
+  const fetchRequests = async () => {
+    try {
+      const res = await fetch("/api/admin/requests", { headers: { "x-admin-key": adminKey } });
+      const data = await res.json();
+      if (data.success) setRequests(data.requests);
+    } catch { console.error("Error fetching requests"); }
   };
 
   const handleCreateUser = async (e: React.FormEvent) => {
@@ -172,6 +184,25 @@ export default function AdminBillingPage() {
         fetchUsers();
       } else { toast.error(data.message || "Failed to delete user"); }
     } catch { toast.error("Error deleting user"); } finally { setDeletingId(null); }
+  };
+
+  const handleProcessRequest = async (reqId: string, action: "approve" | "reject") => {
+    setProcessingReqId(reqId);
+    try {
+      const res = await fetch("/api/admin/requests", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "x-admin-key": adminKey },
+        body: JSON.stringify({ requestId: reqId, action }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success(data.message);
+        fetchRequests();
+        fetchUsers(); // Refresh user data if approved
+      } else {
+        toast.error(data.message || "Failed to process request");
+      }
+    } catch { toast.error("Error processing request"); } finally { setProcessingReqId(null); }
   };
 
   const startEdit = (user: any, tab: "billing" | "plan" | "account" | "credentials" | "limits" | "tenancy" = "billing") => {
@@ -289,11 +320,57 @@ export default function AdminBillingPage() {
             <button onClick={() => setShowCreateModal(true)} className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-500 to-blue-500 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md hover:from-indigo-600 hover:to-blue-600 transition-all w-full sm:w-auto">
               <UserPlus size={16} /> Create User
             </button>
-            <button onClick={fetchUsers} disabled={loading} className="flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-medium hover:bg-slate-50 shadow-sm transition-all w-full sm:w-auto justify-center">
+            <button onClick={() => { fetchUsers(); fetchRequests(); }} disabled={loading} className="flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-medium hover:bg-slate-50 shadow-sm transition-all w-full sm:w-auto justify-center">
               <RefreshCw size={16} className={loading ? "animate-spin text-amber-500" : ""} /> Refresh
             </button>
           </div>
         </div>
+
+        {/* PENDING CONFIGURATION REQUESTS SECTION */}
+        {requests.length > 0 && (
+          <div className="mb-6 bg-white rounded-2xl border border-amber-200 shadow-sm p-5">
+            <h2 className="text-lg font-bold text-amber-700 mb-4 flex items-center gap-2">
+              <AlertCircle size={18} /> Pending Configuration Requests ({requests.length})
+            </h2>
+            <div className="space-y-3">
+              {requests.map(req => (
+                <div key={req._id} className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 bg-amber-50 rounded-xl border border-amber-100 gap-3">
+                  <div className="flex items-start gap-3">
+                    <div className="p-2 bg-white rounded-lg border border-amber-200 mt-0.5">
+                      <UserCog size={16} className="text-amber-600" />
+                    </div>
+                    <div>
+                      <p className="font-bold text-gray-900 text-sm">{req.userName}</p>
+                      <div className="text-xs text-gray-600 mt-1 space-y-0.5 font-mono">
+                        {req.wabaId && <p>WABA ID: <span className="font-semibold">{req.wabaId}</span></p>}
+                        {req.whatsappPhoneNumberId && <p>Phone ID: <span className="font-semibold">{req.whatsappPhoneNumberId}</span></p>}
+                        <p className="text-emerald-600 font-bold flex items-center gap-1"><KeyRound size={10} /> {req.whatsappAccessToken ? "New Token Provided" : "No Token Change"}</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 w-full sm:w-auto">
+                    <button 
+                      onClick={() => handleProcessRequest(req._id, "approve")} 
+                      disabled={processingReqId === req._id}
+                      className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 bg-emerald-500 text-white rounded-lg text-xs font-bold hover:bg-emerald-600 transition-all disabled:opacity-50"
+                    >
+                      {processingReqId === req._id ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                      Approve
+                    </button>
+                    <button 
+                      onClick={() => handleProcessRequest(req._id, "reject")} 
+                      disabled={processingReqId === req._id}
+                      className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 bg-red-500 text-white rounded-lg text-xs font-bold hover:bg-red-600 transition-all disabled:opacity-50"
+                    >
+                      <X size={14} />
+                      Reject
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4 mb-6 sm:mb-8">
           <div className="bg-white p-4 sm:p-5 rounded-xl sm:rounded-2xl border border-slate-200 shadow-sm"><p className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Users</p><p className="text-xl sm:text-2xl font-extrabold">{users.length}</p></div>
