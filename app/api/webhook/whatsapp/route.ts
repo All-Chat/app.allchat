@@ -1,6 +1,10 @@
 /* ============================================================================
    WHATSAPP WEBHOOK ROUTE
-   ---------------------------------------------------------------------------- */
+   ----------------------------------------------------------------------------
+   Handles incoming WhatsApp messages, statuses, workflow logic, 
+   conversational forms, and dynamic campaign reporting.
+   ============================================================================ */
+
 /* eslint-disable prefer-const */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -54,9 +58,11 @@ const startWorkflowInactivityTimer = (
       await connectDB();
       const wf = await Workflow.findById(workflowId);
       if (!wf || !wf.steps) return;
+      
       const inactivityNode = Object.values(wf.steps).find(
         (s: any) => s.stepType === "inactivity_node"
       ) as any;
+      
       if (!inactivityNode) return;
 
       const delaySeconds = inactivityNode.delaySeconds || 30;
@@ -143,18 +149,30 @@ const startFormInactivityTimer = (
   }
 };
 
+/* ============================================================================
+   GET ROUTE - Webhook Verification
+   ============================================================================ */
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
     const mode = url.searchParams.get("hub.mode");
     const token = url.searchParams.get("hub.verify_token");
     const challenge = url.searchParams.get("hub.challenge");
+    
     if (!mode && !token && !challenge) {
-      return new Response("WhatsApp Webhook Endpoint is Live ✅", { status: 200, headers: { "Content-Type": "text/plain" } });
+      return new Response("WhatsApp Webhook Endpoint is Live ✅", { 
+        status: 200, 
+        headers: { "Content-Type": "text/plain" } 
+      });
     }
+    
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
-      return new Response(challenge || "", { status: 200, headers: { "Content-Type": "text/plain" } });
+      return new Response(challenge || "", { 
+        status: 200, 
+        headers: { "Content-Type": "text/plain" } 
+      });
     }
+    
     return new Response("Forbidden", { status: 403 });
   } catch (err) {
     console.error("GET webhook error:", err);
@@ -162,10 +180,14 @@ export async function GET(req: Request) {
   }
 }
 
+/* ============================================================================
+   POST ROUTE - Main Webhook Handler
+   ============================================================================ */
 export async function POST(req: Request) {
   try {
     const body = await req.json();
     const value = body?.entry?.[0]?.changes?.[0]?.value;
+    
     if (!value) return NextResponse.json({ success: true });
 
     await connectDB();
@@ -189,7 +211,7 @@ export async function POST(req: Request) {
     if (value.statuses && value.statuses.length > 0) {
       try {
         const statusUpdate = value.statuses[0];
-        const wamid = statusUpdate.id; // Match by exact WhatsApp Message ID
+        const wamid = statusUpdate.id;
         
         let statusPhone = statusUpdate.recipient_id;
         const newStatus = statusUpdate.status;
@@ -235,15 +257,13 @@ export async function POST(req: Request) {
               let balanceAdjustment = 0;
               const cost = ownerUser ? getPriceForCategory(ownerUser, camp.templateCategory || "MARKETING") : 0;
 
-              // Balance is already deducted in start/route.ts. 
-              // We ONLY refund here if the message FAILS.
               if ((finalStatus === "failed" || finalStatus === "invalid") && currentItem.charged) {
                 balanceAdjustment += cost;
                 currentItem.charged = false;
                 camp.totalDeducted = Math.max(0, (camp.totalDeducted || 0) - cost);
               }
 
-              currentItem.status = finalStatus; // Update to delivered, read, etc.
+              currentItem.status = finalStatus;
               camp.markModified("reportData");
               await camp.save();
 
@@ -304,8 +324,14 @@ export async function POST(req: Request) {
     if (!textToSave && !buttonId && !mediaId) return NextResponse.json({ success: true });
 
     await Message.create({
-      userId, phone, text: textToSave, direction: "in", messageType, mediaUrl: mediaId,
-      whatsappMessageId: message.id || null, contactName: contactName,
+      userId, 
+      phone, 
+      text: textToSave, 
+      direction: "in", 
+      messageType, 
+      mediaUrl: mediaId,
+      whatsappMessageId: message.id || null, 
+      contactName: contactName,
     });
 
     /* ══════════════════════════════════════════════════════════════════════════
@@ -320,13 +346,17 @@ export async function POST(req: Request) {
           await Session.deleteOne({ _id: activeSession._id });
           return NextResponse.json({ success: true });
         }
+        
         const currentField = form.fields[activeSession.formFieldIndex];
+        
         await FormResponse.findOneAndUpdate(
           { formId: form._id, phone, status: "incomplete" },
           { $set: { [`data.${currentField.label}`]: textToSave } },
           { upsert: true, new: true }
         );
+        
         const nextIndex = activeSession.formFieldIndex + 1;
+        
         if (nextIndex < form.fields.length) {
           activeSession.formFieldIndex = nextIndex;
           await activeSession.save();
@@ -340,6 +370,7 @@ export async function POST(req: Request) {
           await activeSession.save();
           await sendWhatsAppMessage(phone, { message: form.completionMessage || "✅ Thank you! Your form has been submitted successfully.", stepType: "text" }, ownerUser?.whatsappPhoneNumberId, ownerUser?.whatsappAccessToken);
         }
+        
         return NextResponse.json({ success: true });
       } catch (formErr) {
         console.error("⚠️ Form processing error:", formErr);
@@ -361,6 +392,7 @@ export async function POST(req: Request) {
           const exactCampaign = await Campaign.findOne(exactQuery);
           if (exactCampaign) targetedCampaigns.push(exactCampaign);
         }
+        
         if (targetedCampaigns.length === 0) {
           const latestQuery: any = { "reportData.phone": phone, status: { $in: ["running", "completed"] } };
           if (userId) latestQuery.userId = userId;
@@ -385,6 +417,7 @@ export async function POST(req: Request) {
 
               const currentTags = camp.reportData[reportIndex].tags || [];
               let detectedTags: string[] = [];
+              
               for (const t of userTags) {
                 const tagNameLower = t.name.toLowerCase();
                 if (tagNameLower && lowerText.includes(tagNameLower)) {
@@ -395,12 +428,14 @@ export async function POST(req: Request) {
                   }
                 }
               }
+              
               if (detectedTags.length > 0) {
                 for (const dt of detectedTags) {
                   if (!currentTags.includes(dt)) currentTags.push(dt);
                 }
                 camp.reportData[reportIndex].tags = currentTags;
               }
+              
               camp.markModified("reportData");
               await camp.save();
 
@@ -427,6 +462,7 @@ export async function POST(req: Request) {
        ══════════════════════════════════════════════════════════════════════════ */
     if (messageType === "text" || isButtonReply) {
       try {
+        // Handle Restart Form Button
         if (isButtonReply && buttonId && buttonId.startsWith("restart_form_")) {
           const formId = buttonId.replace("restart_form_", "");
           const formData = await Form.findById(formId);
@@ -440,17 +476,21 @@ export async function POST(req: Request) {
           }
         }
 
+        // Handle Active Session Button Replies
         if (isButtonReply && userId) {
           const session = activeSession || (await Session.findOne({ phone, userId }));
           if (session) {
             const wf = await Workflow.findById(session.workflowId);
-            if (wf && wf.steps) {
+            
+            // ✅ FIX: Check if workflow exists AND is active
+            if (wf && wf.active && wf.steps) {
               let clickedBtn = null;
               for (const stepId in wf.steps) {
                 const step = wf.steps[stepId];
                 const btn = step.buttons?.find((b: any) => b.id === buttonId || b.label?.toLowerCase() === lowerText);
                 if (btn) { clickedBtn = btn; break; }
               }
+              
               if (clickedBtn) {
                 if (clickedBtn.optInNodeId) {
                   try {
@@ -458,6 +498,7 @@ export async function POST(req: Request) {
                     if (!existingOpt) await OptNumber.create({ userId, phoneNumber: phone });
                   } catch (optErr) { console.error("⚠️ Failed to save opt-in number:", optErr); }
                 }
+                
                 if (clickedBtn.nextStepId) {
                   let nextStep = wf.steps[clickedBtn.nextStepId];
                   while (nextStep && nextStep.stepType === "delay_node") {
@@ -465,6 +506,7 @@ export async function POST(req: Request) {
                     if (delaySeconds > 0) await new Promise((resolve) => setTimeout(resolve, delaySeconds * 1000));
                     nextStep = nextStep.nextStepId ? wf.steps[nextStep.nextStepId] : null;
                   }
+                  
                   if (nextStep) {
                     if (nextStep.stepType === "form_node" && nextStep.selectedForm) {
                       const formData = await Form.findById(nextStep.selectedForm);
@@ -485,15 +527,29 @@ export async function POST(req: Request) {
                       startWorkflowInactivityTimer(phone, userId!, wf._id.toString(), ownerUser);
                     }
                     return NextResponse.json({ success: true });
-                  } else { await Session.deleteOne({ _id: session._id }); return NextResponse.json({ success: true }); }
-                } else { await Session.deleteOne({ _id: session._id }); return NextResponse.json({ success: true }); }
-              } else { await Session.deleteOne({ _id: session._id }); return NextResponse.json({ success: true }); }
-            } else { await Session.deleteOne({ _id: session._id }); }
+                  } else { 
+                    await Session.deleteOne({ _id: session._id }); 
+                    return NextResponse.json({ success: true }); 
+                  }
+                } else { 
+                  await Session.deleteOne({ _id: session._id }); 
+                  return NextResponse.json({ success: true }); 
+                }
+              } else { 
+                await Session.deleteOne({ _id: session._id }); 
+                return NextResponse.json({ success: true }); 
+              }
+            } else { 
+              // Workflow is inactive or deleted, kill session
+              await Session.deleteOne({ _id: session._id }); 
+            }
           }
         }
 
-        const workflowQuery: any = {};
+        // ✅ FIX: Only find workflows that are active!
+        const workflowQuery: any = { active: true };
         if (userId) workflowQuery.userId = userId;
+        
         const workflows = await Workflow.find(workflowQuery);
         let matchedStepId: string | null = null;
         let matchedWorkflow: any = null;
@@ -518,6 +574,7 @@ export async function POST(req: Request) {
             if (delaySeconds > 0) await new Promise((resolve) => setTimeout(resolve, delaySeconds * 1000));
             step = step.nextStepId ? matchedWorkflow.steps[step.nextStepId] : null;
           }
+          
           if (step && (step.message || step.stepType === "template" || step.stepType === "url_action" || step.stepType === "call_action" || step.stepType === "form_node")) {
             if (step.stepType === "form_node" && step.selectedForm) {
               const formData = await Form.findById(step.selectedForm);
@@ -530,9 +587,11 @@ export async function POST(req: Request) {
                 return NextResponse.json({ success: true });
               }
             }
+            
             await sendWhatsAppMessage(phone, step, ownerUser?.whatsappPhoneNumberId, ownerUser?.whatsappAccessToken);
             await Message.create({ userId, phone, text: step.message || `[${step.stepType?.toUpperCase()}]`, direction: "out", messageType: "text" });
             await Session.findOneAndUpdate({ phone, userId }, { workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() }, { upsert: true, new: true });
+            
             if (step.buttons && step.buttons.length > 0) {
               startWorkflowInactivityTimer(phone, userId!, matchedWorkflow._id.toString(), ownerUser);
             }
