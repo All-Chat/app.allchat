@@ -78,12 +78,17 @@ export async function GET(req: Request) {
         name: (u as any).name,
         wabaId: (u as any).wabaId || "",
         whatsappPhoneNumberId: (u as any).whatsappPhoneNumberId || "",
-        password: (u as any).password || "", // NOW RETURNED
-        whatsappAccessToken: (u as any).whatsappAccessToken || "", // NOW RETURNED
+        password: (u as any).password || "",
+        whatsappAccessToken: (u as any).whatsappAccessToken || "",
         hasRealToken: !!(u as any).whatsappAccessToken,
         balance: (u as any).balance || 0,
         totalRecharged: (u as any).totalRecharged || 0,
+        // Legacy
         pricePerMessage: (u as any).pricePerMessage || 0.90,
+        // NEW: Category-based prices with fallbacks
+        priceMarketing: (u as any).priceMarketing ?? (u as any).pricePerMessage ?? 0.90,
+        priceUtility: (u as any).priceUtility ?? 0.50,
+        priceAuthentication: (u as any).priceAuthentication ?? 0.30,
         accountStatus: (u as any).accountStatus || "active",
         planExpiry: (u as any).planExpiry,
         planDuration: (u as any).planDuration || "",
@@ -110,7 +115,12 @@ export async function PUT(req: Request) {
 
     const body = await req.json();
     const {
-      userId, pricePerMessage, rechargeAmount,
+      userId,
+      // Category-based prices
+      priceMarketing, priceUtility, priceAuthentication,
+      // Legacy price
+      pricePerMessage,
+      rechargeAmount,
       planDuration, activatePlan, clearPlan,
       suspendAccount, suspendReason,
       reactivateAccount,
@@ -128,7 +138,32 @@ export async function PUT(req: Request) {
 
     const updateData: any = {};
 
-    // Price per message
+    // ===== Category-based prices =====
+    if (priceMarketing !== undefined && priceMarketing !== null) {
+      const price = Number(priceMarketing);
+      if (isNaN(price) || price < 0) {
+        return NextResponse.json({ message: "Invalid marketing price" }, { status: 400 });
+      }
+      updateData.priceMarketing = Math.round(price * 100) / 100;
+    }
+
+    if (priceUtility !== undefined && priceUtility !== null) {
+      const price = Number(priceUtility);
+      if (isNaN(price) || price < 0) {
+        return NextResponse.json({ message: "Invalid utility price" }, { status: 400 });
+      }
+      updateData.priceUtility = Math.round(price * 100) / 100;
+    }
+
+    if (priceAuthentication !== undefined && priceAuthentication !== null) {
+      const price = Number(priceAuthentication);
+      if (isNaN(price) || price < 0) {
+        return NextResponse.json({ message: "Invalid authentication price" }, { status: 400 });
+      }
+      updateData.priceAuthentication = Math.round(price * 100) / 100;
+    }
+
+    // Legacy price (optional, for backward compatibility)
     if (pricePerMessage !== undefined && pricePerMessage !== null) {
       const price = Number(pricePerMessage);
       if (isNaN(price) || price < 0) {
@@ -214,6 +249,9 @@ export async function PUT(req: Request) {
         balance: (updatedUser as any).balance,
         totalRecharged: (updatedUser as any).totalRecharged,
         pricePerMessage: (updatedUser as any).pricePerMessage,
+        priceMarketing: (updatedUser as any).priceMarketing,
+        priceUtility: (updatedUser as any).priceUtility,
+        priceAuthentication: (updatedUser as any).priceAuthentication,
         accountStatus: (updatedUser as any).accountStatus,
         planExpiry: (updatedUser as any).planExpiry,
         planDuration: (updatedUser as any).planDuration,
