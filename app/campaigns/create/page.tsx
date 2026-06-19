@@ -634,8 +634,7 @@ export default function CreateCampaign() {
                   Create Campaign
                 </h1>
                 <p className="text-blue-700/80 text-xs sm:text-sm mt-2 font-medium">
-                  Set up your audience and broadcast WhatsApp messages instantly. Max limit: 50,000
-                  numbers.
+                  Set up your audience and broadcast WhatsApp messages instantly.
                 </p>
               </div>
               <div className="flex items-center gap-3 flex-shrink-0">
