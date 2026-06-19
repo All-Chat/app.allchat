@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 
 const limitItemSchema = new mongoose.Schema({
-  max: { type: Number, default: -1 }, // -1 = unlimited
+  max: { type: Number, default: -1 },
   period: {
     type: String,
     enum: ["day", "month", "year", "total", "unlimited"],
@@ -15,90 +15,40 @@ const usageItemSchema = new mongoose.Schema({
 }, { _id: false });
 
 const UserSchema = new mongoose.Schema({
-  name: {
-    type: String,
-    required: true,
-    unique: true,
-  },
-  password: {
-    type: String,
-    required: true,
-  },
+  name: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  
   // ==========================================
-  // MULTI-TENANT WHATSAPP CONFIGURATION
+  // MULTI-TENANT CONFIGURATION
   // ==========================================
-  wabaId: {
-    type: String,
-    default: null,
-  },
-  whatsappPhoneNumberId: {
-    type: String,
-    default: null,
-  },
-  whatsappAccessToken: {
-    type: String,
-    default: null,
-  },
+  isTenant: { type: Boolean, default: false },
+  tenantId: { type: String, default: null, index: true }, // The unique ID for the tenant's workspace
+  parentTenantId: { type: String, default: null, index: true }, // If this user is a sub-user, this points to the tenant's tenantId
+  maxSubUsers: { type: Number, default: 0 }, // How many sub-users this tenant can create
   // ==========================================
-  // BILLING & BALANCE
-  // ==========================================
-  balance: {
-    type: Number,
-    default: 0,
-  },
-  totalRecharged: {
-    type: Number,
-    default: 0,
-  },
-  // Legacy single price (kept for backward compatibility)
-  pricePerMessage: {
-    type: Number,
-    default: 0.90,
-  },
-  // NEW: Category-based pricing
-  priceMarketing: {
-    type: Number,
-    default: 0.90,
-  },
-  priceUtility: {
-    type: Number,
-    default: 0.50,
-  },
-  priceAuthentication: {
-    type: Number,
-    default: 0.30,
-  },
-  // ==========================================
-  // ACCOUNT & PLAN
-  // ==========================================
+
+  wabaId: { type: String, default: null },
+  whatsappPhoneNumberId: { type: String, default: null },
+  whatsappAccessToken: { type: String, default: null },
+  
+  balance: { type: Number, default: 0 },
+  totalRecharged: { type: Number, default: 0 },
+  pricePerMessage: { type: Number, default: 0.90 },
+  priceMarketing: { type: Number, default: 0.90 },
+  priceUtility: { type: Number, default: 0.50 },
+  priceAuthentication: { type: Number, default: 0.30 },
+  
   accountStatus: {
     type: String,
     enum: ["active", "expired", "suspended"],
     default: "active",
   },
-  planExpiry: {
-    type: Date,
-    default: null,
-  },
-  planDuration: {
-    type: String,
-    default: null,
-  },
-  planActivatedAt: {
-    type: Date,
-    default: null,
-  },
-  suspendedAt: {
-    type: Date,
-    default: null,
-  },
-  suspendedReason: {
-    type: String,
-    default: null,
-  },
-  // ==========================================
-  // RESOURCE LIMITS & USAGE TRACKING
-  // ==========================================
+  planExpiry: { type: Date, default: null },
+  planDuration: { type: String, default: null },
+  planActivatedAt: { type: Date, default: null },
+  suspendedAt: { type: Date, default: null },
+  suspendedReason: { type: String, default: null },
+  
   limits: {
     tags: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
     workflows: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
