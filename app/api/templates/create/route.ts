@@ -288,22 +288,24 @@ export async function POST(req: Request) {
     // ==========================================
     // 5. VALIDATE BODY VARIABLES
     // ==========================================
-    const bodyComp = components.find((c: any) => c.type === "BODY");
-    if (bodyComp && bodyComp.text) {
-      const variableMatches = bodyComp.text.match(/\{\{(\d+)\}\}/g);
-      if (variableMatches && variableMatches.length > 0) {
-        const hasBodyExample =
-          bodyComp.example?.body_text &&
-          bodyComp.example.body_text.length > 0 &&
-          bodyComp.example.body_text[0].length > 0;
-        if (!hasBodyExample) {
-          return NextResponse.json(
-            {
-              success: false,
-              message: "Templates with variables {{1}}, {{2}}, etc. require sample values.",
-            },
-            { status: 400 }
-          );
+    if (category !== "AUTHENTICATION") {
+      const bodyComp = components.find((c: any) => c.type === "BODY");
+      if (bodyComp && bodyComp.text) {
+        const variableMatches = bodyComp.text.match(/\{\{(\d+)\}\}/g);
+        if (variableMatches && variableMatches.length > 0) {
+          const hasBodyExample =
+            bodyComp.example?.body_text &&
+            bodyComp.example.body_text.length > 0 &&
+            bodyComp.example.body_text[0].length > 0;
+          if (!hasBodyExample) {
+            return NextResponse.json(
+              {
+                success: false,
+                message: "Templates with variables {{1}}, {{2}}, etc. require sample values.",
+              },
+              { status: 400 }
+            );
+          }
         }
       }
     }
@@ -311,29 +313,62 @@ export async function POST(req: Request) {
     // ==========================================
     // 6. BUILD META API PAYLOAD
     // ==========================================
-    const metaComponents = components.map((comp: any) => {
-      const metaComp: any = { type: comp.type.toUpperCase() };
+    let metaComponents: any[] = [];
 
-      if (comp.type.toUpperCase() === "HEADER") {
-        metaComp.format = comp.format;
-        if (comp.text) metaComp.text = comp.text;
-        if (comp.example) metaComp.example = comp.example;
-      } else if (comp.type.toUpperCase() === "BODY") {
-        metaComp.text = comp.text;
-        if (comp.example) metaComp.example = comp.example;
-      } else if (comp.type.toUpperCase() === "FOOTER") {
-        metaComp.text = comp.text;
-      } else if (comp.type.toUpperCase() === "BUTTONS") {
-        metaComp.buttons = comp.buttons.map((btn: any) => {
-          const metaBtn: any = { type: btn.type, text: btn.text };
-          if (btn.type === "URL" && btn.url) metaBtn.url = btn.url;
-          if (btn.type === "PHONE_NUMBER" && btn.phone_number) metaBtn.phone_number = btn.phone_number;
-          return metaBtn;
+    if (category === "AUTHENTICATION") {
+      // AUTHENTICATION templates are strictly formatted by Meta.
+      // We must ignore custom body text and enforce the OTP button structure.
+      metaComponents.push({
+        type: "BODY",
+        add_security_recommendation: true
+      });
+
+      // Optional: Code expiration footer
+      const footerComp = components.find((c: any) => c.type.toUpperCase() === "FOOTER");
+      if (footerComp && footerComp.code_expiration_minutes) {
+        metaComponents.push({
+          type: "FOOTER",
+          code_expiration_minutes: Number(footerComp.code_expiration_minutes)
         });
       }
 
-      return metaComp;
-    });
+      // Mandatory: Exactly one OTP button
+      metaComponents.push({
+        type: "BUTTONS",
+        buttons: [
+          {
+            type: "OTP",
+            otp_type: "COPY_CODE",
+            text: "Copy Code"
+          }
+        ]
+      });
+    } else {
+      // MARKETING / UTILITY templates mapping
+      metaComponents = components.map((comp: any) => {
+        const compType = comp.type.toUpperCase();
+        const metaComp: any = { type: compType };
+
+        if (compType === "HEADER") {
+          metaComp.format = comp.format;
+          if (comp.text) metaComp.text = comp.text;
+          if (comp.example) metaComp.example = comp.example;
+        } else if (compType === "BODY") {
+          metaComp.text = comp.text;
+          if (comp.example) metaComp.example = comp.example;
+        } else if (compType === "FOOTER") {
+          metaComp.text = comp.text;
+        } else if (compType === "BUTTONS") {
+          metaComp.buttons = comp.buttons.map((btn: any) => {
+            const metaBtn: any = { type: btn.type, text: btn.text };
+            if (btn.type === "URL" && btn.url) metaBtn.url = btn.url;
+            if (btn.type === "PHONE_NUMBER" && btn.phone_number) metaBtn.phone_number = btn.phone_number;
+            return metaBtn;
+          });
+        }
+        return metaComp;
+      }).filter(Boolean);
+    }
 
     const metaPayload = {
       name: safeName,
