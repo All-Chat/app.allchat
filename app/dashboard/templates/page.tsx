@@ -6,6 +6,7 @@ import Sidebar from "@/components/Sidebar";
 import {
   Type, Image, Video, FileText, MousePointerClick, ExternalLink, Phone,
   Trash2, Send, Loader2, Upload, X, Globe, AlertTriangle,
+  Gauge, Infinity as InfinityIcon, // ✅ LIMIT ADDED
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -37,6 +38,12 @@ export default function TemplatesPage() {
 
   const [mediaPermissionWarning, setMediaPermissionWarning] = useState(false);
 
+  // ✅ LIMIT ADDED: Limit State
+  const [templateLimit, setTemplateLimit] = useState<any>(null);
+  const isLimitActive = templateLimit && templateLimit.limit.period !== "unlimited" && templateLimit.limit.max !== -1;
+  const usagePercent = isLimitActive ? Math.min(100, Math.round(((templateLimit?.usage?.count || 0) / templateLimit.limit.max) * 100)) : 0;
+  const isAtLimit = isLimitActive && !templateLimit.allowed;
+
   const bodyVariables = useMemo(() => {
     const matches = bodyText.match(/\{\{(\d+)\}\}/g);
     if (!matches) return [];
@@ -49,6 +56,22 @@ export default function TemplatesPage() {
   useEffect(() => {
     if (status === "unauthenticated") {
       window.location.href = "/";
+    }
+    // ✅ LIMIT ADDED: Fetch limits
+    if (status === "authenticated") {
+      fetch("/api/user/limits?resource=templates")
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success) {
+            setTemplateLimit({
+              limit: { max: data.limit, period: data.period },
+              usage: { count: data.currentUsage || 0, resetAt: null },
+              remaining: data.remaining,
+              allowed: data.allowed,
+            });
+          }
+        })
+        .catch(console.error);
     }
   }, [status]);
 
@@ -160,6 +183,17 @@ export default function TemplatesPage() {
         return;
       }
 
+      // ✅ LIMIT ADDED: Handle limit exceeded
+      if (res.status === 429) {
+        const data = await res.json();
+        toast.error(data.message || "Template limit reached", { autoClose: 8000 });
+        if (data.limitInfo) {
+          setTemplateLimit((prev: any) => prev ? { ...prev, allowed: false, usage: { count: data.limitInfo.currentUsage, resetAt: null }, remaining: 0 } : prev);
+        }
+        setSubmitting(false);
+        return;
+      }
+
       let data;
       try {
         data = await res.json();
@@ -189,6 +223,20 @@ export default function TemplatesPage() {
       }
 
       resetForm();
+      // ✅ LIMIT ADDED: Refresh limits after creation
+      fetch("/api/user/limits?resource=templates")
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.success) {
+            setTemplateLimit({
+              limit: { max: d.limit, period: d.period },
+              usage: { count: d.currentUsage || 0, resetAt: null },
+              remaining: d.remaining,
+              allowed: d.allowed,
+            });
+          }
+        })
+        .catch(console.error);
     } catch (err) {
       toast.error("Network error");
     } finally {
@@ -212,17 +260,58 @@ export default function TemplatesPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
-      {/* Sidebar Component - Handles Mobile Subnavbar automatically */}
       <Sidebar />
 
-      {/* Main Content Area */}
       <main className="md:ml-64 flex h-screen overflow-hidden">
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-xl mx-auto p-4 sm:p-8">
             <div className="mb-6 sm:mb-8">
-              <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Create Template</h1>
-              <p className="text-gray-500 text-xs sm:text-sm mt-1">Design rich WhatsApp messages for Meta approval.</p>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Create Template</h1>
+                  <p className="text-gray-500 text-xs sm:text-sm mt-1">Design rich WhatsApp messages for Meta approval.</p>
+                </div>
+                {/* ✅ LIMIT ADDED: Badge */}
+                {templateLimit && (
+                  <div className={`hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold shrink-0 ${
+                    isAtLimit ? "bg-red-50 border-red-200 text-red-700" :
+                    usagePercent >= 80 ? "bg-amber-50 border-amber-200 text-amber-700" :
+                    isLimitActive ? "bg-white border-slate-200 text-slate-600" :
+                    "bg-emerald-50 border-emerald-200 text-emerald-600"
+                  }`}>
+                    {isLimitActive ? (
+                      <><Gauge size={14} /> {templateLimit.usage.count}/{templateLimit.limit.max} {templateLimit.limit.period !== "total" && `/${templateLimit.limit.period}`}</>
+                    ) : (
+                      <><InfinityIcon size={14} /> Unlimited</>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
+
+            {/* ✅ LIMIT ADDED: Warning Bar */}
+            {isLimitActive && (
+              <div className={`mb-5 rounded-xl p-3 flex items-center gap-3 text-sm border ${
+                isAtLimit ? "bg-red-50 border-red-200 text-red-700" :
+                usagePercent >= 80 ? "bg-amber-50 border-amber-200 text-amber-700" :
+                "bg-blue-50 border-blue-200 text-blue-600"
+              }`}>
+                {isAtLimit ? <AlertTriangle size={16} className="shrink-0" /> : <Gauge size={16} className="shrink-0" />}
+                <div className="flex-1">
+                  <span className="font-bold">
+                    {isAtLimit ? "Template limit reached!" : usagePercent >= 80 ? "Approaching template limit" : "Template usage"}
+                  </span>
+                  <span className="ml-2 opacity-80">
+                    {templateLimit?.usage.count} of {templateLimit?.limit.max} templates used
+                    {templateLimit?.limit.period !== "total" && ` per ${templateLimit?.limit.period}`}
+                  </span>
+                </div>
+                <div className="w-24 h-2 bg-white/60 rounded-full overflow-hidden shrink-0">
+                  <div className={`h-full rounded-full transition-all ${isAtLimit ? "bg-red-500" : usagePercent >= 80 ? "bg-amber-500" : "bg-emerald-500"}`} style={{ width: `${usagePercent}%` }} />
+                </div>
+                <span className="text-xs font-bold shrink-0">{usagePercent}%</span>
+              </div>
+            )}
 
             {/* MEDIA PERMISSION WARNING BANNER */}
             {mediaPermissionWarning && (
@@ -252,17 +341,17 @@ export default function TemplatesPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-6 gap-4">
                   <div className="sm:col-span-3">
                     <label className="text-xs font-bold text-gray-800 mb-2 block">Template Name</label>
-                    <input className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition text-sm font-mono" placeholder="welcome_message" value={name} onChange={(e) => handleNameChange(e.target.value)} />
+                    <input className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition text-sm font-mono" placeholder="welcome_message" value={name} onChange={(e) => handleNameChange(e.target.value)} disabled={isAtLimit} />
                   </div>
                   <div className="sm:col-span-2">
                     <label className="text-xs font-bold text-gray-800 mb-2 block">Category</label>
-                    <select className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition text-sm" value={category} onChange={(e) => setCategory(e.target.value)}>
+                    <select className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition text-sm" value={category} onChange={(e) => setCategory(e.target.value)} disabled={isAtLimit}>
                       <option>MARKETING</option><option>UTILITY</option><option>AUTHENTICATION</option>
                     </select>
                   </div>
                   <div className="sm:col-span-1">
                     <label className="text-xs font-bold text-gray-800 mb-2 block">Lang</label>
-                    <select className="w-full px-2 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition text-sm" value={language} onChange={(e) => setLanguage(e.target.value)}>
+                    <select className="w-full px-2 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition text-sm" value={language} onChange={(e) => setLanguage(e.target.value)} disabled={isAtLimit}>
                       <option value="en">EN</option>
                       <option value="en_US">EN_US</option>
                       <option value="en_GB">EN_GB</option>
@@ -297,11 +386,12 @@ export default function TemplatesPage() {
                         setSampleFile(null);
                         setSampleUrl("");
                       }}
+                      disabled={isAtLimit}
                       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
                         headerType === t.id
                           ? "bg-emerald-50 border-emerald-500 text-emerald-700"
                           : "border-gray-100 text-gray-500 hover:bg-gray-50"
-                      }`}
+                      } ${isAtLimit ? "opacity-50 cursor-not-allowed" : ""}`}
                     >
                       <t.icon size={14} /> {t.label}
                     </button>
@@ -309,7 +399,7 @@ export default function TemplatesPage() {
                 </div>
 
                 {headerType === "text" && (
-                  <input className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition text-sm" placeholder="Header text..." value={headerText} onChange={(e) => setHeaderText(e.target.value)} />
+                  <input className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition text-sm" placeholder="Header text..." value={headerText} onChange={(e) => setHeaderText(e.target.value)} disabled={isAtLimit} />
                 )}
 
                 {isMediaHeader && (
@@ -376,6 +466,7 @@ export default function TemplatesPage() {
                   value={bodyText}
                   onChange={(e) => setBodyText(e.target.value)}
                   maxLength={1024}
+                  disabled={isAtLimit}
                 />
                 <div className="flex justify-between mt-1.5 px-1">
                   <p className="text-[10px] text-gray-400">Variables: {"{{1}}"}</p>
@@ -389,7 +480,7 @@ export default function TemplatesPage() {
                     {bodyVariables.map((varNum) => (
                       <div key={varNum} className="flex items-center gap-2">
                         <span className="text-xs font-mono text-gray-500 w-10 shrink-0">{"{{" + varNum + "}}"}</span>
-                        <input className="flex-1 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition min-w-0" placeholder={`Sample value`} value={bodyExamples[varNum] || ""} onChange={(e) => setBodyExamples((prev) => ({ ...prev, [varNum]: e.target.value }))} />
+                        <input className="flex-1 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition min-w-0" placeholder={`Sample value`} value={bodyExamples[varNum] || ""} onChange={(e) => setBodyExamples((prev) => ({ ...prev, [varNum]: e.target.value }))} disabled={isAtLimit} />
                       </div>
                     ))}
                   </div>
@@ -399,7 +490,7 @@ export default function TemplatesPage() {
               {/* Footer */}
               <div className="bg-white border border-gray-200 rounded-2xl p-4 sm:p-5 shadow-sm">
                 <h3 className="text-xs font-bold text-gray-800 mb-3">Footer (Optional)</h3>
-                <input className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition text-sm" placeholder="e.g. Reply STOP to unsubscribe" value={footerText} onChange={(e) => setFooterText(e.target.value)} />
+                <input className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition text-sm" placeholder="e.g. Reply STOP to unsubscribe" value={footerText} onChange={(e) => setFooterText(e.target.value)} disabled={isAtLimit} />
               </div>
 
               {/* Buttons */}
@@ -407,18 +498,18 @@ export default function TemplatesPage() {
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-3 gap-3">
                   <h3 className="text-xs font-bold text-gray-800">Buttons (Max 3)</h3>
                   <div className="flex gap-2 flex-wrap">
-                    <button onClick={() => addButton("QUICK_REPLY")} className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-medium hover:bg-gray-100 transition"><MousePointerClick size={10} /> Reply</button>
-                    <button onClick={() => addButton("URL")} className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-medium hover:bg-gray-100 transition"><ExternalLink size={10} /> URL</button>
-                    <button onClick={() => addButton("PHONE_NUMBER")} className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-medium hover:bg-gray-100 transition"><Phone size={10} /> Call</button>
+                    <button onClick={() => addButton("QUICK_REPLY")} disabled={isAtLimit} className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-medium hover:bg-gray-100 transition disabled:opacity-50"><MousePointerClick size={10} /> Reply</button>
+                    <button onClick={() => addButton("URL")} disabled={isAtLimit} className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-medium hover:bg-gray-100 transition disabled:opacity-50"><ExternalLink size={10} /> URL</button>
+                    <button onClick={() => addButton("PHONE_NUMBER")} disabled={isAtLimit} className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-medium hover:bg-gray-100 transition disabled:opacity-50"><Phone size={10} /> Call</button>
                   </div>
                 </div>
                 <div className="space-y-2">
                   {buttons.map((btn) => (
                     <div key={btn.id} className="bg-gray-50 border border-gray-200 rounded-xl p-2.5 flex items-start gap-2">
                       <div className="flex-1 space-y-1.5 min-w-0">
-                        <input className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" placeholder="Button Label" value={btn.text} onChange={(e) => updateButton(btn.id, { text: e.target.value })} />
-                        {btn.type === "URL" && <input className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" placeholder="https://example.com" value={btn.url || ""} onChange={(e) => updateButton(btn.id, { url: e.target.value })} />}
-                        {btn.type === "PHONE_NUMBER" && <input className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" placeholder="+1234567890" value={btn.phone || ""} onChange={(e) => updateButton(btn.id, { phone: e.target.value })} />}
+                        <input className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" placeholder="Button Label" value={btn.text} onChange={(e) => updateButton(btn.id, { text: e.target.value })} disabled={isAtLimit} />
+                        {btn.type === "URL" && <input className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" placeholder="https://example.com" value={btn.url || ""} onChange={(e) => updateButton(btn.id, { url: e.target.value })} disabled={isAtLimit} />}
+                        {btn.type === "PHONE_NUMBER" && <input className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" placeholder="+1234567890" value={btn.phone || ""} onChange={(e) => updateButton(btn.id, { phone: e.target.value })} disabled={isAtLimit} />}
                       </div>
                       <button onClick={() => removeButton(btn.id)} className="text-gray-300 hover:text-red-500 transition mt-1.5 shrink-0"><Trash2 size={14} /></button>
                     </div>
@@ -428,9 +519,17 @@ export default function TemplatesPage() {
               </div>
 
               <div className="flex justify-center sm:justify-end pt-2 pb-12">
-                <button onClick={createTemplate} disabled={submitting} className="w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3 bg-emerald-500 text-white font-bold rounded-xl shadow-md hover:bg-emerald-600 transition-all disabled:opacity-50 text-sm">
-                  {submitting ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-                  {submitting ? "Submitting..." : "Submit to Meta"}
+                <button
+                  onClick={createTemplate}
+                  disabled={submitting || isAtLimit}
+                  className={`w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3 font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm ${
+                    isAtLimit
+                      ? "bg-slate-400 text-white cursor-not-allowed"
+                      : "bg-emerald-500 text-white hover:bg-emerald-600"
+                  }`}
+                >
+                  {submitting ? <Loader2 size={16} className="animate-spin" /> : isAtLimit ? <AlertTriangle size={16} /> : <Send size={16} />}
+                  {submitting ? "Submitting..." : isAtLimit ? "Limit Reached" : "Submit to Meta"}
                 </button>
               </div>
             </div>
