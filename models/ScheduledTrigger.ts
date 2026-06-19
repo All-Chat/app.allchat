@@ -1,7 +1,14 @@
 import mongoose from "mongoose";
 
 const ScheduledTriggerSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true }, // ← ADDED
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+  
+  // ==========================================
+  // 🔴 MULTI-TENANT DATA ISOLATION
+  // ==========================================
+  tenantId: { type: String, default: null, index: true },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
+  
   campaignId: { type: String, required: true, index: true },
   expireAt: { type: Date, required: true },
   processed: { type: Boolean, default: false },
