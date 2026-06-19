@@ -427,7 +427,7 @@ function EditCampaignContent() {
             <div className="relative flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 z-10">
               <div>
                 <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-indigo-900">Edit Campaign</h1>
-                <p className="text-indigo-700/80 text-xs sm:text-sm mt-2 font-medium">Modify your audience, template, or schedule before it goes live. Max limit: 50,000 numbers.</p>
+                <p className="text-indigo-700/80 text-xs sm:text-sm mt-2 font-medium">Modify your audience, template, or schedule before it goes live.</p>
               </div>
               {rawNumbers.length > 0 && (
                 <div className="flex-shrink-0 bg-gradient-to-br from-indigo-500 to-purple-600 px-5 sm:px-8 py-2 sm:py-3 rounded-xl sm:rounded-2xl flex items-center gap-3 sm:gap-4 text-base sm:text-lg font-bold text-white shadow-md shadow-indigo-200/60">
