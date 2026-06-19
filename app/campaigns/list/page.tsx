@@ -106,7 +106,7 @@ export default function CampaignList() {
     if (status === "authenticated") {
       loadCampaigns();
       fetchBilling();
-      const interval = setInterval(loadCampaigns, 3000); // 🔴 DYNAMIC REFRESH EVERY 3 SECONDS
+      const interval = setInterval(loadCampaigns, 3000); // Refreshes every 3s to fetch latest delivered counts
       return () => clearInterval(interval);
     } else if (status === "unauthenticated") { router.push("/"); }
   }, [status, router]);
