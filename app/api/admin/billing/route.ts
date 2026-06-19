@@ -40,20 +40,22 @@ function getNextResetDate(period: string): Date | null {
   }
 }
 
-const LIMIT_RESOURCES = ["tags", "workflows", "templates", "testMessages", "campaigns", "optNumbers", "forms"];
+const LIMIT_RESOURCES = ["tags", "workflows", "templates", "testMessages", "campaigns", "optNumbers", "forms", "whatsappNumbers"];
 
 const DEFAULT_LIMITS: Record<string, { max: number; period: string }> = {
   tags: { max: -1, period: "unlimited" }, workflows: { max: -1, period: "unlimited" },
   templates: { max: -1, period: "unlimited" }, testMessages: { max: -1, period: "unlimited" },
   campaigns: { max: -1, period: "unlimited" }, optNumbers: { max: -1, period: "unlimited" },
-  forms: { max: -1, period: "unlimited" },
+  forms: { max: -1, period: "unlimited" }, whatsappNumbers: { max: -1, period: "unlimited" },
 };
+
+
 
 const DEFAULT_USAGE: Record<string, { count: number; resetAt: null }> = {
   tags: { count: 0, resetAt: null }, workflows: { count: 0, resetAt: null },
   templates: { count: 0, resetAt: null }, testMessages: { count: 0, resetAt: null },
   campaigns: { count: 0, resetAt: null }, optNumbers: { count: 0, resetAt: null },
-  forms: { count: 0, resetAt: null },
+  forms: { count: 0, resetAt: null }, whatsappNumbers: { count: 0, resetAt: null },
 };
 
 // POST: Verify admin key OR Create new user
