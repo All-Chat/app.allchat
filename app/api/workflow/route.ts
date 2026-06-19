@@ -2,15 +2,15 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Workflow from "@/models/Workflow";
-import { getServerSession } from "next-auth"; // ADDED
-import { authOptions } from "@/lib/auth";      // ADDED
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import { checkLimit, incrementUsage } from "@/lib/limits";
 
 // GET ALL WORKFLOWS
 export async function GET() {
   await connectDB();
-  
+
   try {
-    // 1. Get the current logged-in user's ID
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
 
@@ -18,7 +18,6 @@ export async function GET() {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
     }
 
-    // 2. Fetch only workflows belonging to this user
     const workflows = await Workflow.find({ userId });
     return NextResponse.json({ workflows });
   } catch (error: any) {
@@ -34,12 +33,31 @@ export async function POST(req: Request) {
   await connectDB();
 
   try {
-    // 1. Get the current logged-in user's ID
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
 
     if (!userId) {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+    }
+
+    // ✅ CHECK LIMIT BEFORE CREATING
+    const limitCheck = await checkLimit(userId, "workflows");
+    if (!limitCheck.allowed) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: `Workflow limit reached. You have used ${limitCheck.currentUsage}/${limitCheck.limit} workflows per ${limitCheck.period}. Contact admin to increase your limit.`,
+          limitExceeded: true,
+          limitInfo: {
+            resource: "workflows",
+            currentUsage: limitCheck.currentUsage,
+            limit: limitCheck.limit,
+            period: limitCheck.period,
+            remaining: limitCheck.remaining,
+          },
+        },
+        { status: 429 }
+      );
     }
 
     const { triggers, steps, rootStepId } = await req.json();
@@ -59,13 +77,15 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2. Create workflow with userId attached
     const wf = await Workflow.create({
-      userId, // ADDED
+      userId,
       triggers,
       steps,
       rootStepId,
     });
+
+    // ✅ INCREMENT USAGE AFTER SUCCESSFUL CREATION
+    await incrementUsage(userId, "workflows");
 
     return NextResponse.json({ success: true, wf });
   } catch (error: any) {
@@ -81,7 +101,6 @@ export async function PUT(req: Request) {
   await connectDB();
 
   try {
-    // 1. Get the current logged-in user's ID
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
 
@@ -98,9 +117,8 @@ export async function PUT(req: Request) {
       );
     }
 
-    // 2. Update workflow ONLY if it belongs to this user
     const updatedWf = await Workflow.findOneAndUpdate(
-      { _id: id, userId: userId }, // ADDED userId to prevent updating other users' workflows
+      { _id: id, userId: userId },
       { 
         triggers, 
         steps, 
