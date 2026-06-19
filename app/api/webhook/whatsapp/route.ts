@@ -4,7 +4,7 @@
    Handles all inbound WhatsApp events and executes workflows.
    
    Key Features:
-   - Dynamic billing (charge on delivered, refund on failed)
+   - Dynamic billing refunds (refund on failed if charged during campaign start)
    - Workflow engine (triggers, steps, buttons, list replies, delays)
    - Inactivity Timers (Auto-sends reminder messages if user doesn't click)
    - Conversational forms with inactivity timers
@@ -30,6 +30,7 @@ import FormResponse from "@/models/FormResponse";
 
 // Utilities
 import { sendWhatsAppMessage } from "@/lib/sendWhatsApp";
+import { getPriceForCategory } from "@/lib/billing"; // NEW: Category pricing helper
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -38,10 +39,7 @@ const VERIFY_TOKEN = "my_secret_token";
 
 /* ============================================================================
    GLOBAL INACTIVITY TIMERS MAP
-   ----------------------------------------------------------------------------
-   Stores active interval IDs for users waiting for a button click.
-   Key: phone_number, Value: NodeJS.Timeout
-   ============================================================================ */
+   ---------------------------------------------------------------------------- */
 const workflowTimers = new Map<string, NodeJS.Timeout>();
 
 const clearWorkflowTimer = (phone: string) => {
@@ -54,27 +52,21 @@ const clearWorkflowTimer = (phone: string) => {
 
 /* ============================================================================
    HELPER: Start Workflow Inactivity Timer
-   ----------------------------------------------------------------------------
-   If the workflow has an `inactivity_node`, this sets up a recurring timer
-   that sends a reminder message if the user doesn't click a button.
-   ============================================================================ */
+   ---------------------------------------------------------------------------- */
 const startWorkflowInactivityTimer = (
   phone: string,
   userId: string,
   workflowId: string,
   ownerUser: any
 ) => {
-  // Clear any existing timer for this user
   clearWorkflowTimer(phone);
 
-  // Use an async IIFE because we need to fetch the workflow
   (async () => {
     try {
       await connectDB();
       const wf = await Workflow.findById(workflowId);
       if (!wf || !wf.steps) return;
 
-      // Find the inactivity node (usually there's only one)
       const inactivityNode = Object.values(wf.steps).find(
         (s: any) => s.stepType === "inactivity_node"
       ) as any;
@@ -87,13 +79,10 @@ const startWorkflowInactivityTimer = (
 
       let sentCount = 0;
 
-      // Start the interval timer
       const timerId = setInterval(async () => {
         try {
-          // Check if the user still has an active session waiting
           const session = await Session.findOne({ phone, userId });
           
-          // If no session, or session moved to a form, stop the timer
           if (!session || session.formId) {
             clearWorkflowTimer(phone);
             return;
@@ -110,7 +99,6 @@ const startWorkflowInactivityTimer = (
             );
             sentCount++;
           } else {
-            // Exhausted repeats, clear timer
             clearWorkflowTimer(phone);
           }
         } catch (err) {
@@ -119,7 +107,6 @@ const startWorkflowInactivityTimer = (
         }
       }, delaySeconds * 1000);
 
-      // Save timer to global map
       workflowTimers.set(phone, timerId);
     } catch (err) {
       console.error("Failed to start inactivity timer:", err);
@@ -266,7 +253,7 @@ export async function POST(req: Request) {
     }
 
     /* ══════════════════════════════════════════════════════════════════════════
-       SECTION A: HANDLE MESSAGE STATUSES & DYNAMIC BILLING
+       SECTION A: HANDLE MESSAGE STATUSES & DYNAMIC BILLING REFUNDS
        ══════════════════════════════════════════════════════════════════════════ */
     if (value.statuses && value.statuses.length > 0) {
       try {
@@ -331,8 +318,12 @@ export async function POST(req: Request) {
               (statusPriority[currentItem.status] || 0)
             ) {
               let balanceAdjustment = 0;
-              const cost = ownerUser?.pricePerMessage || 0;
+              
+              // 🔴 NEW: Get exact category price for potential refund
+              const cost = ownerUser ? getPriceForCategory(ownerUser, camp.templateCategory || "MARKETING") : 0;
 
+              // Since start/route.ts already charges on 'sent' (setting charged=true),
+              // this deduction block will be safely skipped for campaign messages.
               if (
                 (finalStatus === "delivered" || finalStatus === "read") &&
                 !currentItem.charged
@@ -344,6 +335,7 @@ export async function POST(req: Request) {
                 (finalStatus === "failed" || finalStatus === "invalid") &&
                 currentItem.charged
               ) {
+                // 🔴 REFUND: If it was charged during campaign start but failed, refund the exact amount
                 balanceAdjustment += cost;
                 currentItem.charged = false;
                 camp.totalDeducted = Math.max(0, (camp.totalDeducted || 0) - cost);
@@ -714,9 +706,6 @@ export async function POST(req: Request) {
                 if (clickedBtn.nextStepId) {
                   let nextStep = wf.steps[clickedBtn.nextStepId];
 
-                  /* ════════════════════════════════════════════════════════════
-                     DELAY NODE LOGIC
-                     ════════════════════════════════════════════════════════════ */
                   while (nextStep && nextStep.stepType === "delay_node") {
                     const delaySeconds = nextStep.delaySeconds || 0;
                     if (delaySeconds > 0) {
@@ -783,7 +772,6 @@ export async function POST(req: Request) {
                       messageType: "text",
                     });
 
-                    // Start Inactivity Timer if the sent message has buttons
                     if (nextStep.buttons && nextStep.buttons.length > 0) {
                       startWorkflowInactivityTimer(
                         phone,
@@ -842,9 +830,6 @@ export async function POST(req: Request) {
         if (matchedWorkflow && matchedStepId) {
           let step = matchedWorkflow.steps?.[matchedStepId];
 
-          /* ════════════════════════════════════════════════════════════
-             DELAY NODE LOGIC FOR TRIGGERS
-             ════════════════════════════════════════════════════════════ */
           while (step && step.stepType === "delay_node") {
             const delaySeconds = step.delaySeconds || 0;
             if (delaySeconds > 0) {
@@ -933,7 +918,6 @@ export async function POST(req: Request) {
               { upsert: true, new: true }
             );
 
-            // Start Inactivity Timer if the trigger message has buttons
             if (step.buttons && step.buttons.length > 0) {
               startWorkflowInactivityTimer(
                 phone,
