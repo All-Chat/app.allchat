@@ -1,5 +1,19 @@
 import mongoose from "mongoose";
 
+const limitItemSchema = new mongoose.Schema({
+  max: { type: Number, default: -1 }, // -1 = unlimited
+  period: {
+    type: String,
+    enum: ["day", "month", "year", "total", "unlimited"],
+    default: "unlimited",
+  },
+}, { _id: false });
+
+const usageItemSchema = new mongoose.Schema({
+  count: { type: Number, default: 0 },
+  resetAt: { type: Date, default: null },
+}, { _id: false });
+
 const UserSchema = new mongoose.Schema({
   name: {
     type: String,
@@ -81,6 +95,27 @@ const UserSchema = new mongoose.Schema({
   suspendedReason: {
     type: String,
     default: null,
+  },
+  // ==========================================
+  // RESOURCE LIMITS & USAGE TRACKING
+  // ==========================================
+  limits: {
+    tags: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+    workflows: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+    templates: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+    testMessages: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+    campaigns: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+    optNumbers: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+    forms: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+  },
+  usage: {
+    tags: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
+    workflows: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
+    templates: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
+    testMessages: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
+    campaigns: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
+    optNumbers: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
+    forms: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
   },
 }, {
   timestamps: true,
