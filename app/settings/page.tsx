@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable react-hooks/set-state-in-effect */
 "use client";
 
@@ -6,7 +7,7 @@ import { useSession } from "next-auth/react";
 import {
   Loader2, Save, ShieldCheck, Phone, KeyRound, Building2,
   CheckCircle2, XCircle, Eye, Wallet, AlertCircle, IndianRupee,
-  ArrowRight, TrendingUp, CreditCard, Info,
+  ArrowRight, TrendingUp, CreditCard, Info, Users,
 } from "lucide-react";
 import Link from "next/link";
 import { toast, ToastContainer } from "react-toastify";
@@ -23,6 +24,9 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [balance, setBalance] = useState(0);
   const [totalRecharged, setTotalRecharged] = useState(0);
+
+  // Check if sub-user
+  const parentTenantName = (session?.user as any)?.parentTenantName;
 
   const formatINR = (amount: number) =>
     new Intl.NumberFormat("en-IN", {
@@ -57,7 +61,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (status === "authenticated") fetchSettings();
-    else if (status === "unauthenticated") window.location.href = "/";
+    else if (status === "unauthenticated") window.location.href = "/signin";
   }, [status]);
 
   const handleSave = async (e: React.FormEvent) => {
@@ -157,6 +161,11 @@ export default function SettingsPage() {
                       }`}>
                         {formatINR(balance)}
                       </p>
+                      {parentTenantName && (
+                        <span className="inline-flex items-center gap-1 mt-1.5 text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
+                          <Users size={10} /> Shared wallet from {parentTenantName}
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -261,7 +270,7 @@ export default function SettingsPage() {
                     <div>
                       <p className="text-sm font-bold text-red-800">No Balance Remaining</p>
                       <p className="text-xs text-red-600 mt-0.5 leading-relaxed">
-                        You cannot send any messages. Please contact your administrator to recharge your account.
+                        You cannot send any messages. {parentTenantName ? `Please contact your tenant administrator (${parentTenantName}) to recharge the account.` : "Please contact your administrator to recharge your account."}
                       </p>
                     </div>
                   </div>
@@ -287,7 +296,7 @@ export default function SettingsPage() {
                     <div>
                       <p className="text-sm font-bold text-amber-800">Get Started</p>
                       <p className="text-xs text-amber-600 mt-0.5 leading-relaxed">
-                        Your account has not been recharged yet. Contact your administrator to add credits and start sending messages.
+                        Your account has not been recharged yet. {parentTenantName ? `Contact your tenant administrator (${parentTenantName}) to add credits.` : "Contact your administrator to add credits and start sending messages."}
                       </p>
                     </div>
                   </div>
