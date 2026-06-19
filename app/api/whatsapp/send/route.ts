@@ -26,8 +26,22 @@ export async function POST(req: Request) {
     const user = await User.findById(session.user.id);
     if (!user) return NextResponse.json({ success: false, message: "User not found" }, { status: 404 });
 
-    const PHONE_NUMBER_ID = user.whatsappPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
-    const ACCESS_TOKEN = user.whatsappAccessToken || process.env.META_ACCESS_TOKEN;
+    // ==========================================
+    // 🔴 SHARED WALLET LOGIC
+    // ==========================================
+    // If sub-user, use the Parent Tenant's wallet for pricing and deductions
+    let payer = user;
+    if (user.parentTenantId) {
+      const parent = await User.findOne({ tenantId: user.parentTenantId });
+      if (parent) {
+        payer = parent;
+      }
+    }
+
+    // Sub-users can have their own WhatsApp credentials, or fallback to Parent Tenant, or fallback to Env vars
+    const PHONE_NUMBER_ID = user.whatsappPhoneNumberId || payer.whatsappPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
+    const ACCESS_TOKEN = user.whatsappAccessToken || payer.whatsappAccessToken || process.env.META_ACCESS_TOKEN;
+    
     if (!PHONE_NUMBER_ID || !ACCESS_TOKEN) return NextResponse.json({ success: false, message: "WhatsApp credentials not configured" }, { status: 400 });
 
     const contentType = req.headers.get("content-type") || "";
@@ -60,8 +74,9 @@ export async function POST(req: Request) {
     category = (category || "MARKETING").toUpperCase().trim();
     if (!["MARKETING", "UTILITY", "AUTHENTICATION"].includes(category)) category = "MARKETING";
 
-    const messagePrice = getPriceForCategory(user, category);
-    const currentBalance = user.balance || 0;
+    // Get price from PAYER's config (Parent Tenant)
+    const messagePrice = getPriceForCategory(payer, category);
+    const currentBalance = payer.balance || 0;
 
     if (messagePrice > 0 && currentBalance < messagePrice) {
       return NextResponse.json({ success: false, message: `Insufficient balance. Required: ₹${messagePrice}, Available: ₹${currentBalance}.` }, { status: 402 });
@@ -171,18 +186,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, error: data.error, message: data.error?.message || "Failed to send message" }, { status: 400 });
     }
 
+    // Deduct from PAYER's wallet (Parent Tenant)
     if (messagePrice > 0) {
-      user.balance = Math.round((currentBalance - messagePrice) * 100) / 100;
-      user.balance = Math.max(user.balance, 0);
-      await user.save();
+      payer.balance = Math.round((currentBalance - messagePrice) * 100) / 100;
+      payer.balance = Math.max(payer.balance, 0);
+      await payer.save();
     }
 
+    // Usage always increments for the logged-in user
     await incrementUsage(session.user.id, "testMessages");
 
     return NextResponse.json({
       success: true,
       data,
-      balance: user.balance,
+      balance: payer.balance, // Return updated payer balance
       chargedAmount: messagePrice,
       category: category,
     });
