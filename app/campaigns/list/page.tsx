@@ -23,6 +23,9 @@ type Campaign = {
   templateName: string;
   templateCategory: string;
   variables: string[];
+  mappedVariables?: string[][];
+  generateOtp?: boolean;
+  otpLength?: number;
   phoneNumbers: string[];
   names?: string[];
   mediaUrl: string;
@@ -142,7 +145,6 @@ export default function CampaignList() {
     if (!confirm("Start this campaign now? Balance will be deducted dynamically for each successful delivery.")) return;
     setStartingId(id);
     try {
-      // 🔴 5 SECOND TIMEOUT TO PREVENT UI LAG
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
 
@@ -173,7 +175,6 @@ export default function CampaignList() {
       }
     } catch (err: any) {
       if (err.name === 'AbortError') {
-        // 🔴 IF TIMEOUT OCCURS, ASSUME IT'S RUNNING IN BACKGROUND
         toast.success(`Campaign started in background! Sending in progress...`);
         loadCampaigns();
       } else {
@@ -298,10 +299,24 @@ export default function CampaignList() {
       return;
     }
     try {
+      let variablesToSend = c.variables || [];
+
+      // ✅ FIX: GENERATE OTP FOR TEST SEND IF NEEDED
+      if (c.generateOtp && c.templateCategory === "AUTHENTICATION") {
+        const len = c.otpLength || 4;
+        const min = Math.pow(10, len - 1);
+        const max = Math.pow(10, len) - 1;
+        const otp = Math.floor(Math.random() * (max - min + 1) + min).toString();
+        variablesToSend = [otp];
+      } else if (c.mappedVariables && c.mappedVariables.length > 0) {
+        // Use first row of mapped variables for test send
+        variablesToSend = c.mappedVariables[0];
+      }
+
       const payload: any = {
         phone: quickPhone.replace(/\D/g, ""),
         templateName: c.templateName,
-        variables: c.variables || [],
+        variables: variablesToSend,
         languageCode: c.languageCode || "en",
         category: c.templateCategory || "MARKETING",
       };
