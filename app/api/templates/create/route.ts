@@ -6,6 +6,7 @@ import User from "@/models/User";
 import Template from "@/models/Template";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { checkLimit, incrementUsage } from "@/lib/limits"; // ✅ LIMIT ADDED
 
 const WHATSAPP_API = "https://graph.facebook.com/v25.0";
 
@@ -47,14 +48,10 @@ async function uploadWhatsAppMedia(
 
     const result = await response.json();
 
-console.log(
-  "📤 MEDIA UPLOAD RESPONSE:",
-  JSON.stringify(result, null, 2)
-);
+    console.log("📤 MEDIA UPLOAD RESPONSE:", JSON.stringify(result, null, 2));
 
     if (!response.ok) {
       console.error("Media Upload Error:", result);
-
       return {
         mediaId: null,
         error: result?.error?.message || "Upload failed",
@@ -66,7 +63,6 @@ console.log(
     };
   } catch (error) {
     console.error(error);
-
     return {
       mediaId: null,
       error: error instanceof Error ? error.message : "Unknown error",
@@ -91,6 +87,26 @@ export async function POST(req: Request) {
       );
     }
 
+    // ✅ LIMIT ADDED: Check template creation limit
+    const limitCheck = await checkLimit(userId, "templates");
+    if (!limitCheck.allowed) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: `Template limit reached. You have used ${limitCheck.currentUsage}/${limitCheck.limit} templates per ${limitCheck.period}. Contact admin to increase your limit.`,
+          limitExceeded: true,
+          limitInfo: {
+            resource: "templates",
+            currentUsage: limitCheck.currentUsage,
+            limit: limitCheck.limit,
+            period: limitCheck.period,
+            remaining: limitCheck.remaining,
+          },
+        },
+        { status: 429 }
+      );
+    }
+
     // ==========================================
     // 2. GET CREDENTIALS FROM DATABASE (NOT .env)
     // ==========================================
@@ -112,8 +128,6 @@ export async function POST(req: Request) {
 
     // ==========================================
     // 🚨 CRITICAL CHECK: WABA ID ≠ Phone Number ID
-    // They are DIFFERENT numbers. If they're the same,
-    // the user entered the wrong ID in Settings.
     // ==========================================
     if (WABA_ID === PHONE_NUMBER_ID) {
       console.error(
@@ -181,13 +195,10 @@ export async function POST(req: Request) {
     // 4. HANDLE SAMPLE MEDIA
     // ==========================================
     const headerComp = components.find((c: any) => c.type === "HEADER");
-    
 
-
-const isMediaHeader =
-  headerComp &&
-  ["IMAGE", "VIDEO", "DOCUMENT"].includes(headerComp.format);
-
+    const isMediaHeader =
+      headerComp &&
+      ["IMAGE", "VIDEO", "DOCUMENT"].includes(headerComp.format);
 
     if (isMediaHeader) {
       let fileBuffer: Buffer | null = null;
@@ -205,8 +216,7 @@ const isMediaHeader =
           const imgRes = await fetch(sampleUrl.trim());
           if (!imgRes.ok) throw new Error("Failed to download URL");
           fileBuffer = Buffer.from(await imgRes.arrayBuffer());
-          fileType =
-            imgRes.headers.get("content-type") || "application/octet-stream";
+          fileType = imgRes.headers.get("content-type") || "application/octet-stream";
 
           if (fileBuffer.length > 5 * 1024 * 1024) {
             return NextResponse.json(
@@ -219,38 +229,33 @@ const isMediaHeader =
           return NextResponse.json(
             {
               success: false,
-              message:
-                "Failed to download the sample URL. Make sure it's publicly accessible.",
+              message: "Failed to download the sample URL. Make sure it's publicly accessible.",
             },
             { status: 400 }
           );
         }
       } else {
         return NextResponse.json(
-          {
-            success: false,
-            message: "Media header requires a sample file or URL.",
-          },
+          { success: false, message: "Media header requires a sample file or URL." },
           { status: 400 }
         );
       }
 
       // Upload to WhatsApp using the USER's token and WABA ID from DB
       if (fileBuffer) {
-       const result = await tryResumableUpload(
-  META_TOKEN,
-  process.env.META_APP_ID!,
-  fileBuffer,
-  fileType
-);
+        const result = await tryResumableUpload(
+          META_TOKEN,
+          process.env.META_APP_ID!,
+          fileBuffer,
+          fileType
+        );
 
         if (result.handle) {
-  headerComp.example = {
-    header_handle: [result.handle],
-  };
-
-  console.log("✅ Applied header_handle to payload");
-} else if (result.permissionMissing) {
+          headerComp.example = {
+            header_handle: [result.handle],
+          };
+          console.log("✅ Applied header_handle to payload");
+        } else if (result.permissionMissing) {
           return NextResponse.json(
             {
               success: false,
@@ -295,8 +300,7 @@ const isMediaHeader =
           return NextResponse.json(
             {
               success: false,
-              message:
-                "Templates with variables {{1}}, {{2}}, etc. require sample values.",
+              message: "Templates with variables {{1}}, {{2}}, etc. require sample values.",
             },
             { status: 400 }
           );
@@ -311,16 +315,10 @@ const isMediaHeader =
       const metaComp: any = { type: comp.type.toUpperCase() };
 
       if (comp.type.toUpperCase() === "HEADER") {
-  metaComp.format = comp.format;
-
-  if (comp.text) {
-    metaComp.text = comp.text;
-  }
-
-  if (comp.example) {
-    metaComp.example = comp.example;
-  }
-} else if (comp.type.toUpperCase() === "BODY") {
+        metaComp.format = comp.format;
+        if (comp.text) metaComp.text = comp.text;
+        if (comp.example) metaComp.example = comp.example;
+      } else if (comp.type.toUpperCase() === "BODY") {
         metaComp.text = comp.text;
         if (comp.example) metaComp.example = comp.example;
       } else if (comp.type.toUpperCase() === "FOOTER") {
@@ -329,8 +327,7 @@ const isMediaHeader =
         metaComp.buttons = comp.buttons.map((btn: any) => {
           const metaBtn: any = { type: btn.type, text: btn.text };
           if (btn.type === "URL" && btn.url) metaBtn.url = btn.url;
-          if (btn.type === "PHONE_NUMBER" && btn.phone_number)
-            metaBtn.phone_number = btn.phone_number;
+          if (btn.type === "PHONE_NUMBER" && btn.phone_number) metaBtn.phone_number = btn.phone_number;
           return metaBtn;
         });
       }
@@ -348,13 +345,9 @@ const isMediaHeader =
     // ==========================================
     // 7. SUBMIT TO META (using USER's token + WABA ID)
     // ==========================================
-    console.log(
-      `📤 Creating template "${safeName}" with WABA: ${WABA_ID}, language: "${language}"`
-    );
-console.log(
-  "📤 TEMPLATE PAYLOAD:",
-  JSON.stringify(metaPayload, null, 2)
-);
+    console.log(`📤 Creating template "${safeName}" with WABA: ${WABA_ID}, language: "${language}"`);
+    console.log("📤 TEMPLATE PAYLOAD:", JSON.stringify(metaPayload, null, 2));
+
     const metaRes = await fetch(
       `${WHATSAPP_API}/${WABA_ID}/message_templates`,
       {
@@ -375,10 +368,7 @@ console.log(
         metaData.error?.message ||
         "Meta rejected template";
 
-      console.error(
-        "Meta template error:",
-        JSON.stringify(metaData.error, null, 2)
-      );
+      console.error("Meta template error:", JSON.stringify(metaData.error, null, 2));
 
       return NextResponse.json(
         { success: false, message: errorMessage },
@@ -398,6 +388,9 @@ console.log(
       status: "submitted",
       metaTemplateId: metaData.id,
     });
+
+    // ✅ LIMIT ADDED: Increment usage after successful creation
+    await incrementUsage(userId, "templates");
 
     console.log(`✅ Template "${safeName}" submitted successfully!`);
 
@@ -421,9 +414,7 @@ async function tryResumableUpload(
   APP_ID: string,
   fileBuffer: Buffer,
   fileType: string
-): Promise<{
-  permissionMissing: any; handle?: string; error?: string 
-}> {
+): Promise<{ permissionMissing: any; handle?: string; error?: string }> {
   try {
     // STEP 1 - Create upload session
     const createSession = await fetch(
@@ -445,38 +436,38 @@ async function tryResumableUpload(
 
     console.log("SESSION:", sessionData);
     if (!createSession.ok) {
-  console.log("SESSION ERROR:", sessionData);
-  return {
-    permissionMissing: false,
-    error: JSON.stringify(sessionData),
-  };
-}
+      console.log("SESSION ERROR:", sessionData);
+      return {
+        permissionMissing: false,
+        error: JSON.stringify(sessionData),
+      };
+    }
 
     const uploadId = sessionData.id;
 
     // STEP 2 - Upload binary
     const uploadRes = await fetch(
-  `https://graph.facebook.com/v25.0/${uploadId}`,
-  {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${META_TOKEN}`,
-      file_offset: "0",
-    },
-    body: Buffer.from(fileBuffer),
-  }
-);
+      `https://graph.facebook.com/v25.0/${uploadId}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${META_TOKEN}`,
+          file_offset: "0",
+        },
+        body: Buffer.from(fileBuffer),
+      }
+    );
 
     const uploadData = await uploadRes.json();
 
     console.log("UPLOAD:", uploadData);
     if (!uploadRes.ok) {
-  console.log("UPLOAD ERROR:", uploadData);
-  return {
-    permissionMissing: false,
-    error: JSON.stringify(uploadData),
-  };
-}
+      console.log("UPLOAD ERROR:", uploadData);
+      return {
+        permissionMissing: false,
+        error: JSON.stringify(uploadData),
+      };
+    }
 
     return {
       permissionMissing: false,
