@@ -140,6 +140,7 @@ export default function SendMessagePage() {
     const template = templates.find(
       (t: any) => t.name === name && t.language === language
     ) || null;
+    
     setSelectedTemplate(template);
     setMediaFile(null);
     setMediaPreview(null);
@@ -151,12 +152,18 @@ export default function SendMessagePage() {
       } else {
         setHeaderMediaType("none");
       }
-      const bodyComp = template.components?.find((c: any) => c.type === "BODY");
-      if (bodyComp?.text) {
-        const matches = bodyComp.text.match(/\{\{\d+\}\}/g) || [];
-        setVariables(Array(matches.length).fill(""));
+      
+      // ✅ FIX: Auth templates always require 1 variable for the OTP code, even if body text isn't saved locally
+      if (template.category === "AUTHENTICATION") {
+        setVariables([""]);
       } else {
-        setVariables([]);
+        const bodyComp = template.components?.find((c: any) => c.type === "BODY");
+        if (bodyComp?.text) {
+          const matches = bodyComp.text.match(/\{\{\d+\}\}/g) || [];
+          setVariables(Array(matches.length).fill(""));
+        } else {
+          setVariables([]);
+        }
       }
     } else {
       setHeaderMediaType("none");
@@ -561,14 +568,14 @@ export default function SendMessagePage() {
                 <div className="space-y-3">
                   <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
                     <Variable className="w-4 h-4 text-gray-400" />
-                    Template Variables
+                    {selectedTemplate.category === "AUTHENTICATION" ? "OTP Code" : "Template Variables"}
                   </label>
                   <div className="space-y-3">
                     {variables.map((v, i) => (
                       <input
                         key={i}
                         type="text"
-                        placeholder={`Variable {{${i + 1}}}`}
+                        placeholder={selectedTemplate.category === "AUTHENTICATION" ? "Enter OTP Code (e.g. 1234)" : `Variable {{${i + 1}}}`}
                         value={v}
                         onChange={(e) => handleVariableChange(i, e.target.value)}
                         disabled={isAtLimit} // ✅ LIMIT ADDED
