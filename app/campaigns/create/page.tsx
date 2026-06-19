@@ -10,7 +10,7 @@ import {
   Upload, FileSpreadsheet, Clock, Globe, CheckCircle2,
   Users, Sparkles, Send, RotateCcw, AlertCircle,
   FileText, Film, Image as ImageIcon, Loader2, X, Link, Tag as TagIcon,
-  Ban, // Added Ban icon for opted out numbers
+  Ban,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -47,10 +47,7 @@ export default function CreateCampaign() {
   const [uploadStep, setUploadStep] = useState(1);
   const [fileName, setFileName] = useState("");
   
-  // Added optedOut to stats
   const [stats, setStats] = useState({ valid: 0, invalid: 0, duplicates: 0, optedOut: 0 });
-
-  // State to hold opted-out numbers from DB
   const [optedOutNumbers, setOptedOutNumbers] = useState<string[]>([]);
 
   const [mediaInputType, setMediaInputType] = useState<"url" | "upload">("url");
@@ -61,7 +58,7 @@ export default function CreateCampaign() {
     if (status === "authenticated") {
       fetchTemplates();
       fetchTags();
-      fetchOptNumbers(); // Fetch blocklist on load
+      fetchOptNumbers();
     } else if (status === "unauthenticated") {
       window.location.href = "/signin";
     }
@@ -77,9 +74,7 @@ export default function CreateCampaign() {
       const data = await res.json();
       if (res.status === 401) { window.location.href = "/signin"; return; }
       if (data.success) setTemplates(data.templates);
-    } catch (err) {
-      console.error("Failed to fetch templates", err);
-    }
+    } catch (err) { console.error("Failed to fetch templates", err); }
   };
 
   const fetchTags = async () => {
@@ -87,30 +82,23 @@ export default function CreateCampaign() {
       const res = await fetch("/api/tags");
       const data = await res.json();
       if (data.tags) setTags(data.tags);
-    } catch (err) {
-      console.error("Failed to fetch tags", err);
-    }
+    } catch (err) { console.error("Failed to fetch tags", err); }
   };
 
-  // Fetch numbers that have opted out
   const fetchOptNumbers = async () => {
     try {
       const res = await fetch("/api/opt-numbers");
       const data = await res.json();
       if (data.numbers) {
-        // Clean them to match the format (digits only)
         const cleaned = data.numbers.map((n: any) => String(n.phoneNumber).replace(/\D/g, ""));
         setOptedOutNumbers(cleaned);
       }
-    } catch (err) {
-      console.error("Failed to fetch opt-out numbers", err);
-    }
+    } catch (err) { console.error("Failed to fetch opt-out numbers", err); }
   };
 
   const handleTagSelect = async (tagName: string) => {
     setSelectedTag(tagName);
     if (!tagName) return;
-    
     try {
       const res = await fetch(`/api/contacts?tag=${encodeURIComponent(tagName)}`);
       const data = await res.json();
@@ -126,27 +114,19 @@ export default function CreateCampaign() {
         setRawNumbers([]);
         setStats({ valid: 0, invalid: 0, duplicates: 0, optedOut: 0 });
       }
-    } catch (err) {
-      toast.error("Error fetching contacts by tag");
-    }
+    } catch (err) { toast.error("Error fetching contacts by tag"); }
   };
 
   const handleTemplateSelect = (name: string, langOrPreserved?: string | string[]) => {
     let language: string | undefined;
     let preservedVars: string[] | undefined;
 
-    if (Array.isArray(langOrPreserved)) {
-      preservedVars = langOrPreserved;
-    } else if (typeof langOrPreserved === "string" && langOrPreserved) {
-      language = langOrPreserved;
-    }
+    if (Array.isArray(langOrPreserved)) preservedVars = langOrPreserved;
+    else if (typeof langOrPreserved === "string" && langOrPreserved) language = langOrPreserved;
 
     let tmpl: any;
-    if (language) {
-      tmpl = templates.find((t: any) => t.name === name && t.language === language);
-    } else {
-      tmpl = templates.find((t: any) => t.name === name);
-    }
+    if (language) tmpl = templates.find((t: any) => t.name === name && t.language === language);
+    else tmpl = templates.find((t: any) => t.name === name);
 
     if (!tmpl) return;
     setSelectedTemplate(tmpl);
@@ -156,19 +136,11 @@ export default function CreateCampaign() {
     setHeaderFormat(hFormat);
     setHeaderText(headerComp?.text || "");
 
-    if (tmpl.language) {
-      setLanguageCode(tmpl.language);
-    } else {
-      setLanguageCode("en");
-    }
+    if (tmpl.language) setLanguageCode(tmpl.language);
+    else setLanguageCode("en");
 
-    if (["IMAGE", "VIDEO", "DOCUMENT"].includes(hFormat)) {
-      setMediaType(hFormat.toLowerCase());
-    } else {
-      setMediaType("");
-      setMediaUrl("");
-      clearMediaFile();
-    }
+    if (["IMAGE", "VIDEO", "DOCUMENT"].includes(hFormat)) setMediaType(hFormat.toLowerCase());
+    else { setMediaType(""); setMediaUrl(""); clearMediaFile(); }
 
     const bodyComp = tmpl.components?.find((c: any) => c.type === "BODY");
     const text = bodyComp?.text || "";
@@ -198,30 +170,38 @@ export default function CreateCampaign() {
   };
 
   const cleanAndValidateNumbers = (nums: string[], names: string[]) => {
+    const MAX_LIMIT = 50000; // 🔴 50K LIMIT
     const seen = new Set();
     let valid = 0, invalid = 0, duplicates = 0, optedOut = 0;
     const finalNumbers: string[] = [];
     const finalNames: string[] = [];
 
-    nums.forEach((num, index) => {
-      if (!num) return;
+    for (let index = 0; index < nums.length; index++) {
+      const num = nums[index];
+      if (!num) continue;
       let clean = String(num).replace(/[^\d+]/g, "");
       if (clean.startsWith("+")) clean = clean.substring(1);
       if (clean.startsWith("0")) clean = clean.substring(1);
       if (!clean.startsWith(countryCode)) clean = countryCode + clean;
 
-      // 🔴 CHECK IF NUMBER IS IN THE OPT-OUT LIST
-      if (optedOutNumbers.includes(clean)) {
-        optedOut++;
-        return; // Skip adding this number
-      }
+      if (optedOutNumbers.includes(clean)) { optedOut++; continue; }
 
       if (clean.length >= 7 && !isObviouslyFakePhone(clean)) {
         if (seen.has(clean)) { duplicates++; }
-        else { seen.add(clean); finalNumbers.push(clean); finalNames.push(names[index] || ""); valid++; }
+        else {
+          seen.add(clean);
+          finalNumbers.push(clean);
+          finalNames.push(names[index] || "");
+          valid++;
+          
+          // 🔴 CHECK LIMIT
+          if (finalNumbers.length >= MAX_LIMIT) {
+            toast.error(`Limit of 50,000 numbers reached. Only the first 50,000 will be processed.`);
+            break;
+          }
+        }
       } else { invalid++; }
-    });
-
+    }
     setStats({ valid, invalid, duplicates, optedOut });
     return { finalNumbers, finalNames };
   };
@@ -235,7 +215,7 @@ export default function CreateCampaign() {
     else toast.error("No valid numbers found");
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setFileName(file.name);
@@ -252,15 +232,33 @@ export default function CreateCampaign() {
         const text = await file.text();
         rows = text.split(/\r?\n/).map(line => line.split(/[,;\t]/).map(cell => cell.trim())).filter(row => row.length > 0 && row[0] !== "");
       }
+      
       if (rows.length === 0) { toast.error("File is empty"); return; }
+      
+      // 🔴 STRICT 50K LIMIT CHECK
+      const MAX_LIMIT = 50000;
+      const dataRows = rows.slice(1); // Remove header row
+      
+      if (dataRows.length > MAX_LIMIT) {
+        toast.error(`❌ The file contains ${dataRows.length.toLocaleString()} numbers. The maximum limit is 50,000. Please split your file and try again.`);
+        setFileName("");
+        setFileHeaders([]);
+        setFileRows([]);
+        setUploadStep(1);
+        return;
+      }
+
       setFileHeaders(rows[0]);
-      setFileRows(rows.slice(1));
+      setFileRows(dataRows);
       const phoneCol = rows[0].find(h => /phone|mobile|number|cell|whatsapp/i.test(h)) || rows[0][0];
       const nameCol = rows[0].find(h => /name|nama|nombre|first/i.test(h)) || "";
       setSelectedPhoneCol(phoneCol);
       setSelectedNameCol(nameCol || "skip");
       setUploadStep(2);
-    } catch (err) { toast.error("Failed to parse file."); }
+    } catch (err) { 
+      toast.error("Failed to parse file."); 
+      setFileName("");
+    }
   };
 
   const processFileColumns = () => {
@@ -288,9 +286,8 @@ export default function CreateCampaign() {
     setMediaFile(file);
     setMediaUrl("");
     if (mediaPreview) URL.revokeObjectURL(mediaPreview);
-    if (mediaType === "image" || mediaType === "video") {
-      setMediaPreview(URL.createObjectURL(file));
-    } else { setMediaPreview(null); }
+    if (mediaType === "image" || mediaType === "video") setMediaPreview(URL.createObjectURL(file));
+    else setMediaPreview(null);
   };
 
   const clearMediaFile = () => {
@@ -390,45 +387,29 @@ export default function CreateCampaign() {
   return (
     <div className="min-h-screen bg-slate-50 text-gray-900">
       <Sidebar />
-
       <div className="md:ml-64 p-4 sm:p-6 lg:p-10 overflow-y-auto min-h-screen">
         <div className="max-w-7xl mx-auto space-y-6 sm:space-y-10">
-
-          {/* Soft Light Blue Header */}
-<div className="relative overflow-hidden bg-gradient-to-br from-[#EFF6FF] to-[#DBEAFE] rounded-2xl sm:rounded-3xl p-6 sm:p-8 border border-blue-100 shadow-lg shadow-blue-100/60">
-  
-  {/* Decorative background blurs */}
-  <div className="absolute -top-12 -right-12 w-56 h-56 bg-[#93C5FD]/40 rounded-full blur-3xl"></div>
-  <div className="absolute -bottom-16 -left-10 w-40 h-40 bg-white/60 rounded-full blur-2xl"></div>
-
-  {/* Content */}
-  <div className="relative flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 z-10">
-    
-    <div>
-      <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-blue-900">
-        Create Campaign
-      </h1>
-      <p className="text-blue-700/80 text-xs sm:text-sm mt-2 font-medium">
-        Set up your audience and broadcast WhatsApp messages instantly.
-      </p>
-    </div>
-
-    {/* Contacts Badge - Made vibrant to stand out on light bg */}
-    {rawNumbers.length > 0 && (
-      <div className="flex-shrink-0 bg-gradient-to-br from-blue-500 to-sky-600 px-5 sm:px-8 py-2 sm:py-3 rounded-xl sm:rounded-2xl flex items-center gap-3 sm:gap-4 text-base sm:text-lg font-bold text-white shadow-md shadow-blue-200/60">
-        <Users size={20} /> {rawNumbers.length} Contacts
-      </div>
-    )}
-  </div>
-</div>
+          <div className="relative overflow-hidden bg-gradient-to-br from-[#EFF6FF] to-[#DBEAFE] rounded-2xl sm:rounded-3xl p-6 sm:p-8 border border-blue-100 shadow-lg shadow-blue-100/60">
+            <div className="absolute -top-12 -right-12 w-56 h-56 bg-[#93C5FD]/40 rounded-full blur-3xl"></div>
+            <div className="absolute -bottom-16 -left-10 w-40 h-40 bg-white/60 rounded-full blur-2xl"></div>
+            <div className="relative flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 z-10">
+              <div>
+                <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-blue-900">Create Campaign</h1>
+                <p className="text-blue-700/80 text-xs sm:text-sm mt-2 font-medium">Set up your audience and broadcast WhatsApp messages instantly. Max limit: 50,000 numbers.</p>
+              </div>
+              {rawNumbers.length > 0 && (
+                <div className="flex-shrink-0 bg-gradient-to-br from-blue-500 to-sky-600 px-5 sm:px-8 py-2 sm:py-3 rounded-xl sm:rounded-2xl flex items-center gap-3 sm:gap-4 text-base sm:text-lg font-bold text-white shadow-md shadow-blue-200/60">
+                  <Users size={20} /> {rawNumbers.length} Contacts
+                </div>
+              )}
+            </div>
+          </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 sm:gap-10">
-            {/* Left Column */}
             <div className="lg:col-span-2 space-y-6 sm:space-y-8">
               <div className="bg-white p-5 sm:p-8 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 space-y-5 sm:space-y-6 hover:shadow-md transition-shadow">
                 <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest flex items-center gap-2"><Sparkles size={14} className="text-emerald-500" /> Campaign Details</label>
                 <input type="text" value={campaignName} onChange={(e) => setCampaignName(e.target.value)} placeholder="e.g. Diwali Dhamaka Offer" className="w-full px-4 sm:px-5 py-3 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-emerald-100 focus:border-emerald-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]" />
-
                 <select
                   value={selectedTemplate ? `${selectedTemplate.name}|${selectedTemplate.language}` : ""}
                   onChange={(e) => { const val = e.target.value; if (!val) return; const [name, lang] = val.split("|"); handleTemplateSelect(name, lang); }}
@@ -487,7 +468,6 @@ export default function CreateCampaign() {
               )}
             </div>
 
-            {/* Right Column */}
             <div className="lg:col-span-3 space-y-6 sm:space-y-8">
               <div className="bg-white p-5 sm:p-8 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 space-y-5 sm:space-y-6 hover:shadow-md transition-shadow">
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -498,7 +478,6 @@ export default function CreateCampaign() {
                   </div>
                 </div>
 
-                {/* TAG DROPDOWN SECTION */}
                 <div className="bg-purple-50/50 border border-purple-100 rounded-xl p-4 space-y-2">
                   <label className="text-[11px] font-extrabold text-purple-800 uppercase tracking-widest flex items-center gap-2"><TagIcon size={14} /> Load from Tags</label>
                   <select
@@ -518,7 +497,7 @@ export default function CreateCampaign() {
                     <input type="file" accept=".csv,.txt,.xlsx,.xls" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
                     <div className="w-12 h-12 sm:w-14 sm:h-14 bg-emerald-50 rounded-2xl flex items-center justify-center mb-4 group-hover:bg-emerald-100 group-hover:scale-110 transition-all duration-300 shadow-sm"><Upload className="w-6 h-6 sm:w-7 sm:h-7 text-emerald-600" /></div>
                     <p className="text-sm sm:text-base font-bold text-slate-700">Upload Excel or CSV File</p>
-                    <p className="text-xs text-slate-400 mt-1 font-medium">Supports .xlsx, .xls, .csv, .txt</p>
+                    <p className="text-xs text-slate-400 mt-1 font-medium">Supports .xlsx, .xls, .csv, .txt (Max 50k)</p>
                   </div>
                 ) : (
                   <div className="border border-emerald-200 bg-gradient-to-br from-emerald-50 to-white rounded-2xl p-4 sm:p-6 space-y-4 sm:space-y-5 shadow-sm">
@@ -538,17 +517,13 @@ export default function CreateCampaign() {
                 </div>
 
                 {rawNumbers.length > 0 && (
-                  // Changed to grid-cols-2 sm:grid-cols-4 to fit the new Opted Out card
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4 text-center pt-2">
                     <div className="bg-gradient-to-br from-emerald-50 to-white p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-emerald-100 shadow-sm hover:shadow-md transition-shadow"><p className="text-2xl sm:text-3xl font-extrabold text-emerald-600">{stats.valid}</p><p className="text-[9px] sm:text-[10px] text-emerald-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><CheckCircle2 size={10} /> Valid</p></div>
                     <div className="bg-gradient-to-br from-red-50 to-white p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-red-100 shadow-sm hover:shadow-md transition-shadow"><p className="text-2xl sm:text-3xl font-extrabold text-red-600">{stats.invalid}</p><p className="text-[9px] sm:text-[10px] text-red-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><AlertCircle size={10} /> Invalid</p></div>
                     <div className="bg-gradient-to-br from-amber-50 to-white p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-amber-100 shadow-sm hover:shadow-md transition-shadow"><p className="text-2xl sm:text-3xl font-extrabold text-amber-600">{stats.duplicates}</p><p className="text-[9px] sm:text-[10px] text-amber-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><RotateCcw size={10} /> Duplicates</p></div>
-                    {/* NEW OPTED-OUT CARD */}
                     <div className="bg-gradient-to-br from-slate-100 to-white p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
                       <p className="text-2xl sm:text-3xl font-extrabold text-slate-600">{stats.optedOut}</p>
-                      <p className="text-[9px] sm:text-[10px] text-slate-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1">
-                        <Ban size={10} /> Opted Out
-                      </p>
+                      <p className="text-[9px] sm:text-[10px] text-slate-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><Ban size={10} /> Opted Out</p>
                     </div>
                   </div>
                 )}
