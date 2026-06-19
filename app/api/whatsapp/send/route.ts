@@ -5,6 +5,7 @@ import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getPriceForCategory } from "@/lib/billing";
+import { checkLimit, incrementUsage } from "@/lib/limits"; // ✅ LIMIT ADDED
 
 export async function POST(req: Request) {
   try {
@@ -14,6 +15,26 @@ export async function POST(req: Request) {
     const session = await getServerSession(authOptions);
     if (!session?.user?.id) {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+    }
+
+    // ✅ LIMIT ADDED: Check test message limit
+    const limitCheck = await checkLimit(session.user.id, "testMessages");
+    if (!limitCheck.allowed) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: `Test message limit reached. You have used ${limitCheck.currentUsage}/${limitCheck.limit} test messages per ${limitCheck.period}. Contact admin to increase your limit.`,
+          limitExceeded: true,
+          limitInfo: {
+            resource: "testMessages",
+            currentUsage: limitCheck.currentUsage,
+            limit: limitCheck.limit,
+            period: limitCheck.period,
+            remaining: limitCheck.remaining,
+          },
+        },
+        { status: 429 }
+      );
     }
 
     // 2. Multi-Tenant Credentials
@@ -77,7 +98,6 @@ export async function POST(req: Request) {
     // ==========================================
     // 🔴 CATEGORY-BASED PRICING
     // ==========================================
-    // Normalize category
     category = (category || "MARKETING").toUpperCase().trim();
 
     const VALID_CATEGORIES = ["MARKETING", "UTILITY", "AUTHENTICATION"];
@@ -86,13 +106,11 @@ export async function POST(req: Request) {
       category = "MARKETING";
     }
 
-    // Determine price based on category
     const messagePrice = getPriceForCategory(user, category);
     const currentBalance = user.balance || 0;
 
     console.log(`💰 Category: ${category} | Price: ₹${messagePrice} | Balance: ₹${currentBalance}`);
 
-    // Balance check
     if (messagePrice > 0 && currentBalance < messagePrice) {
       return NextResponse.json(
         {
@@ -124,9 +142,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // ==========================================
-    // CLEAN mediaUrl
-    // ==========================================
     if (mediaUrl === "" || mediaUrl === "null" || mediaUrl === "undefined") {
       mediaUrl = null;
     }
@@ -258,7 +273,6 @@ export async function POST(req: Request) {
 
     // ==========================================
     // 🔴 DEDUCT BALANCE AFTER SUCCESSFUL SEND
-    // Based on category-specific price
     // ==========================================
     if (messagePrice > 0) {
       const newBalance = Math.round((currentBalance - messagePrice) * 100) / 100;
@@ -268,7 +282,9 @@ export async function POST(req: Request) {
     } else {
       console.log(`💰 Free message (${category} price = ₹0). No deduction for user ${user.name}.`);
     }
-    // ==========================================
+
+    // ✅ LIMIT ADDED: Increment test message usage after successful send
+    await incrementUsage(session.user.id, "testMessages");
 
     return NextResponse.json({
       success: true,
