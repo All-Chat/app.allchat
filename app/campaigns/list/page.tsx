@@ -45,7 +45,6 @@ const formatINR = (amount: number) =>
     minimumFractionDigits: 2,
   }).format(amount);
 
-// Helper to get category badge color
 const getCategoryColor = (category: string) => {
   switch (category?.toUpperCase()) {
     case "MARKETING":
@@ -78,7 +77,7 @@ export default function CampaignList() {
   const { data: session, status } = useSession();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [startingId, setStartingId] = useState<string | null>(null);
-  const [actionId, setActionId] = useState<string | null>(null); // For pause/resume/stop loading
+  const [actionId, setActionId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [viewCampaign, setViewCampaign] = useState<Campaign | null>(null);
   const [quickPhone, setQuickPhone] = useState("");
@@ -107,8 +106,7 @@ export default function CampaignList() {
     if (status === "authenticated") {
       loadCampaigns();
       fetchBilling();
-      // 🔴 DYNAMIC REFRESH: Polls every 3 seconds to update delivered count and amount spent
-      const interval = setInterval(loadCampaigns, 3000);
+      const interval = setInterval(loadCampaigns, 3000); // 🔴 DYNAMIC REFRESH EVERY 3 SECONDS
       return () => clearInterval(interval);
     } else if (status === "unauthenticated") { router.push("/"); }
   }, [status, router]);
@@ -182,7 +180,6 @@ export default function CampaignList() {
     }
   };
 
-  // Pause, Resume, and Stop Functions
   const handleCampaignAction = async (id: string, action: "pause" | "resume" | "stop") => {
     setActionId(id);
     try {
@@ -296,7 +293,7 @@ export default function CampaignList() {
         templateName: c.templateName,
         variables: c.variables || [],
         languageCode: c.languageCode || "en",
-        category: c.templateCategory || "MARKETING", // Pass category for test send
+        category: c.templateCategory || "MARKETING",
       };
       if (c.mediaUrl) { payload.mediaUrl = c.mediaUrl; payload.headerMediaType = c.mediaType; }
 
@@ -350,7 +347,6 @@ export default function CampaignList() {
     <div className="min-h-screen bg-slate-50 text-gray-900">
       <Sidebar />
 
-      {/* View Campaign Modal */}
       {viewCampaign && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={() => setViewCampaign(null)}>
           <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full sm:max-w-xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
@@ -444,11 +440,9 @@ export default function CampaignList() {
         </div>
       )}
 
-      {/* Main Content Area */}
       <div className="md:ml-64 p-4 sm:p-6 lg:p-8">
         <div className="max-w-6xl mx-auto space-y-4 sm:space-y-6">
           
-          {/* Header */}
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end border-b border-slate-200 pb-4 sm:pb-6 gap-4">
             <div>
               <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-slate-900">Campaigns</h1>
@@ -470,7 +464,6 @@ export default function CampaignList() {
             </div>
           </div>
 
-          {/* Insufficient Balance Warning */}
           {!canSendMessage && (
             <div className="p-3 sm:p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
               <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
@@ -484,7 +477,6 @@ export default function CampaignList() {
             </div>
           )}
 
-          {/* Search & Filter */}
           <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3 sm:gap-4">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
@@ -513,7 +505,6 @@ export default function CampaignList() {
             </div>
           </div>
 
-          {/* Campaign List */}
           {filteredCampaigns.length === 0 ? (
             <div className="text-center py-20 sm:py-32 bg-white rounded-2xl border border-dashed border-slate-200 text-slate-400">
               <BarChart3 className="w-10 h-10 sm:w-12 sm:h-12 mx-auto mb-3 text-slate-200" />
@@ -529,7 +520,6 @@ export default function CampaignList() {
 
                 return (
                   <div key={c._id} className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all duration-200 group">
-                    {/* Top Row */}
                     <div className="flex flex-col sm:flex-row justify-between items-start gap-3 mb-4">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 sm:gap-3 mb-1 flex-wrap">
@@ -557,7 +547,6 @@ export default function CampaignList() {
                         )}
                       </div>
                       
-                      {/* Action Buttons */}
                       <div className="flex items-center gap-1.5 sm:ml-4 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity w-full sm:w-auto justify-end flex-wrap">
                         <button onClick={() => setViewCampaign(c)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Details">
                           <Eye size={16} />
@@ -629,7 +618,6 @@ export default function CampaignList() {
                       </div>
                     </div>
 
-                    {/* Stats Row */}
                     <div className={`grid gap-2 sm:gap-3 text-center grid-cols-2 sm:grid-cols-3 md:grid-cols-5 ${
                       amountSpent > 0 ? 'lg:grid-cols-6' : ''
                     }`}>
@@ -684,14 +672,14 @@ export default function CampaignList() {
                         <Wallet size={12} className="text-blue-500" />
                         <span className="text-slate-500">Amount spent (Dynamic):</span>
                         <span className="font-bold text-blue-700">{formatINR(amountSpent)}</span>
-                        <span className="text-slate-400">({c.sentCount} delivered)</span>
+                        <span className="text-slate-400">({liveStats.deliveredRead} delivered)</span>
                       </div>
                     )}
 
-                    {isCompleted && amountSpent === 0 && c.sentCount > 0 && (
+                    {isCompleted && amountSpent === 0 && liveStats.deliveredRead > 0 && (
                       <div className="mt-3 flex items-center gap-2 text-xs">
                         <CheckCircle size={12} className="text-emerald-500" />
-                        <span className="text-slate-500">Completed — {c.sentCount} messages delivered</span>
+                        <span className="text-slate-500">Completed — {liveStats.deliveredRead} messages delivered (Free)</span>
                       </div>
                     )}
                   </div>
