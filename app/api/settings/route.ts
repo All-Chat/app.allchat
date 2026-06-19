@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import User from "@/models/User";
+import SettingsRequest from "@/models/SettingsRequest";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 
@@ -35,6 +36,9 @@ export async function GET() {
       ? `${user.whatsappAccessToken.substring(0, 5)}${"*".repeat(15)}${user.whatsappAccessToken.slice(-4)}`
       : "";
 
+    // Fetch the latest settings request for this user to check status
+    const latestRequest = await SettingsRequest.findOne({ userId: session.user.id }).sort({ createdAt: -1 }).lean();
+
     return NextResponse.json({
       success: true,
       settings: {
@@ -47,6 +51,13 @@ export async function GET() {
         // ==========================================
         balance: billingUser.balance || 0,
         totalRecharged: billingUser.totalRecharged || 0,
+        // ==========================================
+        // PENDING REQUEST INFO
+        // ==========================================
+        pendingRequest: latestRequest ? {
+          status: latestRequest.status,
+          createdAt: latestRequest.createdAt
+        } : null,
       },
     });
   } catch (error) {
@@ -67,26 +78,33 @@ export async function PUT(req: Request) {
     const body = await req.json();
     const { wabaId, whatsappPhoneNumberId, whatsappAccessToken } = body;
 
-    const updateData: any = {
-      wabaId: wabaId?.trim() || null,
-      whatsappPhoneNumberId: whatsappPhoneNumberId?.trim() || null,
-    };
-
-    if (whatsappAccessToken && !whatsappAccessToken.includes("*")) {
-      updateData.whatsappAccessToken = whatsappAccessToken.trim();
-    }
-
-    const updatedUser = await User.findByIdAndUpdate(
-      session.user.id,
-      updateData,
-      { returnDocument: "after", runValidators: true }
-    );
-
-    if (!updatedUser) {
+    const user = await User.findById(session.user.id);
+    if (!user) {
       return NextResponse.json({ message: "User not found" }, { status: 404 });
     }
 
-    return NextResponse.json({ success: true, message: "Settings updated successfully" });
+    // Check if there's already a pending request
+    const existingPending = await SettingsRequest.findOne({ userId: session.user.id, status: "pending" });
+    if (existingPending) {
+      return NextResponse.json({ 
+        message: "You already have a pending request. Please wait for admin approval before submitting another." 
+      }, { status: 400 });
+    }
+
+    // Create a new settings request instead of updating directly
+    await SettingsRequest.create({
+      userId: session.user.id,
+      userName: user.name,
+      wabaId: wabaId?.trim() || null,
+      whatsappPhoneNumberId: whatsappPhoneNumberId?.trim() || null,
+      // Only save the token if they actually typed a new one (doesn't contain only stars)
+      whatsappAccessToken: whatsappAccessToken && !whatsappAccessToken.includes("*") ? whatsappAccessToken.trim() : null,
+    });
+
+    return NextResponse.json({ 
+      success: true, 
+      message: "Request sent to admin for approval." 
+    });
   } catch (error) {
     console.error("Error updating settings:", error);
     return NextResponse.json({ message: "Internal server error" }, { status: 500 });
