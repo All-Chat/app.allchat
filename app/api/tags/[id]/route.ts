@@ -5,6 +5,7 @@ import Tag from "@/models/Tag";
 import Contact from "@/models/Contact";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { decrementUsage } from "@/lib/limits";
 
 export async function PUT(req: Request) {
   try {
@@ -14,24 +15,24 @@ export async function PUT(req: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // 🔥 MANUAL URL PARSING (Bypasses Next.js params bug)
+    // MANUAL URL PARSING (Bypasses Next.js params bug)
     const url = new URL(req.url);
     const parts = url.pathname.split("/");
     const id = parts[parts.length - 1];
 
     const { name, isCampaignSpecific, campaignId, campaignName } = await req.json();
-    
+
     if (!name || !name.trim()) {
       return NextResponse.json({ error: "Tag name is required" }, { status: 400 });
     }
 
     const tag = await Tag.findOneAndUpdate(
       { _id: id, userId: session.user.id },
-      { 
-        name: name.trim(), 
+      {
+        name: name.trim(),
         isCampaignSpecific: isCampaignSpecific || false,
         campaignId: isCampaignSpecific ? campaignId : null,
-        campaignName: isCampaignSpecific ? campaignName : null
+        campaignName: isCampaignSpecific ? campaignName : null,
       },
       { new: true }
     );
@@ -54,13 +55,13 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // 🔥 MANUAL URL PARSING (Bypasses Next.js params bug)
+    // MANUAL URL PARSING (Bypasses Next.js params bug)
     const url = new URL(req.url);
     const parts = url.pathname.split("/");
     const id = parts[parts.length - 1];
 
     const tag = await Tag.findOneAndDelete({ _id: id, userId: session.user.id });
-    
+
     if (!tag) {
       return NextResponse.json({ error: "Tag not found" }, { status: 404 });
     }
@@ -70,6 +71,9 @@ export async function DELETE(req: Request) {
       { userId: session.user.id, tags: tag.name },
       { $pull: { tags: tag.name } }
     );
+
+    // ✅ DECREMENT USAGE AFTER SUCCESSFUL DELETION
+    await decrementUsage(session.user.id, "tags");
 
     return NextResponse.json({ success: true });
   } catch (error: any) {
