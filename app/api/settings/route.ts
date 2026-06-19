@@ -19,6 +19,18 @@ export async function GET() {
       return NextResponse.json({ message: "User not found" }, { status: 404 });
     }
 
+    // ==========================================
+    // 🔴 SHARED WALLET LOGIC
+    // ==========================================
+    // If the user is a sub-user, fetch the Parent Tenant's balance
+    let billingUser = user;
+    if (user.parentTenantId) {
+      const parent = await User.findOne({ tenantId: user.parentTenantId });
+      if (parent) {
+        billingUser = parent;
+      }
+    }
+
     const maskedToken = user.whatsappAccessToken
       ? `${user.whatsappAccessToken.substring(0, 5)}${"*".repeat(15)}${user.whatsappAccessToken.slice(-4)}`
       : "";
@@ -31,10 +43,10 @@ export async function GET() {
         whatsappAccessToken: maskedToken,
         hasRealToken: !!user.whatsappAccessToken,
         // ==========================================
-        // BILLING INFO — NO pricePerMessage exposed
+        // BILLING INFO — Synced from Parent Tenant
         // ==========================================
-        balance: user.balance || 0,
-        totalRecharged: user.totalRecharged || 0,
+        balance: billingUser.balance || 0,
+        totalRecharged: billingUser.totalRecharged || 0,
       },
     });
   } catch (error) {
