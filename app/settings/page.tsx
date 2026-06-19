@@ -7,7 +7,7 @@ import { useSession } from "next-auth/react";
 import {
   Loader2, Save, ShieldCheck, Phone, KeyRound, Building2,
   CheckCircle2, XCircle, Eye, Wallet, AlertCircle, IndianRupee,
-  ArrowRight, TrendingUp, CreditCard, Info, Users, Clock,
+  ArrowRight, TrendingUp, CreditCard, Info, Users, Clock, PlusCircle, Trash2, Pencil,
 } from "lucide-react";
 import Link from "next/link";
 import { toast, ToastContainer } from "react-toastify";
@@ -16,25 +16,30 @@ import Sidebar from "@/components/Sidebar";
 
 export default function SettingsPage() {
   const { data: session, status } = useSession();
-  const [wabaId, setWabaId] = useState("");
-  const [phoneNumberId, setPhoneNumberId] = useState("");
-  const [accessToken, setAccessToken] = useState("");
-  const [hasRealToken, setHasRealToken] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [switchingId, setSwitchingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  
   const [balance, setBalance] = useState(0);
   const [totalRecharged, setTotalRecharged] = useState(0);
+  const [whatsappNumbers, setWhatsappNumbers] = useState<any[]>([]);
   const [pendingRequest, setPendingRequest] = useState<any>(null);
+  const [waNumberLimit, setWaNumberLimit] = useState<any>(null);
 
-  // Check if sub-user
+  // Form State
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  
+  const [newNumName, setNewNumName] = useState("");
+  const [newWabaId, setNewWabaId] = useState("");
+  const [newPhoneId, setNewPhoneId] = useState("");
+  const [newAccessToken, setNewAccessToken] = useState("");
+
   const parentTenantName = (session?.user as any)?.parentTenantName;
 
   const formatINR = (amount: number) =>
-    new Intl.NumberFormat("en-IN", {
-      style: "currency",
-      currency: "INR",
-      minimumFractionDigits: 2,
-    }).format(amount);
+    new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", minimumFractionDigits: 2 }).format(amount);
 
   const totalSpent = Math.max(Math.round((totalRecharged - balance) * 100) / 100, 0);
   const usagePercent = totalRecharged > 0 ? Math.round((totalSpent / totalRecharged) * 100) : 0;
@@ -42,17 +47,30 @@ export default function SettingsPage() {
 
   const fetchSettings = async () => {
     try {
-      const res = await fetch("/api/settings");
-      if (res.status === 401) return;
-      const data = await res.json();
-      if (data.success) {
-        setWabaId(data.settings.wabaId);
-        setPhoneNumberId(data.settings.whatsappPhoneNumberId);
-        setAccessToken(data.settings.whatsappAccessToken);
-        setHasRealToken(data.settings.hasRealToken);
-        setBalance(data.settings.balance || 0);
-        setTotalRecharged(data.settings.totalRecharged || 0);
-        setPendingRequest(data.settings.pendingRequest || null);
+      const [settingsRes, limitsRes] = await Promise.all([
+        fetch("/api/settings"),
+        fetch("/api/user/limits?resource=whatsappNumbers")
+      ]);
+
+      if (settingsRes.status === 401) return;
+      const settingsData = await settingsRes.json();
+      if (settingsData.success) {
+        setBalance(settingsData.settings.balance || 0);
+        setTotalRecharged(settingsData.settings.totalRecharged || 0);
+        setWhatsappNumbers(settingsData.settings.whatsappNumbers || []);
+        setPendingRequest(settingsData.settings.pendingRequest || null);
+      }
+
+      if (limitsRes.ok) {
+        const limitsData = await limitsRes.json();
+        if (limitsData.success) {
+          setWaNumberLimit({
+            limit: limitsData.limit,
+            usage: limitsData.currentUsage || 0,
+            remaining: limitsData.remaining,
+            allowed: limitsData.allowed,
+          });
+        }
       }
     } catch (error) {
       console.error("Failed to load settings", error);
@@ -66,23 +84,41 @@ export default function SettingsPage() {
     else if (status === "unauthenticated") window.location.href = "/signin";
   }, [status]);
 
-  const handleSave = async (e: React.FormEvent) => {
+  const resetForm = () => {
+    setShowForm(false);
+    setEditingId(null);
+    setNewNumName(""); setNewWabaId(""); setNewPhoneId(""); setNewAccessToken("");
+  };
+
+  const handleEditClick = (num: any) => {
+    setEditingId(num._id);
+    setShowForm(true);
+    setNewNumName(num.name || "");
+    setNewWabaId(num.wabaId || "");
+    setNewPhoneId(num.whatsappPhoneNumberId || "");
+    setNewAccessToken("");
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     try {
+      const isEdit = !!editingId;
+      const method = isEdit ? "PUT" : "POST";
+      const body = isEdit 
+        ? { numberId: editingId, name: newNumName, wabaId: newWabaId, whatsappPhoneNumberId: newPhoneId, whatsappAccessToken: newAccessToken }
+        : { name: newNumName, wabaId: newWabaId, whatsappPhoneNumberId: newPhoneId, whatsappAccessToken: newAccessToken };
+
       const res = await fetch("/api/settings", {
-        method: "PUT",
+        method,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          wabaId,
-          whatsappPhoneNumberId: phoneNumberId,
-          whatsappAccessToken: accessToken,
-        }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (data.success) {
-        toast.success("Request sent to admin for approval!");
-        fetchSettings(); // Refresh to show pending state
+        toast.success(data.message);
+        resetForm();
+        fetchSettings();
       } else {
         toast.error(data.message || "Failed to send request");
       }
@@ -90,6 +126,50 @@ export default function SettingsPage() {
       toast.error("Error sending request");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSwitchNumber = async (numberId: string, name: string) => {
+    if (!window.confirm(`Are you sure you want to switch the active WhatsApp number to "${name}"?`)) return;
+    
+    setSwitchingId(numberId);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ numberId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success(data.message);
+        fetchSettings();
+      } else {
+        toast.error(data.message || "Failed to switch number");
+      }
+    } catch (error) {
+      toast.error("Error switching number");
+    } finally {
+      setSwitchingId(null);
+    }
+  };
+
+  const handleDeleteNumber = async (numberId: string, name: string) => {
+    if (!window.confirm(`Are you sure you want to delete the number "${name}"?`)) return;
+
+    setDeletingId(numberId);
+    try {
+      const res = await fetch(`/api/settings?numberId=${numberId}`, { method: "DELETE" });
+      const data = await res.json();
+      if (data.success) {
+        toast.success(data.message);
+        fetchSettings();
+      } else {
+        toast.error(data.message || "Failed to delete number");
+      }
+    } catch (error) {
+      toast.error("Error deleting number");
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -101,14 +181,13 @@ export default function SettingsPage() {
     );
   }
 
-  const isFullyConfigured = wabaId && phoneNumberId && hasRealToken;
+  const isLimitActive = waNumberLimit && waNumberLimit.limit !== -1 && waNumberLimit.limit !== "unlimited";
+  const isAtLimit = isLimitActive && !waNumberLimit?.allowed;
   const isPending = pendingRequest?.status === "pending";
-  const isRejected = pendingRequest?.status === "rejected";
 
   return (
     <div className="min-h-screen bg-slate-50 text-gray-900 font-sans">
       <Sidebar />
-      
       <div className="ml-0 md:ml-64 p-4 sm:p-6 lg:p-8">
         <div className="max-w-3xl mx-auto pb-12">
 
@@ -166,7 +245,6 @@ export default function SettingsPage() {
                       )}
                     </div>
                   </div>
-
                   <div className="sm:text-right">
                     {isLowBalance ? (
                       <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-red-700 bg-red-50 px-3.5 py-2 rounded-full border border-red-200 shadow-sm">
@@ -182,7 +260,6 @@ export default function SettingsPage() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 mb-6">
                   <div className="relative overflow-hidden p-4 rounded-xl border border-blue-100 bg-gradient-to-br from-blue-50/80 to-white">
-                    <div className="absolute -top-2 -right-2 w-12 h-12 bg-blue-100/40 rounded-full blur-lg" />
                     <div className="relative">
                       <div className="flex items-center gap-1.5 mb-2">
                         <TrendingUp size={12} className="text-blue-500" />
@@ -191,9 +268,7 @@ export default function SettingsPage() {
                       <p className="text-xl font-extrabold text-blue-800">{formatINR(totalRecharged)}</p>
                     </div>
                   </div>
-
                   <div className="relative overflow-hidden p-4 rounded-xl border border-orange-100 bg-gradient-to-br from-orange-50/80 to-white">
-                    <div className="absolute -top-2 -right-2 w-12 h-12 bg-orange-100/40 rounded-full blur-lg" />
                     <div className="relative">
                       <div className="flex items-center gap-1.5 mb-2">
                         <CreditCard size={12} className="text-orange-500" />
@@ -202,13 +277,9 @@ export default function SettingsPage() {
                       <p className="text-xl font-extrabold text-orange-800">{formatINR(totalSpent)}</p>
                     </div>
                   </div>
-
                   <div className={`relative overflow-hidden p-4 rounded-xl border ${
                     isLowBalance ? "border-red-100 bg-gradient-to-br from-red-50/80 to-white" : "border-emerald-100 bg-gradient-to-br from-emerald-50/80 to-white"
                   }`}>
-                    <div className={`absolute -top-2 -right-2 w-12 h-12 rounded-full blur-lg ${
-                      isLowBalance ? "bg-red-100/40" : "bg-emerald-100/40"
-                    }`} />
                     <div className="relative">
                       <div className="flex items-center gap-1.5 mb-2">
                         <Wallet size={12} className={isLowBalance ? "text-red-500" : "text-emerald-500"} />
@@ -219,63 +290,22 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
-                {totalRecharged > 0 && (
-                  <div className="mb-5">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs text-gray-500 font-medium">Credit Usage</span>
-                      <span className={`text-xs font-bold ${
-                        usagePercent > 90 ? "text-red-600" : usagePercent > 70 ? "text-amber-600" : "text-emerald-600"
-                      }`}>
-                        {usagePercent}% used
-                      </span>
-                    </div>
-                    <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
-                      <div
-                        className={`h-3 rounded-full transition-all duration-700 ${
-                          usagePercent > 90
-                            ? "bg-gradient-to-r from-red-400 to-red-500"
-                            : usagePercent > 70
-                              ? "bg-gradient-to-r from-amber-400 to-amber-500"
-                              : "bg-gradient-to-r from-emerald-400 to-teal-500"
-                        }`}
-                        style={{ width: `${Math.min(usagePercent, 100)}%` }}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between mt-2.5">
-                      <span className="text-[11px] text-gray-400 flex items-center gap-1.5">
-                        <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
-                        Left: {formatINR(balance)}
-                      </span>
-                      <span className="text-[11px] text-gray-400 flex items-center gap-1.5">
-                        <span className="w-2 h-2 rounded-full bg-orange-400 inline-block" />
-                        Spent: {formatINR(totalSpent)}
-                      </span>
-                    </div>
-                  </div>
-                )}
-
                 {isLowBalance ? (
                   <div className="p-3 sm:p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
-                    <div className="p-1.5 bg-red-100 rounded-lg shrink-0">
-                      <AlertCircle className="w-4 h-4 text-red-600" />
-                    </div>
+                    <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
                     <div>
                       <p className="text-sm font-bold text-red-800">No Balance Remaining</p>
-                      <p className="text-xs text-red-600 mt-0.5 leading-relaxed">
-                        You cannot send any messages. {parentTenantName ? `Please contact your tenant administrator (${parentTenantName}) to recharge the account.` : "Please contact your administrator to recharge your account."}
+                      <p className="text-xs text-red-600 mt-0.5">
+                        You cannot send any messages. {parentTenantName ? `Please contact your tenant administrator (${parentTenantName}) to recharge.` : "Please recharge your account."}
                       </p>
                     </div>
                   </div>
                 ) : (
                   <div className="p-3 sm:p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-start gap-3">
-                    <div className="p-1.5 bg-emerald-100 rounded-lg shrink-0">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                    </div>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                     <div>
                       <p className="text-sm font-bold text-emerald-800">Balance Active</p>
-                      <p className="text-xs text-emerald-600 mt-0.5 leading-relaxed">
-                        Your account is funded and ready. Messages will be charged automatically from your balance on each successful delivery.
-                      </p>
+                      <p className="text-xs text-emerald-600 mt-0.5">Messages will be charged automatically from your balance.</p>
                     </div>
                   </div>
                 )}
@@ -283,202 +313,155 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* PENDING REQUEST BANNER */}
-          {isPending && (
-            <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3">
-              <Clock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5 animate-pulse" />
-              <div>
-                <p className="text-sm font-bold text-amber-800">Request Sent: Waiting for Response</p>
-                <p className="text-xs text-amber-700 mt-0.5">
-                  Your request to update WhatsApp credentials is currently pending admin approval. You cannot submit new changes until this is reviewed.
-                </p>
-              </div>
-            </div>
-          )}
-
-          {isRejected && (
-            <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-3">
-              <XCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
-              <div>
-                <p className="text-sm font-bold text-red-800">Request Rejected</p>
-                <p className="text-xs text-red-600 mt-0.5">
-                  Your last request to update credentials was rejected by the admin. You may try submitting new details again.
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* CURRENT CONFIGURATION */}
+          {/* WHATSAPP NUMBERS MANAGEMENT */}
           <div className="mb-6 sm:mb-8">
-            <div className="flex items-center gap-2 mb-4">
-              <div className="w-1.5 h-6 bg-gradient-to-b from-indigo-500 to-purple-500 rounded-full" />
-              <h2 className="text-base sm:text-lg font-bold text-gray-900">Current Configuration</h2>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <div className="w-1.5 h-6 bg-gradient-to-b from-indigo-500 to-purple-500 rounded-full" />
+                <h2 className="text-base sm:text-lg font-bold text-gray-900">WhatsApp Numbers</h2>
+              </div>
+              {isLimitActive && (
+                <span className={`text-[11px] font-bold px-3 py-1.5 rounded-full border ${
+                  isAtLimit ? "bg-red-50 border-red-200 text-red-700" : "bg-white border-slate-200 text-slate-600"
+                }`}>
+                  {waNumberLimit.usage}/{waNumberLimit.limit} Used
+                </span>
+              )}
             </div>
 
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-              <div className="px-4 sm:px-7 py-4 bg-gradient-to-r from-gray-50 to-slate-50 border-b border-gray-100 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className={`p-2.5 rounded-xl ${isFullyConfigured ? "bg-emerald-100" : "bg-amber-100"}`}>
-                    <Eye className={`w-4 h-4 ${isFullyConfigured ? "text-emerald-600" : "text-amber-600"}`} />
-                  </div>
-                  <div>
-                    <p className="font-semibold text-gray-800 text-sm">Live Status</p>
-                    <p className="text-[11px] text-gray-500 hidden sm:block">Connected account overview</p>
-                  </div>
+            {isPending && (
+              <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3">
+                <Clock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5 animate-pulse" />
+                <div>
+                  <p className="text-sm font-bold text-amber-800">Request Sent: Waiting for Response</p>
+                  <p className="text-xs text-amber-700 mt-0.5">
+                    Your request to modify your WhatsApp numbers is pending admin approval.
+                  </p>
                 </div>
-                {isFullyConfigured ? (
-                  <span className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-3 py-1.5 sm:px-3.5 rounded-full border border-emerald-200 shadow-sm">
-                    <CheckCircle2 size={13} /> Connected
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-1.5 text-[11px] font-bold text-amber-700 bg-amber-50 px-3 py-1.5 sm:px-3.5 rounded-full border border-amber-200 shadow-sm">
-                    <XCircle size={13} /> Incomplete
-                  </span>
-                )}
               </div>
+            )}
 
-              <div className="divide-y divide-gray-50">
-                <div className="px-4 sm:px-7 py-4 flex items-center justify-between group hover:bg-slate-50/50 transition-colors">
-                  <div className="flex items-center gap-3 sm:gap-3.5">
-                    <div className="p-2 bg-slate-100 rounded-lg">
-                      <Building2 size={15} className="text-slate-500" />
-                    </div>
-                    <div>
-                      <p className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">WABA ID</p>
-                      <p className={`text-sm font-medium font-mono mt-0.5 ${wabaId ? "text-gray-900" : "text-gray-300 italic"}`}>
-                        {wabaId || "Not configured"}
-                      </p>
-                    </div>
-                  </div>
-                  {wabaId && <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />}
-                </div>
+            <div className="space-y-4">
+              {whatsappNumbers.map((num) => (
+                <div key={num._id} className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${
+                  num.isActive ? "border-emerald-300 ring-2 ring-emerald-100" : "border-gray-200"
+                }`}>
+                  <div className="p-5">
+                    <div className="flex justify-between items-start mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className={`p-2 rounded-lg ${num.isActive ? "bg-emerald-100" : "bg-slate-100"}`}>
+                          <Phone className={`w-5 h-5 ${num.isActive ? "text-emerald-600" : "text-slate-500"}`} />
+                        </div>
+                        <div>
+                          <h3 className="font-bold text-gray-900">{num.name}</h3>
+                          <p className="text-[11px] text-gray-500 font-mono">{num.whatsappPhoneNumberId || "No ID"}</p>
+                        </div>
+                      </div>
 
-                <div className="px-4 sm:px-7 py-4 flex items-center justify-between group hover:bg-slate-50/50 transition-colors">
-                  <div className="flex items-center gap-3 sm:gap-3.5">
-                    <div className="p-2 bg-slate-100 rounded-lg">
-                      <Phone size={15} className="text-slate-500" />
-                    </div>
-                    <div>
-                      <p className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">Phone Number ID</p>
-                      <p className={`text-sm font-medium font-mono mt-0.5 ${phoneNumberId ? "text-gray-900" : "text-gray-300 italic"}`}>
-                        {phoneNumberId || "Not configured"}
-                      </p>
-                    </div>
-                  </div>
-                  {phoneNumberId && <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />}
-                </div>
-
-                <div className="px-4 sm:px-7 py-4 flex items-center justify-between group hover:bg-slate-50/50 transition-colors">
-                  <div className="flex items-center gap-3 sm:gap-3.5">
-                    <div className="p-2 bg-slate-100 rounded-lg">
-                      <KeyRound size={15} className="text-slate-500" />
-                    </div>
-                    <div>
-                      <p className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">Access Token</p>
-                      <p className={`text-sm font-medium mt-0.5 flex items-center gap-1.5 ${
-                        hasRealToken ? "text-emerald-600" : "text-red-500"
-                      }`}>
-                        {hasRealToken ? (
-                          <><ShieldCheck size={14} /> Secured</>
+                      <div className="flex items-center gap-2">
+                        {num.isActive ? (
+                          <span className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-full border border-emerald-200">
+                            <CheckCircle2 size={12} /> Active
+                          </span>
                         ) : (
-                          <><XCircle size={14} /> Missing</>
+                          <button
+                            onClick={() => handleSwitchNumber(num._id, num.name)}
+                            disabled={switchingId === num._id}
+                            className="flex items-center gap-1.5 text-[11px] font-bold text-indigo-700 bg-indigo-50 px-3 py-1.5 rounded-full border border-indigo-200 hover:bg-indigo-100 transition-all disabled:opacity-50"
+                          >
+                            {switchingId === num._id ? <Loader2 size={12} className="animate-spin" /> : <ArrowRight size={12} />}
+                            Use This
+                          </button>
                         )}
-                      </p>
+                        
+                        {/* EDIT BUTTON */}
+                        <button
+                          onClick={() => handleEditClick(num)}
+                          disabled={isPending}
+                          className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-50"
+                          title="Edit Number"
+                        >
+                          <Pencil size={16} />
+                        </button>
+
+                        {/* DELETE BUTTON */}
+                        <button
+                          onClick={() => handleDeleteNumber(num._id, num.name)}
+                          disabled={deletingId === num._id || isPending}
+                          className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
+                          title="Delete Number"
+                        >
+                          {deletingId === num._id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 text-xs">
+                      <div>
+                        <p className="text-gray-400 font-bold uppercase mb-1 flex items-center gap-1"><Building2 size={12} /> WABA ID</p>
+                        <p className="font-mono text-gray-700 truncate">{num.wabaId || "N/A"}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-400 font-bold uppercase mb-1 flex items-center gap-1"><KeyRound size={12} /> Token</p>
+                        <p className="font-mono text-gray-700 flex items-center gap-1">
+                          {num.whatsappAccessToken ? <><ShieldCheck size={12} className="text-emerald-500" /> Secured</> : "Missing"}
+                        </p>
+                      </div>
                     </div>
                   </div>
-                  {hasRealToken && <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />}
                 </div>
-              </div>
-            </div>
-          </div>
+              ))}
 
-          {/* UPDATE CONFIGURATION */}
-          <div className="mb-6 sm:mb-8">
-            <div className="flex items-center gap-2 mb-4">
-              <div className="w-1.5 h-6 bg-gradient-to-b from-violet-500 to-purple-500 rounded-full" />
-              <h2 className="text-base sm:text-lg font-bold text-gray-900">Update Configuration</h2>
-            </div>
-
-            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-              <div className="px-4 sm:px-7 py-4 bg-gradient-to-r from-gray-50 to-slate-50 border-b border-gray-100 flex items-center gap-3">
-                <div className="p-2.5 bg-violet-100 rounded-xl">
-                  <Building2 className="w-4 h-4 text-violet-600" />
+              {/* Add/Edit Form */}
+              {!showForm ? (
+                <button
+                  onClick={() => { resetForm(); setShowForm(true); }}
+                  disabled={isAtLimit || isPending}
+                  className="w-full p-5 border-2 border-dashed border-slate-300 rounded-2xl text-slate-500 hover:bg-slate-50 transition-all flex items-center justify-center gap-2 font-bold text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isAtLimit ? <AlertCircle size={16} /> : <PlusCircle size={16} />}
+                  {isAtLimit ? "Number Limit Reached" : isPending ? "Pending Approval..." : "Add New Number"}
+                </button>
+              ) : (
+                <div className="bg-white rounded-2xl border border-violet-200 shadow-sm p-5">
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="font-bold text-gray-900 text-sm flex items-center gap-2">
+                      {editingId ? <Pencil size={16} className="text-violet-500" /> : <PlusCircle size={16} className="text-violet-500" />}
+                      {editingId ? "Edit WhatsApp Number" : "Add New WhatsApp Number"}
+                    </h3>
+                    <button onClick={resetForm} className="text-slate-400 hover:text-red-500"><XCircle size={18} /></button>
+                  </div>
+                  <form onSubmit={handleSubmit} className="space-y-4">
+                    <div>
+                      <label className="text-xs font-bold text-gray-600 mb-1.5 block">Number Name (e.g. Support Line)</label>
+                      <input type="text" value={newNumName} onChange={(e) => setNewNumName(e.target.value)} required className="w-full px-4 py-2.5 bg-slate-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-gray-600 mb-1.5 block">WABA ID</label>
+                      <input type="text" value={newWabaId} onChange={(e) => setNewWabaId(e.target.value)} required className="w-full px-4 py-2.5 bg-slate-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 font-mono" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-gray-600 mb-1.5 block">Phone Number ID</label>
+                      <input type="text" value={newPhoneId} onChange={(e) => setNewPhoneId(e.target.value)} required className="w-full px-4 py-2.5 bg-slate-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 font-mono" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-gray-600 mb-1.5 block">Access Token</label>
+                      <input 
+                        type="password" 
+                        value={newAccessToken} 
+                        onChange={(e) => setNewAccessToken(e.target.value)} 
+                        placeholder={editingId ? "Leave blank to keep current token" : "Paste your EAAxxxxxx token"} 
+                        required={!editingId} 
+                        className="w-full px-4 py-2.5 bg-slate-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 font-mono" 
+                      />
+                    </div>
+                    <button type="submit" disabled={saving} className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50">
+                      {saving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />} 
+                      {editingId ? "Send Edit for Approval" : "Send for Approval"}
+                    </button>
+                  </form>
                 </div>
-                <div>
-                  <p className="font-semibold text-gray-800 text-sm">Meta Developer Credentials</p>
-                  <p className="text-[11px] text-gray-500 hidden sm:block">Changes require admin approval before taking effect</p>
-                </div>
-              </div>
-
-              <form onSubmit={handleSave} className="p-4 sm:p-7 space-y-6 sm:space-y-7">
-                <div>
-                  <label className="flex items-center gap-2 text-sm font-semibold text-gray-700 mb-2">
-                    <Building2 size={14} className="text-gray-400" />
-                    WhatsApp Business Account ID
-                  </label>
-                  <input
-                    type="text"
-                    value={wabaId}
-                    onChange={(e) => setWabaId(e.target.value)}
-                    placeholder="e.g., 102938475610"
-                    disabled={isPending}
-                    className="w-full px-4 py-3 bg-slate-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 focus:bg-white transition-all text-sm shadow-[inset_0_1px_3px_rgba(0,0,0,0.04)] disabled:opacity-60 disabled:cursor-not-allowed"
-                  />
-                </div>
-
-                <div>
-                  <label className="flex items-center gap-2 text-sm font-semibold text-gray-700 mb-2">
-                    <Phone size={14} className="text-gray-400" />
-                    Phone Number ID
-                  </label>
-                  <input
-                    type="text"
-                    value={phoneNumberId}
-                    onChange={(e) => setPhoneNumberId(e.target.value)}
-                    placeholder="e.g., 108219xxxxxxxxxx"
-                    disabled={isPending}
-                    className="w-full px-4 py-3 bg-slate-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 focus:bg-white transition-all text-sm shadow-[inset_0_1px_3px_rgba(0,0,0,0.04)] disabled:opacity-60 disabled:cursor-not-allowed"
-                  />
-                </div>
-
-                <div>
-                  <label className="flex items-center gap-2 text-sm font-semibold text-gray-700 mb-2">
-                    <KeyRound size={14} className="text-gray-400" />
-                    Permanent Access Token
-                  </label>
-                  <input
-                    type="password"
-                    value={accessToken}
-                    onChange={(e) => setAccessToken(e.target.value)}
-                    placeholder={hasRealToken ? "Leave blank to keep current token" : "Paste your EAAxxxxxx token"}
-                    disabled={isPending}
-                    className="w-full px-4 py-3 bg-slate-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 focus:bg-white transition-all text-sm shadow-[inset_0_1px_3px_rgba(0,0,0,0.04)] disabled:opacity-60 disabled:cursor-not-allowed"
-                  />
-                  <p className="text-[11px] mt-2">
-                    {hasRealToken ? (
-                      <span className="flex items-center gap-1 text-emerald-600">
-                        <ShieldCheck size={11} /> Token is securely saved. Paste a new one only to update.
-                      </span>
-                    ) : (
-                      <span className="text-gray-400">Required to send messages on your behalf.</span>
-                    )}
-                  </p>
-                </div>
-
-                <div className="pt-5 border-t border-gray-100 flex flex-col sm:flex-row items-center justify-between gap-4">
-                  <p className="text-[11px] text-gray-400 text-center sm:text-left">
-                    {isPending ? "Waiting for admin approval..." : "Changes will be sent for admin approval"}
-                  </p>
-                  <button
-                    type="submit"
-                    disabled={saving || isPending}
-                    className="w-full sm:w-auto flex items-center justify-center gap-2.5 px-7 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white font-semibold rounded-xl shadow-md shadow-emerald-200 transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:shadow-lg hover:shadow-emerald-200/50"
-                  >
-                    {saving ? <Loader2 size={17} className="animate-spin" /> : <Save size={17} />}
-                    {saving ? "Sending..." : "Send for Approval"}
-                  </button>
-                </div>
-              </form>
+              )}
             </div>
           </div>
 
