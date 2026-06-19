@@ -4,6 +4,7 @@ import { connectDB } from "@/lib/mongodb";
 import Workflow from "@/models/Workflow";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { decrementUsage } from "@/lib/limits";
 
 export async function DELETE(req: Request) {
   try {
@@ -16,12 +17,10 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
     }
 
-    // 🔥 MANUAL URL PARSING (this bypasses Next.js params bug completely)
+    // MANUAL URL PARSING (this bypasses Next.js params bug completely)
     const url = new URL(req.url);
     const parts = url.pathname.split("/");
     const id = parts[parts.length - 1];
-
-    console.log("🗑️ Extracted ID:", id);
 
     if (!id || id === "workflow") {
       return NextResponse.json(
@@ -42,6 +41,9 @@ export async function DELETE(req: Request) {
         { status: 404 }
       );
     }
+
+    // ✅ DECREMENT USAGE AFTER SUCCESSFUL DELETION
+    await decrementUsage(userId, "workflows");
 
     return NextResponse.json({
       success: true,
