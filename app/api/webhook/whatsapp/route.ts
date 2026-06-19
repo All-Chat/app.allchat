@@ -184,12 +184,12 @@ export async function POST(req: Request) {
     }
 
     /* ══════════════════════════════════════════════════════════════════════════
-       SECTION A: HANDLE MESSAGE STATUSES & DYNAMIC BILLING (WAMID MATCH)
+       SECTION A: HANDLE MESSAGE STATUSES & DYNAMIC BILLING REFUNDS
        ══════════════════════════════════════════════════════════════════════════ */
     if (value.statuses && value.statuses.length > 0) {
       try {
         const statusUpdate = value.statuses[0];
-        const wamid = statusUpdate.id; // 🔴 MUST MATCH BY WAMID TO PREVENT DOUBLE CHARGING
+        const wamid = statusUpdate.id; // Match by exact WhatsApp Message ID
         
         let statusPhone = statusUpdate.recipient_id;
         const newStatus = statusUpdate.status;
@@ -233,23 +233,17 @@ export async function POST(req: Request) {
 
             if (statusPriority[finalStatus] > (statusPriority[currentItem.status] || 0)) {
               let balanceAdjustment = 0;
-              // 🔴 GET EXACT CATEGORY PRICE
               const cost = ownerUser ? getPriceForCategory(ownerUser, camp.templateCategory || "MARKETING") : 0;
 
-              // 🔴 ONLY DEDUCT IF STATUS IS DELIVERED (OR READ) AND HAS NOT BEEN CHARGED YET
-              if ((finalStatus === "delivered" || finalStatus === "read") && !currentItem.charged) {
-                balanceAdjustment -= cost;
-                currentItem.charged = true;
-                camp.totalDeducted = (camp.totalDeducted || 0) + cost;
-              } 
-              // 🔴 REFUND IF IT FAILS AND WAS PREVIOUSLY CHARGED
-              else if ((finalStatus === "failed" || finalStatus === "invalid") && currentItem.charged) {
+              // Balance is already deducted in start/route.ts. 
+              // We ONLY refund here if the message FAILS.
+              if ((finalStatus === "failed" || finalStatus === "invalid") && currentItem.charged) {
                 balanceAdjustment += cost;
                 currentItem.charged = false;
                 camp.totalDeducted = Math.max(0, (camp.totalDeducted || 0) - cost);
               }
 
-              currentItem.status = finalStatus;
+              currentItem.status = finalStatus; // Update to delivered, read, etc.
               camp.markModified("reportData");
               await camp.save();
 
