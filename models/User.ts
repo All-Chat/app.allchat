@@ -18,18 +18,29 @@ const UserSchema = new mongoose.Schema({
   name: { type: String, required: true, unique: true },
   password: { type: String, required: true },
   
-  // ==========================================
-  // MULTI-TENANT CONFIGURATION
-  // ==========================================
   isTenant: { type: Boolean, default: false },
-  tenantId: { type: String, default: null, index: true }, // The unique ID for the tenant's workspace
-  parentTenantId: { type: String, default: null, index: true }, // If this user is a sub-user, this points to the tenant's tenantId
-  maxSubUsers: { type: Number, default: 0 }, // How many sub-users this tenant can create
-  // ==========================================
+  tenantId: { type: String, default: null, index: true },
+  parentTenantId: { type: String, default: null, index: true },
+  maxSubUsers: { type: Number, default: 0 },
 
+  // ==========================================
+  // ACTIVE WHATSAPP CONFIG (Synced from whatsappNumbers)
+  // ==========================================
   wabaId: { type: String, default: null },
   whatsappPhoneNumberId: { type: String, default: null },
   whatsappAccessToken: { type: String, default: null },
+
+  // ==========================================
+  // MULTIPLE WHATSAPP NUMBERS
+  // ==========================================
+  whatsappNumbers: [{
+    name: { type: String, default: "Default Number" },
+    wabaId: { type: String, default: null },
+    whatsappPhoneNumberId: { type: String, default: null },
+    whatsappAccessToken: { type: String, default: null },
+    isActive: { type: Boolean, default: false }
+  }],
+  // ==========================================
   
   balance: { type: Number, default: 0 },
   totalRecharged: { type: Number, default: 0 },
@@ -57,6 +68,7 @@ const UserSchema = new mongoose.Schema({
     campaigns: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
     optNumbers: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
     forms: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+    whatsappNumbers: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) }, // NEW LIMIT
   },
   usage: {
     tags: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
@@ -66,6 +78,7 @@ const UserSchema = new mongoose.Schema({
     campaigns: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
     optNumbers: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
     forms: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
+    whatsappNumbers: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) }, // NEW USAGE
   },
 }, {
   timestamps: true,
