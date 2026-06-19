@@ -45,6 +45,20 @@ const formatINR = (amount: number) =>
     minimumFractionDigits: 2,
   }).format(amount);
 
+// Helper to get category badge color
+const getCategoryColor = (category: string) => {
+  switch (category?.toUpperCase()) {
+    case "MARKETING":
+      return "bg-orange-50 text-orange-700 border-orange-200";
+    case "UTILITY":
+      return "bg-blue-50 text-blue-700 border-blue-200";
+    case "AUTHENTICATION":
+      return "bg-purple-50 text-purple-700 border-purple-200";
+    default:
+      return "bg-gray-50 text-gray-700 border-gray-200";
+  }
+};
+
 const getCampaignLiveStats = (reportData: ReportItem[] = []) => {
   let deliveredRead = 0, sent = 0, failedInvalid = 0, pending = 0;
   reportData.forEach(d => {
@@ -93,6 +107,7 @@ export default function CampaignList() {
     if (status === "authenticated") {
       loadCampaigns();
       fetchBilling();
+      // 🔴 DYNAMIC REFRESH: Polls every 3 seconds to update delivered count and amount spent
       const interval = setInterval(loadCampaigns, 3000);
       return () => clearInterval(interval);
     } else if (status === "unauthenticated") { router.push("/"); }
@@ -281,6 +296,7 @@ export default function CampaignList() {
         templateName: c.templateName,
         variables: c.variables || [],
         languageCode: c.languageCode || "en",
+        category: c.templateCategory || "MARKETING", // Pass category for test send
       };
       if (c.mediaUrl) { payload.mediaUrl = c.mediaUrl; payload.headerMediaType = c.mediaType; }
 
@@ -342,7 +358,12 @@ export default function CampaignList() {
               <button onClick={() => setViewCampaign(null)} className="absolute top-4 right-4 text-white/80 hover:text-white"><X size={20} /></button>
               <h2 className="text-xl sm:text-2xl font-bold pr-8">{viewCampaign.name}</h2>
               <p className="text-sm text-white/80 mt-1">{viewCampaign.templateName} • {viewCampaign.templateCategory}</p>
-              <div className="mt-2 inline-flex items-center gap-1.5 bg-white/20 px-2.5 py-1 rounded-lg text-xs font-bold">🌐 {viewCampaign.languageCode || "en"}</div>
+              <div className="mt-2 flex gap-2">
+                <div className="inline-flex items-center gap-1.5 bg-white/20 px-2.5 py-1 rounded-lg text-xs font-bold">🌐 {viewCampaign.languageCode || "en"}</div>
+                <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold border ${getCategoryColor(viewCampaign.templateCategory)}`}>
+                  📋 {viewCampaign.templateCategory || "MARKETING"}
+                </div>
+              </div>
             </div>
             
             <div className="p-5 sm:p-6 space-y-5 overflow-y-auto">
@@ -520,6 +541,11 @@ export default function CampaignList() {
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
                             🌐 {c.languageCode || "en"}
                           </span>
+                          {c.templateCategory && (
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${getCategoryColor(c.templateCategory)}`}>
+                              📋 {c.templateCategory}
+                            </span>
+                          )}
                         </div>
                         <p className="text-xs text-slate-500 mt-0.5">
                           {c.templateName} • Created {new Date(c.createdAt).toLocaleDateString()}
