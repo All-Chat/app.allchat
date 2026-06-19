@@ -8,6 +8,7 @@ import Sidebar from "@/components/Sidebar";
 import {
   Send, Phone, FileText, Loader2, AlertCircle,
   Image, Video, Upload, X, Variable, Wallet,
+  Gauge, Infinity as InfinityIcon, // ✅ LIMIT ADDED
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -29,6 +30,12 @@ export default function SendMessagePage() {
   const [balance, setBalance] = useState(0);
   const [canSendMessage, setCanSendMessage] = useState(true);
 
+  // ✅ LIMIT ADDED: Limit State
+  const [testMessageLimit, setTestMessageLimit] = useState<any>(null);
+  const isLimitActive = testMessageLimit && testMessageLimit.limit.period !== "unlimited" && testMessageLimit.limit.max !== -1;
+  const usagePercent = isLimitActive ? Math.min(100, Math.round(((testMessageLimit?.usage?.count || 0) / testMessageLimit.limit.max) * 100)) : 0;
+  const isAtLimit = isLimitActive && !testMessageLimit.allowed;
+
   const formatINR = (amount: number) =>
     new Intl.NumberFormat("en-IN", {
       style: "currency",
@@ -36,7 +43,6 @@ export default function SendMessagePage() {
       minimumFractionDigits: 2,
     }).format(amount);
 
-  // Helper to get category badge color
   const getCategoryColor = (category: string) => {
     switch (category?.toUpperCase()) {
       case "MARKETING":
@@ -64,10 +70,31 @@ export default function SendMessagePage() {
     }
   };
 
+  // ✅ LIMIT ADDED: Fetch limits function
+  const fetchLimits = async () => {
+    try {
+      const res = await fetch("/api/user/limits?resource=testMessages");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setTestMessageLimit({
+            limit: { max: data.limit, period: data.period },
+            usage: { count: data.currentUsage || 0, resetAt: null },
+            remaining: data.remaining,
+            allowed: data.allowed,
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Failed to fetch limits", error);
+    }
+  };
+
   useEffect(() => {
     if (status === "authenticated") {
       fetchTemplates();
       fetchBilling();
+      fetchLimits(); // ✅ LIMIT ADDED
     } else if (status === "unauthenticated") {
       window.location.href = "/signin";
     }
@@ -182,6 +209,10 @@ export default function SendMessagePage() {
       toast.error("Insufficient balance. Please recharge your account to send messages.");
       return;
     }
+    if (isAtLimit) { // ✅ LIMIT ADDED
+      toast.error("Test message limit reached. Contact admin to increase your limit.");
+      return;
+    }
 
     setSending(true);
     try {
@@ -189,7 +220,6 @@ export default function SendMessagePage() {
       formData.append("phone", phone.replace(/\+/g, ""));
       formData.append("templateName", selectedTemplate.name);
       formData.append("languageCode", selectedTemplate.language || "en");
-      // 🔴 PASS CATEGORY for category-based pricing
       formData.append("category", selectedTemplate.category || "MARKETING");
 
       if (variables.length > 0) {
@@ -220,6 +250,16 @@ export default function SendMessagePage() {
         return;
       }
 
+      // ✅ LIMIT ADDED: Handle 429 limit exceeded
+      if (res.status === 429) {
+        const data429 = await res.json();
+        toast.error(data429.message || "Test message limit reached", { autoClose: 8000 });
+        if (data429.limitInfo) {
+          setTestMessageLimit((prev: any) => prev ? { ...prev, allowed: false, usage: { count: data429.limitInfo.currentUsage, resetAt: null }, remaining: 0 } : prev);
+        }
+        return;
+      }
+
       const data = await res.json();
 
       if (!res.ok) {
@@ -232,10 +272,10 @@ export default function SendMessagePage() {
         return;
       }
 
-      // Show success message without showing any price details
       toast.success("Message sent successfully! 🚀");
 
       fetchBilling();
+      fetchLimits(); // ✅ LIMIT ADDED: Refresh limits after sending
 
       setPhone("");
       setSelectedTemplate(null);
@@ -264,10 +304,8 @@ export default function SendMessagePage() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
-      {/* Sidebar Component - Handles Mobile Subnavbar automatically */}
       <Sidebar />
 
-      {/* Main Content Area */}
       <div className="md:ml-64 p-4 sm:p-6 lg:p-8">
         <div className="max-w-2xl mx-auto">
 
@@ -282,23 +320,65 @@ export default function SendMessagePage() {
               </p>
             </div>
 
-            {/* BALANCE DISPLAY */}
-            <div className={`flex items-center gap-3 px-4 sm:px-5 py-2 sm:py-3 rounded-xl border shadow-sm shrink-0 ${
-              !canSendMessage
-                ? "bg-red-50 border-red-200"
-                : "bg-emerald-50 border-emerald-200"
-            }`}>
-              <Wallet className={`w-4 h-4 sm:w-5 sm:h-5 ${!canSendMessage ? "text-red-500" : "text-emerald-500"}`} />
-              <div>
-                <p className={`text-[9px] sm:text-[10px] font-bold uppercase tracking-widest ${
-                  !canSendMessage ? "text-red-500" : "text-emerald-600"
-                }`}>Balance</p>
-                <p className={`text-base sm:text-lg font-extrabold ${
-                  !canSendMessage ? "text-red-700" : "text-emerald-700"
-                }`}>{formatINR(balance)}</p>
+            <div className="flex items-center gap-3">
+              {/* ✅ LIMIT ADDED: Badge */}
+              {testMessageLimit && (
+                <div className={`hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold shrink-0 ${
+                  isAtLimit ? "bg-red-50 border-red-200 text-red-700" :
+                  usagePercent >= 80 ? "bg-amber-50 border-amber-200 text-amber-700" :
+                  isLimitActive ? "bg-white border-slate-200 text-slate-600" :
+                  "bg-emerald-50 border-emerald-200 text-emerald-600"
+                }`}>
+                  {isLimitActive ? (
+                    <><Gauge size={14} /> {testMessageLimit.usage.count}/{testMessageLimit.limit.max} {testMessageLimit.limit.period !== "total" && `/${testMessageLimit.limit.period}`}</>
+                  ) : (
+                    <><InfinityIcon size={14} /> Unlimited</>
+                  )}
+                </div>
+              )}
+
+              {/* BALANCE DISPLAY */}
+              <div className={`flex items-center gap-3 px-4 sm:px-5 py-2 sm:py-3 rounded-xl border shadow-sm shrink-0 ${
+                !canSendMessage
+                  ? "bg-red-50 border-red-200"
+                  : "bg-emerald-50 border-emerald-200"
+              }`}>
+                <Wallet className={`w-4 h-4 sm:w-5 sm:h-5 ${!canSendMessage ? "text-red-500" : "text-emerald-500"}`} />
+                <div>
+                  <p className={`text-[9px] sm:text-[10px] font-bold uppercase tracking-widest ${
+                    !canSendMessage ? "text-red-500" : "text-emerald-600"
+                  }`}>Balance</p>
+                  <p className={`text-base sm:text-lg font-extrabold ${
+                    !canSendMessage ? "text-red-700" : "text-emerald-700"
+                  }`}>{formatINR(balance)}</p>
+                </div>
               </div>
             </div>
           </div>
+
+          {/* ✅ LIMIT ADDED: Warning Bar */}
+          {isLimitActive && (
+            <div className={`mb-6 rounded-xl p-3 flex items-center gap-3 text-sm border ${
+              isAtLimit ? "bg-red-50 border-red-200 text-red-700" :
+              usagePercent >= 80 ? "bg-amber-50 border-amber-200 text-amber-700" :
+              "bg-blue-50 border-blue-200 text-blue-600"
+            }`}>
+              {isAtLimit ? <AlertCircle size={16} className="shrink-0" /> : <Gauge size={16} className="shrink-0" />}
+              <div className="flex-1">
+                <span className="font-bold">
+                  {isAtLimit ? "Test message limit reached!" : usagePercent >= 80 ? "Approaching test message limit" : "Test message usage"}
+                </span>
+                <span className="ml-2 opacity-80">
+                  {testMessageLimit?.usage.count} of {testMessageLimit?.limit.max} messages used
+                  {testMessageLimit?.limit.period !== "total" && ` per ${testMessageLimit?.limit.period}`}
+                </span>
+              </div>
+              <div className="w-24 h-2 bg-white/60 rounded-full overflow-hidden shrink-0">
+                <div className={`h-full rounded-full transition-all ${isAtLimit ? "bg-red-500" : usagePercent >= 80 ? "bg-amber-500" : "bg-emerald-500"}`} style={{ width: `${usagePercent}%` }} />
+              </div>
+              <span className="text-xs font-bold shrink-0">{usagePercent}%</span>
+            </div>
+          )}
 
           {/* LOW BALANCE WARNING BANNER */}
           {!canSendMessage && (
@@ -342,7 +422,8 @@ export default function SendMessagePage() {
                   placeholder="e.g. 919876543210"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
-                  className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition shadow-sm text-sm"
+                  disabled={isAtLimit} // ✅ LIMIT ADDED
+                  className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition shadow-sm text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                 />
                 <p className="text-[11px] sm:text-xs text-gray-400 mt-2 flex items-center gap-1">
                   <AlertCircle className="w-3 h-3" />
@@ -365,7 +446,8 @@ export default function SendMessagePage() {
                   <select
                     value={dropdownValue}
                     onChange={(e) => handleTemplateChange(e.target.value)}
-                    className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition appearance-none cursor-pointer shadow-sm text-sm"
+                    disabled={isAtLimit} // ✅ LIMIT ADDED
+                    className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition appearance-none cursor-pointer shadow-sm text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <option value="" disabled>
                       {templates.length > 0
@@ -421,7 +503,7 @@ export default function SendMessagePage() {
                     Upload {headerMediaType.charAt(0) + headerMediaType.slice(1).toLowerCase()} Media
                   </label>
                   {!mediaFile ? (
-                    <label className="flex flex-col items-center justify-center w-full h-36 sm:h-40 border-2 border-dashed border-gray-300 rounded-xl cursor-pointer bg-gray-50 hover:bg-gray-100 transition">
+                    <label className={`flex flex-col items-center justify-center w-full h-36 sm:h-40 border-2 border-dashed border-gray-300 rounded-xl cursor-pointer bg-gray-50 hover:bg-gray-100 transition ${isAtLimit ? "opacity-50 pointer-events-none" : ""}`}>
                       <div className="flex flex-col items-center justify-center pt-5 pb-6 px-4">
                         <Upload className="w-8 h-8 text-gray-400 mb-2" />
                         <p className="mb-1 text-sm text-gray-500 font-medium text-center">
@@ -489,7 +571,8 @@ export default function SendMessagePage() {
                         placeholder={`Variable {{${i + 1}}}`}
                         value={v}
                         onChange={(e) => handleVariableChange(i, e.target.value)}
-                        className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition shadow-sm text-sm"
+                        disabled={isAtLimit} // ✅ LIMIT ADDED
+                        className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition shadow-sm text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                       />
                     ))}
                   </div>
@@ -500,13 +583,22 @@ export default function SendMessagePage() {
               <div className="pt-2 sm:pt-4">
                 <button
                   onClick={sendMessage}
-                  disabled={sending || loading || templates.length === 0 || !canSendMessage}
-                  className="w-full flex items-center justify-center gap-2 px-4 sm:px-6 py-3.5 sm:py-4 bg-green-600 text-white font-bold rounded-xl shadow-lg hover:bg-green-700 transition-all duration-300 hover:shadow-xl hover:shadow-green-500/20 disabled:opacity-60 disabled:cursor-not-allowed text-sm sm:text-base"
+                  disabled={sending || loading || templates.length === 0 || !canSendMessage || isAtLimit} // ✅ LIMIT ADDED
+                  className={`w-full flex items-center justify-center gap-2 px-4 sm:px-6 py-3.5 sm:py-4 font-bold rounded-xl shadow-lg transition-all duration-300 hover:shadow-xl hover:shadow-green-500/20 disabled:opacity-60 disabled:cursor-not-allowed text-sm sm:text-base ${
+                    isAtLimit
+                      ? "bg-slate-400 text-white"
+                      : "bg-green-600 text-white hover:bg-green-700"
+                  }`}
                 >
                   {sending ? (
                     <>
                       <Loader2 className="w-5 h-5 animate-spin" />
                       Sending Message...
+                    </>
+                  ) : isAtLimit ? ( // ✅ LIMIT ADDED
+                    <>
+                      <AlertCircle className="w-5 h-5" />
+                      Limit Reached — Contact Admin
                     </>
                   ) : !canSendMessage ? (
                     <>
