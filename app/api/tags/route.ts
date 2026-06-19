@@ -4,6 +4,7 @@ import { connectDB } from "@/lib/mongodb";
 import Tag from "@/models/Tag";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { checkLimit, incrementUsage } from "@/lib/limits";
 
 export async function GET() {
   try {
@@ -32,9 +33,27 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // 🔴 READ THE NEW FIELDS FROM THE REQUEST BODY
+    // ✅ CHECK LIMIT BEFORE CREATING
+    const limitCheck = await checkLimit(userId, "tags");
+    if (!limitCheck.allowed) {
+      return NextResponse.json(
+        {
+          error: `Tag limit reached. You have used ${limitCheck.currentUsage}/${limitCheck.limit} tags per ${limitCheck.period}. Contact admin to increase your limit.`,
+          limitExceeded: true,
+          limitInfo: {
+            resource: "tags",
+            currentUsage: limitCheck.currentUsage,
+            limit: limitCheck.limit,
+            period: limitCheck.period,
+            remaining: limitCheck.remaining,
+          },
+        },
+        { status: 429 }
+      );
+    }
+
     const { name, isCampaignSpecific, campaignId, campaignName } = await req.json();
-    
+
     if (!name || !name.trim()) {
       return NextResponse.json({ error: "Tag name is required" }, { status: 400 });
     }
@@ -50,14 +69,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Tag already exists" }, { status: 400 });
     }
 
-    // 🔴 SAVE THE NEW FIELDS TO DATABASE
-    const tag = await Tag.create({ 
-      userId, 
+    const tag = await Tag.create({
+      userId,
       name: name.trim(),
       isCampaignSpecific: isCampaignSpecific || false,
       campaignId: isCampaignSpecific ? campaignId : null,
-      campaignName: isCampaignSpecific ? campaignName : null
+      campaignName: isCampaignSpecific ? campaignName : null,
     });
+
+    // ✅ INCREMENT USAGE AFTER SUCCESSFUL CREATION
+    await incrementUsage(userId, "tags");
 
     return NextResponse.json({ success: true, tag });
   } catch (error: any) {
