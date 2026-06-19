@@ -4,6 +4,7 @@ import { connectDB } from "@/lib/mongodb";
 import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { getPriceForCategory } from "@/lib/billing";
 
 export async function POST(req: Request) {
   try {
@@ -25,25 +26,11 @@ export async function POST(req: Request) {
     const ACCESS_TOKEN = user.whatsappAccessToken || process.env.META_ACCESS_TOKEN;
 
     if (!PHONE_NUMBER_ID || !ACCESS_TOKEN) {
-      return NextResponse.json({ success: false, message: "WhatsApp credentials not configured" }, { status: 400 });
-    }
-
-    // ==========================================
-    // 🔴 BALANCE CHECK — BEFORE ANY PROCESSING
-    // ==========================================
-    const pricePerMessage = user.pricePerMessage || 0;
-    const currentBalance = user.balance || 0;
-
-    if (pricePerMessage > 0 && currentBalance < pricePerMessage) {
       return NextResponse.json(
-        {
-          success: false,
-          message: "Insufficient balance. Please recharge your account to send messages.",
-        },
-        { status: 402 }
+        { success: false, message: "WhatsApp credentials not configured" },
+        { status: 400 }
       );
     }
-    // ==========================================
 
     // ==========================================
     // 3. SMART PAYLOAD PARSING (FormData OR JSON)
@@ -56,6 +43,7 @@ export async function POST(req: Request) {
     let headerMediaType: string;
     let file: File | null = null;
     let mediaUrl: string | null = null;
+    let category: string = "MARKETING"; // default
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await req.formData();
@@ -66,6 +54,7 @@ export async function POST(req: Request) {
       headerMediaType = (formData.get("headerMediaType") as string) || "none";
       file = formData.get("file") as File | null;
       mediaUrl = (formData.get("mediaUrl") as string) || null;
+      category = (formData.get("category") as string) || "MARKETING";
     } else {
       const body = await req.json();
       phone = body.phone || "";
@@ -74,6 +63,7 @@ export async function POST(req: Request) {
       variables = body.variables || [];
       headerMediaType = body.headerMediaType || body.mediaType || "none";
       mediaUrl = body.mediaUrl || null;
+      category = body.category || "MARKETING";
       file = null;
     }
 
@@ -83,6 +73,36 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
+
+    // ==========================================
+    // 🔴 CATEGORY-BASED PRICING
+    // ==========================================
+    // Normalize category
+    category = (category || "MARKETING").toUpperCase().trim();
+
+    const VALID_CATEGORIES = ["MARKETING", "UTILITY", "AUTHENTICATION"];
+    if (!VALID_CATEGORIES.includes(category)) {
+      console.warn(`⚠️ Unknown category "${category}", defaulting to MARKETING`);
+      category = "MARKETING";
+    }
+
+    // Determine price based on category
+    const messagePrice = getPriceForCategory(user, category);
+    const currentBalance = user.balance || 0;
+
+    console.log(`💰 Category: ${category} | Price: ₹${messagePrice} | Balance: ₹${currentBalance}`);
+
+    // Balance check
+    if (messagePrice > 0 && currentBalance < messagePrice) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: `Insufficient balance for ${category} message. Required: ₹${messagePrice}, Available: ₹${currentBalance}. Please recharge your account.`,
+        },
+        { status: 402 }
+      );
+    }
+    // ==========================================
 
     const sanitizedPhone = phone.replace(/\+/g, "");
 
@@ -96,7 +116,10 @@ export async function POST(req: Request) {
     }
     if (headerMediaType !== "none" && !VALID_MEDIA_TYPES.includes(headerMediaType)) {
       return NextResponse.json(
-        { success: false, message: `Invalid headerMediaType: "${headerMediaType}". Must be one of: none, image, video, document` },
+        {
+          success: false,
+          message: `Invalid headerMediaType: "${headerMediaType}". Must be one of: none, image, video, document`,
+        },
         { status: 400 }
       );
     }
@@ -108,7 +131,7 @@ export async function POST(req: Request) {
       mediaUrl = null;
     }
 
-    console.log(`📤 Sending template "${templateName}" to ${sanitizedPhone} with language: "${languageCode}"`);
+    console.log(`📤 Sending ${category} template "${templateName}" to ${sanitizedPhone} with language: "${languageCode}" | Price: ₹${messagePrice}`);
 
     // ==========================================
     // 4. Upload Media if a file exists
@@ -235,12 +258,15 @@ export async function POST(req: Request) {
 
     // ==========================================
     // 🔴 DEDUCT BALANCE AFTER SUCCESSFUL SEND
+    // Based on category-specific price
     // ==========================================
-    if (pricePerMessage > 0) {
-      const newBalance = Math.round((currentBalance - pricePerMessage) * 100) / 100;
+    if (messagePrice > 0) {
+      const newBalance = Math.round((currentBalance - messagePrice) * 100) / 100;
       user.balance = Math.max(newBalance, 0);
       await user.save();
-      console.log(`💰 Deducted ₹${pricePerMessage} from user ${user.name}. New balance: ₹${user.balance}`);
+      console.log(`💰 Deducted ₹${messagePrice} (${category}) from user ${user.name}. New balance: ₹${user.balance}`);
+    } else {
+      console.log(`💰 Free message (${category} price = ₹0). No deduction for user ${user.name}.`);
     }
     // ==========================================
 
@@ -248,6 +274,8 @@ export async function POST(req: Request) {
       success: true,
       data,
       balance: user.balance,
+      chargedAmount: messagePrice,
+      category: category,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
