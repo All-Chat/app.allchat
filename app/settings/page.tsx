@@ -7,7 +7,7 @@ import { useSession } from "next-auth/react";
 import {
   Loader2, Save, ShieldCheck, Phone, KeyRound, Building2,
   CheckCircle2, XCircle, Eye, Wallet, AlertCircle, IndianRupee,
-  ArrowRight, TrendingUp, CreditCard, Info, Users,
+  ArrowRight, TrendingUp, CreditCard, Info, Users, Clock,
 } from "lucide-react";
 import Link from "next/link";
 import { toast, ToastContainer } from "react-toastify";
@@ -24,6 +24,7 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [balance, setBalance] = useState(0);
   const [totalRecharged, setTotalRecharged] = useState(0);
+  const [pendingRequest, setPendingRequest] = useState<any>(null);
 
   // Check if sub-user
   const parentTenantName = (session?.user as any)?.parentTenantName;
@@ -51,6 +52,7 @@ export default function SettingsPage() {
         setHasRealToken(data.settings.hasRealToken);
         setBalance(data.settings.balance || 0);
         setTotalRecharged(data.settings.totalRecharged || 0);
+        setPendingRequest(data.settings.pendingRequest || null);
       }
     } catch (error) {
       console.error("Failed to load settings", error);
@@ -79,13 +81,13 @@ export default function SettingsPage() {
       });
       const data = await res.json();
       if (data.success) {
-        toast.success("Settings saved successfully!");
-        fetchSettings();
+        toast.success("Request sent to admin for approval!");
+        fetchSettings(); // Refresh to show pending state
       } else {
-        toast.error(data.message || "Failed to save settings");
+        toast.error(data.message || "Failed to send request");
       }
     } catch (error) {
-      toast.error("Error saving settings");
+      toast.error("Error sending request");
     } finally {
       setSaving(false);
     }
@@ -100,18 +102,17 @@ export default function SettingsPage() {
   }
 
   const isFullyConfigured = wabaId && phoneNumberId && hasRealToken;
+  const isPending = pendingRequest?.status === "pending";
+  const isRejected = pendingRequest?.status === "rejected";
 
   return (
     <div className="min-h-screen bg-slate-50 text-gray-900 font-sans">
       <Sidebar />
       
-      {/* Responsive Margin and Padding */}
       <div className="ml-0 md:ml-64 p-4 sm:p-6 lg:p-8">
         <div className="max-w-3xl mx-auto pb-12">
 
-          {/* ============================
-              HEADER
-              ============================ */}
+          {/* HEADER */}
           <div className="mb-8 sm:mb-10">
             <div className="flex items-center gap-3 sm:gap-4 mb-2">
               <div className="p-2.5 sm:p-3 bg-gradient-to-br from-emerald-500 to-teal-500 rounded-xl sm:rounded-2xl shadow-lg shadow-emerald-200">
@@ -124,9 +125,7 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* ============================
-              1. BILLING & BALANCE
-              ============================ */}
+          {/* BILLING & BALANCE */}
           <div className="mb-6 sm:mb-8">
             <div className="flex items-center gap-2 mb-4">
               <div className="w-1.5 h-6 bg-gradient-to-b from-emerald-500 to-teal-500 rounded-full" />
@@ -141,7 +140,6 @@ export default function SettingsPage() {
               }`} />
 
               <div className="p-4 sm:p-7">
-                {/* Top: Balance + Status */}
                 <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-6 sm:mb-7">
                   <div className="flex items-center gap-4">
                     <div className={`relative p-3 sm:p-4 rounded-xl sm:rounded-2xl ${
@@ -182,9 +180,7 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
-                {/* Three Metric Cards - Responsive Grid */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 mb-6">
-                  {/* Total Recharged */}
                   <div className="relative overflow-hidden p-4 rounded-xl border border-blue-100 bg-gradient-to-br from-blue-50/80 to-white">
                     <div className="absolute -top-2 -right-2 w-12 h-12 bg-blue-100/40 rounded-full blur-lg" />
                     <div className="relative">
@@ -196,7 +192,6 @@ export default function SettingsPage() {
                     </div>
                   </div>
 
-                  {/* Total Spent */}
                   <div className="relative overflow-hidden p-4 rounded-xl border border-orange-100 bg-gradient-to-br from-orange-50/80 to-white">
                     <div className="absolute -top-2 -right-2 w-12 h-12 bg-orange-100/40 rounded-full blur-lg" />
                     <div className="relative">
@@ -208,7 +203,6 @@ export default function SettingsPage() {
                     </div>
                   </div>
 
-                  {/* Remaining */}
                   <div className={`relative overflow-hidden p-4 rounded-xl border ${
                     isLowBalance ? "border-red-100 bg-gradient-to-br from-red-50/80 to-white" : "border-emerald-100 bg-gradient-to-br from-emerald-50/80 to-white"
                   }`}>
@@ -225,7 +219,6 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
-                {/* Usage Progress Bar */}
                 {totalRecharged > 0 && (
                   <div className="mb-5">
                     <div className="flex items-center justify-between mb-2">
@@ -261,7 +254,6 @@ export default function SettingsPage() {
                   </div>
                 )}
 
-                {/* Status Messages */}
                 {isLowBalance ? (
                   <div className="p-3 sm:p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
                     <div className="p-1.5 bg-red-100 rounded-lg shrink-0">
@@ -287,27 +279,36 @@ export default function SettingsPage() {
                     </div>
                   </div>
                 )}
-
-                {balance === 0 && totalRecharged === 0 && (
-                  <div className="mt-4 p-3 sm:p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3">
-                    <div className="p-1.5 bg-amber-100 rounded-lg shrink-0">
-                      <Info className="w-4 h-4 text-amber-600" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-bold text-amber-800">Get Started</p>
-                      <p className="text-xs text-amber-600 mt-0.5 leading-relaxed">
-                        Your account has not been recharged yet. {parentTenantName ? `Contact your tenant administrator (${parentTenantName}) to add credits.` : "Contact your administrator to add credits and start sending messages."}
-                      </p>
-                    </div>
-                  </div>
-                )}
               </div>
             </div>
           </div>
 
-          {/* ============================
-              2. CURRENT CONFIGURATION
-              ============================ */}
+          {/* PENDING REQUEST BANNER */}
+          {isPending && (
+            <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3">
+              <Clock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5 animate-pulse" />
+              <div>
+                <p className="text-sm font-bold text-amber-800">Request Sent: Waiting for Response</p>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  Your request to update WhatsApp credentials is currently pending admin approval. You cannot submit new changes until this is reviewed.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {isRejected && (
+            <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-3">
+              <XCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-bold text-red-800">Request Rejected</p>
+                <p className="text-xs text-red-600 mt-0.5">
+                  Your last request to update credentials was rejected by the admin. You may try submitting new details again.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* CURRENT CONFIGURATION */}
           <div className="mb-6 sm:mb-8">
             <div className="flex items-center gap-2 mb-4">
               <div className="w-1.5 h-6 bg-gradient-to-b from-indigo-500 to-purple-500 rounded-full" />
@@ -391,9 +392,7 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* ============================
-              3. UPDATE CONFIGURATION
-              ============================ */}
+          {/* UPDATE CONFIGURATION */}
           <div className="mb-6 sm:mb-8">
             <div className="flex items-center gap-2 mb-4">
               <div className="w-1.5 h-6 bg-gradient-to-b from-violet-500 to-purple-500 rounded-full" />
@@ -407,7 +406,7 @@ export default function SettingsPage() {
                 </div>
                 <div>
                   <p className="font-semibold text-gray-800 text-sm">Meta Developer Credentials</p>
-                  <p className="text-[11px] text-gray-500 hidden sm:block">Modify your API configuration below</p>
+                  <p className="text-[11px] text-gray-500 hidden sm:block">Changes require admin approval before taking effect</p>
                 </div>
               </div>
 
@@ -422,11 +421,9 @@ export default function SettingsPage() {
                     value={wabaId}
                     onChange={(e) => setWabaId(e.target.value)}
                     placeholder="e.g., 102938475610"
-                    className="w-full px-4 py-3 bg-slate-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 focus:bg-white transition-all text-sm shadow-[inset_0_1px_3px_rgba(0,0,0,0.04)]"
+                    disabled={isPending}
+                    className="w-full px-4 py-3 bg-slate-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 focus:bg-white transition-all text-sm shadow-[inset_0_1px_3px_rgba(0,0,0,0.04)] disabled:opacity-60 disabled:cursor-not-allowed"
                   />
-                  <p className="text-[11px] text-gray-400 mt-2 flex items-center gap-1">
-                    <Info size={11} /> Meta Dashboard → WhatsApp → API Setup → Business Account ID
-                  </p>
                 </div>
 
                 <div>
@@ -439,11 +436,9 @@ export default function SettingsPage() {
                     value={phoneNumberId}
                     onChange={(e) => setPhoneNumberId(e.target.value)}
                     placeholder="e.g., 108219xxxxxxxxxx"
-                    className="w-full px-4 py-3 bg-slate-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 focus:bg-white transition-all text-sm shadow-[inset_0_1px_3px_rgba(0,0,0,0.04)]"
+                    disabled={isPending}
+                    className="w-full px-4 py-3 bg-slate-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 focus:bg-white transition-all text-sm shadow-[inset_0_1px_3px_rgba(0,0,0,0.04)] disabled:opacity-60 disabled:cursor-not-allowed"
                   />
-                  <p className="text-[11px] text-gray-400 mt-2 flex items-center gap-1">
-                    <Info size={11} /> Meta Dashboard → WhatsApp → API Setup → From Phone Number ID
-                  </p>
                 </div>
 
                 <div>
@@ -456,7 +451,8 @@ export default function SettingsPage() {
                     value={accessToken}
                     onChange={(e) => setAccessToken(e.target.value)}
                     placeholder={hasRealToken ? "Leave blank to keep current token" : "Paste your EAAxxxxxx token"}
-                    className="w-full px-4 py-3 bg-slate-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 focus:bg-white transition-all text-sm shadow-[inset_0_1px_3px_rgba(0,0,0,0.04)]"
+                    disabled={isPending}
+                    className="w-full px-4 py-3 bg-slate-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-400 focus:bg-white transition-all text-sm shadow-[inset_0_1px_3px_rgba(0,0,0,0.04)] disabled:opacity-60 disabled:cursor-not-allowed"
                   />
                   <p className="text-[11px] mt-2">
                     {hasRealToken ? (
@@ -469,36 +465,20 @@ export default function SettingsPage() {
                   </p>
                 </div>
 
-                {/* Responsive Button Layout */}
                 <div className="pt-5 border-t border-gray-100 flex flex-col sm:flex-row items-center justify-between gap-4">
                   <p className="text-[11px] text-gray-400 text-center sm:text-left">
-                    Changes take effect immediately after saving
+                    {isPending ? "Waiting for admin approval..." : "Changes will be sent for admin approval"}
                   </p>
                   <button
                     type="submit"
-                    disabled={saving}
+                    disabled={saving || isPending}
                     className="w-full sm:w-auto flex items-center justify-center gap-2.5 px-7 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white font-semibold rounded-xl shadow-md shadow-emerald-200 transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:shadow-lg hover:shadow-emerald-200/50"
                   >
                     {saving ? <Loader2 size={17} className="animate-spin" /> : <Save size={17} />}
-                    {saving ? "Saving..." : "Save Configuration"}
+                    {saving ? "Sending..." : "Send for Approval"}
                   </button>
                 </div>
               </form>
-            </div>
-          </div>
-
-          {/* ============================
-              INFO BOX
-              ============================ */}
-          <div className="p-4 sm:p-5 bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100 rounded-2xl flex gap-4">
-            <div className="p-2.5 bg-blue-100 rounded-xl shrink-0">
-              <ShieldCheck size={20} className="text-blue-600" />
-            </div>
-            <div>
-              <p className="font-bold text-blue-900 text-sm mb-1.5">Secure & Multi-Tenant</p>
-              <p className="text-blue-700 text-xs leading-relaxed">
-                Your credentials are encrypted in the database and uniquely linked to your account. When a customer replies to your number, the system automatically routes the message to your dashboard using your Phone Number ID. Messaging costs are deducted per successful delivery from your balance.
-              </p>
             </div>
           </div>
 
