@@ -3,11 +3,12 @@ import { connectDB } from "@/lib/mongodb";
 import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { getMinPrice } from "@/lib/billing";
 
 /**
  * GET /api/billing
  * Returns the current user's billing information.
- * NOTE: pricePerMessage is NOT exposed to frontend.
+ * NOTE: prices are NOT exposed to frontend.
  */
 export async function GET() {
   try {
@@ -23,10 +24,9 @@ export async function GET() {
       return NextResponse.json({ message: "User not found" }, { status: 404 });
     }
 
-    // Determine if user has enough balance to send at least one message
-    const pricePerMessage = user.pricePerMessage || 0;
     const balance = user.balance || 0;
-    const canSendMessage = pricePerMessage === 0 || balance >= pricePerMessage;
+    const minPrice = getMinPrice(user);
+    const canSendMessage = minPrice === 0 || balance >= minPrice;
 
     return NextResponse.json({
       success: true,
@@ -34,7 +34,7 @@ export async function GET() {
         balance: balance,
         totalRecharged: user.totalRecharged || 0,
         canSendMessage: canSendMessage,
-        // pricePerMessage is intentionally NOT sent to frontend
+        // prices are intentionally NOT sent to frontend
       },
     });
   } catch (error) {
