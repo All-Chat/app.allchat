@@ -4,6 +4,7 @@ import { connectDB } from "@/lib/mongodb";
 import OptNumber from "@/models/OptNumber";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { decrementUsage } from "@/lib/limits";
 
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -13,10 +14,17 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
 
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    // Await the params object before accessing the id
     const { id } = await params;
 
-    await OptNumber.deleteOne({ _id: id, userId });
+    const deleted = await OptNumber.findOneAndDelete({ _id: id, userId });
+
+    if (!deleted) {
+      return NextResponse.json({ error: "Number not found" }, { status: 404 });
+    }
+
+    // ✅ DECREMENT USAGE AFTER SUCCESSFUL DELETION
+    await decrementUsage(userId, "optNumbers");
+
     return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
