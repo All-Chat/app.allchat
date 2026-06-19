@@ -10,7 +10,7 @@ import {
   Ban, Play, ExternalLink, CalendarDays, X, Settings2,
   ChevronDown, Zap, CreditCard, UserCog, MoreVertical,
   Timer, Infinity as InfinityIcon, AlertTriangle, BadgeCheck,
-  XCircle, User, Lock, 
+  XCircle, User, Lock, Megaphone, Wrench, ShieldCheck,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -43,12 +43,16 @@ export default function AdminBillingPage() {
   // Edit states
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [editTab, setEditTab] = useState<"billing" | "plan" | "account" | "credentials">("billing");
-  const [editPrice, setEditPrice] = useState("");
   const [editRecharge, setEditRecharge] = useState("");
   const [editPlanDuration, setEditPlanDuration] = useState("1mo");
   const [editCustomDuration, setEditCustomDuration] = useState("");
   const [editSuspendReason, setEditSuspendReason] = useState("");
-  
+
+  // NEW: Category-based price states
+  const [editPriceMarketing, setEditPriceMarketing] = useState("0.90");
+  const [editPriceUtility, setEditPriceUtility] = useState("0.50");
+  const [editPriceAuthentication, setEditPriceAuthentication] = useState("0.30");
+
   // Credential States
   const [editName, setEditName] = useState("");
   const [editPassword, setEditPassword] = useState("");
@@ -118,18 +122,21 @@ export default function AdminBillingPage() {
   const startEdit = (user: any, tab: "billing" | "plan" | "account" | "credentials" = "billing") => {
     setEditingUserId(user._id);
     setEditTab(tab);
-    setEditPrice(user.pricePerMessage?.toString() || "0.90");
+    // NEW: Initialize category-based prices
+    setEditPriceMarketing(user.priceMarketing?.toString() || "0.90");
+    setEditPriceUtility(user.priceUtility?.toString() || "0.50");
+    setEditPriceAuthentication(user.priceAuthentication?.toString() || "0.30");
     setEditRecharge("");
     setEditPlanDuration(user.planDuration || "1mo");
     setEditCustomDuration("");
     setEditSuspendReason("");
-    
+
     setEditName(user.name || "");
-    setEditPassword(user.password || ""); 
+    setEditPassword(user.password || "");
     setEditPhoneNumberId(user.whatsappPhoneNumberId || "");
     setEditWabaId(user.wabaId || "");
-    setEditAccessToken(user.whatsappAccessToken || ""); 
-    
+    setEditAccessToken(user.whatsappAccessToken || "");
+
     setShowPassword(false);
     setShowAccessToken(false);
   };
@@ -145,7 +152,10 @@ export default function AdminBillingPage() {
       const body: any = { userId, ...extraData };
 
       if (action === "billing") {
-        if (editPrice !== "") body.pricePerMessage = Number(editPrice);
+        // NEW: Send all 3 category prices
+        body.priceMarketing = Number(editPriceMarketing);
+        body.priceUtility = Number(editPriceUtility);
+        body.priceAuthentication = Number(editPriceAuthentication);
         if (editRecharge !== "" && Number(editRecharge) > 0) body.rechargeAmount = Number(editRecharge);
       }
 
@@ -404,9 +414,16 @@ export default function AdminBillingPage() {
                               {formatINR(user.balance || 0)}
                             </p>
                           </div>
+                          {/* NEW: Category-based prices display */}
                           <div className="flex-1 sm:flex-none text-right px-3 py-1.5 sm:px-4 sm:py-2 bg-slate-50 rounded-lg sm:rounded-xl border border-slate-100">
-                            <p className="text-[9px] text-slate-400 font-bold uppercase">Price/Msg</p>
-                            <p className="text-xs sm:text-sm font-extrabold text-amber-600">{formatINR(user.pricePerMessage || 0.9)}</p>
+                            <p className="text-[9px] text-slate-400 font-bold uppercase">Prices (M/U/A)</p>
+                            <div className="flex items-center gap-1.5 text-[10px] sm:text-xs font-extrabold">
+                              <span className="text-orange-600" title="Marketing">{formatINR(user.priceMarketing || 0.90)}</span>
+                              <span className="text-slate-300">/</span>
+                              <span className="text-blue-600" title="Utility">{formatINR(user.priceUtility || 0.50)}</span>
+                              <span className="text-slate-300">/</span>
+                              <span className="text-purple-600" title="Authentication">{formatINR(user.priceAuthentication || 0.30)}</span>
+                            </div>
                           </div>
                         </div>
                         <div className="flex items-center gap-1.5 ml-auto sm:ml-0">
@@ -470,27 +487,106 @@ export default function AdminBillingPage() {
                       </div>
 
                       <div className="p-4 sm:p-6">
+                        {/* ======== BILLING TAB — UPDATED WITH 3 CATEGORY PRICES ======== */}
                         {editTab === "billing" && (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6 max-w-2xl">
+                          <div className="space-y-5 sm:space-y-6 max-w-2xl">
+                            {/* Category-Based Pricing Section */}
                             <div>
-                              <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2 block">Price per Message (₹)</label>
-                              <div className="relative">
-                                <IndianRupee className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-                                <input type="number" step="0.01" min="0" value={editPrice} onChange={(e) => setEditPrice(e.target.value)} className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-gray-900 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-400 transition-all text-sm" />
+                              <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+                                <IndianRupee size={12} /> Category-Based Message Pricing
+                              </p>
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+                                {/* MARKETING */}
+                                <div className="p-3 sm:p-4 bg-orange-50 border border-orange-200 rounded-xl">
+                                  <label className="text-[10px] font-bold text-orange-600 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                                    <Megaphone size={12} /> Marketing
+                                  </label>
+                                  <div className="relative">
+                                    <IndianRupee className="absolute left-2.5 top-2.5 w-4 h-4 text-orange-400" />
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      min="0"
+                                      value={editPriceMarketing}
+                                      onChange={(e) => setEditPriceMarketing(e.target.value)}
+                                      className="w-full pl-8 pr-3 py-2.5 bg-white border border-orange-200 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-400 transition-all text-sm font-bold"
+                                    />
+                                  </div>
+                                  <p className="text-[9px] text-orange-400 mt-1">Promotional messages</p>
+                                </div>
+
+                                {/* UTILITY */}
+                                <div className="p-3 sm:p-4 bg-blue-50 border border-blue-200 rounded-xl">
+                                  <label className="text-[10px] font-bold text-blue-600 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                                    <Wrench size={12} /> Utility
+                                  </label>
+                                  <div className="relative">
+                                    <IndianRupee className="absolute left-2.5 top-2.5 w-4 h-4 text-blue-400" />
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      min="0"
+                                      value={editPriceUtility}
+                                      onChange={(e) => setEditPriceUtility(e.target.value)}
+                                      className="w-full pl-8 pr-3 py-2.5 bg-white border border-blue-200 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 transition-all text-sm font-bold"
+                                    />
+                                  </div>
+                                  <p className="text-[9px] text-blue-400 mt-1">Account updates, alerts</p>
+                                </div>
+
+                                {/* AUTHENTICATION */}
+                                <div className="p-3 sm:p-4 bg-purple-50 border border-purple-200 rounded-xl">
+                                  <label className="text-[10px] font-bold text-purple-600 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                                    <ShieldCheck size={12} /> Authentication
+                                  </label>
+                                  <div className="relative">
+                                    <IndianRupee className="absolute left-2.5 top-2.5 w-4 h-4 text-purple-400" />
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      min="0"
+                                      value={editPriceAuthentication}
+                                      onChange={(e) => setEditPriceAuthentication(e.target.value)}
+                                      className="w-full pl-8 pr-3 py-2.5 bg-white border border-purple-200 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-400 transition-all text-sm font-bold"
+                                    />
+                                  </div>
+                                  <p className="text-[9px] text-purple-400 mt-1">OTP, verification codes</p>
+                                </div>
                               </div>
-                              <p className="text-[10px] text-slate-400 mt-1">Current: {formatINR(user.pricePerMessage || 0.9)}</p>
+                              <p className="text-[10px] text-slate-400 mt-2">
+                                💡 Set price to ₹0 for free messages in that category. Prices are per message sent.
+                              </p>
                             </div>
-                            <div>
+
+                            {/* Recharge Section */}
+                            <div className="border-t border-slate-200 pt-4">
                               <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2 block">Add Balance (₹)</label>
                               <div className="relative">
                                 <Wallet className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-                                <input type="number" step="1" min="0" value={editRecharge} onChange={(e) => setEditRecharge(e.target.value)} placeholder="100" className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-gray-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 transition-all text-sm" />
+                                <input
+                                  type="number"
+                                  step="1"
+                                  min="0"
+                                  value={editRecharge}
+                                  onChange={(e) => setEditRecharge(e.target.value)}
+                                  placeholder="100"
+                                  className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-gray-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 transition-all text-sm"
+                                />
                               </div>
-                              <p className="text-[10px] text-slate-400 mt-1">{Number(editRecharge) > 0 ? <>New balance: <span className="text-emerald-600 font-bold">{formatINR((user.balance || 0) + Number(editRecharge))}</span></> : "Leave 0 to skip recharge"}</p>
+                              <p className="text-[10px] text-slate-400 mt-1">
+                                {Number(editRecharge) > 0
+                                  ? <>New balance: <span className="text-emerald-600 font-bold">{formatINR((user.balance || 0) + Number(editRecharge))}</span></>
+                                  : "Leave 0 to skip recharge"}
+                              </p>
                             </div>
-                            <div className="col-span-1 sm:col-span-2 flex flex-col sm:flex-row justify-end gap-3 pt-3">
+
+                            <div className="flex flex-col sm:flex-row justify-end gap-3 pt-3">
                               <button onClick={cancelEdit} className="px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-all">Cancel</button>
-                              <button onClick={() => saveUser(user._id, "billing")} disabled={saving === user._id + "billing"} className="flex items-center justify-center gap-2 px-6 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm">
+                              <button
+                                onClick={() => saveUser(user._id, "billing")}
+                                disabled={saving === user._id + "billing"}
+                                className="flex items-center justify-center gap-2 px-6 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm"
+                              >
                                 {saving === user._id + "billing" ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Billing
                               </button>
                             </div>
@@ -625,8 +721,9 @@ export default function AdminBillingPage() {
           <div>
             <p className="text-sm font-bold text-amber-800">Admin Access Only</p>
             <p className="text-xs text-amber-700 mt-1 leading-relaxed">
-              This panel is not linked from the main application. Set <code className="bg-amber-100 px-1.5 py-0.5 rounded text-amber-900 text-[11px]">ADMIN_SECRET_KEY</code> in <code className="bg-amber-100 px-1.5 py-0.5 rounded text-amber-900 text-[11px]">.env.local</code>. 
-              Suspended/expired users will see a blocked screen on login. Plans auto-expire based on duration. Users can be impersonated via the external link button to debug their dashboard.
+              This panel is not linked from the main application. Set <code className="bg-amber-100 px-1.5 py-0.5 rounded text-amber-900 text-[11px]">ADMIN_SECRET_KEY</code> in <code className="bg-amber-100 px-1.5 py-0.5 rounded text-amber-900 text-[11px]">.env.local</code>.
+              Category-based pricing: Marketing (promotional), Utility (alerts/updates), Authentication (OTP/verification).
+              Suspended/expired users will see a blocked screen on login. Plans auto-expire based on duration.
             </p>
           </div>
         </div>
