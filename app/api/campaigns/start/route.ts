@@ -48,7 +48,9 @@ export async function POST(req: Request) {
       );
     }
 
-    // ONLY CHECK BALANCE HERE. DO NOT DEDUCT.
+    // ==========================================
+    // 🔴 CATEGORY-BASED INITIAL BALANCE CHECK
+    // ==========================================
     const category = campaign.templateCategory || "MARKETING";
     const messagePrice = getPriceForCategory(user, category);
     const currentBalance = user.balance || 0;
@@ -62,6 +64,7 @@ export async function POST(req: Request) {
         { status: 402 }
       );
     }
+    // ==========================================
 
     // Mark as running
     campaign.status = "running";
@@ -110,9 +113,7 @@ export async function POST(req: Request) {
             type: "header",
             parameters: [{
               type: "image",
-              image: campaign.mediaUrl.startsWith("http")
-                ? { link: campaign.mediaUrl }
-                : { id: campaign.mediaUrl },
+              image: campaign.mediaUrl.startsWith("http") ? { link: campaign.mediaUrl } : { id: campaign.mediaUrl },
             }],
           });
         } else if (campaign.mediaType === "video" && campaign.mediaUrl) {
@@ -120,9 +121,7 @@ export async function POST(req: Request) {
             type: "header",
             parameters: [{
               type: "video",
-              video: campaign.mediaUrl.startsWith("http")
-                ? { link: campaign.mediaUrl }
-                : { id: campaign.mediaUrl },
+              video: campaign.mediaUrl.startsWith("http") ? { link: campaign.mediaUrl } : { id: campaign.mediaUrl },
             }],
           });
         } else if (campaign.mediaType === "document" && campaign.mediaUrl) {
@@ -130,9 +129,7 @@ export async function POST(req: Request) {
             type: "header",
             parameters: [{
               type: "document",
-              document: campaign.mediaUrl.startsWith("http")
-                ? { link: campaign.mediaUrl, filename: "document.pdf" }
-                : { id: campaign.mediaUrl, filename: "document.pdf" },
+              document: campaign.mediaUrl.startsWith("http") ? { link: campaign.mediaUrl, filename: "document.pdf" } : { id: campaign.mediaUrl, filename: "document.pdf" },
             }],
           });
         }
@@ -140,10 +137,7 @@ export async function POST(req: Request) {
         if (campaign.variables && campaign.variables.length > 0) {
           templatePayload.components.push({
             type: "body",
-            parameters: campaign.variables.map((v: string) => ({
-              type: "text",
-              text: v || "",
-            })),
+            parameters: campaign.variables.map((v: string) => ({ type: "text", text: v || "" })),
           });
         }
 
@@ -154,17 +148,11 @@ export async function POST(req: Request) {
           template: templatePayload,
         };
 
-        const sendRes = await fetch(
-          `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${token}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(messagePayload),
-          }
-        );
+        const sendRes = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify(messagePayload),
+        });
 
         const sendData = await sendRes.json();
 
@@ -178,8 +166,8 @@ export async function POST(req: Request) {
           sentCount++;
           if (campaign.reportData[i]) {
             campaign.reportData[i].status = "sent";
-            campaign.reportData[i].sentWamid = sendData.message_id || null;
-            campaign.reportData[i].charged = false; // EXPLICITLY SET TO FALSE. WEBHOOK WILL CHARGE ON DELIVERED
+            campaign.reportData[i].sentWamid = sendData.message_id || null; // Save WAMID
+            campaign.reportData[i].charged = false; // Explicitly set to false. Webhook will charge on 'delivered'
           }
         }
 
