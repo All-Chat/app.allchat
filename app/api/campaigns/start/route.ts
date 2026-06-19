@@ -5,6 +5,7 @@ import Campaign from "@/models/Campaign";
 import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { getPriceForCategory } from "@/lib/billing";
 
 export async function POST(req: Request) {
   try {
@@ -49,16 +50,17 @@ export async function POST(req: Request) {
     }
 
     // ==========================================
-    // 🔴 INITIAL BALANCE CHECK — BEFORE STARTING
+    // 🔴 CATEGORY-BASED INITIAL BALANCE CHECK
     // ==========================================
-    const pricePerMessage = user.pricePerMessage || 0;
+    const category = campaign.templateCategory || "MARKETING";
+    const messagePrice = getPriceForCategory(user, category);
     const currentBalance = user.balance || 0;
 
-    if (pricePerMessage > 0 && currentBalance < pricePerMessage) {
+    if (messagePrice > 0 && currentBalance < messagePrice) {
       return NextResponse.json(
         {
           success: false,
-          message: "Insufficient balance. Please recharge your account to send messages.",
+          message: `Insufficient balance for ${category} messages. Required: ₹${messagePrice}, Available: ₹${currentBalance}. Please recharge your account.`,
         },
         { status: 402 }
       );
@@ -71,13 +73,13 @@ export async function POST(req: Request) {
 
     let sentCount = campaign.sentCount || 0;
     let failedCount = campaign.failedCount || 0;
+    let totalDeducted = campaign.totalDeducted || 0;
 
     for (let i = 0; i < campaign.phoneNumbers.length; i++) {
       const phone = campaign.phoneNumbers[i];
 
       // ==========================================
       // 🔴 PAUSE / STOP LOGIC
-      // Check database status on every loop to allow pause/stop
       // ==========================================
       const liveCampaign = await Campaign.findById(campaignId);
       if (liveCampaign.status === "paused") {
@@ -85,6 +87,8 @@ export async function POST(req: Request) {
         campaign.status = "paused";
         campaign.sentCount = sentCount;
         campaign.failedCount = failedCount;
+        campaign.totalDeducted = totalDeducted;
+        await user.save(); // Save deducted balance
         await campaign.save();
         return NextResponse.json({ success: true, message: "Campaign paused", sent: sentCount });
       }
@@ -93,6 +97,8 @@ export async function POST(req: Request) {
         campaign.status = "completed";
         campaign.sentCount = sentCount;
         campaign.failedCount = failedCount;
+        campaign.totalDeducted = totalDeducted;
+        await user.save(); // Save deducted balance
         await campaign.save();
         return NextResponse.json({ success: true, message: "Campaign stopped", sent: sentCount });
       }
@@ -100,7 +106,6 @@ export async function POST(req: Request) {
 
       // ==========================================
       // 🔴 RESUME LOGIC
-      // Skip numbers that have already been processed (sent, delivered, read)
       // ==========================================
       const currentStatus = campaign.reportData[i]?.status;
       if (["sent", "delivered", "read", "failed", "invalid"].includes(currentStatus)) {
@@ -186,15 +191,27 @@ export async function POST(req: Request) {
           if (campaign.reportData[i]) {
             campaign.reportData[i].status = "failed";
           }
-          // 🔴 DO NOT DEDUCT FOR FAILED SENDS. WEBHOOK WILL HANDLE BILLING.
+          // DO NOT DEDUCT FOR FAILED SENDS
         } else {
           sentCount++;
           if (campaign.reportData[i]) {
             campaign.reportData[i].status = "sent";
-            campaign.reportData[i].sentWamid = sendData.message_id || null; // Save ID for webhook matching
+            campaign.reportData[i].sentWamid = sendData.message_id || null;
           }
-          // 🔴 DO NOT DEDUCT BALANCE HERE. 
-          // The webhook will charge the user when the status becomes 'delivered'.
+          
+          // ==========================================
+          // 🔴 DEDUCT BALANCE HERE BASED ON CATEGORY
+          // ==========================================
+          if (messagePrice > 0) {
+            user.balance = Math.round((user.balance - messagePrice) * 100) / 100;
+            if (user.balance < 0) user.balance = 0;
+            
+            totalDeducted = Math.round((totalDeducted + messagePrice) * 100) / 100;
+            if (campaign.reportData[i]) {
+              campaign.reportData[i].charged = true;
+            }
+          }
+          // ==========================================
         }
 
         // Rate limit
@@ -213,14 +230,17 @@ export async function POST(req: Request) {
     // ==========================================
     campaign.sentCount = sentCount;
     campaign.failedCount = failedCount;
+    campaign.totalDeducted = totalDeducted;
     campaign.status = sentCount > 0 ? "completed" : "failed";
+    
+    await user.save(); // Save final user balance
     await campaign.save();
 
     return NextResponse.json({
       success: true,
       sent: sentCount,
       failed: failedCount,
-      message: "Campaign processing complete. Billing will update dynamically via webhook.",
+      message: "Campaign processing complete. Billing deducted dynamically based on category.",
     });
   } catch (error: any) {
     console.error("❌ Start Campaign Error:", error);
