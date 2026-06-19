@@ -61,8 +61,9 @@ import {
   UserPlus,
   ClipboardList,
   List,
-  Clock,
+    Clock,
   Hourglass, // Added for Inactivity Node
+  Gauge, AlertTriangle, Infinity as InfinityIcon, // ✅ LIMIT ADDED
 } from "lucide-react";
 
 // Authentication
@@ -2241,6 +2242,12 @@ export default function Home() {
     type: "success" | "error";
   } | null>(null);
 
+  // ✅ LIMIT ADDED: Limit State & Helpers
+  const [workflowLimit, setWorkflowLimit] = useState<any>(null);
+  const isLimitActive = workflowLimit && workflowLimit.limit.period !== "unlimited" && workflowLimit.limit.max !== -1;
+  const usagePercent = isLimitActive ? Math.min(100, Math.round(((workflowLimit?.usage?.count || 0) / workflowLimit.limit.max) * 100)) : 0;
+  const isAtLimit = isLimitActive && !workflowLimit.allowed;
+
   const showToast = (message: string, type: "success" | "error" = "success") =>
     setToast({ message, type });
 
@@ -2303,13 +2310,30 @@ export default function Home() {
 
   const load = async () => {
     try {
-      const res = await fetch("/api/workflow");
-      if (res.status === 401) {
+      // ✅ LIMIT ADDED: Fetch limits alongside workflows
+      const [wfRes, limitsRes] = await Promise.all([
+        fetch("/api/workflow"),
+        fetch("/api/user/limits?resource=workflows"),
+      ]);
+      if (wfRes.status === 401) {
         window.location.href = "/signin";
         return;
       }
-      const data = await res.json();
+      const data = await wfRes.json();
       setWorkflows((data.workflows || []).map(normalizeWorkflow));
+
+      // ✅ LIMIT ADDED: Process limit data
+      if (limitsRes.ok) {
+        const limitsData = await limitsRes.json();
+        if (limitsData.success) {
+          setWorkflowLimit({
+            limit: { max: limitsData.limit, period: limitsData.period },
+            usage: { count: limitsData.currentUsage || 0, resetAt: null },
+            remaining: limitsData.remaining,
+            allowed: limitsData.allowed,
+          });
+        }
+      }
     } catch {
       showToast("Failed to load workflows", "error");
     }
@@ -2321,39 +2345,49 @@ export default function Home() {
   }, [status]);
 
   const startCreating = () => {
+    // ✅ LIMIT ADDED: Prevent creating if at limit
+    if (isAtLimit) {
+      showToast("Workflow limit reached. Delete existing workflows or contact admin.", "error");
+      return;
+    }
     setEditId("new");
     setEditData(getEmptyWorkflow());
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const save = async (wfData: Workflow) => {
+    const save = async (wfData: Workflow) => {
     try {
-      const payload = {
-        triggers: wfData.triggers,
-        steps: wfData.steps,
-        rootStepId: wfData.rootStepId,
-      };
+      const payload = { triggers: wfData.triggers, steps: wfData.steps, rootStepId: wfData.rootStepId };
 
       if (editId && editId !== "new") {
-        await fetch("/api/workflow", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
+        const res = await fetch("/api/workflow", {
+          method: "PUT", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: editId, ...payload }),
         });
-        showToast("Workflow updated!");
+        if (res.ok) showToast("Workflow updated!");
+        else { const d = await res.json(); throw new Error(d.message || "Update failed"); }
       } else {
-        await fetch("/api/workflow", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
+        const res = await fetch("/api/workflow", {
+          method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
+        const data = await res.json();
+
+        // ✅ LIMIT ADDED: Handle limit exceeded response
+        if (res.status === 429 && data.limitExceeded) {
+          showToast(data.message, "error");
+          if (data.limitInfo) {
+            setWorkflowLimit((prev: any) => prev ? { ...prev, allowed: false, usage: { count: data.limitInfo.currentUsage, resetAt: null }, remaining: 0 } : prev);
+          }
+          return;
+        }
+
+        if (!res.ok) throw new Error(data.message || "Creation failed");
         showToast("Workflow created!");
       }
-      setEditId(null);
-      setEditData(null);
-      load();
-    } catch {
-      showToast("Something went wrong", "error");
+      setEditId(null); setEditData(null); load();
+    } catch (err: any) {
+      showToast(err.message || "Something went wrong", "error");
     }
   };
 
@@ -2362,6 +2396,7 @@ export default function Home() {
       await fetch(`/api/workflow/${id}`, { method: "DELETE" });
       setWorkflows((prev) => prev.filter((wf) => wf._id !== id));
       showToast("Deleted");
+      load(); // ✅ LIMIT ADDED: Refresh limits after deletion
     } catch {
       showToast("Delete failed", "error");
     }
@@ -2426,35 +2461,70 @@ export default function Home() {
         <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
           <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-gray-200 -mx-4 sm:-mx-6 px-4 sm:px-6 py-4">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-              <div>
-                <h1 className="text-xl font-bold text-gray-900">Workflows</h1>
-                <p className="text-sm text-gray-400 mt-0.5">
-                  Drag, drop, and connect nodes like n8n
-                </p>
+                            <div className="flex items-center gap-3">
+                <div>
+                  <h1 className="text-xl font-bold text-gray-900">Workflows</h1>
+                  <p className="text-sm text-gray-400 mt-0.5">Drag, drop, and connect nodes like n8n</p>
+                </div>
+                {/* ✅ LIMIT ADDED: Badge */}
+                {workflowLimit && (
+                  <div className={`hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold shrink-0 ${
+                    isAtLimit ? "bg-red-50 border-red-200 text-red-700" :
+                    usagePercent >= 80 ? "bg-amber-50 border-amber-200 text-amber-700" :
+                    isLimitActive ? "bg-white border-slate-200 text-slate-600" :
+                    "bg-emerald-50 border-emerald-200 text-emerald-600"
+                  }`}>
+                    {isLimitActive ? (
+                      <><Gauge size={14} /> {workflowLimit.usage.count}/{workflowLimit.limit.max} {workflowLimit.limit.period !== "total" && `/${workflowLimit.limit.period}`}</>
+                    ) : (
+                      <><InfinityIcon size={14} /> Unlimited</>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="flex flex-col sm:flex-row w-full sm:w-auto items-stretch sm:items-center gap-3">
                 <div className="relative flex-1 sm:flex-none">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <circle cx="11" cy="11" r="8" />
-                      <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                    </svg>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
                   </span>
-                  <input
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search workflows…"
-                    className="w-full sm:w-64 pl-9 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all"
-                  />
+                  <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search workflows…" className="w-full sm:w-64 pl-9 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition-all" />
                 </div>
+                {/* ✅ LIMIT ADDED: Disabled button */}
                 <button
                   onClick={startCreating}
-                  className="bg-emerald-500 text-white px-4 py-2.5 rounded-xl text-sm font-semibold hover:bg-emerald-600 transition-all flex items-center justify-center gap-2 shadow-sm whitespace-nowrap"
+                  disabled={isAtLimit}
+                  className={`px-4 py-2.5 rounded-xl text-sm font-semibold transition-all flex items-center justify-center gap-2 shadow-sm whitespace-nowrap ${
+                    isAtLimit ? "bg-slate-400 text-white cursor-not-allowed" : "bg-emerald-500 text-white hover:bg-emerald-600"
+                  }`}
                 >
-                  <Plus size={16} /> Create Workflow
+                  {isAtLimit ? <AlertTriangle size={16} /> : <Plus size={16} />} {isAtLimit ? "Limit Reached" : "Create Workflow"}
                 </button>
               </div>
-            </div>
+                        </div>
+
+            {/* ✅ LIMIT ADDED: Warning Bar */}
+            {isLimitActive && (
+              <div className={`mt-3 rounded-xl p-3 flex items-center gap-3 text-sm border ${
+                isAtLimit ? "bg-red-50 border-red-200 text-red-700" :
+                usagePercent >= 80 ? "bg-amber-50 border-amber-200 text-amber-700" :
+                "bg-blue-50 border-blue-200 text-blue-600"
+              }`}>
+                {isAtLimit ? <AlertTriangle size={16} className="shrink-0" /> : <Gauge size={16} className="shrink-0" />}
+                <div className="flex-1">
+                  <span className="font-bold">
+                    {isAtLimit ? "Workflow limit reached!" : usagePercent >= 80 ? "Approaching workflow limit" : "Workflow usage"}
+                  </span>
+                  <span className="ml-2 opacity-80">
+                    {workflowLimit?.usage.count} of {workflowLimit?.limit.max} workflows used
+                    {workflowLimit?.limit.period !== "total" && ` per ${workflowLimit?.limit.period}`}
+                  </span>
+                </div>
+                <div className="w-24 h-2 bg-white/60 rounded-full overflow-hidden shrink-0">
+                  <div className={`h-full rounded-full transition-all ${isAtLimit ? "bg-red-500" : usagePercent >= 80 ? "bg-amber-500" : "bg-emerald-500"}`} style={{ width: `${usagePercent}%` }} />
+                </div>
+                <span className="text-xs font-bold shrink-0">{usagePercent}%</span>
+              </div>
+            )}
           </header>
 
           {editId !== null && (
