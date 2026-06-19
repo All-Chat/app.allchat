@@ -20,6 +20,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
     }
 
+    // ==========================================
+    // 🔴 TENANT DATA ISOLATION CONTEXT
+    // ==========================================
+    const tenantId = (session?.user as any)?.parentTenantId || (session?.user as any)?.tenantId || null;
+
     const limitCheck = await checkLimit(userId, "campaigns");
     if (!limitCheck.allowed) {
       return NextResponse.json(
@@ -158,13 +163,15 @@ export async function POST(req: Request) {
 
     const newCampaign = await Campaign.create({
       userId,
+      tenantId, // ✅ ATTACH TENANT ID FOR MULTI-TENANT QUERIES
+      createdBy: userId, // ✅ TRACK WHO CREATED IT
       name: name.trim(),
       templateName,
       templateCategory,
       variables,
-      mappedVariables, // ✅ SAVE MAPPED VARIABLES
-      generateOtp,     // ✅ SAVE OTP FLAG
-      otpLength,       // ✅ SAVE OTP LENGTH
+      mappedVariables, 
+      generateOtp,     
+      otpLength,       
       phoneNumbers,
       names: names || [],
       mediaUrl: finalMediaUrl,
@@ -181,6 +188,7 @@ export async function POST(req: Request) {
     if (scheduledAt) {
       await ScheduledTrigger.create({
         userId,
+        tenantId, // ✅ ATTACH TENANT ID HERE TOO
         campaignId: newCampaign._id,
         expireAt: new Date(scheduledAt),
         processed: false,
