@@ -24,10 +24,13 @@ import {
   ChevronUp,
   Loader2,
   Wallet,
-  IndianRupee,
   TrendingUp,
   TrendingDown,
   AlertCircle,
+  Phone,
+  ShieldCheck,
+  Gauge,
+  Activity,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -39,6 +42,16 @@ const formatINR = (amount: number) =>
     currency: "INR",
     minimumFractionDigits: 2,
   }).format(amount);
+
+const formatTier = (tier: string | undefined) => {
+  if (!tier || tier === "N/A") return "N/A";
+  if (tier === "TIER_UNLIMITED") return "Unlimited";
+  if (tier === "TIER_100K") return "100,000 / 24h";
+  if (tier === "TIER_10K") return "10,000 / 24h";
+  if (tier === "TIER_1K") return "1,000 / 24h";
+  if (tier === "TIER_250") return "250 / 24h";
+  return tier.replace("TIER_", "") + " / 24h";
+};
 
 export default function DashboardPage() {
   const { data: session, status } = useSession();
@@ -53,6 +66,7 @@ export default function DashboardPage() {
     totalCampaigns: 0,
   });
   const [campaignsData, setCampaignsData] = useState<any[]>([]);
+  const [phoneDetails, setPhoneDetails] = useState<any>(null);
 
   const [billingData, setBillingData] = useState({
     balance: 0,
@@ -84,6 +98,8 @@ export default function DashboardPage() {
           totalCampaigns: data.totalCampaigns,
         });
         setCampaignsData(data.campaigns);
+        setPhoneDetails(data.phoneDetails);
+        
         if (data.billing) {
           setBillingData({
             balance: data.billing.balance || 0,
@@ -162,10 +178,10 @@ export default function DashboardPage() {
   const userName = session?.user?.name || "";
 
   const stats = [
-    { title: "Total Chats", value: statsData.totalChats.toLocaleString(), icon: MessageSquare, color: "text-blue-600", bg: "bg-blue-50", link: "/chat" },
-    { title: "Active Workflows", value: statsData.totalWorkflows.toString(), icon: Zap, color: "text-emerald-600", bg: "bg-emerald-50", link: "/workflows" },
-    { title: "Templates", value: templates.length.toString(), icon: FileText, color: "text-purple-600", bg: "bg-purple-50", link: "/dashboard/templates" },
-    { title: "Campaigns", value: statsData.totalCampaigns.toString(), icon: Megaphone, color: "text-amber-600", bg: "bg-amber-50", link: "/campaigns/list" },
+    { title: "Total Chats", value: (statsData.totalChats ?? 0).toLocaleString(), icon: MessageSquare, color: "text-blue-600", bg: "bg-blue-50", link: "/chat" },
+    { title: "Active Workflows", value: (statsData.totalWorkflows ?? 0).toString(), icon: Zap, color: "text-emerald-600", bg: "bg-emerald-50", link: "/workflows" },
+    { title: "Templates", value: templates?.length?.toString() ?? "0", icon: FileText, color: "text-purple-600", bg: "bg-purple-50", link: "/dashboard/templates" },
+    { title: "Campaigns", value: (statsData.totalCampaigns ?? 0).toString(), icon: Megaphone, color: "text-amber-600", bg: "bg-amber-50", link: "/campaigns/list" },
   ];
 
   const displayedTemplates = showAllTemplates ? templates : templates.slice(0, 5);
@@ -180,10 +196,8 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
-      {/* Sidebar Component - Handles Mobile Subnavbar automatically */}
       <Sidebar />
 
-      {/* Main Content Area */}
       <main className="md:ml-64 flex flex-col min-h-screen">
         <div className="flex-1 p-4 sm:p-6 lg:p-8 space-y-6 sm:space-y-8">
 
@@ -206,6 +220,93 @@ export default function DashboardPage() {
                 <RefreshCw className={`w-3.5 h-3.5 text-emerald-600 ${syncing ? "animate-spin" : ""}`} />
                 {syncing ? "Syncing..." : "Sync Meta"}
               </button>
+            </div>
+          </div>
+
+          {/* WHATSAPP NUMBER STATUS CARD */}
+          <div className="relative overflow-hidden bg-white border border-gray-200 rounded-2xl shadow-sm">
+            <div className="p-4 sm:p-6">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-emerald-100">
+                    <Phone className="w-5 h-5 text-emerald-600" />
+                  </div>
+                  <div>
+                    <h2 className="font-bold text-gray-900 text-sm sm:text-base">WhatsApp Number Status</h2>
+                    <p className="text-[11px] sm:text-xs text-gray-500">
+                      {phoneDetails ? (
+                        <>
+                          {phoneDetails.displayPhoneNumber} <span className="text-gray-400 mx-1">•</span> {phoneDetails.verifiedName}
+                        </>
+                      ) : "Loading number details..."}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {phoneDetails ? (
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+                  {/* Status */}
+                  <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
+                    <Activity size={16} className={
+                      phoneDetails.status === "CONNECTED" ? "text-emerald-500" : 
+                      phoneDetails.status === "DISCONNECTED" ? "text-gray-400" : "text-red-500"
+                    } />
+                    <div>
+                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Status</p>
+                      <p className={`text-xs font-bold ${
+                        phoneDetails.status === "CONNECTED" ? "text-emerald-700" : 
+                        phoneDetails.status === "DISCONNECTED" ? "text-gray-600" : "text-red-700"
+                      }`}>
+                        {phoneDetails.status}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Quality Score */}
+                  <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
+                    <Gauge size={16} className={
+                      phoneDetails.qualityRating === "GREEN" || phoneDetails.qualityRating === "HIGH" ? "text-emerald-500" :
+                      phoneDetails.qualityRating === "YELLOW" || phoneDetails.qualityRating === "MEDIUM" ? "text-amber-500" :
+                      phoneDetails.qualityRating === "RED" || phoneDetails.qualityRating === "LOW" ? "text-red-500" : "text-gray-400"
+                    } />
+                    <div>
+                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Quality Score</p>
+                      <p className={`text-xs font-bold ${
+                        phoneDetails.qualityRating === "GREEN" || phoneDetails.qualityRating === "HIGH" ? "text-emerald-700" :
+                        phoneDetails.qualityRating === "YELLOW" || phoneDetails.qualityRating === "MEDIUM" ? "text-amber-700" :
+                        phoneDetails.qualityRating === "RED" || phoneDetails.qualityRating === "LOW" ? "text-red-700" : "text-gray-700"
+                      }`}>
+                        {phoneDetails.qualityRating}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Messaging Limit */}
+                  <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
+                    <Send size={16} className="text-blue-500" />
+                    <div>
+                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Msg Limit</p>
+                      <p className="text-xs font-bold text-blue-700">{formatTier(phoneDetails.messagingLimitTier)}</p>
+                    </div>
+                  </div>
+
+                  {/* 2FA Status */}
+                  <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
+                    <ShieldCheck size={16} className={phoneDetails.twoFactorEnabled === true ? "text-emerald-500" : "text-gray-400"} />
+                    <div>
+                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Two-Factor Auth</p>
+                      <p className={`text-xs font-bold ${phoneDetails.twoFactorEnabled === true ? "text-emerald-700" : "text-gray-700"}`}>
+                        {phoneDetails.twoFactorEnabled === true ? "Enabled" : phoneDetails.twoFactorEnabled === false ? "Disabled" : "N/A"}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex justify-center items-center py-4 text-gray-400 text-xs">
+                  <Loader2 size={14} className="animate-spin mr-2" /> Fetching live data from Meta...
+                </div>
+              )}
             </div>
           </div>
 
@@ -494,13 +595,13 @@ export default function DashboardPage() {
               <div>
                 <h2 className="text-base sm:text-lg font-bold text-gray-900 mb-4">Active Campaigns</h2>
                 <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden divide-y divide-gray-100">
-                  {campaignsData.length === 0 ? (
+                  {campaignsData?.length === 0 ? (
                     <div className="p-8 text-center">
                       <Megaphone className="w-6 h-6 mx-auto text-gray-300 mb-2" />
                       <p className="text-xs text-gray-500">No active campaigns</p>
                     </div>
                   ) : (
-                    campaignsData.map((camp: any) => {
+                    campaignsData?.map((camp: any) => {
                       const statusConfig = getStatusConfig(camp.status);
                       return (
                         <div key={camp._id} className="p-4 group hover:bg-gray-50 transition-colors">
