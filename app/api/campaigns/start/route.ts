@@ -74,75 +74,41 @@ export async function POST(req: Request) {
     let failedCount = campaign.failedCount || 0;
     let totalDeducted = campaign.totalDeducted || 0;
 
-    for (let i = 0; i < campaign.phoneNumbers.length; i++) {
-      const phone = campaign.phoneNumbers[i];
-
-      const liveCampaign = await Campaign.findById(campaignId);
-      if (liveCampaign.status === "paused") {
-        console.log("⏸️ Campaign paused by user. Saving progress...");
-        campaign.status = "paused";
-        campaign.sentCount = sentCount;
-        campaign.failedCount = failedCount;
-        campaign.totalDeducted = totalDeducted;
-        await user.save(); // Save deducted balance
-        await campaign.save();
-        return NextResponse.json({ success: true, message: "Campaign paused", sent: sentCount });
-      }
-      if (liveCampaign.status === "completed" || liveCampaign.status === "stopped") {
-        console.log("⏹️ Campaign stopped by user.");
-        campaign.status = "completed";
-        campaign.sentCount = sentCount;
-        campaign.failedCount = failedCount;
-        campaign.totalDeducted = totalDeducted;
-        await user.save(); // Save deducted balance
-        await campaign.save();
-        return NextResponse.json({ success: true, message: "Campaign stopped", sent: sentCount });
-      }
-
-      const currentStatus = campaign.reportData[i]?.status;
+    // 🔴 WORKER PROCESS FUNCTION
+    const workerProcess = async (phone: string, campaignDoc: any, i: number, token: string, phoneNumberId: string) => {
+      const currentStatus = campaignDoc.reportData[i]?.status;
       if (["sent", "delivered", "read", "failed", "invalid"].includes(currentStatus)) {
-        continue; 
+        return { status: "skipped" };
       }
 
       try {
         const templatePayload: any = {
-          name: campaign.templateName,
-          language: {
-            code: campaign.languageCode || "en",
-          },
+          name: campaignDoc.templateName,
+          language: { code: campaignDoc.languageCode || "en" },
           components: [] as any[],
         };
 
-        if (campaign.mediaType === "image" && campaign.mediaUrl) {
+        if (campaignDoc.mediaType === "image" && campaignDoc.mediaUrl) {
           templatePayload.components.push({
             type: "header",
-            parameters: [{
-              type: "image",
-              image: campaign.mediaUrl.startsWith("http") ? { link: campaign.mediaUrl } : { id: campaign.mediaUrl },
-            }],
+            parameters: [{ type: "image", image: campaignDoc.mediaUrl.startsWith("http") ? { link: campaignDoc.mediaUrl } : { id: campaignDoc.mediaUrl } }],
           });
-        } else if (campaign.mediaType === "video" && campaign.mediaUrl) {
+        } else if (campaignDoc.mediaType === "video" && campaignDoc.mediaUrl) {
           templatePayload.components.push({
             type: "header",
-            parameters: [{
-              type: "video",
-              video: campaign.mediaUrl.startsWith("http") ? { link: campaign.mediaUrl } : { id: campaign.mediaUrl },
-            }],
+            parameters: [{ type: "video", video: campaignDoc.mediaUrl.startsWith("http") ? { link: campaignDoc.mediaUrl } : { id: campaignDoc.mediaUrl } }],
           });
-        } else if (campaign.mediaType === "document" && campaign.mediaUrl) {
+        } else if (campaignDoc.mediaType === "document" && campaignDoc.mediaUrl) {
           templatePayload.components.push({
             type: "header",
-            parameters: [{
-              type: "document",
-              document: campaign.mediaUrl.startsWith("http") ? { link: campaign.mediaUrl, filename: "document.pdf" } : { id: campaign.mediaUrl, filename: "document.pdf" },
-            }],
+            parameters: [{ type: "document", document: campaignDoc.mediaUrl.startsWith("http") ? { link: campaignDoc.mediaUrl, filename: "document.pdf" } : { id: campaignDoc.mediaUrl, filename: "document.pdf" } }],
           });
         }
 
-        if (campaign.variables && campaign.variables.length > 0) {
+        if (campaignDoc.variables && campaignDoc.variables.length > 0) {
           templatePayload.components.push({
             type: "body",
-            parameters: campaign.variables.map((v: string) => ({ type: "text", text: v || "" })),
+            parameters: campaignDoc.variables.map((v: string) => ({ type: "text", text: v || "" })),
           });
         }
 
@@ -163,35 +129,86 @@ export async function POST(req: Request) {
 
         if (sendData.error) {
           console.error(`❌ Send error for ${phone}:`, sendData.error.message);
-          failedCount++;
-          if (campaign.reportData[i]) {
-            campaign.reportData[i].status = "failed";
-          }
+          return { status: "failed" };
         } else {
-          sentCount++;
-          if (campaign.reportData[i]) {
-            campaign.reportData[i].status = "sent";
-            // 🔴 CRITICAL FIX: Meta returns messages[0].id, NOT message_id. This fixes the delivered status tracking!
-            campaign.reportData[i].sentWamid = sendData?.messages?.[0]?.id || null; 
-            campaign.reportData[i].charged = true; // Mark as charged immediately
-          }
-          
-          // 🔴 CHARGE BALANCE IMMEDIATELY UPON SUCCESSFUL SEND
-          if (messagePrice > 0) {
-            user.balance = Math.round((user.balance - messagePrice) * 100) / 100;
-            if (user.balance < 0) user.balance = 0;
-            totalDeducted = Math.round((totalDeducted + messagePrice) * 100) / 100;
-          }
+          return { status: "sent", wamid: sendData?.messages?.[0]?.id || null };
         }
-
-        await new Promise((r) => setTimeout(r, 50));
       } catch (err: any) {
         console.error(`❌ Send error for ${phone}:`, err.message);
-        failedCount++;
-        if (campaign.reportData[i]) {
-          campaign.reportData[i].status = "failed";
+        return { status: "failed" };
+      }
+    };
+
+    // 🔴 QUEUE SYSTEM WITH 4 WORKERS
+    let index = 0;
+    while (index < campaign.phoneNumbers.length) {
+      // Check pause/stop
+      const liveCampaign = await Campaign.findById(campaignId);
+      if (liveCampaign.status === "paused") {
+        campaign.status = "paused";
+        campaign.sentCount = sentCount;
+        campaign.failedCount = failedCount;
+        campaign.totalDeducted = totalDeducted;
+        await user.save();
+        await campaign.save();
+        return NextResponse.json({ success: true, message: "Campaign paused", sent: sentCount });
+      }
+      if (liveCampaign.status === "completed" || liveCampaign.status === "stopped") {
+        campaign.status = "completed";
+        campaign.sentCount = sentCount;
+        campaign.failedCount = failedCount;
+        campaign.totalDeducted = totalDeducted;
+        await user.save();
+        await campaign.save();
+        return NextResponse.json({ success: true, message: "Campaign stopped", sent: sentCount });
+      }
+
+      const workerPromises = [];
+      const batchIndices: any[] = [];
+
+      // Batch 4 numbers at a time
+      for (let w = 0; w < 4; w++) {
+        if (index < campaign.phoneNumbers.length) {
+          batchIndices.push(index);
+          workerPromises.push(workerProcess(campaign.phoneNumbers[index], campaign, index, token, phoneNumberId));
+          index++;
         }
       }
+
+      const results = await Promise.all(workerPromises);
+      let batchDeducted = 0;
+
+      results.forEach((res, i) => {
+        const currentI = batchIndices[i];
+        if (res.status === "sent") {
+          sentCount++;
+          if (campaign.reportData[currentI]) {
+            campaign.reportData[currentI].status = "sent";
+            campaign.reportData[currentI].sentWamid = res.wamid;
+            campaign.reportData[currentI].charged = true;
+          }
+          batchDeducted += messagePrice;
+        } else if (res.status === "failed") {
+          failedCount++;
+          if (campaign.reportData[currentI]) {
+            campaign.reportData[currentI].status = "failed";
+          }
+        }
+      });
+
+      // Deduct balance for the batch
+      if (batchDeducted > 0) {
+        user.balance = Math.round((user.balance - batchDeducted) * 100) / 100;
+        if (user.balance < 0) user.balance = 0;
+        totalDeducted = Math.round((totalDeducted + batchDeducted) * 100) / 100;
+      }
+
+      // Save progress
+      await user.save();
+      await campaign.save();
+      
+      // Small delay to prevent CPU overload
+      await new Promise((r) => setTimeout(r, 50));
     }
 
     campaign.sentCount = sentCount;
@@ -199,7 +216,7 @@ export async function POST(req: Request) {
     campaign.totalDeducted = totalDeducted;
     campaign.status = sentCount > 0 ? "completed" : "failed";
     
-    await user.save(); // Save final user balance
+    await user.save();
     await campaign.save();
 
     return NextResponse.json({
