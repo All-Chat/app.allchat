@@ -36,18 +36,20 @@ const LIMIT_RESOURCES_CONFIG = [
   { key: "campaigns", label: "Campaigns", icon: Megaphone, color: "rose", description: "Campaign creation & launch" },
   { key: "optNumbers", label: "Opt-in Numbers", icon: UserPlus, color: "cyan", description: "Opt-in contact numbers" },
   { key: "forms", label: "Forms", icon: ClipboardList, color: "amber", description: "Form creation" },
+  { key: "whatsappNumbers", label: "WhatsApp Numbers", icon: Phone, color: "indigo", description: "Multiple WA numbers per user" },
 ];
 
 const LIMIT_PRESETS = [
-  { label: "Free Tier", limits: { tags: { max: 5, period: "month" }, workflows: { max: 2, period: "total" }, templates: { max: 3, period: "total" }, testMessages: { max: 5, period: "day" }, campaigns: { max: 2, period: "month" }, optNumbers: { max: 50, period: "total" }, forms: { max: 2, period: "total" } } },
-  { label: "Basic", limits: { tags: { max: 50, period: "month" }, workflows: { max: 5, period: "total" }, templates: { max: 10, period: "total" }, testMessages: { max: 20, period: "day" }, campaigns: { max: 5, period: "month" }, optNumbers: { max: 500, period: "total" }, forms: { max: 5, period: "total" } } },
-  { label: "Pro", limits: { tags: { max: 200, period: "month" }, workflows: { max: 20, period: "total" }, templates: { max: 50, period: "total" }, testMessages: { max: 100, period: "day" }, campaigns: { max: 20, period: "month" }, optNumbers: { max: 5000, period: "total" }, forms: { max: 20, period: "total" } } },
-  { label: "Enterprise", limits: { tags: { max: -1, period: "unlimited" }, workflows: { max: -1, period: "unlimited" }, templates: { max: -1, period: "unlimited" }, testMessages: { max: -1, period: "unlimited" }, campaigns: { max: -1, period: "unlimited" }, optNumbers: { max: -1, period: "unlimited" }, forms: { max: -1, period: "unlimited" } } },
+  { label: "Free Tier", limits: { tags: { max: 5, period: "month" }, workflows: { max: 2, period: "total" }, templates: { max: 3, period: "total" }, testMessages: { max: 5, period: "day" }, campaigns: { max: 2, period: "month" }, optNumbers: { max: 50, period: "total" }, forms: { max: 2, period: "total" }, whatsappNumbers: { max: 1, period: "total" } } },
+  { label: "Basic", limits: { tags: { max: 50, period: "month" }, workflows: { max: 5, period: "total" }, templates: { max: 10, period: "total" }, testMessages: { max: 20, period: "day" }, campaigns: { max: 5, period: "month" }, optNumbers: { max: 500, period: "total" }, forms: { max: 5, period: "total" }, whatsappNumbers: { max: 2, period: "total" } } },
+  { label: "Pro", limits: { tags: { max: 200, period: "month" }, workflows: { max: 20, period: "total" }, templates: { max: 50, period: "total" }, testMessages: { max: 100, period: "day" }, campaigns: { max: 20, period: "month" }, optNumbers: { max: 5000, period: "total" }, forms: { max: 20, period: "total" }, whatsappNumbers: { max: 5, period: "total" } } },
+  { label: "Enterprise", limits: { tags: { max: -1, period: "unlimited" }, workflows: { max: -1, period: "unlimited" }, templates: { max: -1, period: "unlimited" }, testMessages: { max: -1, period: "unlimited" }, campaigns: { max: -1, period: "unlimited" }, optNumbers: { max: -1, period: "unlimited" }, forms: { max: -1, period: "unlimited" }, whatsappNumbers: { max: -1, period: "unlimited" } } },
 ];
 
 const DEFAULT_LIMITS: Record<string, { max: number; period: string }> = {
   tags: { max: -1, period: "unlimited" }, workflows: { max: -1, period: "unlimited" }, templates: { max: -1, period: "unlimited" },
-  testMessages: { max: -1, period: "unlimited" }, campaigns: { max: -1, period: "unlimited" }, optNumbers: { max: -1, period: "unlimited" }, forms: { max: -1, period: "unlimited" },
+  testMessages: { max: -1, period: "unlimited" }, campaigns: { max: -1, period: "unlimited" }, optNumbers: { max: -1, period: "unlimited" }, 
+  forms: { max: -1, period: "unlimited" }, whatsappNumbers: { max: -1, period: "unlimited" },
 };
 
 type LimitValue = { max: number; period: string };
@@ -61,6 +63,7 @@ function getLimitColor(color: string) {
     rose: { bg: "bg-rose-50", border: "border-rose-200", iconBg: "bg-rose-100", iconText: "text-rose-600", inputBorder: "border-rose-200", inputFocus: "focus:ring-rose-500/30 focus:border-rose-400" },
     cyan: { bg: "bg-cyan-50", border: "border-cyan-200", iconBg: "bg-cyan-100", iconText: "text-cyan-600", inputBorder: "border-cyan-200", inputFocus: "focus:ring-cyan-500/30 focus:border-cyan-400" },
     amber: { bg: "bg-amber-50", border: "border-amber-200", iconBg: "bg-amber-100", iconText: "text-amber-600", inputBorder: "border-amber-200", inputFocus: "focus:ring-amber-500/30 focus:border-amber-400" },
+    indigo: { bg: "bg-indigo-50", border: "border-indigo-200", iconBg: "bg-indigo-100", iconText: "text-indigo-600", inputBorder: "border-indigo-200", inputFocus: "focus:ring-indigo-500/30 focus:border-indigo-400" },
   };
   return map[color] || map.orange;
 }
@@ -198,7 +201,7 @@ export default function AdminBillingPage() {
       if (data.success) {
         toast.success(data.message);
         fetchRequests();
-        fetchUsers(); // Refresh user data if approved
+        fetchUsers(); 
       } else {
         toast.error(data.message || "Failed to process request");
       }
@@ -326,7 +329,7 @@ export default function AdminBillingPage() {
           </div>
         </div>
 
-        {/* PENDING CONFIGURATION REQUESTS SECTION */}
+                        {/* PENDING CONFIGURATION REQUESTS SECTION */}
         {requests.length > 0 && (
           <div className="mb-6 bg-white rounded-2xl border border-amber-200 shadow-sm p-5">
             <h2 className="text-lg font-bold text-amber-700 mb-4 flex items-center gap-2">
@@ -337,10 +340,13 @@ export default function AdminBillingPage() {
                 <div key={req._id} className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 bg-amber-50 rounded-xl border border-amber-100 gap-3">
                   <div className="flex items-start gap-3">
                     <div className="p-2 bg-white rounded-lg border border-amber-200 mt-0.5">
-                      <UserCog size={16} className="text-amber-600" />
+                      <Phone size={16} className="text-amber-600" />
                     </div>
                     <div>
                       <p className="font-bold text-gray-900 text-sm">{req.userName}</p>
+                      <p className="text-xs text-indigo-600 font-bold mt-0.5">
+                        {req.requestType === "edit" ? "Editing Existing Number" : "Adding New Number"}: {req.name || "WhatsApp Number"}
+                      </p>
                       <div className="text-xs text-gray-600 mt-1 space-y-0.5 font-mono">
                         {req.wabaId && <p>WABA ID: <span className="font-semibold">{req.wabaId}</span></p>}
                         {req.whatsappPhoneNumberId && <p>Phone ID: <span className="font-semibold">{req.whatsappPhoneNumberId}</span></p>}
