@@ -7,6 +7,13 @@ const WorkflowSchema = new mongoose.Schema({
     required: true, 
     index: true 
   },
+  
+  // ==========================================
+  // 🔴 MULTI-TENANT DATA ISOLATION
+  // ==========================================
+  tenantId: { type: String, default: null, index: true },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
+
   name: {
     type: String,
     default: "Untitled Workflow",
