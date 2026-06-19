@@ -5,7 +5,13 @@ const CampaignSchema = new mongoose.Schema({
   name: { type: String, required: true },
   templateName: { type: String, required: true },
   templateCategory: { type: String, default: "MARKETING" },
+  
+  // ✅ ADDED/UPDATED VARIABLE FIELDS
   variables: { type: [String], default: [] },
+  mappedVariables: { type: [[String]], default: [] }, // Array of arrays for per-contact variables
+  generateOtp: { type: Boolean, default: false },
+  otpLength: { type: Number, default: 0 },
+
   phoneNumbers: { type: [String], required: true },
   names: { type: [String], default: [] },
   languageCode: { type: String, default: "en" },
@@ -31,7 +37,8 @@ const CampaignSchema = new mongoose.Schema({
   mediaType: { type: String, default: null },
   status: {
     type: String,
-    enum: ["saved", "scheduled", "running", "completed", "failed"],
+    // ✅ FIX: Added "paused" and "stopped" to the enum to prevent Mongoose validation errors
+    enum: ["saved", "scheduled", "running", "paused", "stopped", "completed", "failed"],
     default: "saved",
   },
   scheduledAt: { type: Date, default: null },
