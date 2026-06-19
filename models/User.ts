@@ -36,9 +36,23 @@ const UserSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  // Legacy single price (kept for backward compatibility)
   pricePerMessage: {
     type: Number,
     default: 0.90,
+  },
+  // NEW: Category-based pricing
+  priceMarketing: {
+    type: Number,
+    default: 0.90,
+  },
+  priceUtility: {
+    type: Number,
+    default: 0.50,
+  },
+  priceAuthentication: {
+    type: Number,
+    default: 0.30,
   },
   // ==========================================
   // ACCOUNT & PLAN
