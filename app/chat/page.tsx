@@ -91,7 +91,7 @@ const parseTemplateButtons = (buttons: TemplateButton[] | string | undefined): T
 
 const handleUnauthorized = (res: Response) => {
   if (res.status === 401) {
-    window.location.href = "/";
+    window.location.href = "/signin";
     return true;
   }
   return false;
@@ -114,6 +114,7 @@ export default function ChatPage() {
 
   // Responsive state for toggling Chat List vs Chat Window on mobile
   const [showChatList, setShowChatList] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const prevMessageCount = useRef(0);
@@ -278,7 +279,7 @@ export default function ChatPage() {
   // ─── Effects ───
   useEffect(() => {
     if (status === "authenticated") loadChats();
-    else if (status === "unauthenticated") window.location.href = "/";
+    else if (status === "unauthenticated") window.location.href = "/signin";
   }, [status]);
 
   useEffect(() => {
@@ -579,17 +580,27 @@ export default function ChatPage() {
               <input
                 type="text"
                 placeholder="Search or start new chat"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full pl-10 pr-4 py-2 bg-white rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/30 shadow-sm transition-all border border-gray-100"
               />
             </div>
           </div>
 
-          {/* Chat List Items */}
+                    {/* Chat List Items */}
           <div className="flex-1 overflow-y-auto scrollbar-hide bg-white">
             {loading ? (
               <div className="p-6 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-emerald-600" /></div>
             ) : (
-              chats.map((chat) => (
+              chats
+              .filter((chat) => {
+                if (!searchQuery) return true;
+                const name = getResolvedName(chat).toLowerCase();
+                const phone = (chat.phone || chat._id).toLowerCase();
+                const query = searchQuery.toLowerCase();
+                return name.includes(query) || phone.includes(query);
+              })
+              .map((chat) => (
                 <div
                   key={chat._id}
                   onClick={() => handleChatSelect(chat)}
