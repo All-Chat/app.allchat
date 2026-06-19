@@ -36,6 +36,20 @@ export default function SendMessagePage() {
       minimumFractionDigits: 2,
     }).format(amount);
 
+  // Helper to get category badge color
+  const getCategoryColor = (category: string) => {
+    switch (category?.toUpperCase()) {
+      case "MARKETING":
+        return "bg-orange-50 text-orange-700 border-orange-200";
+      case "UTILITY":
+        return "bg-blue-50 text-blue-700 border-blue-200";
+      case "AUTHENTICATION":
+        return "bg-purple-50 text-purple-700 border-purple-200";
+      default:
+        return "bg-gray-50 text-gray-700 border-gray-200";
+    }
+  };
+
   const fetchBilling = async () => {
     try {
       const res = await fetch("/api/billing");
@@ -175,6 +189,8 @@ export default function SendMessagePage() {
       formData.append("phone", phone.replace(/\+/g, ""));
       formData.append("templateName", selectedTemplate.name);
       formData.append("languageCode", selectedTemplate.language || "en");
+      // 🔴 PASS CATEGORY for category-based pricing
+      formData.append("category", selectedTemplate.category || "MARKETING");
 
       if (variables.length > 0) {
         formData.append("variables", JSON.stringify(variables.filter((v) => v !== "")));
@@ -216,7 +232,9 @@ export default function SendMessagePage() {
         return;
       }
 
+      // Show success message without showing any price details
       toast.success("Message sent successfully! 🚀");
+
       fetchBilling();
 
       setPhone("");
@@ -252,7 +270,7 @@ export default function SendMessagePage() {
       {/* Main Content Area */}
       <div className="md:ml-64 p-4 sm:p-6 lg:p-8">
         <div className="max-w-2xl mx-auto">
-          
+
           {/* PAGE HEADER */}
           <div className="mb-6 sm:mb-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div>
@@ -358,22 +376,31 @@ export default function SendMessagePage() {
                       const headerComp = t.components?.find((c: any) => c.type === "HEADER");
                       const hasMedia = headerComp && ["IMAGE", "VIDEO", "DOCUMENT"].includes(headerComp.format);
                       const mediaLabel = hasMedia ? ` [${headerComp.format}]` : "";
+                      const catLabel = t.category ? ` [${t.category}]` : "";
                       return (
                         <option
                           key={`${t.name}-${t.language}-${i}`}
                           value={`${t.name}|${t.language}`}
                         >
-                          {t.name} ({t.language || "N/A"}){mediaLabel}
+                          {t.name} ({t.language || "N/A"}){mediaLabel}{catLabel}
                         </option>
                       );
                     })}
                   </select>
                 )}
 
+                {/* Category Badge + Language Info */}
                 {selectedTemplate && (
-                  <p className="text-[11px] sm:text-xs text-emerald-600 mt-2 flex items-center gap-1.5 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-100">
-                    🌐 Language: <span className="font-bold">{selectedTemplate.language || "en"}</span>
-                  </p>
+                  <div className="flex flex-wrap items-center gap-2 mt-2">
+                    <span className="text-[11px] sm:text-xs text-emerald-600 flex items-center gap-1.5 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-100">
+                      🌐 Language: <span className="font-bold">{selectedTemplate.language || "en"}</span>
+                    </span>
+                    {selectedTemplate.category && (
+                      <span className={`text-[11px] sm:text-xs font-bold px-3 py-1.5 rounded-lg border flex items-center gap-1.5 ${getCategoryColor(selectedTemplate.category)}`}>
+                        📋 {selectedTemplate.category}
+                      </span>
+                    )}
+                  </div>
                 )}
 
                 {!loading && templates.length === 0 && (
