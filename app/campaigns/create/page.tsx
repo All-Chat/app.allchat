@@ -10,7 +10,7 @@ import {
   Upload, FileSpreadsheet, Clock, Globe, CheckCircle2,
   Users, Sparkles, Send, RotateCcw, AlertCircle,
   FileText, Film, Image as ImageIcon, Loader2, X, Link, Tag as TagIcon,
-  Ban,
+  Ban, ShieldCheck,
   Gauge, Infinity as InfinityIcon, // ✅ LIMIT ADDED
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
@@ -25,6 +25,7 @@ export default function CreateCampaign() {
   const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
   const [rawNumbers, setRawNumbers] = useState<string[]>([]);
   const [rawNames, setRawNames] = useState<string[]>([]);
+  const [rawVariables, setRawVariables] = useState<string[][]>([]); // ✅ PER-CONTACT VARIABLES
   const [rawText, setRawText] = useState("");
   const [countryCode, setCountryCode] = useState("91");
   const [campaignName, setCampaignName] = useState("");
@@ -35,6 +36,11 @@ export default function CreateCampaign() {
   const [scheduleDate, setScheduleDate] = useState("");
   const [saving, setSaving] = useState(false);
   const [languageCode, setLanguageCode] = useState("en");
+
+  // ✅ OTP & MAPPING STATES
+  const [useRandomOtp, setUseRandomOtp] = useState(false);
+  const [otpLength, setOtpLength] = useState(4);
+  const [selectedVarCols, setSelectedVarCols] = useState<string[]>([]);
 
   const [headerFormat, setHeaderFormat] = useState("TEXT");
   const [headerText, setHeaderText] = useState("");
@@ -65,6 +71,8 @@ export default function CreateCampaign() {
     ? Math.min(100, Math.round(((campaignLimit?.usage?.count || 0) / campaignLimit.limit.max) * 100))
     : 0;
   const isAtLimit = isLimitActive && !campaignLimit.allowed;
+
+  const isAuthTemplate = selectedTemplate?.category === "AUTHENTICATION";
 
   useEffect(() => {
     if (status === "authenticated") {
@@ -149,9 +157,10 @@ export default function CreateCampaign() {
       if (data.success && data.contacts.length > 0) {
         const numbers = data.contacts.map((c: any) => c.phone);
         const names = data.contacts.map((c: any) => c.name || "");
-        const { finalNumbers, finalNames } = cleanAndValidateNumbers(numbers, names);
+        const { finalNumbers, finalNames, finalVariables } = cleanAndValidateNumbers(numbers, names);
         setRawNumbers(finalNumbers);
         setRawNames(finalNames);
+        setRawVariables(finalVariables);
         toast.success(`Loaded ${finalNumbers.length} valid numbers from tag: ${tagName}`);
       } else {
         toast.error("No contacts found for this tag");
@@ -195,8 +204,16 @@ export default function CreateCampaign() {
     const bodyComp = tmpl.components?.find((c: any) => c.type === "BODY");
     const text = bodyComp?.text || "";
     setBodyText(text);
-    const matches = text.match(/\{\{\d+\}\}/g) || [];
-    setVariables(matches.map(() => ""));
+    
+    // ✅ Auth templates always have exactly 1 variable for the code
+    const varCount = tmpl.category === "AUTHENTICATION" ? 1 : (text.match(/\{\{\d+\}\}/g) || []).length;
+    setVariables(Array(varCount).fill(""));
+    
+    // Reset OTP and Mappings
+    setUseRandomOtp(false);
+    setOtpLength(4);
+    setSelectedVarCols(Array(varCount).fill("skip"));
+    setRawVariables([]);
 
     const footerComp = tmpl.components?.find((c: any) => c.type === "FOOTER");
     setFooterText(footerComp?.text || "");
@@ -208,7 +225,10 @@ export default function CreateCampaign() {
   const replaceVars = (text: string) => {
     let preview = text;
     variables.forEach((v, i) => {
-      preview = preview.replace(`{{${i + 1}}}`, v || `{{${i + 1}}}`);
+      let displayVal = v;
+      if (useRandomOtp && isAuthTemplate) displayVal = "1234";
+      else if (selectedVarCols[i] && selectedVarCols[i] !== "skip") displayVal = `[${selectedVarCols[i]}]`;
+      preview = preview.replace(`{{${i + 1}}}`, displayVal || `{{${i + 1}}}`);
     });
     return preview;
   };
@@ -221,7 +241,7 @@ export default function CreateCampaign() {
     return false;
   };
 
-  const cleanAndValidateNumbers = (nums: string[], names: string[]) => {
+  const cleanAndValidateNumbers = (nums: string[], names: string[], rows: string[][] = [], varIndices: number[] = []) => {
     const MAX_LIMIT = 50000;
     const seen = new Set();
     let valid = 0,
@@ -230,6 +250,7 @@ export default function CreateCampaign() {
       optedOut = 0;
     const finalNumbers: string[] = [];
     const finalNames: string[] = [];
+    const finalVariables: string[][] = [];
 
     for (let index = 0; index < nums.length; index++) {
       const num = nums[index];
@@ -251,6 +272,11 @@ export default function CreateCampaign() {
           seen.add(clean);
           finalNumbers.push(clean);
           finalNames.push(names[index] || "");
+          
+          // ✅ Extract mapped variables for this row
+          const contactVars = varIndices.map(vIdx => vIdx !== -1 ? (rows[index]?.[vIdx] || "") : "");
+          finalVariables.push(contactVars);
+          
           valid++;
 
           if (finalNumbers.length >= MAX_LIMIT) {
@@ -263,7 +289,7 @@ export default function CreateCampaign() {
       }
     }
     setStats({ valid, invalid, duplicates, optedOut });
-    return { finalNumbers, finalNames };
+    return { finalNumbers, finalNames, finalVariables };
   };
 
   const handleTextNumbers = () => {
@@ -271,9 +297,10 @@ export default function CreateCampaign() {
       .split(/[\n,;]+/)
       .map((n) => n.trim())
       .filter((n) => n);
-    const { finalNumbers, finalNames } = cleanAndValidateNumbers(lines, lines.map(() => ""));
+    const { finalNumbers, finalNames, finalVariables } = cleanAndValidateNumbers(lines, lines.map(() => ""));
     setRawNumbers(finalNumbers);
     setRawNames(finalNames);
+    setRawVariables(finalVariables);
     if (finalNumbers.length > 0) toast.success(`Parsed ${finalNumbers.length} valid numbers`);
     else toast.error("No valid numbers found");
   };
@@ -342,15 +369,22 @@ export default function CreateCampaign() {
     const phoneIdx = fileHeaders.indexOf(selectedPhoneCol);
     const nameIdx =
       selectedNameCol && selectedNameCol !== "skip" ? fileHeaders.indexOf(selectedNameCol) : -1;
+      
+    // ✅ Get indices for mapped variable columns
+    const varIndices = selectedVarCols.map(col => col && col !== "skip" ? fileHeaders.indexOf(col) : -1);
+
     const numbers: string[] = [];
     const names: string[] = [];
-    fileRows.forEach((row) => {
+    fileRows.forEach(row => {
       numbers.push(row[phoneIdx] || "");
       names.push(nameIdx !== -1 ? row[nameIdx] || "" : "");
     });
-    const { finalNumbers, finalNames } = cleanAndValidateNumbers(numbers, names);
+    
+    // ✅ Pass rows and varIndices to extract mapped variables
+    const { finalNumbers, finalNames, finalVariables } = cleanAndValidateNumbers(numbers, names, fileRows, varIndices);
     setRawNumbers(finalNumbers);
     setRawNames(finalNames);
+    setRawVariables(finalVariables);
     toast.success(`Extracted ${finalNumbers.length} valid numbers`);
   };
 
@@ -361,6 +395,7 @@ export default function CreateCampaign() {
     setSelectedPhoneCol("");
     setSelectedNameCol("");
     setFileName("");
+    setSelectedVarCols(variables.map(() => "skip")); // Reset var mappings
   };
 
   const handleMediaFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -539,17 +574,27 @@ export default function CreateCampaign() {
     setSaving(true);
     try {
       let res;
+      const commonData = {
+        name: campaignName,
+        templateName: selectedTemplate.name,
+        templateCategory: selectedTemplate.category,
+        variables: useRandomOtp ? [] : variables, // Static variables
+        mappedVariables: rawVariables.length > 0 ? rawVariables : [], // ✅ Per-contact variables
+        generateOtp: useRandomOtp, // ✅ OTP Flag
+        otpLength: useRandomOtp ? parseInt(otpLength.toString(), 10) : 0, // ✅ OTP Length
+        phoneNumbers: rawNumbers,
+        names: rawNames,
+        mediaType,
+        languageCode,
+        scheduledAt: isSchedule ? scheduleDate : null,
+      };
+
       if (mediaInputType === "upload" && mediaFile) {
         const formData = new FormData();
-        formData.append("name", campaignName);
-        formData.append("templateName", selectedTemplate.name);
-        formData.append("templateCategory", selectedTemplate.category);
-        formData.append("variables", JSON.stringify(variables));
-        formData.append("phoneNumbers", JSON.stringify(rawNumbers));
-        formData.append("names", JSON.stringify(rawNames));
-        formData.append("mediaType", mediaType);
-        formData.append("languageCode", languageCode);
-        formData.append("scheduledAt", isSchedule ? scheduleDate : "null");
+        Object.keys(commonData).forEach(key => {
+          formData.append(key, JSON.stringify((commonData as any)[key]));
+        });
+        formData.append("mediaUrl", mediaUrl);
         formData.append("file", mediaFile);
         res = await fetch("/api/campaigns/save", { method: "POST", body: formData });
       } else {
@@ -557,16 +602,8 @@ export default function CreateCampaign() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            name: campaignName,
-            templateName: selectedTemplate.name,
-            templateCategory: selectedTemplate.category,
-            variables,
-            phoneNumbers: rawNumbers,
-            names: rawNames,
+            ...commonData,
             mediaUrl,
-            mediaType,
-            languageCode,
-            scheduledAt: isSchedule ? scheduleDate : null,
           }),
         });
       }
@@ -770,23 +807,61 @@ export default function CreateCampaign() {
                     <label className="text-[11px] font-extrabold text-slate-700 flex items-center gap-2 uppercase tracking-widest">
                       <Sparkles size={12} className="text-indigo-500" /> Template Variables
                     </label>
-                    {variables.map((v, i) => (
-                      <div key={i} className="relative">
-                        <div className="absolute left-3 top-2.5 text-[10px] font-bold text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded">{`{{${i + 1}}}`}</div>
-                        <input
-                          type="text"
-                          value={v}
-                          onChange={(e) => {
-                            const u = [...variables];
-                            u[i] = e.target.value;
-                            setVariables(u);
-                          }}
-                          placeholder="Enter value..."
-                          disabled={isAtLimit}
-                          className="w-full pl-20 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)] disabled:opacity-50 disabled:cursor-not-allowed"
-                        />
+
+                    {/* ✅ RANDOM OTP OPTION */}
+                    {isAuthTemplate && (
+                      <div className="bg-purple-50/50 border border-purple-100 rounded-xl p-4 space-y-3">
+                        <label className="flex items-center gap-3 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={useRandomOtp}
+                            onChange={(e) => setUseRandomOtp(e.target.checked)}
+                            className="w-4 h-4 accent-purple-600"
+                          />
+                          <span className="text-sm font-bold text-purple-800 flex items-center gap-2">
+                            <ShieldCheck size={14} /> Generate Random OTP for each contact
+                          </span>
+                        </label>
+                        {useRandomOtp && (
+                          <div className="flex items-center gap-3 pl-7">
+                            <label className="text-xs font-medium text-purple-700">Number of digits:</label>
+                            <input
+                              type="number"
+                              min="4"
+                              max="8"
+                              value={otpLength}
+                              onChange={(e) => setOtpLength(Math.max(4, Math.min(8, parseInt(e.target.value) || 4)))}
+                              className="w-20 px-3 py-1.5 bg-white border border-purple-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-100 focus:border-purple-500"
+                            />
+                          </div>
+                        )}
                       </div>
-                    ))}
+                    )}
+
+                    {/* ✅ DYNAMIC VARIABLE INPUTS */}
+                    {!useRandomOtp && (
+                      variables.map((v, i) => {
+                        const isMapped = selectedVarCols[i] && selectedVarCols[i] !== "skip";
+                        return (
+                          <div key={i} className="relative">
+                            <div className="absolute left-3 top-2.5 text-[10px] font-bold text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded">{`{{${i + 1}}}`}</div>
+                            <input
+                              type="text"
+                              value={isMapped ? `From Column: ${selectedVarCols[i]}` : v}
+                              onChange={(e) => {
+                                const u = [...variables];
+                                u[i] = e.target.value;
+                                setVariables(u);
+                              }}
+                              placeholder="Enter static value..."
+                              disabled={isMapped || isAtLimit}
+                              className="w-full pl-20 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)] disabled:opacity-50 disabled:cursor-not-allowed"
+                            />
+                            {isMapped && <p className="text-[10px] text-emerald-600 mt-1 pl-1">Value will be extracted from Excel automatically.</p>}
+                          </div>
+                        );
+                      })
+                    )}
                   </div>
                 )}
               </div>
@@ -977,6 +1052,33 @@ export default function CreateCampaign() {
                         </option>
                       ))}
                     </select>
+
+                    {/* ✅ EXCEL VARIABLE MAPPING */}
+                    {variables.length > 0 && !useRandomOtp && (
+                      <div className="space-y-2 mt-2 pt-2 border-t border-emerald-100">
+                        <p className="text-[11px] font-extrabold text-emerald-800 uppercase tracking-widest flex items-center gap-2">
+                          <Sparkles size={12} /> Map Template Variables
+                        </p>
+                        {variables.map((v, i) => (
+                          <select
+                            key={i}
+                            value={selectedVarCols[i] || "skip"}
+                            onChange={(e) => {
+                              const newArr = [...selectedVarCols];
+                              newArr[i] = e.target.value;
+                              setSelectedVarCols(newArr);
+                            }}
+                            className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-emerald-100 focus:border-emerald-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"
+                          >
+                            <option value="skip">-- Variable {i + 1} Column (Optional) --</option>
+                            {fileHeaders.map((h, idx) => (
+                              <option key={idx} value={h}>🔗 {h}</option>
+                            ))}
+                          </select>
+                        ))}
+                      </div>
+                    )}
+
                     <button
                       onClick={processFileColumns}
                       className="w-full px-5 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl text-sm font-bold hover:from-emerald-600 hover:to-teal-600 transition-all shadow-md flex items-center justify-center gap-2"
