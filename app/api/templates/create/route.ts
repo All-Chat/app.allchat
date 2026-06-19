@@ -6,7 +6,7 @@ import User from "@/models/User";
 import Template from "@/models/Template";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { checkLimit, incrementUsage } from "@/lib/limits"; // ✅ LIMIT ADDED
+import { checkLimit, incrementUsage } from "@/lib/limits";
 
 const WHATSAPP_API = "https://graph.facebook.com/v25.0";
 
@@ -414,8 +414,13 @@ export async function POST(req: Request) {
     // ==========================================
     // 8. SAVE TO LOCAL DB
     // ==========================================
+    // 🔴 MULTI-TENANT DATA ISOLATION
+    const tenantId = (session.user as any)?.parentTenantId || (session.user as any)?.tenantId || null;
+
     const template = await Template.create({
       userId,
+      tenantId, // ✅ ATTACH TENANT ID FOR AGGREGATED VIEWS
+      createdBy: userId, // ✅ TRACK WHO CREATED IT
       name: safeName,
       category,
       language,
