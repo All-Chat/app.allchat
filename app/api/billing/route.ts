@@ -19,9 +19,20 @@ export async function GET() {
       return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
     }
 
-    const user = await User.findById(session.user.id);
+    let user = await User.findById(session.user.id);
     if (!user) {
       return NextResponse.json({ message: "User not found" }, { status: 404 });
+    }
+
+    // ==========================================
+    // 🔴 SHARED WALLET LOGIC
+    // ==========================================
+    // If the user is a sub-user, we need to check their Parent Tenant's balance.
+    if (user.parentTenantId) {
+      const parent = await User.findOne({ tenantId: user.parentTenantId });
+      if (parent) {
+        user = parent; // Switch context to the parent tenant for billing
+      }
     }
 
     const balance = user.balance || 0;
@@ -33,6 +44,7 @@ export async function GET() {
       billing: {
         balance: balance,
         totalRecharged: user.totalRecharged || 0,
+        totalSpent: Math.max(0, (user.totalRecharged || 0) - balance), // Calculate spent dynamically
         canSendMessage: canSendMessage,
         // prices are intentionally NOT sent to frontend
       },
