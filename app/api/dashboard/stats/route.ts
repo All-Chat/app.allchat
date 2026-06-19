@@ -19,28 +19,21 @@ export async function GET() {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
     }
 
-    // 2. Get total unique phones that have chatted FOR THIS USER
     const totalChats = (await Message.distinct("phone", { userId })).length;
-
-    // 3. Get total workflows FOR THIS USER
     const totalWorkflows = await Workflow.countDocuments({ userId });
-
-    // 4. Get total campaigns FOR THIS USER
     const totalCampaigns = await Campaign.countDocuments({ userId });
 
-    // 5. Get recent active campaigns FOR THIS USER
     const activeCampaigns = await Campaign.find({
       userId: userId,
       status: { $in: ["running", "scheduled", "completed"] }
     })
-    .sort({ createdAt: -1 })
-    .limit(5)
-    .lean();
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .lean();
 
     const campaignData = activeCampaigns.map((camp: any) => {
       const total = camp.reportData?.length || 0;
       const readCount = camp.reportData?.filter((r: any) => r.status === 'read').length || 0;
-      const deliveredCount = camp.reportData?.filter((r: any) => r.status === 'delivered').length || 0;
       const sentCount = camp.reportData?.filter((r: any) =>
         ['sent', 'delivered', 'read'].includes(r.status)
       ).length || 0;
@@ -58,15 +51,69 @@ export async function GET() {
       };
     });
 
-    // ==========================================
-    // 🔴 BILLING INFO FROM USER
-    // ==========================================
-    const user = await User.findById(userId).select("balance totalRecharged pricePerMessage");
+    const user = await User.findById(userId).select("balance totalRecharged pricePerMessage whatsappAccessToken whatsappPhoneNumberId");
     const balance = user?.balance || 0;
     const totalRecharged = user?.totalRecharged || 0;
     const totalSpent = Math.round((totalRecharged - balance) * 100) / 100;
     const pricePerMessage = user?.pricePerMessage || 0;
     const canSendMessage = pricePerMessage === 0 || balance >= pricePerMessage;
+
+    // ==========================================
+    // ✅ FETCH WHATSAPP PHONE NUMBER DETAILS FROM META
+    // ==========================================
+    let phoneDetails: any = {
+      displayPhoneNumber: "Not Configured",
+      verifiedName: "Add Credentials in Settings",
+      qualityRating: "N/A",
+      status: "DISCONNECTED",
+      messagingLimitTier: "N/A",
+      twoFactorEnabled: "N/A",
+    };
+
+    if (user?.whatsappAccessToken && user?.whatsappPhoneNumberId) {
+      try {
+        // FIX: Using v21.0 (Latest stable) and is_pin_enabled for 2FA
+        const metaRes = await fetch(
+          `https://graph.facebook.com/v21.0/${user.whatsappPhoneNumberId}?fields=display_phone_number,verified_name,quality_rating,status,whatsapp_business_manager_messaging_limit,is_pin_enabled`,
+          {
+            headers: { Authorization: `Bearer ${user.whatsappAccessToken}` },
+            cache: "no-store"
+          }
+        );
+
+        const metaJson = await metaRes.json();
+
+        if (metaRes.ok) {
+          phoneDetails = {
+            displayPhoneNumber: metaJson.display_phone_number || "Not Available",
+            verifiedName: metaJson.verified_name || "Not Available",
+            qualityRating: metaJson.quality_rating || "N/A",
+            status: metaJson.status || "N/A",
+            messagingLimitTier: metaJson.whatsapp_business_manager_messaging_limit || "N/A",
+            twoFactorEnabled: metaJson.is_pin_enabled === true ? true : (metaJson.is_pin_enabled === false ? false : "N/A"),
+          };
+        } else {
+          // If it fails, it's usually because the token lacks 'whatsapp_business_management' permission
+          phoneDetails = {
+            displayPhoneNumber: "Error",
+            verifiedName: metaJson?.error?.message || "Token lacks whatsapp_business_management permission",
+            qualityRating: "N/A",
+            status: "ERROR",
+            messagingLimitTier: "N/A",
+            twoFactorEnabled: "N/A",
+          };
+        }
+      } catch (err) {
+        phoneDetails = {
+          displayPhoneNumber: "Error",
+          verifiedName: "Fetch Failed",
+          qualityRating: "N/A",
+          status: "ERROR",
+          messagingLimitTier: "N/A",
+          twoFactorEnabled: "N/A",
+        };
+      }
+    }
 
     return NextResponse.json({
       success: true,
@@ -74,9 +121,7 @@ export async function GET() {
       totalWorkflows,
       totalCampaigns,
       campaigns: campaignData,
-      // ==========================================
-      // 🔴 BILLING DATA
-      // ==========================================
+      phoneDetails,
       billing: {
         balance,
         totalRecharged,
