@@ -26,6 +26,8 @@ import {
   Menu,
   X,
   ChevronDown,
+  Users,
+  UserCog,
   MessagesSquare,
 } from "lucide-react";
 import { useSession } from "next-auth/react";
@@ -85,6 +87,13 @@ const categories: NavCategory[] = [
       { name: "Opted-Out Numbers", icon: Ban, href: "/opt-numbers" },
       { name: "Create Form", icon: FormInput, href: "/forms" },
       { name: "Form Responses", icon: ClipboardCheck, href: "/forms/responses" },
+    ],
+  },
+    {
+    title: "Team",
+    icon: Users,
+    items: [
+      { name: "Users", icon: UserCog, href: "/tenant/users" },
     ],
   },
 ];
