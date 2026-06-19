@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import User from "@/models/User";
+import { connectDB } from "@/lib/mongodb";
 
 /**
  * Valid WhatsApp template categories
@@ -8,13 +9,28 @@ export const TEMPLATE_CATEGORIES = ["MARKETING", "UTILITY", "AUTHENTICATION"] as
 export type TemplateCategory = (typeof TEMPLATE_CATEGORIES)[number];
 
 /**
+ * Helper: Get the user who actually pays for the messages.
+ * If the user is a sub-user (has parentTenantId), return the Parent Tenant.
+ * Otherwise, return the user themselves.
+ */
+async function getPayer(userId: string) {
+  await connectDB();
+  const user = await User.findById(userId);
+  if (!user) return null;
+
+  if (user.parentTenantId) {
+    const parent = await User.findOne({ tenantId: user.parentTenantId });
+    return parent || user; // Fallback to user if parent not found (safety)
+  }
+  
+  return user;
+}
+
+/**
  * Get the price for a specific template category for a user.
  * Falls back to legacy pricePerMessage if category-specific price is not set.
  */
-export function getPriceForCategory(
-  user: any,
-  category: string
-): number {
+export function getPriceForCategory(user: any, category: string): number {
   const cat = (category || "MARKETING").toUpperCase().trim();
 
   switch (cat) {
@@ -46,17 +62,17 @@ export function getMinPrice(user: any): number {
 }
 
 /**
- * Check if user has sufficient balance for a given cost.
+ * Check if user (or their parent tenant) has sufficient balance for a given cost.
  * If the determined price is 0, messages are free — always returns true.
  */
 export async function hasSufficientBalance(
   userId: string,
   requiredAmount: number
 ): Promise<{ sufficient: boolean; balance: number; pricePerMessage: number }> {
-  const user = await User.findById(userId);
-  if (!user) return { sufficient: false, balance: 0, pricePerMessage: 0 };
+  const payer = await getPayer(userId);
+  if (!payer) return { sufficient: false, balance: 0, pricePerMessage: 0 };
 
-  const balance = user.balance || 0;
+  const balance = payer.balance || 0;
   const pricePerMessage = requiredAmount || 0;
 
   if (pricePerMessage === 0) return { sufficient: true, balance, pricePerMessage };
@@ -69,17 +85,17 @@ export async function hasSufficientBalance(
 }
 
 /**
- * Check if user has sufficient balance for a specific category.
+ * Check if user (or their parent tenant) has sufficient balance for a specific category.
  */
 export async function hasSufficientBalanceForCategory(
   userId: string,
   category: string
 ): Promise<{ sufficient: boolean; balance: number; price: number; category: string }> {
-  const user = await User.findById(userId);
-  if (!user) return { sufficient: false, balance: 0, price: 0, category };
+  const payer = await getPayer(userId);
+  if (!payer) return { sufficient: false, balance: 0, price: 0, category };
 
-  const balance = user.balance || 0;
-  const price = getPriceForCategory(user, category);
+  const balance = payer.balance || 0;
+  const price = getPriceForCategory(payer, category);
 
   if (price === 0) return { sufficient: true, balance, price, category };
 
@@ -87,23 +103,23 @@ export async function hasSufficientBalanceForCategory(
 }
 
 /**
- * Deduct balance from user after a successful message send.
+ * Deduct balance from user (or their parent tenant) after a successful message send.
  * Uses Math.round to avoid floating-point precision issues.
  */
 export async function deductBalance(
   userId: string,
   amount: number
 ): Promise<{ success: boolean; newBalance: number }> {
-  const user = await User.findById(userId);
-  if (!user) return { success: false, newBalance: 0 };
+  const payer = await getPayer(userId);
+  if (!payer) return { success: false, newBalance: 0 };
 
-  const currentBalance = user.balance || 0;
+  const currentBalance = payer.balance || 0;
   const newBalance = Math.round((currentBalance - amount) * 100) / 100;
 
-  user.balance = Math.max(newBalance, 0);
-  await user.save();
+  payer.balance = Math.max(newBalance, 0);
+  await payer.save();
 
-  return { success: true, newBalance: user.balance };
+  return { success: true, newBalance: payer.balance };
 }
 
 /**
