@@ -40,7 +40,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
     }
 
-    // ✅ CHECK LIMIT BEFORE CREATING
     const limitCheck = await checkLimit(userId, "workflows");
     if (!limitCheck.allowed) {
       return NextResponse.json(
@@ -62,7 +61,6 @@ export async function POST(req: Request) {
 
     const { triggers, steps, rootStepId } = await req.json();
 
-    // Basic validation
     if (!triggers || triggers.length === 0) {
       return NextResponse.json(
         { success: false, message: "At least one trigger is required" },
@@ -82,9 +80,9 @@ export async function POST(req: Request) {
       triggers,
       steps,
       rootStepId,
+      active: true, // ✅ Explicitly set to active on creation
     });
 
-    // ✅ INCREMENT USAGE AFTER SUCCESSFUL CREATION
     await incrementUsage(userId, "workflows");
 
     return NextResponse.json({ success: true, wf });
@@ -108,7 +106,7 @@ export async function PUT(req: Request) {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
     }
 
-    const { id, triggers, steps, rootStepId } = await req.json();
+    const { id, triggers, steps, rootStepId, active } = await req.json();
 
     if (!id) {
       return NextResponse.json(
@@ -117,13 +115,17 @@ export async function PUT(req: Request) {
       );
     }
 
+    // ✅ DYNAMIC UPDATE OBJECT: Only update fields that are actually provided.
+    // This prevents overwriting steps/triggers with undefined when just toggling active status.
+    const updateData: any = {};
+    if (triggers !== undefined) updateData.triggers = triggers;
+    if (steps !== undefined) updateData.steps = steps;
+    if (rootStepId !== undefined) updateData.rootStepId = rootStepId;
+    if (active !== undefined) updateData.active = active;
+
     const updatedWf = await Workflow.findOneAndUpdate(
       { _id: id, userId: userId },
-      { 
-        triggers, 
-        steps, 
-        rootStepId 
-      },
+      updateData, 
       { new: true, runValidators: true }
     );
 
