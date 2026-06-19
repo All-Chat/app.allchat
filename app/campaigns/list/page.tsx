@@ -47,14 +47,10 @@ const formatINR = (amount: number) =>
 
 const getCategoryColor = (category: string) => {
   switch (category?.toUpperCase()) {
-    case "MARKETING":
-      return "bg-orange-50 text-orange-700 border-orange-200";
-    case "UTILITY":
-      return "bg-blue-50 text-blue-700 border-blue-200";
-    case "AUTHENTICATION":
-      return "bg-purple-50 text-purple-700 border-purple-200";
-    default:
-      return "bg-gray-50 text-gray-700 border-gray-200";
+    case "MARKETING": return "bg-orange-50 text-orange-700 border-orange-200";
+    case "UTILITY": return "bg-blue-50 text-blue-700 border-blue-200";
+    case "AUTHENTICATION": return "bg-purple-50 text-purple-700 border-purple-200";
+    default: return "bg-gray-50 text-gray-700 border-gray-200";
   }
 };
 
@@ -97,16 +93,14 @@ export default function CampaignList() {
         setBalance(data.billing.balance || 0);
         setCanSendMessage(data.billing.canSendMessage !== false);
       }
-    } catch (error) {
-      console.error("Failed to fetch billing", error);
-    }
+    } catch (error) { console.error("Failed to fetch billing", error); }
   };
 
   useEffect(() => {
     if (status === "authenticated") {
       loadCampaigns();
       fetchBilling();
-      const interval = setInterval(loadCampaigns, 3000); // Refreshes every 3s to fetch latest delivered counts
+      const interval = setInterval(loadCampaigns, 3000); // Refreshes every 3s
       return () => clearInterval(interval);
     } else if (status === "unauthenticated") { router.push("/"); }
   }, [status, router]);
@@ -148,11 +142,17 @@ export default function CampaignList() {
     if (!confirm("Start this campaign now? Balance will be deducted dynamically for each successful delivery.")) return;
     setStartingId(id);
     try {
+      // 🔴 5 SECOND TIMEOUT TO PREVENT UI LAG
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
       const res = await fetch("/api/campaigns/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ campaignId: id }),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
       if (res.status === 402) {
         const data402 = await res.json();
@@ -164,7 +164,6 @@ export default function CampaignList() {
       }
 
       const data = await res.json();
-
       if (data.success) {
         toast.success(`Campaign started! Sending in progress...`);
         fetchBilling();
@@ -172,9 +171,15 @@ export default function CampaignList() {
       } else {
         toast.error(data.message || "Failed to start campaign");
       }
-    } catch (err) {
-      console.error("Start campaign error:", err);
-      toast.error("Failed to start campaign");
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        // 🔴 IF TIMEOUT OCCURS, ASSUME IT'S RUNNING IN BACKGROUND
+        toast.success(`Campaign started in background! Sending in progress...`);
+        loadCampaigns();
+      } else {
+        console.error("Start campaign error:", err);
+        toast.error("Failed to start campaign");
+      }
     } finally {
       setStartingId(null);
     }
@@ -217,12 +222,7 @@ export default function CampaignList() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...campaign,
-          id: campaign._id,
-          status: "saved",
-          sentCount: 0,
-          failedCount: 0,
-          totalDeducted: 0,
+          ...campaign, id: campaign._id, status: "saved", sentCount: 0, failedCount: 0, totalDeducted: 0,
         }),
       });
 
@@ -232,11 +232,16 @@ export default function CampaignList() {
         return;
       }
 
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
       const startRes = await fetch("/api/campaigns/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ campaignId: id }),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
       if (startRes.status === 402) {
         const data402 = await startRes.json();
@@ -256,10 +261,15 @@ export default function CampaignList() {
         toast.error(data.message || "Failed to rerun campaign");
         loadCampaigns();
       }
-    } catch (err) {
-      console.error("Rerun error:", err);
-      toast.error("Failed to rerun campaign");
-      loadCampaigns();
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        toast.success(`Rerun started in background! Sending in progress...`);
+        loadCampaigns();
+      } else {
+        console.error("Rerun error:", err);
+        toast.error("Failed to rerun campaign");
+        loadCampaigns();
+      }
     } finally {
       setStartingId(null);
     }
@@ -315,8 +325,7 @@ export default function CampaignList() {
       if (data.success) {
         toast.success("Test sent!");
         fetchBilling();
-      }
-      else toast.error(data.message || data.error?.message || "Failed");
+      } else toast.error(data.message || data.error?.message || "Failed");
     } catch (err) { toast.error("Error"); }
   };
 
@@ -356,9 +365,7 @@ export default function CampaignList() {
               <p className="text-sm text-white/80 mt-1">{viewCampaign.templateName} • {viewCampaign.templateCategory}</p>
               <div className="mt-2 flex gap-2">
                 <div className="inline-flex items-center gap-1.5 bg-white/20 px-2.5 py-1 rounded-lg text-xs font-bold">🌐 {viewCampaign.languageCode || "en"}</div>
-                <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold border ${getCategoryColor(viewCampaign.templateCategory)}`}>
-                  📋 {viewCampaign.templateCategory || "MARKETING"}
-                </div>
+                <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold border ${getCategoryColor(viewCampaign.templateCategory)}`}>📋 {viewCampaign.templateCategory || "MARKETING"}</div>
               </div>
             </div>
             
@@ -528,18 +535,12 @@ export default function CampaignList() {
                             {cfg.icon} {c.status.toUpperCase()}
                             {c.status === "running" && <Radio size={10} className="animate-pulse ml-1" />}
                           </span>
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
-                            🌐 {c.languageCode || "en"}
-                          </span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200">🌐 {c.languageCode || "en"}</span>
                           {c.templateCategory && (
-                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${getCategoryColor(c.templateCategory)}`}>
-                              📋 {c.templateCategory}
-                            </span>
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${getCategoryColor(c.templateCategory)}`}>📋 {c.templateCategory}</span>
                           )}
                         </div>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          {c.templateName} • Created {new Date(c.createdAt).toLocaleDateString()}
-                        </p>
+                        <p className="text-xs text-slate-500 mt-0.5">{c.templateName} • Created {new Date(c.createdAt).toLocaleDateString()}</p>
                         {c.status === "scheduled" && timers[c._id] && (
                           <div className="mt-2 inline-flex items-center gap-1.5 bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-lg text-xs font-bold border border-indigo-100">
                             <Clock size={12} className="animate-pulse" /> Starts in: {timers[c._id]}
@@ -548,63 +549,34 @@ export default function CampaignList() {
                       </div>
                       
                       <div className="flex items-center gap-1.5 sm:ml-4 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity w-full sm:w-auto justify-end flex-wrap">
-                        <button onClick={() => setViewCampaign(c)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Details">
-                          <Eye size={16} />
-                        </button>
-                        <button onClick={() => router.push(`/campaigns/edit?id=${c._id}`)} className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors" title="Edit">
-                          <Pencil size={16} />
-                        </button>
+                        <button onClick={() => setViewCampaign(c)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Details"><Eye size={16} /></button>
+                        <button onClick={() => router.push(`/campaigns/edit?id=${c._id}`)} className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors" title="Edit"><Pencil size={16} /></button>
 
                         {c.status === "running" && (
-                          <button
-                            onClick={() => handleCampaignAction(c._id, "pause")}
-                            disabled={actionId === c._id}
-                            className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-blue-500 text-white hover:bg-blue-600 transition-all shadow-sm"
-                          >
+                          <button onClick={() => handleCampaignAction(c._id, "pause")} disabled={actionId === c._id} className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-blue-500 text-white hover:bg-blue-600 transition-all shadow-sm">
                             {actionId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Pause size={12} />} Pause
                           </button>
                         )}
 
                         {c.status === "paused" && (
                           <>
-                            <button
-                              onClick={() => handleCampaignAction(c._id, "resume")}
-                              disabled={actionId === c._id}
-                              className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-emerald-500 text-white hover:bg-emerald-600 transition-all shadow-sm"
-                            >
+                            <button onClick={() => handleCampaignAction(c._id, "resume")} disabled={actionId === c._id} className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-emerald-500 text-white hover:bg-emerald-600 transition-all shadow-sm">
                               {actionId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Resume
                             </button>
-                            <button
-                              onClick={() => handleCampaignAction(c._id, "stop")}
-                              disabled={actionId === c._id}
-                              className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-red-500 text-white hover:bg-red-600 transition-all shadow-sm"
-                            >
+                            <button onClick={() => handleCampaignAction(c._id, "stop")} disabled={actionId === c._id} className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-red-500 text-white hover:bg-red-600 transition-all shadow-sm">
                               {actionId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Square size={12} />} Stop
                             </button>
                           </>
                         )}
 
                         {isCompleted && (
-                          <button
-                            onClick={() => rerunCampaign(c._id)}
-                            disabled={startingId === c._id || !canSendMessage}
-                            className={`p-2 rounded-lg transition-colors ${
-                              !canSendMessage ? "text-slate-300 cursor-not-allowed" : "text-slate-400 hover:text-purple-600 hover:bg-purple-50"
-                            }`}
-                            title={!canSendMessage ? "Insufficient balance" : "Rerun"}
-                          >
+                          <button onClick={() => rerunCampaign(c._id)} disabled={startingId === c._id || !canSendMessage} className={`p-2 rounded-lg transition-colors ${!canSendMessage ? "text-slate-300 cursor-not-allowed" : "text-slate-400 hover:text-purple-600 hover:bg-purple-50"}`} title={!canSendMessage ? "Insufficient balance" : "Rerun"}>
                             {startingId === c._id ? <Loader2 size={16} className="animate-spin" /> : <RotateCcw size={16} />}
                           </button>
                         )}
                         
                         {c.status === "saved" && (
-                          <button
-                            onClick={() => startCampaign(c._id)}
-                            disabled={startingId === c._id || !canSendMessage}
-                            className={`px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all ${
-                              !canSendMessage ? "bg-slate-200 text-slate-400 cursor-not-allowed" : "bg-emerald-500 text-white hover:bg-emerald-600 hover:scale-105"
-                            }`}
-                          >
+                          <button onClick={() => startCampaign(c._id)} disabled={startingId === c._id || !canSendMessage} className={`px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all ${!canSendMessage ? "bg-slate-200 text-slate-400 cursor-not-allowed" : "bg-emerald-500 text-white hover:bg-emerald-600 hover:scale-105"}`}>
                             {startingId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
                             {!canSendMessage ? "No Balance" : "Start"}
                           </button>
@@ -618,9 +590,7 @@ export default function CampaignList() {
                       </div>
                     </div>
 
-                    <div className={`grid gap-2 sm:gap-3 text-center grid-cols-2 sm:grid-cols-3 md:grid-cols-5 ${
-                      amountSpent > 0 ? 'lg:grid-cols-6' : ''
-                    }`}>
+                    <div className={`grid gap-2 sm:gap-3 text-center grid-cols-2 sm:grid-cols-3 md:grid-cols-5 ${amountSpent > 0 ? 'lg:grid-cols-6' : ''}`}>
                       <div className="bg-slate-50 p-2 rounded-xl border border-slate-100">
                         <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Total</p>
                         <p className="font-bold text-slate-900 text-sm mt-0.5">{liveStats.total || c.totalMessages}</p>
@@ -640,9 +610,7 @@ export default function CampaignList() {
 
                       {amountSpent > 0 && (
                         <div className="bg-blue-50 p-2 rounded-xl border border-blue-100 col-span-2 sm:col-span-1">
-                          <p className="text-[9px] text-blue-600 font-bold uppercase tracking-wider flex items-center justify-center gap-0.5">
-                            <Wallet size={8} /> Spent
-                          </p>
+                          <p className="text-[9px] text-blue-600 font-bold uppercase tracking-wider flex items-center justify-center gap-0.5"><Wallet size={8} /> Spent</p>
                           <p className="font-bold text-blue-700 text-sm mt-0.5">{formatINR(amountSpent)}</p>
                         </div>
                       )}
@@ -650,20 +618,14 @@ export default function CampaignList() {
                       <div className="bg-slate-50 p-2 rounded-xl border border-slate-100 flex flex-col items-center justify-center col-span-2 sm:col-span-1">
                         <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider mb-1">Progress</p>
                         <div className="w-full bg-slate-200 rounded-full h-2">
-                          <div
-                            className="bg-emerald-500 h-2 rounded-full transition-all duration-500"
-                            style={{ width: `${liveStats.progress}%` }}
-                          ></div>
+                          <div className="bg-emerald-500 h-2 rounded-full transition-all duration-500" style={{ width: `${liveStats.progress}%` }}></div>
                         </div>
                       </div>
                     </div>
 
                     {c.status === "running" && (
                       <div className="mt-3 w-full bg-slate-100 rounded-full h-2">
-                        <div
-                          className="bg-gradient-to-r from-amber-400 to-amber-500 h-2 rounded-full animate-pulse"
-                          style={{ width: `${liveStats.progress || 10}%` }}
-                        ></div>
+                        <div className="bg-gradient-to-r from-amber-400 to-amber-500 h-2 rounded-full animate-pulse" style={{ width: `${liveStats.progress || 10}%` }}></div>
                       </div>
                     )}
 
