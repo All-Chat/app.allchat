@@ -78,6 +78,9 @@ export default function ReportsPage() {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
 
+  // ✅ NEW: State for WhatsApp Numbers (Sender Names)
+  const [whatsappNumbers, setWhatsappNumbers] = useState<any[]>([]);
+
   // Responsive toggle state
   const [showCampaignList, setShowCampaignList] = useState(true);
   
@@ -90,6 +93,7 @@ export default function ReportsPage() {
     if (status === "authenticated") {
       fetchCampaigns();
       fetchTags();
+      fetchWhatsappNumbers(); // ✅ Fetch numbers on load
     } else if (status === "unauthenticated") {
       window.location.href = "/";
     }
@@ -117,6 +121,55 @@ export default function ReportsPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  // ✅ NEW: Fetch WhatsApp Numbers Function
+  const fetchWhatsappNumbers = async () => {
+    try {
+      const res = await fetch("/api/user/whatsapp-numbers");
+      if (!res.ok) return;
+      
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) return;
+
+      const data = await res.json();
+      let numbers = [];
+      if (data.success && Array.isArray(data.numbers)) numbers = data.numbers;
+      else if (Array.isArray(data)) numbers = data;
+      else if (data.user?.whatsappNumbers) numbers = data.user.whatsappNumbers;
+      else if (Array.isArray(data.whatsappNumbers)) numbers = data.whatsappNumbers;
+
+      if (numbers.length > 0) setWhatsappNumbers(numbers);
+    } catch (err) {
+      console.error("Failed to fetch WhatsApp numbers", err);
+    }
+  };
+
+  // ✅ NEW: Helper to get sender name for a campaign
+  const getCampaignSenderName = (c: Campaign | undefined) => {
+    if (!c) return "Unknown";
+    
+    // 1. Try matching by whatsappNumberId stored in campaign
+    if (c.whatsappNumberId) {
+      const match = whatsappNumbers.find(n => n.whatsappPhoneNumberId === c.whatsappNumberId);
+      if (match?.name) return match.name;
+    }
+    
+    // 2. Try matching by senderPhone stored in campaign
+    if (c.senderPhone) {
+      const match = whatsappNumbers.find(n => 
+        (n.phoneNumber && n.phoneNumber.includes(c.senderPhone)) || 
+        (n.displayPhoneNumber && n.displayPhoneNumber.includes(c.senderPhone))
+      );
+      if (match?.name) return match.name;
+    }
+
+    // 3. Aggressive fallback: If user has numbers, use the first one's name
+    if (whatsappNumbers.length > 0 && whatsappNumbers[0]?.name) {
+      return whatsappNumbers[0].name;
+    }
+    
+    return "Unknown Sender";
   };
 
   const fetchTags = async () => {
@@ -227,6 +280,7 @@ export default function ReportsPage() {
                     }`}
                   >
                     <p className="font-semibold text-sm truncate">{c.name}</p>
+
                     <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5 text-[10px]">
                       {stats.deliveredRead > 0 && <span className="flex items-center gap-1 text-cyan-600 font-medium"><CheckCheck size={10}/> {stats.deliveredRead} Delivered</span>}
                       {stats.sent > 0 && <span className="flex items-center gap-1 text-emerald-600 font-medium"><CheckCircle size={10}/> {stats.sent} Sent</span>}
@@ -271,7 +325,13 @@ export default function ReportsPage() {
                         </span>
                       )}
                     </div>
-                    <p className="text-[11px] text-slate-500 mt-0.5 truncate">Template: {selectedCamp.templateName} • Auto-updates</p>
+                    {/* ✅ NEW: Sender Name Displayed in Header Also */}
+                    <p className="text-[11px] text-slate-500 mt-0.5 truncate">
+                      Template: {selectedCamp.templateName} • Auto-updates
+                    </p>
+                    <p className="text-[11px] text-emerald-600 font-medium truncate mt-0.5">
+                      Sent by: {getCampaignSenderName(selectedCamp)}
+                    </p>
                   </div>
                 </div>
 
