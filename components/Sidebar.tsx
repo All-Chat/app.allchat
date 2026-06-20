@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable react-hooks/immutability */
 /* eslint-disable react-hooks/set-state-in-effect */
 "use client";
@@ -89,7 +90,7 @@ const categories: NavCategory[] = [
       { name: "Form Responses", icon: ClipboardCheck, href: "/forms/responses" },
     ],
   },
-    {
+  {
     title: "Team",
     icon: Users,
     items: [
@@ -115,6 +116,15 @@ export default function Sidebar() {
   
   const navRef = useRef<HTMLElement>(null);
 
+  // ==========================================
+  // 🔴 TENANT CHECK LOGIC
+  // ==========================================
+  const isTenant = (session?.user as any)?.isTenant === true;
+  const visibleCategories = categories.filter(cat => {
+    if (cat.title === "Team") return isTenant;
+    return true;
+  });
+
   useEffect(() => setMounted(true), []);
 
   // Load saved dropdown states from local storage on mount
@@ -136,27 +146,23 @@ export default function Sidebar() {
 
   // Ensure the active category stays open even on refresh
   useEffect(() => {
-    const activeCat = categories.find((cat) =>
+    const activeCat = visibleCategories.find((cat) =>
       cat.items.some((item) => item.href === pathname)
     );
 
     if (activeCat) {
       setOpenCategories((prev) => {
-        // If the active category is already open, don't change state
         if (prev[activeCat.title]) return prev;
-        // Otherwise, open the active category and close others (Accordion)
         return { [activeCat.title]: true };
       });
     }
-  }, [pathname]);
+  }, [pathname, isTenant]);
 
   // Restore scroll position on mount and route change
   useEffect(() => {
     if (navRef.current) {
       const savedScroll = localStorage.getItem("sidebarScrollTop");
       if (savedScroll) {
-        // Use requestAnimationFrame to wait for the DOM to fully render 
-        // dropdowns before applying the scroll position
         requestAnimationFrame(() => {
           if (navRef.current) {
             const maxScroll = navRef.current.scrollHeight - navRef.current.clientHeight;
@@ -168,18 +174,15 @@ export default function Sidebar() {
     }
   }, [pathname, openCategories]);
 
-  // Save scroll position continuously
   const handleScroll = () => {
     if (navRef.current) {
       localStorage.setItem("sidebarScrollTop", String(navRef.current.scrollTop));
     }
   };
 
-  // Toggle dropdown (Accordion behavior: close others when opening a new one)
   const toggleCategory = (title: string) => {
     setOpenCategories((prev) => {
       const isCurrentlyOpen = prev[title];
-      // If it's open, close it. If it's closed, open it and close everything else.
       const newState = isCurrentlyOpen ? {} : { [title]: true };
       localStorage.setItem("sidebarOpenCategories", JSON.stringify(newState));
       return newState;
@@ -199,20 +202,19 @@ export default function Sidebar() {
     return (
       <Link
         href={item.href}
-        className={`relative flex items-center gap-3 py-2.5 px-4 rounded-lg transition-all duration-200 whitespace-nowrap group focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-1 ${
+        className={`relative flex items-center gap-3 py-2.5 px-4 rounded-lg transition-all duration-200 whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-1 ${
           isActive
             ? "bg-green-50 text-green-700 font-semibold shadow-sm"
             : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
         }`}
       >
-        {/* Active Indicator Bar */}
         {isActive && (
           <span className="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-1.5 bg-green-600 rounded-r-full" />
         )}
         
         <item.icon
           className={`w-[18px] h-[18px] flex-shrink-0 transition-colors ${
-            isActive ? "text-green-600" : "text-gray-400 group-hover:text-gray-600"
+            isActive ? "text-green-600" : "text-gray-400"
           }`}
         />
         <span className="text-sm font-medium">{item.name}</span>
@@ -222,9 +224,7 @@ export default function Sidebar() {
 
   return (
     <>
-      {/* ==============================================
-          1. MOBILE SUB-NAVBAR (Below Main Navbar)
-          ============================================== */}
+      {/* 1. MOBILE SUB-NAVBAR */}
       <div className="md:hidden sticky top-[70px] z-40 bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between shadow-sm">
         <span className="font-bold text-lg text-gray-900">Dashboard</span>
         <button
@@ -236,9 +236,7 @@ export default function Sidebar() {
         </button>
       </div>
 
-      {/* ==============================================
-          2. MOBILE BACKDROP OVERLAY
-          ============================================== */}
+      {/* 2. MOBILE BACKDROP OVERLAY */}
       {isOpen && (
         <div
           className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm md:hidden transition-opacity"
@@ -246,9 +244,7 @@ export default function Sidebar() {
         />
       )}
 
-      {/* ==============================================
-          3. SIDEBAR DRAWER
-          ============================================== */}
+      {/* 3. SIDEBAR DRAWER */}
       <aside
         className={`
           fixed left-0 bottom-0 z-50 w-64 bg-white border-r border-gray-200 flex flex-col
@@ -285,7 +281,7 @@ export default function Sidebar() {
           onScroll={handleScroll}
           className="flex-1 p-4 space-y-2 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
-          {/* Top Single Links (Overview) */}
+          {/* Top Single Links */}
           <div className="space-y-1 mb-2">
             {topLinks.map((item, i) => (
               <div key={i}>{renderLink(item)}</div>
@@ -293,7 +289,7 @@ export default function Sidebar() {
           </div>
 
           {/* Categorized Dropdowns */}
-          {categories.map((cat) => {
+          {visibleCategories.map((cat) => {
             const isCatOpen = openCategories[cat.title];
             const isCatActive = cat.items.some((item) => pathname === item.href);
 
@@ -325,7 +321,6 @@ export default function Sidebar() {
                   />
                 </button>
 
-                {/* Animated Dropdown Container */}
                 <div
                   className={`grid transition-all duration-300 ease-in-out ${
                     isCatOpen ? "grid-rows-[1fr] opacity-100 mt-1" : "grid-rows-[0fr] opacity-0"
@@ -343,7 +338,7 @@ export default function Sidebar() {
             );
           })}
 
-          {/* Bottom Single Links (Settings) */}
+          {/* Bottom Single Links */}
           <div className="space-y-1 mt-4 pt-4 border-t border-gray-100">
             {bottomLinks.map((item, i) => (
               <div key={i}>{renderLink(item)}</div>
