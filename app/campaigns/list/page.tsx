@@ -87,6 +87,10 @@ export default function CampaignList() {
   const [balance, setBalance] = useState(0);
   const [canSendMessage, setCanSendMessage] = useState(true);
 
+  // ✅ Pagination State
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 6;
+
   const fetchBilling = async () => {
     try {
       const res = await fetch("/api/billing");
@@ -301,7 +305,6 @@ export default function CampaignList() {
     try {
       let variablesToSend = c.variables || [];
 
-      // ✅ FIX: GENERATE OTP FOR TEST SEND IF NEEDED
       if (c.generateOtp && c.templateCategory === "AUTHENTICATION") {
         const len = c.otpLength || 4;
         const min = Math.pow(10, len - 1);
@@ -309,7 +312,6 @@ export default function CampaignList() {
         const otp = Math.floor(Math.random() * (max - min + 1) + min).toString();
         variablesToSend = [otp];
       } else if (c.mappedVariables && c.mappedVariables.length > 0) {
-        // Use first row of mapped variables for test send
         variablesToSend = c.mappedVariables[0];
       }
 
@@ -351,6 +353,17 @@ export default function CampaignList() {
       const lt = searchTerm.toLowerCase();
       return c.name.toLowerCase().includes(lt) || c.templateName.toLowerCase().includes(lt);
     });
+
+  // ✅ Reset to page 1 if filters or search change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter]);
+
+  // ✅ Pagination Logic
+  const totalPages = Math.ceil(filteredCampaigns.length / itemsPerPage);
+  const indexOfLastItem = currentPage * itemsPerPage;
+  const indexOfFirstItem = indexOfLastItem - itemsPerPage;
+  const currentItems = filteredCampaigns.slice(indexOfFirstItem, indexOfLastItem);
 
   const statusConfig: any = {
     saved: { bg: "bg-gray-100", text: "text-gray-700", border: "border-gray-200", icon: <FileText size={12} /> },
@@ -534,7 +547,8 @@ export default function CampaignList() {
             </div>
           ) : (
             <div className="space-y-4">
-              {filteredCampaigns.map((c) => {
+              {/* ✅ Changed filteredCampaigns.map to currentItems.map */}
+              {currentItems.map((c) => {
                 const cfg = statusConfig[c.status] || statusConfig.saved;
                 const liveStats = getCampaignLiveStats(c.reportData);
                 const isCompleted = c.status === "completed" || c.status === "failed";
@@ -662,6 +676,29 @@ export default function CampaignList() {
                   </div>
                 );
               })}
+
+              {/* ✅ Pagination Controls */}
+              {totalPages > 1 && (
+                <div className="flex justify-center items-center gap-4 mt-8">
+                  <button
+                    onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                    disabled={currentPage === 1}
+                    className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-sm font-bold text-slate-700">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                  <button
+                    onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                    disabled={currentPage === totalPages}
+                    className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
