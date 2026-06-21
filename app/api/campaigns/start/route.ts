@@ -6,6 +6,8 @@ import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getPriceForCategory } from "@/lib/billing";
+// ✅ NEW: Import Google Sheet Sync Helper
+import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
 
 export async function POST(req: Request) {
   try {
@@ -243,6 +245,13 @@ export async function POST(req: Request) {
 
       await user.save();
       await campaign.save();
+      
+      // ✅ NEW: Sync to Google Sheets after every batch
+      await syncCampaignToGoogleSheet(userId, {
+        name: campaign.name,
+        reportData: campaign.reportData
+      });
+
       await new Promise((r) => setTimeout(r, 50));
     }
 
@@ -253,6 +262,12 @@ export async function POST(req: Request) {
     
     await user.save();
     await campaign.save();
+
+    // ✅ NEW: Final sync to Google Sheets
+    await syncCampaignToGoogleSheet(userId, {
+      name: campaign.name,
+      reportData: campaign.reportData
+    });
 
     return NextResponse.json({
       success: true,
