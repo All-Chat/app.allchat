@@ -36,6 +36,8 @@ export async function GET() {
         balance: billingUser.balance || 0,
         totalRecharged: billingUser.totalRecharged || 0,
         pendingRequest: latestRequest ? { status: latestRequest.status, createdAt: latestRequest.createdAt } : null,
+        // ✅ NEW: Return Google Sheet ID so the frontend can show the "Open Sheet" button
+        googleSheetId: user.googleSheetId || null,
       },
     });
   } catch (error) {
@@ -167,12 +169,12 @@ export async function DELETE(req: Request) {
     const user = await User.findById(session.user.id);
     if (!user) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
-      const numberToDelete = user.whatsappNumbers.find((n: any) => n._id.toString() === numberId);
-      if (!numberToDelete) return NextResponse.json({ message: "Number not found" }, { status: 404 });
+    const numberToDelete = user.whatsappNumbers.find((n: any) => n._id.toString() === numberId);
+    if (!numberToDelete) return NextResponse.json({ message: "Number not found" }, { status: 404 });
 
-      const wasActive = numberToDelete.isActive;
-      // Filter out the deleted number. Cast to any to satisfy TS typing for Mongoose DocumentArray.
-      user.whatsappNumbers = user.whatsappNumbers.filter((n: any) => n._id.toString() !== numberId) as any;
+    const wasActive = numberToDelete.isActive;
+    // Filter out the deleted number. Cast to any to satisfy TS typing for Mongoose DocumentArray.
+    user.whatsappNumbers = user.whatsappNumbers.filter((n: any) => n._id.toString() !== numberId) as any;
 
     if (wasActive) {
       if (user.whatsappNumbers.length > 0) {
