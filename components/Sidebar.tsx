@@ -119,9 +119,15 @@ export default function Sidebar() {
   const navRef = useRef<HTMLElement>(null);
 
   // ==========================================
-  // 🔴 TENANT CHECK LOGIC
+  // 🔴 TENANT & WHITE LABEL LOGIC
   // ==========================================
   const isTenant = (session?.user as any)?.isTenant === true;
+  
+  // ✅ White Label Name Logic (Only name, no logo in sidebar)
+  const wl = (session?.user as any)?.whiteLabel;
+  const isWhiteLabel = wl?.enabled;
+  const sidebarAppName = isWhiteLabel && wl?.appName ? `${wl.appName} CRM` : "All Chat CRM";
+
   const visibleCategories = categories.filter(cat => {
     if (cat.title === "Team") return isTenant;
     return true;
@@ -257,14 +263,11 @@ export default function Sidebar() {
           md:translate-x-0 md:top-[81px] md:h-[calc(100vh-64px)]
         `}
       >
-        {/* Logo & Mobile Close Button */}
+        {/* ✅ NAME ONLY (No Logo) */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
-          <Link href="/dashboard" className="flex items-center gap-2 group">
-            <div className="p-2 bg-gradient-to-tr from-green-500 to-emerald-400 rounded-xl shadow-md shadow-green-500/20 transition-transform group-hover:scale-105">
-              <MessagesSquare className="w-5 h-5 text-white" />
-            </div>
+          <Link href="/dashboard" className="flex items-center group">
             <span className="text-xl font-bold text-gray-900 tracking-tight">
-              All Chat CRM
+              {sidebarAppName}
             </span>
           </Link>
           
