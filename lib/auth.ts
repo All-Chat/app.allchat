@@ -30,7 +30,6 @@ export const authOptions: NextAuthOptions = {
           if (!isNaN(expiry.getTime()) && expiry < new Date()) throw new Error("PLAN_EXPIRED");
         }
 
-        // Fetch Parent Tenant Name if Sub-User
         let parentTenantName = null;
         if (user.parentTenantId) {
           const parent = await User.findOne({ tenantId: user.parentTenantId }).select("name").lean();
@@ -43,7 +42,8 @@ export const authOptions: NextAuthOptions = {
           isTenant: user.isTenant,
           tenantId: user.tenantId,
           parentTenantId: user.parentTenantId,
-          parentTenantName: parentTenantName, // Added to session
+          parentTenantName: parentTenantName,
+          whiteLabel: user.whiteLabel, // ✅ PASS WHITE LABEL DATA
         } as any;
       },
     }),
@@ -63,6 +63,7 @@ export const authOptions: NextAuthOptions = {
         (token as any).tenantId = (user as any).tenantId;
         (token as any).parentTenantId = (user as any).parentTenantId;
         (token as any).parentTenantName = (user as any).parentTenantName;
+        (token as any).whiteLabel = (user as any).whiteLabel; // ✅ SAVE TO TOKEN
       }
       return token;
     },
@@ -73,6 +74,7 @@ export const authOptions: NextAuthOptions = {
         (session.user as any).tenantId = (token as any).tenantId;
         (session.user as any).parentTenantId = (token as any).parentTenantId;
         (session.user as any).parentTenantName = (token as any).parentTenantName;
+        (session.user as any).whiteLabel = (token as any).whiteLabel; // ✅ EXPOSE TO SESSION
       }
       return session;
     },
