@@ -64,6 +64,15 @@ const UserSchema = new mongoose.Schema({
     supportEmail: { type: String, default: "" },
     brandUrl: { type: String, default: "" } // e.g., "therealleads"
   },
+
+  // Add these fields to your UserSchema
+googleSheetId: { type: String, default: null },
+googleTokens: {
+  access_token: { type: String, default: null },
+  refresh_token: { type: String, default: null },
+  scope: { type: String, default: null },
+  expiry_date: { type: Number, default: null }
+},
   
   limits: {
     tags: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
