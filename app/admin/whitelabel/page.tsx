@@ -2,18 +2,14 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, Save, Search, ShieldCheck, Upload, X } from "lucide-react";
+import { Loader2, Save, Search, ShieldCheck } from "lucide-react";
 import { toast } from "react-toastify";
 
 export default function WhiteLabelAdminPage() {
   const [searchName, setSearchName] = useState("");
   const [searching, setSearching] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [foundUser, setFoundUser] = useState<any>(null);
-
-  // Local instant preview state
-  const [previewUrl, setPreviewUrl] = useState("");
 
   const [wlSettings, setWlSettings] = useState({
     enabled: false,
@@ -21,14 +17,13 @@ export default function WhiteLabelAdminPage() {
     logoUrl: "",
     primaryColor: "#10b981",
     supportEmail: "",
-    brandUrl: ""
+    brandUrl: "" // e.g., "therealleads.in"
   });
 
   const handleSearchUser = async () => {
     if (!searchName) return toast.error("Enter a username to search");
     setSearching(true);
     setFoundUser(null);
-    setPreviewUrl("");
 
     try {
       const res = await fetch(`/api/admin/user?name=${encodeURIComponent(searchName)}`);
@@ -45,7 +40,6 @@ export default function WhiteLabelAdminPage() {
           supportEmail: wl.supportEmail || "",
           brandUrl: wl.brandUrl || ""
         });
-        setPreviewUrl(wl.logoUrl || ""); // Set existing logo preview
         toast.success("User found!");
       } else {
         toast.error(data.message || "User not found");
@@ -54,41 +48,6 @@ export default function WhiteLabelAdminPage() {
       toast.error("Error searching user");
     } finally {
       setSearching(false);
-    }
-  };
-
-  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    // ✅ INSTANT PREVIEW: Show image immediately before uploading
-    setPreviewUrl(URL.createObjectURL(file));
-    setUploading(true);
-
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-// Inside handleLogoUpload function in your whitelabel page:
-const res = await fetch("/api/upload/logo", { // <-- Change this to /api/upload/logo
-  method: "POST",
-  body: formData,
-});
-      const data = await res.json();
-
-      if (data.success || data.url) {
-        const imageUrl = data.url || data.fileUrl;
-        setWlSettings(prev => ({ ...prev, logoUrl: imageUrl }));
-        setPreviewUrl(imageUrl); // Replace blob URL with permanent server URL
-        toast.success("Logo uploaded successfully!");
-      } else {
-        throw new Error(data.message || "Upload failed");
-      }
-    } catch (error: any) {
-      toast.error(error.message || "Failed to upload logo.");
-      setPreviewUrl(wlSettings.logoUrl); // Revert preview on failure
-    } finally {
-      setUploading(false);
     }
   };
 
@@ -127,6 +86,7 @@ const res = await fetch("/api/upload/logo", { // <-- Change this to /api/upload/
           </div>
         </div>
 
+        {/* Search User by Name */}
         <div className="flex gap-3 mb-8">
           <input
             type="text"
@@ -192,31 +152,26 @@ const res = await fetch("/api/upload/logo", { // <-- Change this to /api/upload/
               </div>
             </div>
 
-            {/* ✅ FIXED LOGO UPLOAD & PREVIEW */}
+            {/* ✅ LOGO URL INPUT ONLY (With Live Preview) */}
             <div>
-              <label className="text-xs font-bold text-slate-700 mb-1.5 block">Brand Logo</label>
+              <label className="text-xs font-bold text-slate-700 mb-1.5 block">Brand Logo URL</label>
               <div className="flex items-center gap-4">
                 <div className="w-20 h-20 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-center overflow-hidden shrink-0">
-                  {previewUrl ? (
-                    <img src={previewUrl} alt="Logo Preview" className="w-full h-full object-contain p-1" />
+                  {wlSettings.logoUrl ? (
+                    <img src={wlSettings.logoUrl} alt="Logo Preview" className="w-full h-full object-contain p-1" />
                   ) : (
                     <span className="text-[10px] text-slate-400 text-center px-2">No Logo</span>
                   )}
                 </div>
                 <div className="flex-1">
-                  <label className="flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer">
-                    {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
-                    {uploading ? "Uploading..." : "Upload Logo"}
-                    <input type="file" accept="image/*" onChange={handleLogoUpload} className="hidden" />
-                  </label>
-                  {wlSettings.logoUrl && !uploading && (
-                    <button 
-                      onClick={() => { setWlSettings({ ...wlSettings, logoUrl: "" }); setPreviewUrl(""); }}
-                      className="mt-2 text-xs text-red-500 hover:text-red-600 flex items-center gap-1"
-                    >
-                      <X size={12} /> Remove Logo
-                    </button>
-                  )}
+                  <input
+                    type="text"
+                    value={wlSettings.logoUrl}
+                    onChange={(e) => setWlSettings({ ...wlSettings, logoUrl: e.target.value })}
+                    placeholder="https://therealleads.com/logo.png"
+                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">Paste a direct link to the logo image (PNG, JPG, SVG).</p>
                 </div>
               </div>
             </div>
@@ -249,7 +204,7 @@ const res = await fetch("/api/upload/logo", { // <-- Change this to /api/upload/
               className="w-full mt-4 px-6 py-3 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 hover:from-amber-600 hover:to-orange-600 transition-all shadow-sm disabled:opacity-50"
             >
               {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-              Save & Provision Domain
+              Save White Label Settings
             </button>
           </div>
         )}
