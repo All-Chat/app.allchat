@@ -60,7 +60,7 @@ const categories: NavCategory[] = [
     title: "Messaging",
     icon: MessagesSquare,
     items: [
-      { name: "Chats", icon: MessageCircle, href: "/Live chat" },
+      { name: "Live Chat", icon: MessageCircle, href: "/chat" },
       { name: "Create Templates", icon: LayoutTemplate, href: "/dashboard/templates" },
       { name: "View Templates", icon: ScanEye, href: "/dashboard/view-templates" },
       { name: "Send Test Message", icon: FlaskConical, href: "/send-message" },
