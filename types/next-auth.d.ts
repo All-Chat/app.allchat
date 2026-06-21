@@ -1,8 +1,10 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import NextAuth from "next-auth"
 
 declare module "next-auth" {
   interface Session {
     user: {
+      whiteLabel: any
       tenantId: string | null | undefined
       id: string
       name?: string | null
