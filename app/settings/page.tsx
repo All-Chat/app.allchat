@@ -14,12 +14,21 @@ import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import Sidebar from "@/components/Sidebar";
 
+// ✅ Declare FB window object for TypeScript
+declare global {
+  interface Window {
+    FB: any;
+    fbAsyncInit: () => void;
+  }
+}
+
 export default function SettingsPage() {
   const { data: session, status } = useSession();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [signingUp, setSigningUp] = useState(false);
   
   const [balance, setBalance] = useState(0);
   const [totalRecharged, setTotalRecharged] = useState(0);
@@ -29,6 +38,7 @@ export default function SettingsPage() {
 
   // Form State
   const [showForm, setShowForm] = useState(false);
+  const [showManualForm, setShowManualForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   
   const [newNumName, setNewNumName] = useState("");
@@ -84,8 +94,34 @@ export default function SettingsPage() {
     else if (status === "unauthenticated") window.location.href = "/signin";
   }, [status]);
 
+  // ✅ Load Facebook SDK for Embedded Signup
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    window.fbAsyncInit = function () {
+      window.FB.init({
+        appId: process.env.NEXT_PUBLIC_META_APP_ID || "YOUR_META_APP_ID", // Ensure this is in your .env
+        cookie: true,
+        xfbml: true,
+        version: "v19.0",
+      });
+    };
+
+    // Load the SDK script
+    const script = document.createElement("script");
+    script.src = "https://connect.facebook.net/en_US/sdk.js";
+    script.async = true;
+    script.defer = true;
+    document.body.appendChild(script);
+
+    return () => {
+      document.body.removeChild(script);
+    };
+  }, []);
+
   const resetForm = () => {
     setShowForm(false);
+    setShowManualForm(false);
     setEditingId(null);
     setNewNumName(""); setNewWabaId(""); setNewPhoneId(""); setNewAccessToken("");
   };
@@ -93,10 +129,58 @@ export default function SettingsPage() {
   const handleEditClick = (num: any) => {
     setEditingId(num._id);
     setShowForm(true);
+    setShowManualForm(true); // Skip to manual form for editing
     setNewNumName(num.name || "");
     setNewWabaId(num.wabaId || "");
     setNewPhoneId(num.whatsappPhoneNumberId || "");
     setNewAccessToken("");
+  };
+
+  // ✅ HANDLE META EMBEDDED SIGNUP
+  const handleEmbeddedSignup = () => {
+    if (!window.FB) {
+      toast.error("Facebook SDK is still loading. Please wait a few seconds and try again.");
+      return;
+    }
+
+    setSigningUp(true);
+
+    window.FB.login((response: any) => {
+      if (response.authResponse && response.authResponse.code) {
+        const code = response.authResponse.code;
+        
+        // Send the code to your backend to exchange for a permanent Access Token
+        fetch("/api/settings/embedded-signup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code }),
+        })
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) {
+            toast.success("WhatsApp number connected successfully!");
+            fetchSettings();
+          } else {
+            toast.error(data.message || "Failed to connect WhatsApp number.");
+          }
+        })
+        .catch(() => toast.error("Error exchanging code."))
+        .finally(() => setSigningUp(false));
+
+      } else {
+        toast.error("Facebook login was cancelled or failed.");
+        setSigningUp(false);
+      }
+    }, {
+      config_id: process.env.NEXT_PUBLIC_META_CONFIG_ID || "YOUR_CONFIG_ID", // Ensure this is in your .env
+      response_type: "code",
+      override_default_response_type: true,
+      extras: {
+        setup: {
+          // Prefill data if needed (e.g., phone number)
+        },
+      },
+    });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -374,7 +458,6 @@ export default function SettingsPage() {
                           </button>
                         )}
                         
-                        {/* EDIT BUTTON */}
                         <button
                           onClick={() => handleEditClick(num)}
                           disabled={isPending}
@@ -384,7 +467,6 @@ export default function SettingsPage() {
                           <Pencil size={16} />
                         </button>
 
-                        {/* DELETE BUTTON */}
                         <button
                           onClick={() => handleDeleteNumber(num._id, num.name)}
                           disabled={deletingId === num._id || isPending}
@@ -412,16 +494,33 @@ export default function SettingsPage() {
                 </div>
               ))}
 
-              {/* Add/Edit Form */}
+              {/* Add Form Container */}
               {!showForm ? (
-                <button
-                  onClick={() => { resetForm(); setShowForm(true); }}
-                  disabled={isAtLimit || isPending}
-                  className="w-full p-5 border-2 border-dashed border-slate-300 rounded-2xl text-slate-500 hover:bg-slate-50 transition-all flex items-center justify-center gap-2 font-bold text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isAtLimit ? <AlertCircle size={16} /> : <PlusCircle size={16} />}
-                  {isAtLimit ? "Number Limit Reached" : isPending ? "Pending Approval..." : "Add New Number"}
-                </button>
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
+                  <button
+                    onClick={handleEmbeddedSignup}
+                    disabled={isAtLimit || isPending || signingUp}
+                    className="w-full px-6 py-3.5 bg-[#1877F2] text-white rounded-xl font-bold hover:bg-[#166FE5] transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+                  >
+                    {signingUp ? <Loader2 size={18} className="animate-spin" /> : <ShieldCheck size={18} />}
+                    {signingUp ? "Connecting..." : "Connect with Meta (Embedded Signup)"}
+                  </button>
+
+                  <div className="relative flex items-center my-2">
+                    <div className="flex-grow border-t border-gray-200"></div>
+                    <span className="px-3 text-xs text-gray-400 font-medium">OR</span>
+                    <div className="flex-grow border-t border-gray-200"></div>
+                  </div>
+
+                  <button
+                    onClick={() => { resetForm(); setShowForm(true); setShowManualForm(true); }}
+                    disabled={isAtLimit || isPending}
+                    className="w-full p-4 border-2 border-dashed border-slate-300 rounded-xl text-slate-500 hover:bg-slate-50 transition-all flex items-center justify-center gap-2 font-bold text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isAtLimit ? <AlertCircle size={16} /> : <PlusCircle size={16} />}
+                    {isAtLimit ? "Number Limit Reached" : isPending ? "Pending Approval..." : "Enter Details Manually"}
+                  </button>
+                </div>
               ) : (
                 <div className="bg-white rounded-2xl border border-violet-200 shadow-sm p-5">
                   <div className="flex justify-between items-center mb-4">
