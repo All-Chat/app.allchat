@@ -185,7 +185,8 @@ export default function DashboardPage() {
     { title: "Campaigns", value: (statsData.totalCampaigns ?? 0).toString(), icon: Megaphone, color: "text-amber-600", bg: "bg-amber-50", link: "/campaigns/list" },
   ];
 
-  const displayedTemplates = showAllTemplates ? templates : templates.slice(0, 5);
+  // ✅ Changed to show only 6 latest templates
+  const displayedTemplates = showAllTemplates ? templates : templates.slice(0, 6);
 
   if (status === "loading") {
     return (
@@ -229,235 +230,215 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* WHATSAPP NUMBER STATUS CARD */}
-          <div className="relative overflow-hidden bg-white border border-gray-200 rounded-2xl shadow-sm">
-            <div className="p-4 sm:p-6">
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-emerald-100">
-                    <Phone className="w-5 h-5 text-emerald-600" />
-                  </div>
-                  <div>
-                    <h2 className="font-bold text-gray-900 text-sm sm:text-base">WhatsApp Number Status</h2>
-                    <p className="text-[11px] sm:text-xs text-gray-500">
-                      {phoneDetails ? (
-                        <>
-                          {phoneDetails.displayPhoneNumber} <span className="text-gray-400 mx-1">•</span> {phoneDetails.verifiedName}
-                        </>
-                      ) : "Loading number details..."}
-                    </p>
+          {/* ✅ NEW: Grid layout for WhatsApp Number Status and Billing Overview Side-by-Side */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8">
+            
+            {/* WHATSAPP NUMBER STATUS CARD */}
+            <div className="relative overflow-hidden bg-white border border-gray-200 rounded-2xl shadow-sm">
+              <div className="p-4 sm:p-6">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 rounded-xl bg-emerald-100">
+                      <Phone className="w-5 h-5 text-emerald-600" />
+                    </div>
+                    <div>
+                      <h2 className="font-bold text-gray-900 text-sm sm:text-base">WhatsApp Number Status</h2>
+                      <p className="text-[11px] sm:text-xs text-gray-500">
+                        {phoneDetails ? (
+                          <>
+                            {phoneDetails.displayPhoneNumber} <span className="text-gray-400 mx-1">•</span> {phoneDetails.verifiedName}
+                          </>
+                        ) : "Loading number details..."}
+                      </p>
+                    </div>
                   </div>
                 </div>
+
+                {phoneDetails ? (
+                  <div className="grid grid-cols-2 gap-3 sm:gap-4">
+                    {/* Status */}
+                    <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
+                      <Activity size={16} className={
+                        phoneDetails.status === "CONNECTED" ? "text-emerald-500" : 
+                        phoneDetails.status === "DISCONNECTED" ? "text-gray-400" : "text-red-500"
+                      } />
+                      <div>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Status</p>
+                        <p className={`text-xs font-bold ${
+                          phoneDetails.status === "CONNECTED" ? "text-emerald-700" : 
+                          phoneDetails.status === "DISCONNECTED" ? "text-gray-600" : "text-red-700"
+                        }`}>
+                          {phoneDetails.status}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Quality Score */}
+                    <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
+                      <Gauge size={16} className={
+                        phoneDetails.qualityRating === "GREEN" || phoneDetails.qualityRating === "HIGH" ? "text-emerald-500" :
+                        phoneDetails.qualityRating === "YELLOW" || phoneDetails.qualityRating === "MEDIUM" ? "text-amber-500" :
+                        phoneDetails.qualityRating === "RED" || phoneDetails.qualityRating === "LOW" ? "text-red-500" : "text-gray-400"
+                      } />
+                      <div>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Quality Score</p>
+                        <p className={`text-xs font-bold ${
+                          phoneDetails.qualityRating === "GREEN" || phoneDetails.qualityRating === "HIGH" ? "text-emerald-700" :
+                          phoneDetails.qualityRating === "YELLOW" || phoneDetails.qualityRating === "MEDIUM" ? "text-amber-700" :
+                          phoneDetails.qualityRating === "RED" || phoneDetails.qualityRating === "LOW" ? "text-red-700" : "text-gray-700"
+                        }`}>
+                          {phoneDetails.qualityRating}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Messaging Limit */}
+                    <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
+                      <Send size={16} className="text-blue-500" />
+                      <div>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Msg Limit</p>
+                        <p className="text-xs font-bold text-blue-700">{formatTier(phoneDetails.messagingLimitTier)}</p>
+                      </div>
+                    </div>
+
+                    {/* 2FA Status */}
+                    <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
+                      <ShieldCheck size={16} className={phoneDetails.twoFactorEnabled === true ? "text-emerald-500" : "text-gray-400"} />
+                      <div>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Two-Factor Auth</p>
+                        <p className={`text-xs font-bold ${phoneDetails.twoFactorEnabled === true ? "text-emerald-700" : "text-gray-700"}`}>
+                          {phoneDetails.twoFactorEnabled === true ? "Enabled" : phoneDetails.twoFactorEnabled === false ? "Disabled" : "N/A"}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex justify-center items-center py-4 text-gray-400 text-xs">
+                    <Loader2 size={14} className="animate-spin mr-2" /> Fetching live data from Meta...
+                  </div>
+                )}
               </div>
-
-              {phoneDetails ? (
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-                  {/* Status */}
-                  <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
-                    <Activity size={16} className={
-                      phoneDetails.status === "CONNECTED" ? "text-emerald-500" : 
-                      phoneDetails.status === "DISCONNECTED" ? "text-gray-400" : "text-red-500"
-                    } />
-                    <div>
-                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Status</p>
-                      <p className={`text-xs font-bold ${
-                        phoneDetails.status === "CONNECTED" ? "text-emerald-700" : 
-                        phoneDetails.status === "DISCONNECTED" ? "text-gray-600" : "text-red-700"
-                      }`}>
-                        {phoneDetails.status}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Quality Score */}
-                  <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
-                    <Gauge size={16} className={
-                      phoneDetails.qualityRating === "GREEN" || phoneDetails.qualityRating === "HIGH" ? "text-emerald-500" :
-                      phoneDetails.qualityRating === "YELLOW" || phoneDetails.qualityRating === "MEDIUM" ? "text-amber-500" :
-                      phoneDetails.qualityRating === "RED" || phoneDetails.qualityRating === "LOW" ? "text-red-500" : "text-gray-400"
-                    } />
-                    <div>
-                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Quality Score</p>
-                      <p className={`text-xs font-bold ${
-                        phoneDetails.qualityRating === "GREEN" || phoneDetails.qualityRating === "HIGH" ? "text-emerald-700" :
-                        phoneDetails.qualityRating === "YELLOW" || phoneDetails.qualityRating === "MEDIUM" ? "text-amber-700" :
-                        phoneDetails.qualityRating === "RED" || phoneDetails.qualityRating === "LOW" ? "text-red-700" : "text-gray-700"
-                      }`}>
-                        {phoneDetails.qualityRating}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Messaging Limit */}
-                  <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
-                    <Send size={16} className="text-blue-500" />
-                    <div>
-                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Msg Limit</p>
-                      <p className="text-xs font-bold text-blue-700">{formatTier(phoneDetails.messagingLimitTier)}</p>
-                    </div>
-                  </div>
-
-                  {/* 2FA Status */}
-                  <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
-                    <ShieldCheck size={16} className={phoneDetails.twoFactorEnabled === true ? "text-emerald-500" : "text-gray-400"} />
-                    <div>
-                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Two-Factor Auth</p>
-                      <p className={`text-xs font-bold ${phoneDetails.twoFactorEnabled === true ? "text-emerald-700" : "text-gray-700"}`}>
-                        {phoneDetails.twoFactorEnabled === true ? "Enabled" : phoneDetails.twoFactorEnabled === false ? "Disabled" : "N/A"}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex justify-center items-center py-4 text-gray-400 text-xs">
-                  <Loader2 size={14} className="animate-spin mr-2" /> Fetching live data from Meta...
-                </div>
-              )}
             </div>
-          </div>
 
-          {/* BILLING OVERVIEW CARD */}
-          <div className="relative overflow-hidden bg-white border border-gray-200 rounded-2xl shadow-sm">
-            <div className="p-4 sm:p-6">
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-5 gap-3">
-                <div className="flex items-center gap-3">
-                  <div className={`p-2.5 rounded-xl ${billingData.canSendMessage ? 'bg-emerald-100' : 'bg-red-100'}`}>
-                    <Wallet className={`w-5 h-5 ${billingData.canSendMessage ? 'text-emerald-600' : 'text-red-600'}`} />
-                  </div>
-                  <div>
-                    <h2 className="font-bold text-gray-900 text-sm sm:text-base">Billing Overview</h2>
-                    <p className="text-[11px] sm:text-xs text-gray-500">
-                      {parentTenantName ? `Shared wallet managed by ${parentTenantName}` : "Your messaging credits and usage"}
-                    </p>
-                  </div>
-                </div>
-                <Link href="/settings" className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-1 transition-colors shrink-0">
-                  View Details <ArrowRight size={12} />
-                </Link>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-5">
-                {/* Balance Remaining */}
-                <div className={`relative overflow-hidden p-4 sm:p-5 rounded-xl border ${
-                  billingData.canSendMessage
-                    ? 'bg-gradient-to-br from-emerald-50 to-white border-emerald-200'
-                    : 'bg-gradient-to-br from-red-50 to-white border-red-200'
-                }`}>
-                  <div className="absolute -top-3 -right-3 w-16 h-16 bg-emerald-100/30 rounded-full blur-xl" />
-                  <div className="relative">
-                    <p className={`text-[10px] font-bold uppercase tracking-widest mb-1.5 ${billingData.canSendMessage ? 'text-emerald-600' : 'text-red-600'}`}>
-                      Balance Remaining
-                    </p>
-                    <p className={`text-xl sm:text-2xl font-extrabold ${billingData.canSendMessage ? 'text-emerald-700' : 'text-red-700'}`}>
-                      {formatINR(billingData.balance)}
-                    </p>
-                    {!billingData.canSendMessage && (
-                      <p className="text-[10px] text-red-600 mt-1 flex items-center gap-1 font-medium">
-                        <AlertCircle size={10} /> Insufficient balance
+            {/* BILLING OVERVIEW CARD */}
+            <div className="relative overflow-hidden bg-white border border-gray-200 rounded-2xl shadow-sm">
+              <div className="p-4 sm:p-6">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-5 gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2.5 rounded-xl ${billingData.canSendMessage ? 'bg-emerald-100' : 'bg-red-100'}`}>
+                      <Wallet className={`w-5 h-5 ${billingData.canSendMessage ? 'text-emerald-600' : 'text-red-600'}`} />
+                    </div>
+                    <div>
+                      <h2 className="font-bold text-gray-900 text-sm sm:text-base">Billing Overview</h2>
+                      <p className="text-[11px] sm:text-xs text-gray-500">
+                        {parentTenantName ? `Shared wallet managed by ${parentTenantName}` : "Your messaging credits and usage"}
                       </p>
-                    )}
+                    </div>
+                  </div>
+                  <Link href="/settings" className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-1 transition-colors shrink-0">
+                    View Details <ArrowRight size={12} />
+                  </Link>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-5">
+                  {/* Balance Remaining */}
+                  <div className={`relative overflow-hidden p-4 sm:p-5 rounded-xl border ${
+                    billingData.canSendMessage
+                      ? 'bg-gradient-to-br from-emerald-50 to-white border-emerald-200'
+                      : 'bg-gradient-to-br from-red-50 to-white border-red-200'
+                  }`}>
+                    <div className="absolute -top-3 -right-3 w-16 h-16 bg-emerald-100/30 rounded-full blur-xl" />
+                    <div className="relative">
+                      <p className={`text-[10px] font-bold uppercase tracking-widest mb-1.5 ${billingData.canSendMessage ? 'text-emerald-600' : 'text-red-600'}`}>
+                        Balance Left
+                      </p>
+                      <p className={`text-xl sm:text-2xl font-extrabold ${billingData.canSendMessage ? 'text-black-700' : 'text-red-700'}`}>
+                        {formatINR(billingData.balance)}
+                      </p>
+                      {!billingData.canSendMessage && (
+                        <p className="text-[10px] text-red-600 mt-1 flex items-center gap-1 font-medium">
+                          <AlertCircle size={10} /> Insufficient balance
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Total Recharged */}
+                  <div className="relative overflow-hidden p-4 sm:p-5 rounded-xl border bg-gradient-to-br from-blue-50 to-white border-blue-200">
+                    <div className="absolute -top-3 -right-3 w-16 h-16 bg-blue-100/30 rounded-full blur-xl" />
+                    <div className="relative">
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-blue-600 mb-1.5">
+                        Total Recharged
+                      </p>
+                      <p className="text-xl sm:text-2xl font-extrabold text-black-700">
+                        {formatINR(billingData.totalRecharged)}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Total Spent */}
+                  <div className="relative overflow-hidden p-4 sm:p-5 rounded-xl border bg-gradient-to-br from-orange-50 to-white border-orange-200">
+                    <div className="absolute -top-3 -right-3 w-16 h-16 bg-orange-100/30 rounded-full blur-xl" />
+                    <div className="relative">
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-orange-600 mb-1.5">
+                        Total Spent
+                      </p>
+                      <p className="text-xl sm:text-2xl font-extrabold text-black-700">
+                        {formatINR(billingData.totalSpent)}
+                      </p>
+                    </div>
                   </div>
                 </div>
 
-                {/* Total Recharged */}
-                <div className="relative overflow-hidden p-4 sm:p-5 rounded-xl border bg-gradient-to-br from-blue-50 to-white border-blue-200">
-                  <div className="absolute -top-3 -right-3 w-16 h-16 bg-blue-100/30 rounded-full blur-xl" />
-                  <div className="relative">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-blue-600 mb-1.5">
-                      Total Recharged
-                    </p>
-                    <p className="text-xl sm:text-2xl font-extrabold text-blue-700">
-                      {formatINR(billingData.totalRecharged)}
-                    </p>
-                    <p className="text-[10px] text-blue-500 mt-1 flex items-center gap-1 font-medium">
-                      <TrendingUp size={10} /> Total amount added
-                    </p>
-                  </div>
-                </div>
+              
 
-                {/* Total Spent */}
-                <div className="relative overflow-hidden p-4 sm:p-5 rounded-xl border bg-gradient-to-br from-orange-50 to-white border-orange-200">
-                  <div className="absolute -top-3 -right-3 w-16 h-16 bg-orange-100/30 rounded-full blur-xl" />
-                  <div className="relative">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-orange-600 mb-1.5">
-                      Total Spent
-                    </p>
-                    <p className="text-xl sm:text-2xl font-extrabold text-orange-700">
-                      {formatINR(billingData.totalSpent)}
-                    </p>
-                    <p className="text-[10px] text-orange-500 mt-1 flex items-center gap-1 font-medium">
-                      <TrendingDown size={10} /> On messaging
+                {/* Zero balance warning */}
+                {billingData.balance === 0 && billingData.totalRecharged === 0 && (
+                  <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                    <p className="text-xs text-amber-700">
+                      No balance yet. Contact your administrator to recharge your account and start sending messages.
                     </p>
                   </div>
-                </div>
+                )}
               </div>
-
-              {/* Progress Bar */}
-              {billingData.totalRecharged > 0 && (
-                <div className="mt-5 pt-4 border-t border-gray-100">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs text-gray-500 font-medium">Usage</span>
-                    <span className="text-xs font-bold text-gray-700">
-                      {billingData.totalRecharged > 0
-                        ? Math.round((billingData.totalSpent / billingData.totalRecharged) * 100)
-                        : 0}% used
-                    </span>
-                  </div>
-                  <div className="w-full bg-gray-100 rounded-full h-2.5">
-                    <div
-                      className={`h-2.5 rounded-full transition-all duration-700 ${
-                        billingData.totalSpent / billingData.totalRecharged > 0.9
-                          ? 'bg-red-500'
-                          : billingData.totalSpent / billingData.totalRecharged > 0.7
-                            ? 'bg-amber-500'
-                            : 'bg-emerald-500'
-                      }`}
-                      style={{
-                        width: `${Math.min(
-                          billingData.totalRecharged > 0
-                            ? (billingData.totalSpent / billingData.totalRecharged) * 100
-                            : 0,
-                          100
-                        )}%`
-                      }}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between mt-2">
-                    <span className="text-[10px] text-gray-400 flex items-center gap-1">
-                      <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span> Left: {formatINR(billingData.balance)}
-                    </span>
-                    <span className="text-[10px] text-gray-400 flex items-center gap-1">
-                      <span className="w-2 h-2 rounded-full bg-orange-400 inline-block"></span> Spent: {formatINR(billingData.totalSpent)}
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {/* Zero balance warning */}
-              {billingData.balance === 0 && billingData.totalRecharged === 0 && (
-                <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-                  <p className="text-xs text-amber-700">
-                    No balance yet. Contact your administrator to recharge your account and start sending messages.
-                  </p>
-                </div>
-              )}
             </div>
+            
           </div>
+          {/* ✅ End of Side-by-Side Grid */}
 
           {/* Stats Grid */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
             {stats.map((stat) => (
-              <Link key={stat.title} href={stat.link} className="bg-white border border-gray-200 rounded-2xl p-4 sm:p-5 shadow-sm hover:shadow-md hover:border-gray-300 transition-all duration-200 group">
-                <div className="flex items-center justify-between mb-3 sm:mb-4">
-                  <div className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center ${stat.bg} ${stat.color} group-hover:scale-110 transition-transform`}>
-                    <stat.icon size={18} />
-                  </div>
-                  <ArrowRight size={16} className="text-gray-300 group-hover:text-gray-500 group-hover:translate-x-1 transition-all" />
-                </div>
-                <p className="text-xl sm:text-2xl font-bold text-gray-900">{stat.value}</p>
-                <p className="text-[11px] sm:text-xs font-medium text-gray-500 mt-1">{stat.title}</p>
-              </Link>
+             <Link
+  key={stat.title}
+  href={stat.link}
+  className="bg-white border border-gray-200 rounded-2xl p-4 sm:p-5 shadow-sm hover:shadow-md hover:border-gray-300 transition-all duration-200 group"
+>
+  <div className="flex items-center justify-between">
+    <div className="flex items-center gap-3">
+      <div
+        className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center ${stat.bg} ${stat.color} group-hover:scale-110 transition-transform`}
+      >
+        <stat.icon size={18} />
+      </div>
+
+      <div>
+        <p className="text-xl sm:text-2xl font-bold text-gray-900 leading-none">
+          {stat.value}
+        </p>
+        <p className="text-[11px] sm:text-xs font-medium text-gray-500 mt-1">
+          {stat.title}
+        </p>
+      </div>
+    </div>
+
+    <ArrowRight
+      size={16}
+      className="text-gray-300 group-hover:text-gray-500 group-hover:translate-x-1 transition-all"
+    />
+  </div>
+</Link>
             ))}
           </div>
 
@@ -546,18 +527,10 @@ export default function DashboardPage() {
                       })}
                     </div>
 
-                    {templates.length > 5 && (
+                    {/* ✅ Updated threshold to 6 */}
+                    {templates.length > 6 && (
                       <div className="p-3 border-t border-gray-100 bg-gray-50/50 text-center">
-                        <button
-                          onClick={() => setShowAllTemplates(!showAllTemplates)}
-                          className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-1 mx-auto transition-colors"
-                        >
-                          {showAllTemplates ? (
-                            <>View Less <ChevronUp size={14} /></>
-                          ) : (
-                            <>View All ({templates.length}) <ChevronDown size={14} /></>
-                          )}
-                        </button>
+   
                       </div>
                     )}
                   </>
@@ -609,7 +582,8 @@ export default function DashboardPage() {
                       <p className="text-xs text-gray-500">No active campaigns</p>
                     </div>
                   ) : (
-                    campaignsData?.map((camp: any) => {
+                    // ✅ Changed to slice(0, 2) to show only 2 campaigns
+                    campaignsData?.slice(0, 2).map((camp: any) => {
                       const statusConfig = getStatusConfig(camp.status);
                       return (
                         <div key={camp._id} className="p-4 group hover:bg-gray-50 transition-colors">
