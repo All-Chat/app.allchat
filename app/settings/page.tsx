@@ -46,6 +46,10 @@ export default function SettingsPage() {
   const [newPhoneId, setNewPhoneId] = useState("");
   const [newAccessToken, setNewAccessToken] = useState("");
 
+  // ✅ NEW: Google Sheets State
+  const [googleSheetUrl, setGoogleSheetUrl] = useState("");
+  const [connectingGoogle, setConnectingGoogle] = useState(false);
+
   const parentTenantName = (session?.user as any)?.parentTenantName;
 
   const formatINR = (amount: number) =>
@@ -69,6 +73,11 @@ export default function SettingsPage() {
         setTotalRecharged(settingsData.settings.totalRecharged || 0);
         setWhatsappNumbers(settingsData.settings.whatsappNumbers || []);
         setPendingRequest(settingsData.settings.pendingRequest || null);
+        
+        // ✅ NEW: Set Google Sheet URL if exists
+        if (settingsData.settings.googleSheetId) {
+          setGoogleSheetUrl(`https://docs.google.com/spreadsheets/d/${settingsData.settings.googleSheetId}/edit`);
+        }
       }
 
       if (limitsRes.ok) {
@@ -88,7 +97,24 @@ export default function SettingsPage() {
       setLoading(false);
     }
   };
+  // ✅ NEW: Automatically open Google Sheet in a new tab after successful connection
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const googleSuccess = urlParams.get('google_success');
 
+    if (googleSuccess === 'true') {
+      // Wait 1 second to ensure settings are fetched and googleSheetUrl is set in state
+      setTimeout(() => {
+        fetchSettings().then(() => {
+          if (googleSheetUrl) {
+            window.open(googleSheetUrl, '_blank', 'noopener,noreferrer');
+            // Clean the URL to remove ?google_success=true so it doesn't open again on refresh
+            window.history.replaceState({}, document.title, window.location.pathname);
+          }
+        });
+      }, 1000);
+    }
+  }, [googleSheetUrl]);
   useEffect(() => {
     if (status === "authenticated") fetchSettings();
     else if (status === "unauthenticated") window.location.href = "/signin";
@@ -181,6 +207,31 @@ export default function SettingsPage() {
         },
       },
     });
+  };
+
+    // ✅ NEW: Handle Google Sheets Connect (POPUP)
+  const handleConnectGoogle = async () => {
+    setConnectingGoogle(true);
+    try {
+      const res = await fetch("/api/google-sheets/auth");
+      const data = await res.json();
+      if (data.url) {
+        // Open as a popup window (500x600)
+        const width = 500;
+        const height = 600;
+        const left = window.screen.width / 2 - width / 2;
+        const top = window.screen.height / 2 - height / 2;
+        
+        window.open(
+          data.url, 
+          "googlePopup", 
+          `width=${width},height=${height},top=${top},left=${left}`
+        );
+      }
+    } catch (error) {
+      toast.error("Failed to connect Google");
+      setConnectingGoogle(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -561,6 +612,50 @@ export default function SettingsPage() {
                   </form>
                 </div>
               )}
+            </div>
+          </div>
+
+                    {/* ✅ NEW: INTEGRATIONS (GOOGLE SHEETS) */}
+          <div className="mb-6 sm:mb-8">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-1.5 h-6 bg-gradient-to-b from-green-500 to-emerald-500 rounded-full" />
+              <h2 className="text-base sm:text-lg font-bold text-gray-900">Integrations</h2>
+            </div>
+            
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-green-100 rounded-lg">
+                    {/* Google Sheets Icon SVG */}
+                    <svg className="w-5 h-5 text-green-700" viewBox="0 0 24 24" fill="currentColor"><path d="M19.5 3h-4v4.5h7V4.5A1.5 1.5 0 0021 3h-1.5zM15 21h4.5a1.5 1.5 0 001.5-1.5V15h-7v4.5H15V21zM3 19.5A1.5 1.5 0 004.5 21H9v-4.5H3v3zM3 9h6V3H4.5A1.5 1.5 0 003 4.5V9zm0 4.5h6V9H3v4.5zM13.5 3H9v6h4.5V3zm0 9H9v4.5h4.5V12z"/></svg>
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-gray-900 text-sm">Google Sheets (Live Reports)</h3>
+                    <p className="text-xs text-gray-500">Automatically export campaign reports to a Google Sheet.</p>
+                  </div>
+                </div>
+
+                {googleSheetUrl ? (
+                  <a 
+                    href={googleSheetUrl} 
+                    target="_blank"  // ✅ Opens in new tab
+                    rel="noopener noreferrer" // ✅ Security best practice for target="_blank"
+                    className="px-5 py-2.5 bg-green-50 text-green-700 border border-green-200 rounded-xl text-xs font-bold flex items-center gap-2 hover:bg-green-100 transition-colors"
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3m-2 16H5V5h7V3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7h-2v7z"/></svg>
+                    Open Google Sheet
+                  </a>
+                ) : (
+                  <button
+                    onClick={handleConnectGoogle}
+                    disabled={connectingGoogle}
+                    className="px-5 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-bold flex items-center gap-2 hover:bg-slate-800 transition-colors disabled:opacity-50"
+                  >
+                    {connectingGoogle ? <Loader2 size={14} className="animate-spin" /> : null}
+                    Connect Google Account
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
