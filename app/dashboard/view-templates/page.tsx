@@ -6,8 +6,10 @@ import { useEffect, useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import Link from "next/link";
 import {
-  FileText, PlusCircle, RefreshCw, Trash2, CheckCircle, XCircle, Clock,
-  Pencil, X, Search, Loader2, Tag, Globe, LayoutGrid, List
+  FileText, PlusCircle, RefreshCw, CheckCircle, XCircle, Clock,
+  Eye, X, Search, Loader2, Tag, Globe, LayoutGrid, List, 
+  Image as ImageIcon, Video, File, Phone, ExternalLink, CheckCheck,
+  ArrowLeft, MoreVertical
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -28,11 +30,9 @@ export default function AllTemplatesPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 6;
 
-  // Edit Modal State
-  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-  const [editingTemplate, setEditingTemplate] = useState<any>(null);
-  const [savingEdit, setSavingEdit] = useState(false);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  // View Modal State
+  const [isViewModalOpen, setIsViewModalOpen] = useState(false);
+  const [viewingTemplate, setViewingTemplate] = useState<any>(null);
 
   // Load view preference from localStorage
   useEffect(() => {
@@ -86,59 +86,9 @@ export default function AllTemplatesPage() {
     }
   };
 
-  const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Delete template "${name}"? This cannot be undone.`)) return;
-    setDeletingId(id);
-    try {
-      const res = await fetch(`/api/templates/delete?id=${id}`, { method: "DELETE" });
-      if (res.ok) {
-        toast.success("Template deleted");
-        setTemplates((prev) => prev.filter((t) => (t.id || t._id) !== id));
-      } else {
-        toast.error("Delete failed");
-      }
-    } catch (err) {
-      toast.error("Delete error");
-    } finally {
-      setDeletingId(null);
-    }
-  };
-
-  const openEditModal = (template: any) => {
-    setEditingTemplate({
-      id: template.id || template._id,
-      name: template.name,
-      category: template.category || "MARKETING",
-      language: template.language || "en_US",
-      body: template.body || template.components?.find((c: any) => c.type === "BODY")?.text || "",
-    });
-    setIsEditModalOpen(true);
-  };
-
-  const handleSaveEdit = async () => {
-    if (!editingTemplate) return;
-    setSavingEdit(true);
-    try {
-      const res = await fetch("/api/templates/update", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(editingTemplate),
-      });
-
-      const data = await res.json();
-      
-      if (res.ok) {
-        toast.success("Template updated successfully! Meta is reviewing the changes.");
-        setIsEditModalOpen(false);
-        fetchTemplates(); 
-      } else {
-        toast.error(data.message || "Failed to update template");
-      }
-    } catch (error) {
-      toast.error("Error updating template");
-    } finally {
-      setSavingEdit(false);
-    }
+  const openViewModal = (template: any) => {
+    setViewingTemplate(template);
+    setIsViewModalOpen(true);
   };
 
   const getStatusConfig = (status: string) => {
@@ -155,12 +105,10 @@ export default function AllTemplatesPage() {
       return t.name?.toLowerCase().includes(searchTerm.toLowerCase());
     });
 
-  // Reset to page 1 if filters or search change
   useEffect(() => {
     setCurrentPage(1);
   }, [searchTerm, statusFilter]);
 
-  // Pagination Logic
   const totalPages = Math.ceil(filteredTemplates.length / itemsPerPage);
   const indexOfLastItem = currentPage * itemsPerPage;
   const indexOfFirstItem = indexOfLastItem - itemsPerPage;
@@ -202,7 +150,7 @@ export default function AllTemplatesPage() {
             </div>
           </div>
 
-          {/* Toolbar (Search, Filter, View Toggle) */}
+          {/* Toolbar */}
           <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3 sm:gap-4">
             <div className="relative flex-1">
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -215,7 +163,6 @@ export default function AllTemplatesPage() {
             </div>
             
             <div className="flex items-center justify-between sm:justify-end gap-3">
-              {/* View Toggle */}
               <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
                 <button
                   onClick={() => setViewMode("list")}
@@ -302,12 +249,10 @@ export default function AllTemplatesPage() {
 
                         <div className="border-t border-slate-100 p-3 flex items-center justify-end gap-2 bg-slate-50/50 rounded-b-2xl">
                           <button
-                            onClick={() => handleDelete(tpl.id || tpl._id, tpl.name)}
-                            disabled={deletingId === (tpl.id || tpl._id)}
-                            className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
+                            onClick={() => openViewModal(tpl)}
+                            className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
                           >
-                            {deletingId === (tpl.id || tpl._id) ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
-                            Delete
+                            <Eye size={13} /> View Template
                           </button>
                         </div>
                       </div>
@@ -354,12 +299,11 @@ export default function AllTemplatesPage() {
                             
                             <div className="flex items-center gap-1">
                               <button
-                                onClick={() => handleDelete(tpl.id || tpl._id, tpl.name)}
-                                disabled={deletingId === (tpl.id || tpl._id)}
-                                className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
-                                title="Delete"
+                                onClick={() => openViewModal(tpl)}
+                                className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                                title="View Template"
                               >
-                                {deletingId === (tpl.id || tpl._id) ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+                                <Eye size={15} />
                               </button>
                             </div>
                           </div>
@@ -397,93 +341,155 @@ export default function AllTemplatesPage() {
         </div>
       </main>
 
-      {/* Edit Modal */}
-      {isEditModalOpen && editingTemplate && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setIsEditModalOpen(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-5 border-b border-slate-200 bg-slate-50">
-              <div className="flex items-center gap-2">
+      {/* ✅ BEAUTIFUL WHATSAPP VIEW MODAL */}
+      {isViewModalOpen && viewingTemplate && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setIsViewModalOpen(false)}>
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col md:flex-row max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+            
+            {/* Modal Header (Left/Top side) */}
+            <div className="p-6 border-b md:border-b-0 md:border-r border-slate-200 bg-slate-50 md:w-64 shrink-0 flex flex-col">
+              <div className="flex items-center justify-between mb-6">
                 <div className="p-2 bg-emerald-100 rounded-lg">
-                  <Pencil className="w-5 h-5 text-emerald-600" />
+                  <Eye className="w-5 h-5 text-emerald-600" />
                 </div>
-                <h2 className="text-lg font-bold text-slate-900">Edit Template</h2>
+                <button onClick={() => setIsViewModalOpen(false)} className="p-2 hover:bg-slate-200 rounded-lg transition-colors">
+                  <X className="w-5 h-5 text-slate-500" />
+                </button>
               </div>
-              <button onClick={() => setIsEditModalOpen(false)} className="p-2 hover:bg-slate-200 rounded-lg transition-colors">
-                <X className="w-5 h-5 text-slate-500" />
-              </button>
-            </div>
-
-            <div className="p-6 space-y-5 overflow-y-auto">
-              <div>
-                <label className="text-xs font-bold text-slate-700 mb-1.5 block">Template Name</label>
-                <input
-                  type="text"
-                  value={editingTemplate.name}
-                  onChange={(e) => setEditingTemplate({ ...editingTemplate, name: e.target.value })}
-                  className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
-                />
-                <p className="text-[11px] text-slate-400 mt-1">Note: Changing the name might require Meta re-approval.</p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-bold text-slate-700 mb-1.5 block">Category</label>
-                  <select
-                    value={editingTemplate.category}
-                    onChange={(e) => setEditingTemplate({ ...editingTemplate, category: e.target.value })}
-                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
-                  >
-                    <option value="MARKETING">Marketing</option>
-                    <option value="UTILITY">Utility</option>
-                    <option value="AUTHENTICATION">Authentication</option>
-                  </select>
+              <h2 className="text-sm font-bold text-slate-900 mb-1">Template Details</h2>
+              <p className="text-xs text-slate-500 mb-6 break-all">{viewingTemplate.name}</p>
+              
+              <div className="space-y-3">
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Status</span>
+                  <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-bold w-fit ${getStatusConfig(viewingTemplate.status).bg} ${getStatusConfig(viewingTemplate.status).border} ${getStatusConfig(viewingTemplate.status).text}`}>
+                    {viewingTemplate.status?.toUpperCase() || "PENDING"}
+                  </span>
                 </div>
-                <div>
-                  <label className="text-xs font-bold text-slate-700 mb-1.5 block">Language</label>
-                  <select
-                    value={editingTemplate.language}
-                    onChange={(e) => setEditingTemplate({ ...editingTemplate, language: e.target.value })}
-                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
-                  >
-                    <option value="en_US">English (US)</option>
-                    <option value="en_GB">English (UK)</option>
-                    <option value="en_IN">English (IN)</option>
-                    <option value="hi">Hindi</option>
-                    <option value="pa">Punjabi</option>
-                    <option value="es">Spanish</option>
-                    <option value="fr">French</option>
-                  </select>
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Category</span>
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-white rounded-lg border border-slate-200 text-xs font-semibold w-fit">
+                    <Tag size={11} className="text-slate-400" /> {viewingTemplate.category || "MARKETING"}
+                  </span>
                 </div>
-              </div>
-
-              <div>
-                <label className="text-xs font-bold text-slate-700 mb-1.5 block">Body Text</label>
-                <textarea
-                  value={editingTemplate.body}
-                  onChange={(e) => setEditingTemplate({ ...editingTemplate, body: e.target.value })}
-                  rows={5}
-                  className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all resize-none"
-                  placeholder="Enter template body. Use {{1}} for variables."
-                />
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Language</span>
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-white rounded-lg border border-slate-200 text-xs font-semibold w-fit">
+                    <Globe size={11} className="text-slate-400" /> {viewingTemplate.language || "en_US"}
+                  </span>
+                </div>
               </div>
             </div>
 
-            <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end gap-3">
-              <button
-                onClick={() => setIsEditModalOpen(false)}
-                className="px-5 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-200 rounded-lg transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSaveEdit}
-                disabled={savingEdit}
-                className="flex items-center gap-1.5 px-6 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-lg text-sm font-bold hover:from-emerald-600 hover:to-teal-600 transition-all shadow-sm disabled:opacity-50"
-              >
-                {savingEdit ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
-                Save Changes
-              </button>
+            {/* WhatsApp Phone Mockup (Right/Bottom side) */}
+            <div className="flex-1 flex items-center justify-center p-6 bg-slate-100 overflow-y-auto">
+              <div className="bg-slate-900 rounded-[2rem] p-2 shadow-xl w-full max-w-[340px] border-[6px] border-slate-800">
+                <div className="bg-[#efeae2] rounded-[1.5rem] overflow-hidden flex flex-col h-[600px] relative">
+                  
+                  {/* WhatsApp Chat Header */}
+                  <div className="bg-[#008069] text-white px-3 py-2.5 flex items-center gap-3 z-10 shrink-0">
+                    <ArrowLeft size={18} className="text-white/90" />
+                    <div className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center font-bold text-sm">U</div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-sm leading-tight truncate">User Name</p>
+                      <p className="text-[10px] text-white/80">online</p>
+                    </div>
+                    <Video size={16} className="text-white/90" />
+                    <Phone size={14} className="text-white/90" />
+                    <MoreVertical size={18} className="text-white/90" />
+                  </div>
+
+                  {/* Chat Area */}
+                  <div className="flex-1 overflow-y-auto p-4 relative">
+                    <div 
+                      className="absolute inset-0 opacity-5 pointer-events-non " 
+                      style={{ backgroundImage: "url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png')", backgroundSize: '260px' }}
+                    ></div>
+                    
+                    {/* Chat Bubble */}
+                    <div className="relative ml-auto max-w-[85%] bg-[#d9fdd3] rounded-lg rounded-tr-none shadow-sm overflow-hidden border border-[#c8fdc6]">
+                      
+                      {/* Bubble Tail */}
+                      <div className="absolute -top-2 right-0 w-4 h-4 bg-[#d9fdd3] border-l border-t border-[#c8fdc6]" style={{ clipPath: 'polygon(100% 0, 0 0, 100% 100%)' }}></div>
+
+                      <div className="relative z-10 p-2">
+                        {/* Render Header */}
+                        {(() => {
+                          const header = viewingTemplate.components?.find((c: any) => c.type === "HEADER");
+                          if (!header) return null;
+
+                          if (header.format === "TEXT") {
+                            return <p className="font-bold text-gray-900 text-sm mb-1 px-1">{header.text}</p>;
+                          }
+                          if (header.format === "IMAGE") {
+                            return (
+                              <div className="w-100 h-40 -m-2 mb-1 bg-slate-200 flex items-center justify-center overflow-hidden">
+                                <ImageIcon className="w-20 h-20 mr-40 text-slate-400" />
+                              </div>
+                            );
+                          }
+                          if (header.format === "VIDEO") {
+                            return (
+                              <div className="w-100 h-40 -m-2 mb-1 bg-slate-800 flex items-center justify-center overflow-hidden">
+                                <Video className="w-20 h-20 mr-40 text-slate-400" />
+                              </div>
+                            );
+                          }
+                          if (header.format === "DOCUMENT") {
+                            return (
+                              <div className="m-1 mb-2 p-2.5 bg-white/60 rounded-lg flex items-center gap-3 border border-slate-200">
+                                <File className="w-8 h-8 text-red-500" />
+                                <div className="text-sm font-medium text-slate-700">document.pdf</div>
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
+
+                        {/* Render Body */}
+                        {(() => {
+                          const body = viewingTemplate.components?.find((c: any) => c.type === "BODY");
+                          if (!body || !body.text) return null;
+                          return <p className="text-gray-800 text-sm mb-1 px-1 whitespace-pre-wrap">{body.text}</p>;
+                        })()}
+
+                        {/* Render Footer */}
+                        {(() => {
+                          const footer = viewingTemplate.components?.find((c: any) => c.type === "FOOTER");
+                          if (!footer || !footer.text) return null;
+                          return <p className="text-[11px] text-gray-500 px-1 mb-1">{footer.text}</p>;
+                        })()}
+
+                        {/* Time and Ticks */}
+                        <div className="flex items-center justify-end gap-1 text-[10px] text-gray-500 px-1">
+                          12:00 PM
+                          <CheckCheck size={12} className="text-blue-500" />
+                        </div>
+                      </div>
+
+                      {/* Render Buttons */}
+                      {(() => {
+                        const buttonsComp = viewingTemplate.components?.find((c: any) => c.type === "BUTTONS");
+                        if (!buttonsComp || !buttonsComp.buttons || buttonsComp.buttons.length === 0) return null;
+
+                        return (
+                          <div className="border-t border-[#c8fdc6] mt-1 bg-[#d9fdd3]">
+                            {buttonsComp.buttons.map((btn: any, idx: number) => (
+                              <div key={idx} className="flex items-center justify-center gap-1.5 text-[#00a5f4] font-medium text-sm py-2.5 border-b border-[#c8fdc6] last:border-b-0 cursor-pointer hover:bg-black/5 transition-colors">
+                                {btn.type === "URL" && <ExternalLink size={14} />}
+                                {btn.type === "PHONE_NUMBER" && <Phone size={14} />}
+                                {btn.text}
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
+
           </div>
         </div>
       )}
