@@ -54,7 +54,7 @@ const UserSchema = new mongoose.Schema({
   suspendedReason: { type: String, default: null },
   
   // ==========================================
-  // ✅ NEW: WHITE LABEL SETTINGS
+  // ✅ WHITE LABEL SETTINGS
   // ==========================================
   whiteLabel: {
     enabled: { type: Boolean, default: false },
@@ -62,17 +62,20 @@ const UserSchema = new mongoose.Schema({
     logoUrl: { type: String, default: "" },
     primaryColor: { type: String, default: "#10b981" },
     supportEmail: { type: String, default: "" },
-    brandUrl: { type: String, default: "" } // e.g., "therealleads"
+    brandUrl: { type: String, default: "" }
   },
 
-  // Add these fields to your UserSchema
-googleSheetId: { type: String, default: null },
-googleTokens: {
-  access_token: { type: String, default: null },
-  refresh_token: { type: String, default: null },
-  scope: { type: String, default: null },
-  expiry_date: { type: Number, default: null }
-},
+  // ==========================================
+  // ✅ GOOGLE SHEETS & INTEGRATIONS SETTINGS
+  // ==========================================
+  googleSheetId: { type: String, default: null },
+  googleTokens: {
+    access_token: { type: String, default: null },
+    refresh_token: { type: String, default: null },
+    scope: { type: String, default: null },
+    expiry_date: { type: Number, default: null }
+  },
+  hideIntegrations: { type: Boolean, default: false }, // ✅ NEW FIELD ADDED HERE
   
   limits: {
     tags: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
