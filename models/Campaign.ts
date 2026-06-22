@@ -13,6 +13,9 @@ const CampaignSchema = new mongoose.Schema({
   templateName: { type: String, required: true },
   templateCategory: { type: String, default: "MARKETING" },
   
+  // ✅ NEW: Stores the _id of the selected WhatsApp number
+  senderPhoneId: { type: String, default: null }, 
+  
   variables: { type: [String], default: [] },
   mappedVariables: { type: [[String]], default: [] }, 
   generateOtp: { type: Boolean, default: false },
