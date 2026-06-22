@@ -79,7 +79,7 @@ export default function AdminBillingPage() {
   const [statusFilter, setStatusFilter] = useState("all");
 
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
-  const [editTab, setEditTab] = useState<"billing" | "plan" | "account" | "credentials" | "limits" | "tenancy">("billing");
+  const [editTab, setEditTab] = useState<"billing" | "plan" | "account" | "credentials" | "limits" | "tenancy" | "integrations">("billing");
   const [editRecharge, setEditRecharge] = useState("");
   const [editPlanDuration, setEditPlanDuration] = useState("1mo");
   const [editCustomDuration, setEditCustomDuration] = useState("");
@@ -102,6 +102,9 @@ export default function AdminBillingPage() {
 
   const [editIsTenant, setEditIsTenant] = useState(false);
   const [editMaxSubUsers, setEditMaxSubUsers] = useState("0");
+
+  // ✅ NEW: Integrations State
+  const [editHideIntegrations, setEditHideIntegrations] = useState(false);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newUser, setNewUser] = useState({ name: "", password: "" });
@@ -208,7 +211,7 @@ export default function AdminBillingPage() {
     } catch { toast.error("Error processing request"); } finally { setProcessingReqId(null); }
   };
 
-  const startEdit = (user: any, tab: "billing" | "plan" | "account" | "credentials" | "limits" | "tenancy" = "billing") => {
+  const startEdit = (user: any, tab: "billing" | "plan" | "account" | "credentials" | "limits" | "tenancy" | "integrations" = "billing") => {
     setEditingUserId(user._id);
     setEditTab(tab);
     setEditPriceMarketing(user.priceMarketing?.toString() || "0.90");
@@ -219,6 +222,9 @@ export default function AdminBillingPage() {
     setEditWabaId(user.wabaId || ""); setEditAccessToken(user.whatsappAccessToken || "");
     setShowPassword(false); setShowAccessToken(false);
     setEditIsTenant(user.isTenant || false); setEditMaxSubUsers(user.maxSubUsers?.toString() || "0");
+    
+    // ✅ NEW: Set Integrations State
+    setEditHideIntegrations(user.hideIntegrations || false);
 
     const userLimits: Record<string, LimitValue> = {};
     for (const res of LIMIT_RESOURCES_CONFIG) userLimits[res.key] = user.limits?.[res.key] || DEFAULT_LIMITS[res.key];
@@ -261,6 +267,13 @@ export default function AdminBillingPage() {
       }
       if (action === "limits") body.limits = editLimits;
       if (action === "tenancy") { body.isTenant = editIsTenant; body.maxSubUsers = Number(editMaxSubUsers); }
+      
+      // ✅ NEW: Handle Integrations Save
+      if (action === "integrations") { 
+        body.hideIntegrations = extraData?.hideIntegrations !== undefined ? extraData.hideIntegrations : editHideIntegrations; 
+      }
+      if (action === "disconnectGoogle") { body.disconnectGoogle = true; }
+
       if (action === "resetUsage") { body.resetUsage = extraData?.resetUsage || {}; body.limits = editLimits; }
       if (action === "resetAllUsage") { body.resetAllUsage = true; body.limits = editLimits; }
 
@@ -268,9 +281,20 @@ export default function AdminBillingPage() {
       const data = await res.json();
       if (data.success) {
         toast.success(`Updated ${data.user.name}`); fetchUsers();
-        if (action !== "suspend" && action !== "reactivate") cancelEdit(); else setEditingUserId(null);
+        if (action === "disconnectGoogle") {
+          toast.success("Google account disconnected for this user.");
+        } else if (action !== "integrations") {
+          cancelEdit();
+        }
       } else { toast.error(data.message || "Failed to update"); }
     } catch { toast.error("Error updating user"); } finally { setSaving(null); }
+  };
+
+  // ✅ NEW: Toggle and Save Instantly
+  const toggleHideIntegrations = (userId: string) => {
+    const newVal = !editHideIntegrations;
+    setEditHideIntegrations(newVal);
+    saveUser(userId, "integrations", { hideIntegrations: newVal });
   };
 
   const filteredUsers = users
@@ -329,7 +353,7 @@ export default function AdminBillingPage() {
           </div>
         </div>
 
-                        {/* PENDING CONFIGURATION REQUESTS SECTION */}
+        {/* PENDING CONFIGURATION REQUESTS SECTION */}
         {requests.length > 0 && (
           <div className="mb-6 bg-white rounded-2xl border border-amber-200 shadow-sm p-5">
             <h2 className="text-lg font-bold text-amber-700 mb-4 flex items-center gap-2">
@@ -355,21 +379,11 @@ export default function AdminBillingPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2 w-full sm:w-auto">
-                    <button 
-                      onClick={() => handleProcessRequest(req._id, "approve")} 
-                      disabled={processingReqId === req._id}
-                      className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 bg-emerald-500 text-white rounded-lg text-xs font-bold hover:bg-emerald-600 transition-all disabled:opacity-50"
-                    >
-                      {processingReqId === req._id ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-                      Approve
+                    <button onClick={() => handleProcessRequest(req._id, "approve")} disabled={processingReqId === req._id} className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 bg-emerald-500 text-white rounded-lg text-xs font-bold hover:bg-emerald-600 transition-all disabled:opacity-50">
+                      {processingReqId === req._id ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Approve
                     </button>
-                    <button 
-                      onClick={() => handleProcessRequest(req._id, "reject")} 
-                      disabled={processingReqId === req._id}
-                      className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 bg-red-500 text-white rounded-lg text-xs font-bold hover:bg-red-600 transition-all disabled:opacity-50"
-                    >
-                      <X size={14} />
-                      Reject
+                    <button onClick={() => handleProcessRequest(req._id, "reject")} disabled={processingReqId === req._id} className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 bg-red-500 text-white rounded-lg text-xs font-bold hover:bg-red-600 transition-all disabled:opacity-50">
+                      <X size={14} /> Reject
                     </button>
                   </div>
                 </div>
@@ -425,6 +439,7 @@ export default function AdminBillingPage() {
                             {user.planDuration && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-violet-50 text-violet-700 border border-violet-200 flex items-center gap-1 shrink-0"><Clock size={9} /> {planLabel}</span>}
                             {user.isTenant && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1 shrink-0"><Building2 size={9} /> Tenant</span>}
                             {activeLimits > 0 && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200 flex items-center gap-1 shrink-0"><Gauge size={9} /> {activeLimits} limit{activeLimits > 1 ? "s" : ""}</span>}
+                            {user.hideIntegrations && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 flex items-center gap-1 shrink-0"><EyeOff size={9} /> Integrations Hidden</span>}
                           </div>
                           <div className="flex flex-wrap items-center gap-x-3 sm:gap-x-4 gap-y-1 text-[11px] sm:text-xs text-gray-400">
                             {user.whatsappPhoneNumberId && <span className="font-mono truncate">{user.whatsappPhoneNumberId}</span>}
@@ -466,7 +481,6 @@ export default function AdminBillingPage() {
                       </div>
                     </div>
 
-                    {/* Sub-Users List (Visible only for Tenants) */}
                     {user.isTenant && user.subUsersList?.length > 0 && (
                       <div className="mt-4 pt-4 border-t border-slate-100">
                         <p className="text-[10px] font-bold text-slate-400 uppercase mb-2 flex items-center gap-1"><Users size={10} /> Sub-Users ({user.subUsersList.length})</p>
@@ -494,7 +508,7 @@ export default function AdminBillingPage() {
                   {isEditing && (
                     <div className="border-t border-slate-100 bg-slate-50/50">
                       <div className="flex overflow-x-auto border-b border-slate-200 px-4 sm:px-6">
-                        {[{ id: "billing", label: "Billing", icon: Wallet }, { id: "plan", label: "Plan", icon: CalendarDays }, { id: "account", label: "Account", icon: UserCog }, { id: "credentials", label: "Credentials", icon: KeyRound }, { id: "limits", label: "Limits", icon: Gauge }, { id: "tenancy", label: "Tenancy", icon: Building2 }].map(tab => (
+                        {[{ id: "billing", label: "Billing", icon: Wallet }, { id: "plan", label: "Plan", icon: CalendarDays }, { id: "account", label: "Account", icon: UserCog }, { id: "credentials", label: "Credentials", icon: KeyRound }, { id: "limits", label: "Limits", icon: Gauge }, { id: "tenancy", label: "Tenancy", icon: Building2 }, { id: "integrations", label: "Integrations", icon: FileText }].map(tab => (
                           <button key={tab.id} onClick={() => setEditTab(tab.id as any)} className={`flex items-center gap-2 px-4 sm:px-5 py-3 text-xs font-bold border-b-2 transition-all whitespace-nowrap ${editTab === tab.id ? "border-amber-500 text-amber-700" : "border-transparent text-slate-400 hover:text-slate-600"}`}><tab.icon size={14} /> {tab.label}</button>
                         ))}
                       </div>
@@ -609,6 +623,53 @@ export default function AdminBillingPage() {
                               {editIsTenant && <div className="mt-4 pt-4 border-t border-slate-100"><label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2 block">Max Sub-Users Allowed</label><input type="number" min="0" value={editMaxSubUsers} onChange={e => setEditMaxSubUsers(e.target.value)} className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 transition-all text-sm" /></div>}
                             </div>
                             <div className="flex justify-end gap-3 pt-3"><button onClick={cancelEdit} className="px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-all">Cancel</button><button onClick={() => saveUser(user._id, "tenancy")} disabled={saving === user._id + "tenancy"} className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-indigo-500 to-blue-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm">{saving === user._id + "tenancy" ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Tenancy</button></div>
+                          </div>
+                        )}
+                        
+                        {/* ✅ NEW: INTEGRATIONS TAB (INSTANT SAVE BUTTON) */}
+                        {editTab === "integrations" && (
+                          <div className="space-y-5 max-w-2xl">
+                            <div className="p-4 bg-white rounded-xl border border-slate-200">
+                              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
+                                <div>
+                                  <p className="text-sm font-bold text-gray-900">Integrations Visibility</p>
+                                  <p className="text-xs text-slate-400 mt-0.5">Hide or show the Integrations section in the user&apos;s Settings. Background syncs continue to work even if hidden.</p>
+                                </div>
+                                <button 
+                                  onClick={() => toggleHideIntegrations(user._id)} 
+                                  disabled={saving === user._id + "integrations"}
+                                  className={`px-4 py-2 rounded-lg text-xs font-bold border transition-all flex items-center gap-1.5 shrink-0 ${
+                                    editHideIntegrations 
+                                      ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100" 
+                                      : "bg-red-50 text-red-600 border-red-200 hover:bg-red-100"
+                                  }`}
+                                >
+                                  {saving === user._id + "integrations" ? <Loader2 size={14} className="animate-spin" /> : 
+                                    editHideIntegrations ? <Eye size={14} /> : <EyeOff size={14} />
+                                  }
+                                  {editHideIntegrations ? "Unhide Integrations" : "Hide Integrations"}
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="p-4 bg-white rounded-xl border border-slate-200">
+                              <p className="text-sm font-bold text-gray-900 mb-2">Google Sheets Integration</p>
+                              {user.googleSheetId ? (
+                                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mt-3">
+                                  <span className="px-3 py-1.5 bg-green-50 text-green-700 border border-green-200 rounded-lg text-xs font-bold">Connected</span>
+                                  <div className="flex gap-2">
+                                    <a href={`https://docs.google.com/spreadsheets/d/${user.googleSheetId}/edit`} target="_blank" rel="noopener noreferrer" className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-xs font-bold hover:bg-slate-200 transition-all flex items-center gap-1">
+                                      <ExternalLink size={12} /> View Sheet
+                                    </a>
+                                    <button onClick={() => saveUser(user._id, "disconnectGoogle")} disabled={saving === user._id + "disconnectGoogle"} className="px-4 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-xs font-bold hover:bg-red-100 transition-all disabled:opacity-50 flex items-center gap-1">
+                                      {saving === user._id + "disconnectGoogle" ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />} Disconnect
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <p className="text-xs text-slate-400 mt-2">User has not connected a Google Account.</p>
+                              )}
+                            </div>
                           </div>
                         )}
                       </div>
