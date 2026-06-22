@@ -99,10 +99,27 @@ export default function ReportsPage() {
     }
   }, [status]);
 
+  // ✅ NEW: Poll every 5 seconds for live updates AND sync Google Sheet
   useEffect(() => {
     if (!selectedId) return;
+    
     fetchReportData(selectedId);
-    const interval = setInterval(() => fetchReportData(selectedId), 5000);
+    
+    const interval = setInterval(async () => {
+      fetchReportData(selectedId);
+      
+      // Tell the backend to push the latest data to Google Sheets
+      try {
+        await fetch("/api/campaigns/sync-sheet", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ campaignId: selectedId }),
+        });
+      } catch (err) {
+        console.error("Sheet sync error:", err);
+      }
+    }, 5000); // 5000ms = 5 seconds
+    
     return () => clearInterval(interval);
   }, [selectedId]);
 
