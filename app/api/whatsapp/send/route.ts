@@ -2,12 +2,10 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import User from "@/models/User";
-import Contact from "@/models/Contact"; // ✅ NEW: Import Contact to get name
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getPriceForCategory } from "@/lib/billing";
 import { checkLimit, incrementUsage } from "@/lib/limits";
-import { syncTestMessageToGoogleSheet } from "@/lib/googleSheetSync"; // ✅ NEW: Import Sync Helper
 
 export async function POST(req: Request) {
   try {
@@ -188,19 +186,6 @@ export async function POST(req: Request) {
     }
 
     await incrementUsage(session.user.id, "testMessages");
-
-    // ✅ NEW: Sync Test Message to Google Sheets
-    try {
-      const existingContact = await Contact.findOne({ userId: session.user.id, phone: sanitizedPhone });
-      await syncTestMessageToGoogleSheet(session.user.id, {
-        name: existingContact?.name || "-",
-        phone: sanitizedPhone,
-        status: "sent",
-        templateName: templateName
-      });
-    } catch (err) {
-      console.error("Failed to sync test message to Google Sheet:", err);
-    }
 
     return NextResponse.json({
       success: true,
