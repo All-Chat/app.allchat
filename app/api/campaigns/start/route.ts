@@ -6,7 +6,6 @@ import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getPriceForCategory } from "@/lib/billing";
-// ✅ NEW: Import Google Sheet Sync Helper
 import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
 
 export async function POST(req: Request) {
@@ -37,8 +36,20 @@ export async function POST(req: Request) {
     const user = await User.findById(userId);
     if (!user) return NextResponse.json({ success: false, message: "User not found" }, { status: 404 });
 
-    const token = user.whatsappAccessToken || process.env.META_ACCESS_TOKEN;
-    const phoneNumberId = user.whatsappPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
+    // ✅ Resolve Sender Number Credentials (Falls back to Active Number automatically)
+    let token = user.whatsappAccessToken || process.env.META_ACCESS_TOKEN;
+    let phoneNumberId = user.whatsappPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+    if (campaign.senderPhoneId) {
+      const selectedNumber = user.whatsappNumbers.find((n: any) => n._id.toString() === campaign.senderPhoneId);
+      if (selectedNumber) {
+        token = selectedNumber.whatsappAccessToken || token;
+        phoneNumberId = selectedNumber.whatsappPhoneNumberId || phoneNumberId;
+      } else {
+        return NextResponse.json({ success: false, message: "Selected sender number not found or deleted." }, { status: 400 });
+      }
+    }
+
     if (!token || !phoneNumberId) return NextResponse.json({ success: false, message: "WhatsApp credentials not configured" }, { status: 400 });
 
     const category = campaign.templateCategory || "MARKETING";
@@ -65,9 +76,7 @@ export async function POST(req: Request) {
       try {
         let currentVariables: string[] = [];
 
-        // ✅ DYNAMIC VARIABLE RESOLUTION WITH AUTH FALLBACK
         if (campaignDoc.templateCategory === "AUTHENTICATION") {
-          // Auth templates MUST have a code. If generateOtp is true OR variables are missing, generate securely.
           if (campaignDoc.generateOtp || currentVariables.length === 0) {
             const len = campaignDoc.otpLength || 4;
             const min = Math.pow(10, len - 1);
@@ -80,7 +89,6 @@ export async function POST(req: Request) {
             currentVariables = campaignDoc.variables || [];
           }
         } else {
-          // Non-Auth templates
           if (campaignDoc.mappedVariables?.[i]?.length > 0) {
             currentVariables = campaignDoc.mappedVariables[i];
           } else {
@@ -88,7 +96,6 @@ export async function POST(req: Request) {
           }
         }
 
-        // ✅ FILTER OUT EMPTY STRINGS TO PREVENT META API ERROR
         currentVariables = currentVariables.filter(v => v && String(v).trim() !== "");
 
         const templatePayload: any = {
@@ -136,10 +143,7 @@ export async function POST(req: Request) {
 
         let sendData = await sendRes.json();
 
-        // ✅ DYNAMIC RETRY FOR AUTHENTICATION URL BUTTONS
         if (sendData.error?.code === 131008 && campaignDoc.templateCategory === "AUTHENTICATION" && currentVariables.length > 0) {
-          console.log(`⚠️ Auth template requires URL button parameter for ${phone}. Retrying...`);
-          
           const retryPayload = {
             messaging_product: "whatsapp",
             to: phone,
@@ -148,16 +152,8 @@ export async function POST(req: Request) {
               name: campaignDoc.templateName,
               language: { code: campaignDoc.languageCode || "en" },
               components: [
-                {
-                  type: "body",
-                  parameters: currentVariables.map((v: string) => ({ type: "text", text: v })),
-                },
-                {
-                  type: "button",
-                  sub_type: "url",
-                  index: 0,
-                  parameters: [{ type: "text", text: currentVariables[0] }],
-                },
+                { type: "body", parameters: currentVariables.map((v: string) => ({ type: "text", text: v })) },
+                { type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: currentVariables[0] }] },
               ],
             },
           };
@@ -167,7 +163,6 @@ export async function POST(req: Request) {
             headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
             body: JSON.stringify(retryPayload),
           });
-
           sendData = await sendRes.json();
         }
 
@@ -246,7 +241,6 @@ export async function POST(req: Request) {
       await user.save();
       await campaign.save();
       
-      // ✅ NEW: Sync to Google Sheets after every batch
       await syncCampaignToGoogleSheet(userId, {
         name: campaign.name,
         reportData: campaign.reportData
@@ -263,7 +257,6 @@ export async function POST(req: Request) {
     await user.save();
     await campaign.save();
 
-    // ✅ NEW: Final sync to Google Sheets
     await syncCampaignToGoogleSheet(userId, {
       name: campaign.name,
       reportData: campaign.reportData
