@@ -3,6 +3,7 @@
 
 import { useState } from "react";
 import Sidebar from "@/components/Sidebar";
+import Link from "next/link";
 import {
   Loader2, Shield, Wallet, IndianRupee, Save, RefreshCw,
   Users, AlertCircle, Eye, EyeOff, LogIn,
@@ -254,14 +255,15 @@ export default function AdminBillingPage() {
   const saveUser = async (userId: string, action: string, extraData?: any) => {
     setSaving(userId + action);
     try {
-      const body: any = { userId, ...extraData };
+      // ✅ FIX: Added 'action' to the body object so the backend knows what to save!
+      const body: any = { userId, action, ...extraData };
+      
       if (action === "billing") {
         body.priceMarketing = Number(editPriceMarketing); 
         body.priceUtility = Number(editPriceUtility); 
         body.priceAuthentication = Number(editPriceAuthentication);
         if (editRecharge !== "" && Number(editRecharge) > 0) body.rechargeAmount = Number(editRecharge);
         
-        // ✅ Force convert to Numbers on the frontend before sending
         body.maxEnabledCountries = Number(editMaxCountries) || 0;
         body.enabledCountries = editEnabledCountries.map((c: any) => ({
           name: String(c.name || ""),
@@ -358,6 +360,9 @@ export default function AdminBillingPage() {
             <button onClick={() => setShowCreateModal(true)} className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-500 to-blue-500 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md hover:from-indigo-600 hover:to-blue-600 transition-all w-full sm:w-auto">
               <UserPlus size={16} /> Create User
             </button>
+            <Link href="/admin/whitelabel" className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md hover:from-violet-600 hover:to-purple-600 transition-all w-full sm:w-auto">
+              <Building2 size={16} /> White Label
+            </Link>
             <button onClick={() => { fetchUsers(); fetchRequests(); }} disabled={loading} className="flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-medium hover:bg-slate-50 shadow-sm transition-all w-full sm:w-auto justify-center">
               <RefreshCw size={16} className={loading ? "animate-spin text-amber-500" : ""} /> Refresh
             </button>
