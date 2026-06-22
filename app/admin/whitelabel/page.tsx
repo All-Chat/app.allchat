@@ -4,6 +4,7 @@
 import { useState } from "react";
 import { Loader2, Save, Search, ShieldCheck } from "lucide-react";
 import { toast } from "react-toastify";
+import Sidebar from "@/components/Sidebar";
 
 export default function WhiteLabelAdminPage() {
   const [searchName, setSearchName] = useState("");
@@ -74,6 +75,8 @@ export default function WhiteLabelAdminPage() {
   };
 
   return (
+    <>
+    <Sidebar />
     <div className="min-h-screen bg-slate-50 p-4 sm:p-8">
       <div className="max-w-3xl mx-auto bg-white rounded-2xl shadow-sm border border-slate-200 p-6 sm:p-8">
         <div className="flex items-center gap-3 mb-6">
@@ -210,5 +213,6 @@ export default function WhiteLabelAdminPage() {
         )}
       </div>
     </div>
+    </>
   );
 }
