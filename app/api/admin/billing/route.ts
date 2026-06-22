@@ -74,20 +74,10 @@ export async function POST(req: Request) {
       const existing = await User.findOne({ name });
       if (existing) return NextResponse.json({ message: "Username already exists" }, { status: 400 });
 
-      // Find the Main Tenant (TRL) to link the new user to
-      const trlAdmin = await User.findOne({ name: "TRL" });
-      let parentTenantId = null;
+      // ✅ FIX: Removed the logic that links them to TRL automatically.
+      // Users created from the admin button are now independent.
+      const newUser = await User.create({ name, password: userPassword });
 
-      if (trlAdmin) {
-        if (!trlAdmin.isTenant || !trlAdmin.tenantId) {
-          trlAdmin.isTenant = true;
-          trlAdmin.tenantId = new mongoose.Types.ObjectId().toString();
-          await trlAdmin.save();
-        }
-        parentTenantId = trlAdmin.tenantId;
-      }
-
-      const newUser = await User.create({ name, password: userPassword, parentTenantId });
       return NextResponse.json({ success: true, message: "User created successfully", user: { _id: newUser._id.toString(), name: newUser.name } });
     }
 
