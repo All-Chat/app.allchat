@@ -2,10 +2,12 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import User from "@/models/User";
+import Contact from "@/models/Contact"; // ✅ NEW: Import Contact to get name
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getPriceForCategory } from "@/lib/billing";
 import { checkLimit, incrementUsage } from "@/lib/limits";
+import { syncTestMessageToGoogleSheet } from "@/lib/googleSheetSync"; // ✅ NEW: Import Sync Helper
 
 export async function POST(req: Request) {
   try {
@@ -29,7 +31,6 @@ export async function POST(req: Request) {
     // ==========================================
     // 🔴 SHARED WALLET LOGIC
     // ==========================================
-    // If sub-user, use the Parent Tenant's wallet for pricing and deductions
     let payer = user;
     if (user.parentTenantId) {
       const parent = await User.findOne({ tenantId: user.parentTenantId });
@@ -38,7 +39,6 @@ export async function POST(req: Request) {
       }
     }
 
-    // Sub-users can have their own WhatsApp credentials, or fallback to Parent Tenant, or fallback to Env vars
     const PHONE_NUMBER_ID = user.whatsappPhoneNumberId || payer.whatsappPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
     const ACCESS_TOKEN = user.whatsappAccessToken || payer.whatsappAccessToken || process.env.META_ACCESS_TOKEN;
     
@@ -74,7 +74,6 @@ export async function POST(req: Request) {
     category = (category || "MARKETING").toUpperCase().trim();
     if (!["MARKETING", "UTILITY", "AUTHENTICATION"].includes(category)) category = "MARKETING";
 
-    // Get price from PAYER's config (Parent Tenant)
     const messagePrice = getPriceForCategory(payer, category);
     const currentBalance = payer.balance || 0;
 
@@ -84,10 +83,8 @@ export async function POST(req: Request) {
 
     const sanitizedPhone = phone.replace(/\+/g, "");
 
-    // ✅ FILTER OUT EMPTY STRINGS TO PREVENT META API ERROR
     variables = variables.filter((v: any) => v && String(v).trim() !== "");
 
-    // ✅ AUTH FALLBACK: If Auth template and variables are missing, generate OTP
     if (category === "AUTHENTICATION" && variables.length === 0) {
       const otp = Math.floor(1000 + Math.random() * 9000).toString();
       variables = [otp];
@@ -146,7 +143,6 @@ export async function POST(req: Request) {
 
     let data = await response.json();
 
-    // ✅ DYNAMIC RETRY FOR AUTHENTICATION URL BUTTONS
     if (!response.ok && data.error?.code === 131008 && category === "AUTHENTICATION" && variables.length > 0) {
       console.log("⚠️ Auth template requires URL button parameter. Retrying with Body + Button...");
       
@@ -186,20 +182,32 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, error: data.error, message: data.error?.message || "Failed to send message" }, { status: 400 });
     }
 
-    // Deduct from PAYER's wallet (Parent Tenant)
+    // Deduct from PAYER's wallet
     if (messagePrice > 0) {
       payer.balance = Math.round((currentBalance - messagePrice) * 100) / 100;
       payer.balance = Math.max(payer.balance, 0);
       await payer.save();
     }
 
-    // Usage always increments for the logged-in user
     await incrementUsage(session.user.id, "testMessages");
+
+    // ✅ NEW: Sync Test Message to Google Sheets
+    try {
+      const existingContact = await Contact.findOne({ userId: session.user.id, phone: sanitizedPhone });
+      await syncTestMessageToGoogleSheet(session.user.id, {
+        name: existingContact?.name || "-",
+        phone: sanitizedPhone,
+        status: "sent",
+        templateName: templateName
+      });
+    } catch (err) {
+      console.error("Failed to sync test message to Google Sheet:", err);
+    }
 
     return NextResponse.json({
       success: true,
       data,
-      balance: payer.balance, // Return updated payer balance
+      balance: payer.balance,
       chargedAmount: messagePrice,
       category: category,
     });
