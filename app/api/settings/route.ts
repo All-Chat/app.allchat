@@ -28,6 +28,8 @@ export async function GET() {
     return NextResponse.json({
       success: true,
       settings: {
+        // ✅ NEW: Return enabled countries for the dropdown
+        enabledCountries: user.enabledCountries || [],
         wabaId: user.wabaId || "",
         whatsappPhoneNumberId: user.whatsappPhoneNumberId || "",
         whatsappAccessToken: user.whatsappAccessToken ? `${user.whatsappAccessToken.substring(0, 5)}${"*".repeat(15)}${user.whatsappAccessToken.slice(-4)}` : "",
