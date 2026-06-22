@@ -42,6 +42,18 @@ const UserSchema = new mongoose.Schema({
   priceUtility: { type: Number, default: 0.50 },
   priceAuthentication: { type: Number, default: 0.30 },
   
+  // ==========================================
+  // ✅ COUNTRY PRICING & LIMITS
+  // ==========================================
+  maxEnabledCountries: { type: Number, default: 0 },
+  enabledCountries: [{
+    name: { type: String, default: "" },
+    code: { type: String, default: "" }, // e.g. "91", "1", "44"
+    priceMarketing: { type: Number, default: 0.90 },
+    priceUtility: { type: Number, default: 0.50 },
+    priceAuthentication: { type: Number, default: 0.30 },
+  }],
+
   accountStatus: {
     type: String,
     enum: ["active", "expired", "suspended"],
@@ -53,9 +65,6 @@ const UserSchema = new mongoose.Schema({
   suspendedAt: { type: Date, default: null },
   suspendedReason: { type: String, default: null },
   
-  // ==========================================
-  // ✅ WHITE LABEL SETTINGS
-  // ==========================================
   whiteLabel: {
     enabled: { type: Boolean, default: false },
     appName: { type: String, default: "" },
@@ -65,9 +74,6 @@ const UserSchema = new mongoose.Schema({
     brandUrl: { type: String, default: "" }
   },
 
-  // ==========================================
-  // ✅ GOOGLE SHEETS & INTEGRATIONS SETTINGS
-  // ==========================================
   googleSheetId: { type: String, default: null },
   googleTokens: {
     access_token: { type: String, default: null },
@@ -75,7 +81,7 @@ const UserSchema = new mongoose.Schema({
     scope: { type: String, default: null },
     expiry_date: { type: Number, default: null }
   },
-  hideIntegrations: { type: Boolean, default: false }, // ✅ NEW FIELD ADDED HERE
+  hideIntegrations: { type: Boolean, default: false },
   
   limits: {
     tags: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
