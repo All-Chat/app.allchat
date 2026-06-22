@@ -27,9 +27,13 @@ function EditCampaignContent() {
   const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
   const [rawNumbers, setRawNumbers] = useState<string[]>([]);
   const [rawNames, setRawNames] = useState<string[]>([]);
-  const [rawVariables, setRawVariables] = useState<string[][]>([]); // ✅ PER-CONTACT VARIABLES
+  const [rawVariables, setRawVariables] = useState<string[][]>([]); 
   const [rawText, setRawText] = useState("");
-  const [countryCode, setCountryCode] = useState("91");
+  
+  // ✅ Country Code Dropdown State
+  const [enabledCountries, setEnabledCountries] = useState<any[]>([]);
+  const [selectedCountryCode, setSelectedCountryCode] = useState("91"); 
+  
   const [campaignName, setCampaignName] = useState("");
   const [variables, setVariables] = useState<string[]>([]);
   const [bodyText, setBodyText] = useState("");
@@ -40,7 +44,6 @@ function EditCampaignContent() {
   const [loadingData, setLoadingData] = useState(true);
   const [languageCode, setLanguageCode] = useState("en");
 
-  // ✅ OTP & MAPPING STATES
   const [useRandomOtp, setUseRandomOtp] = useState(false);
   const [otpLength, setOtpLength] = useState(4);
   const [selectedVarCols, setSelectedVarCols] = useState<string[]>([]);
@@ -72,6 +75,7 @@ function EditCampaignContent() {
     fetchTemplates();
     fetchTags();
     fetchOptNumbers();
+    fetchSettings(); // ✅ Fetch settings for countries
     if (campaignId) fetchCampaignData();
   }, [campaignId]);
 
@@ -82,7 +86,6 @@ function EditCampaignContent() {
       );
       if (tmpl) {
         handleTemplateSelect(tmpl.name, tmpl.language, initialCampaignData.variables);
-        // ✅ Re-apply OTP settings after template select potentially clears them
         setUseRandomOtp(initialCampaignData.generateOtp || false);
         setOtpLength(initialCampaignData.otpLength || 4);
         setRawVariables(initialCampaignData.mappedVariables || []);
@@ -125,6 +128,18 @@ function EditCampaignContent() {
     } catch (err) { console.error("Failed to fetch opt-out numbers", err); }
   };
 
+  // ✅ Fetch Settings for Enabled Countries
+  const fetchSettings = async () => {
+    try {
+      const res = await fetch("/api/settings");
+      const data = await res.json();
+      if (data.success && data.settings?.enabledCountries && data.settings.enabledCountries.length > 0) {
+        setEnabledCountries(data.settings.enabledCountries);
+        setSelectedCountryCode(data.settings.enabledCountries[0].code);
+      }
+    } catch (error) { console.error("Failed to fetch settings", error); }
+  };
+
   const handleTagSelect = async (tagName: string) => {
     setSelectedTag(tagName);
     if (!tagName) return;
@@ -164,7 +179,6 @@ function EditCampaignContent() {
           setLanguageCode(campaign.languageCode || "en");
           setStats({ valid: campaign.phoneNumbers.length, invalid: 0, duplicates: 0, optedOut: 0 });
           
-          // ✅ LOAD OTP & MAPPED VARIABLES
           setUseRandomOtp(campaign.generateOtp || false);
           setOtpLength(campaign.otpLength || 4);
           setRawVariables(campaign.mappedVariables || []);
@@ -200,14 +214,12 @@ function EditCampaignContent() {
     const text = bodyComp?.text || "";
     setBodyText(text);
     
-    // ✅ Auth templates always have exactly 1 variable for the code
     const varCount = tmpl.category === "AUTHENTICATION" ? 1 : (text.match(/\{\{\d+\}\}/g) || []).length;
     setVariables(Array(varCount).fill(""));
 
     if (preservedVars) {
       setVariables(preservedVars);
     } else {
-      // Reset OTP and Mappings if changing template manually
       setUseRandomOtp(false);
       setOtpLength(4);
       setSelectedVarCols(Array(varCount).fill("skip"));
@@ -239,7 +251,7 @@ function EditCampaignContent() {
   };
 
   const cleanAndValidateNumbers = (nums: string[], names: string[], rows: string[][] = [], varIndices: number[] = []) => {
-    const MAX_LIMIT = 50000; // 🔴 50K LIMIT
+    const MAX_LIMIT = 50000; 
     const seen = new Set();
     let valid = 0, invalid = 0, duplicates = 0, optedOut = 0;
     const finalNumbers: string[] = [];
@@ -252,7 +264,9 @@ function EditCampaignContent() {
       let clean = String(num).replace(/[^\d+]/g, "");
       if (clean.startsWith("+")) clean = clean.substring(1);
       if (clean.startsWith("0")) clean = clean.substring(1);
-      if (!clean.startsWith(countryCode)) clean = countryCode + clean;
+      
+      // ✅ Use selectedCountryCode from dropdown
+      if (!clean.startsWith(selectedCountryCode)) clean = selectedCountryCode + clean;
 
       if (optedOutNumbers.includes(clean)) { optedOut++; continue; }
 
@@ -263,7 +277,6 @@ function EditCampaignContent() {
           finalNumbers.push(clean);
           finalNames.push(names[index] || "");
           
-          // ✅ Extract mapped variables for this row
           const contactVars = varIndices.map(vIdx => vIdx !== -1 ? (rows[index]?.[vIdx] || "") : "");
           finalVariables.push(contactVars);
           
@@ -318,9 +331,8 @@ function EditCampaignContent() {
         return;
       }
       
-      // 🔴 STRICT 50K LIMIT CHECK
       const MAX_LIMIT = 50000;
-      const dataRows = rows.slice(1); // Remove header row
+      const dataRows = rows.slice(1); 
       
       if (dataRows.length > MAX_LIMIT) {
         toast.error(`❌ The file contains ${dataRows.length.toLocaleString()} numbers. The maximum limit is 50,000. Please split your file and try again.`);
@@ -347,14 +359,12 @@ function EditCampaignContent() {
     const phoneIdx = fileHeaders.indexOf(selectedPhoneCol);
     const nameIdx = selectedNameCol !== "skip" ? fileHeaders.indexOf(selectedNameCol) : -1;
     
-    // ✅ Get indices for mapped variable columns
     const varIndices = selectedVarCols.map(col => col && col !== "skip" ? fileHeaders.indexOf(col) : -1);
 
     const numbers: string[] = [];
     const names: string[] = [];
     fileRows.forEach(row => { numbers.push(row[phoneIdx] || ""); names.push(nameIdx !== -1 ? (row[nameIdx] || "") : ""); });
     
-    // ✅ Pass rows and varIndices to extract mapped variables
     const { finalNumbers, finalNames, finalVariables } = cleanAndValidateNumbers(numbers, names, fileRows, varIndices);
     setRawNumbers(finalNumbers);
     setRawNames(finalNames);
@@ -369,7 +379,7 @@ function EditCampaignContent() {
     setSelectedPhoneCol(""); 
     setSelectedNameCol(""); 
     setFileName(""); 
-    setSelectedVarCols(variables.map(() => "skip")); // Reset var mappings
+    setSelectedVarCols(variables.map(() => "skip")); 
   };
 
   const handleMediaFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -441,10 +451,10 @@ function EditCampaignContent() {
         name: campaignName,
         templateName: selectedTemplate.name,
         templateCategory: selectedTemplate.category,
-        variables: useRandomOtp ? [] : variables, // Static variables
-        mappedVariables: rawVariables.length > 0 ? rawVariables : [], // ✅ Per-contact variables
-        generateOtp: useRandomOtp, // ✅ OTP Flag
-        otpLength: useRandomOtp ? parseInt(otpLength.toString(), 10) : 0, // ✅ OTP Length
+        variables: useRandomOtp ? [] : variables, 
+        mappedVariables: rawVariables.length > 0 ? rawVariables : [], 
+        generateOtp: useRandomOtp, 
+        otpLength: useRandomOtp ? parseInt(otpLength.toString(), 10) : 0, 
         phoneNumbers: rawNumbers,
         names: rawNames,
         mediaType,
@@ -528,7 +538,6 @@ function EditCampaignContent() {
                   <div className="space-y-4 pt-5 border-t border-slate-100">
                     <label className="text-[11px] font-extrabold text-slate-700 flex items-center gap-2 uppercase tracking-widest"><Sparkles size={12} className="text-indigo-500" /> Template Variables</label>
                     
-                    {/* ✅ RANDOM OTP OPTION */}
                     {isAuthTemplate && (
                       <div className="bg-purple-50/50 border border-purple-100 rounded-xl p-4 space-y-3">
                         <label className="flex items-center gap-3 cursor-pointer">
@@ -558,7 +567,6 @@ function EditCampaignContent() {
                       </div>
                     )}
 
-                    {/* ✅ DYNAMIC VARIABLE INPUTS */}
                     {!useRandomOtp && (
                       variables.map((v, i) => {
                         const isMapped = !!(selectedVarCols[i] && selectedVarCols[i] !== "skip");
@@ -614,9 +622,28 @@ function EditCampaignContent() {
               <div className="bg-white p-5 sm:p-8 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 space-y-5 sm:space-y-6 hover:shadow-md transition-shadow">
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                   <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest">Target Audience</label>
-                  <div className="relative w-full sm:w-36">
-                    <Globe className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-                    <input type="text" value={countryCode} onChange={(e) => setCountryCode(e.target.value.replace(/\D/g, ""))} className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all font-bold shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]" />
+                  
+                  {/* ✅ Country Code Dropdown */}
+                  <div className="flex items-center gap-2 w-full sm:w-auto">
+                    <Globe size={14} className="text-slate-400 hidden sm:block" />
+                    {enabledCountries.length > 0 ? (
+                      <select
+                        value={selectedCountryCode}
+                        onChange={(e) => setSelectedCountryCode(e.target.value)}
+                        className="w-full sm:w-auto px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"
+                      >
+                        {enabledCountries.map((c, i) => (
+                          <option key={i} value={c.code}>{c.name} (+{c.code})</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={selectedCountryCode}
+                        onChange={(e) => setSelectedCountryCode(e.target.value.replace(/\D/g, ""))}
+                        className="w-full sm:w-36 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"
+                      />
+                    )}
                   </div>
                 </div>
 
@@ -644,7 +671,6 @@ function EditCampaignContent() {
                     <select value={selectedPhoneCol} onChange={(e) => setSelectedPhoneCol(e.target.value)} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"><option value="skip">-- Select Phone Column --</option>{fileHeaders.map((h, i) => (<option key={i} value={h}>📱 {h}</option>))}</select>
                     <select value={selectedNameCol} onChange={(e) => setSelectedNameCol(e.target.value)} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"><option value="skip">-- Select Name Column (Optional) --</option>{fileHeaders.map((h, i) => (<option key={i} value={h}>👤 {h}</option>))}</select>
 
-                    {/* ✅ EXCEL VARIABLE MAPPING */}
                     {variables.length > 0 && !useRandomOtp && (
                       <div className="space-y-2 mt-2 pt-2 border-t border-indigo-100">
                         <p className="text-[11px] font-extrabold text-indigo-800 uppercase tracking-widest flex items-center gap-2"><Sparkles size={12} /> Map Template Variables</p>
