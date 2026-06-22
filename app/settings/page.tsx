@@ -29,6 +29,8 @@ export default function SettingsPage() {
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [signingUp, setSigningUp] = useState(false);
+
+  const [disconnectingGoogle, setDisconnectingGoogle] = useState(false);
   
   const [balance, setBalance] = useState(0);
   const [totalRecharged, setTotalRecharged] = useState(0);
@@ -231,6 +233,28 @@ export default function SettingsPage() {
     } catch (error) {
       toast.error("Failed to connect Google");
       setConnectingGoogle(false);
+    }
+  };
+
+    // ✅ NEW: Handle Google Sheets Disconnect
+  const handleDisconnectGoogle = async () => {
+    if (!window.confirm("Are you sure you want to disconnect Google Sheets? Live campaign updates will stop.")) return;
+    
+    setDisconnectingGoogle(true);
+    try {
+      const res = await fetch("/api/google-sheets/auth", { method: "DELETE" });
+      const data = await res.json();
+      
+      if (data.success) {
+        toast.success("Google account disconnected.");
+        setGoogleSheetUrl(""); // Hide the Open Sheet button immediately
+      } else {
+        toast.error(data.message || "Failed to disconnect");
+      }
+    } catch (error) {
+      toast.error("Error disconnecting Google account");
+    } finally {
+      setDisconnectingGoogle(false);
     }
   };
 
@@ -635,26 +659,39 @@ export default function SettingsPage() {
                   </div>
                 </div>
 
-                {googleSheetUrl ? (
-                  <a 
-                    href={googleSheetUrl} 
-                    target="_blank"  // ✅ Opens in new tab
-                    rel="noopener noreferrer" // ✅ Security best practice for target="_blank"
-                    className="px-5 py-2.5 bg-green-50 text-green-700 border border-green-200 rounded-xl text-xs font-bold flex items-center gap-2 hover:bg-green-100 transition-colors"
-                  >
-                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3m-2 16H5V5h7V3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7h-2v7z"/></svg>
-                    Open Google Sheet
-                  </a>
-                ) : (
-                  <button
-                    onClick={handleConnectGoogle}
-                    disabled={connectingGoogle}
-                    className="px-5 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-bold flex items-center gap-2 hover:bg-slate-800 transition-colors disabled:opacity-50"
-                  >
-                    {connectingGoogle ? <Loader2 size={14} className="animate-spin" /> : null}
-                    Connect Google Account
-                  </button>
-                )}
+                {/* ✅ NEW: Conditional Buttons for Connect / Open / Disconnect */}
+                <div className="flex items-center gap-2">
+                  {googleSheetUrl ? (
+                    <>
+                      <a 
+                        href={googleSheetUrl} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="px-5 py-2.5 bg-green-50 text-green-700 border border-green-200 rounded-xl text-xs font-bold flex items-center gap-2 hover:bg-green-100 transition-colors"
+                      >
+                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3m-2 16H5V5h7V3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7h-2v7z"/></svg>
+                        Open Sheet
+                      </a>
+                      <button
+                        onClick={handleDisconnectGoogle}
+                        disabled={disconnectingGoogle}
+                        className="px-4 py-2.5 bg-red-50 text-red-600 border border-red-200 rounded-xl text-xs font-bold flex items-center gap-2 hover:bg-red-100 transition-colors disabled:opacity-50"
+                      >
+                        {disconnectingGoogle ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                        Disconnect
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={handleConnectGoogle}
+                      disabled={connectingGoogle}
+                      className="px-5 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-bold flex items-center gap-2 hover:bg-slate-800 transition-colors disabled:opacity-50"
+                    >
+                      {connectingGoogle ? <Loader2 size={14} className="animate-spin" /> : null}
+                      Connect Google Account
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
