@@ -11,7 +11,7 @@ import {
   Users, Sparkles, Send, RotateCcw, AlertCircle,
   FileText, Film, Image as ImageIcon, Loader2, X, Link, Tag as TagIcon,
   Ban, ShieldCheck,
-  Gauge, Infinity as InfinityIcon, // ✅ LIMIT ADDED
+  Gauge, Infinity as InfinityIcon, 
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -25,9 +25,13 @@ export default function CreateCampaign() {
   const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
   const [rawNumbers, setRawNumbers] = useState<string[]>([]);
   const [rawNames, setRawNames] = useState<string[]>([]);
-  const [rawVariables, setRawVariables] = useState<string[][]>([]); // ✅ PER-CONTACT VARIABLES
+  const [rawVariables, setRawVariables] = useState<string[][]>([]); 
   const [rawText, setRawText] = useState("");
-  const [countryCode, setCountryCode] = useState("91");
+  
+  // ✅ Country Code Dropdown State
+  const [enabledCountries, setEnabledCountries] = useState<any[]>([]);
+  const [selectedCountryCode, setSelectedCountryCode] = useState("91"); // Default fallback
+  
   const [campaignName, setCampaignName] = useState("");
   const [variables, setVariables] = useState<string[]>([]);
   const [bodyText, setBodyText] = useState("");
@@ -37,7 +41,6 @@ export default function CreateCampaign() {
   const [saving, setSaving] = useState(false);
   const [languageCode, setLanguageCode] = useState("en");
 
-  // ✅ OTP & MAPPING STATES
   const [useRandomOtp, setUseRandomOtp] = useState(false);
   const [otpLength, setOtpLength] = useState(4);
   const [selectedVarCols, setSelectedVarCols] = useState<string[]>([]);
@@ -61,7 +64,6 @@ export default function CreateCampaign() {
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [mediaPreview, setMediaPreview] = useState<string | null>(null);
 
-  // ✅ LIMIT ADDED: Limit State
   const [campaignLimit, setCampaignLimit] = useState<any>(null);
   const isLimitActive =
     campaignLimit &&
@@ -79,7 +81,8 @@ export default function CreateCampaign() {
       fetchTemplates();
       fetchTags();
       fetchOptNumbers();
-      fetchLimits(); // ✅ LIMIT ADDED
+      fetchLimits();
+      fetchSettings(); // ✅ Fetch settings for countries
     } else if (status === "unauthenticated") {
       window.location.href = "/signin";
     }
@@ -91,7 +94,6 @@ export default function CreateCampaign() {
     };
   }, [mediaPreview]);
 
-  // ✅ LIMIT ADDED: Fetch limits
   const fetchLimits = async () => {
     try {
       const res = await fetch("/api/user/limits?resource=campaigns");
@@ -109,6 +111,20 @@ export default function CreateCampaign() {
     } catch (error) {
       console.error("Failed to fetch limits", error);
     }
+  };
+
+  // ✅ Fetch Settings for Enabled Countries
+  const fetchSettings = async () => {
+    try {
+      const res = await fetch("/api/settings");
+      const data = await res.json();
+      if (data.success && data.settings) {
+        if (data.settings.enabledCountries && data.settings.enabledCountries.length > 0) {
+          setEnabledCountries(data.settings.enabledCountries);
+          setSelectedCountryCode(data.settings.enabledCountries[0].code);
+        }
+      }
+    } catch (error) { console.error("Failed to fetch settings", error); }
   };
 
   const fetchTemplates = async () => {
@@ -205,11 +221,9 @@ export default function CreateCampaign() {
     const text = bodyComp?.text || "";
     setBodyText(text);
     
-    // ✅ Auth templates always have exactly 1 variable for the code
     const varCount = tmpl.category === "AUTHENTICATION" ? 1 : (text.match(/\{\{\d+\}\}/g) || []).length;
     setVariables(Array(varCount).fill(""));
     
-    // Reset OTP and Mappings
     setUseRandomOtp(false);
     setOtpLength(4);
     setSelectedVarCols(Array(varCount).fill("skip"));
@@ -244,10 +258,7 @@ export default function CreateCampaign() {
   const cleanAndValidateNumbers = (nums: string[], names: string[], rows: string[][] = [], varIndices: number[] = []) => {
     const MAX_LIMIT = 50000;
     const seen = new Set();
-    let valid = 0,
-      invalid = 0,
-      duplicates = 0,
-      optedOut = 0;
+    let valid = 0, invalid = 0, duplicates = 0, optedOut = 0;
     const finalNumbers: string[] = [];
     const finalNames: string[] = [];
     const finalVariables: string[][] = [];
@@ -258,7 +269,9 @@ export default function CreateCampaign() {
       let clean = String(num).replace(/[^\d+]/g, "");
       if (clean.startsWith("+")) clean = clean.substring(1);
       if (clean.startsWith("0")) clean = clean.substring(1);
-      if (!clean.startsWith(countryCode)) clean = countryCode + clean;
+      
+      // ✅ Use selectedCountryCode from dropdown
+      if (!clean.startsWith(selectedCountryCode)) clean = selectedCountryCode + clean;
 
       if (optedOutNumbers.includes(clean)) {
         optedOut++;
@@ -273,7 +286,6 @@ export default function CreateCampaign() {
           finalNumbers.push(clean);
           finalNames.push(names[index] || "");
           
-          // ✅ Extract mapped variables for this row
           const contactVars = varIndices.map(vIdx => vIdx !== -1 ? (rows[index]?.[vIdx] || "") : "");
           finalVariables.push(contactVars);
           
@@ -370,7 +382,6 @@ export default function CreateCampaign() {
     const nameIdx =
       selectedNameCol && selectedNameCol !== "skip" ? fileHeaders.indexOf(selectedNameCol) : -1;
       
-    // ✅ Get indices for mapped variable columns
     const varIndices = selectedVarCols.map(col => col && col !== "skip" ? fileHeaders.indexOf(col) : -1);
 
     const numbers: string[] = [];
@@ -380,7 +391,6 @@ export default function CreateCampaign() {
       names.push(nameIdx !== -1 ? row[nameIdx] || "" : "");
     });
     
-    // ✅ Pass rows and varIndices to extract mapped variables
     const { finalNumbers, finalNames, finalVariables } = cleanAndValidateNumbers(numbers, names, fileRows, varIndices);
     setRawNumbers(finalNumbers);
     setRawNames(finalNames);
@@ -395,7 +405,7 @@ export default function CreateCampaign() {
     setSelectedPhoneCol("");
     setSelectedNameCol("");
     setFileName("");
-    setSelectedVarCols(variables.map(() => "skip")); // Reset var mappings
+    setSelectedVarCols(variables.map(() => "skip")); 
   };
 
   const handleMediaFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -578,15 +588,16 @@ export default function CreateCampaign() {
         name: campaignName,
         templateName: selectedTemplate.name,
         templateCategory: selectedTemplate.category,
-        variables: useRandomOtp ? [] : variables, // Static variables
-        mappedVariables: rawVariables.length > 0 ? rawVariables : [], // ✅ Per-contact variables
-        generateOtp: useRandomOtp, // ✅ OTP Flag
-        otpLength: useRandomOtp ? parseInt(otpLength.toString(), 10) : 0, // ✅ OTP Length
+        variables: useRandomOtp ? [] : variables, 
+        mappedVariables: rawVariables.length > 0 ? rawVariables : [], 
+        generateOtp: useRandomOtp, 
+        otpLength: useRandomOtp ? parseInt(otpLength.toString(), 10) : 0, 
         phoneNumbers: rawNumbers,
         names: rawNames,
         mediaType,
         languageCode,
         scheduledAt: isSchedule ? scheduleDate : null,
+        // senderPhoneId is omitted, it will use the active number automatically
       };
 
       if (mediaInputType === "upload" && mediaFile) {
@@ -614,7 +625,6 @@ export default function CreateCampaign() {
         return;
       }
 
-      // ✅ LIMIT ADDED: Handle 429 limit exceeded
       if (res.status === 429) {
         const data429 = await res.json();
         toast.error(data429.message || "Campaign limit reached", { autoClose: 8000 });
@@ -637,7 +647,7 @@ export default function CreateCampaign() {
       const data = await res.json();
       if (data.success) {
         toast.success(isSchedule ? "Scheduled!" : "Saved!");
-        fetchLimits(); // ✅ LIMIT ADDED: Refresh limits
+        fetchLimits(); 
         setTimeout(() => (window.location.href = "/campaigns/list"), 1000);
       } else toast.error(data.message);
     } catch (err) {
@@ -675,7 +685,6 @@ export default function CreateCampaign() {
                 </p>
               </div>
               <div className="flex items-center gap-3 flex-shrink-0">
-                {/* ✅ LIMIT ADDED: Badge */}
                 {campaignLimit && (
                   <div
                     className={`hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold shrink-0 ${
@@ -709,7 +718,6 @@ export default function CreateCampaign() {
             </div>
           </div>
 
-          {/* ✅ LIMIT ADDED: Warning Bar */}
           {isLimitActive && (
             <div
               className={`rounded-xl p-3 flex items-center gap-3 text-sm border ${
@@ -768,6 +776,7 @@ export default function CreateCampaign() {
                   disabled={isAtLimit}
                   className="w-full px-4 sm:px-5 py-3 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-emerald-100 focus:border-emerald-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)] disabled:opacity-50 disabled:cursor-not-allowed"
                 />
+
                 <select
                   value={
                     selectedTemplate
@@ -808,7 +817,6 @@ export default function CreateCampaign() {
                       <Sparkles size={12} className="text-indigo-500" /> Template Variables
                     </label>
 
-                    {/* ✅ RANDOM OTP OPTION */}
                     {isAuthTemplate && (
                       <div className="bg-purple-50/50 border border-purple-100 rounded-xl p-4 space-y-3">
                         <label className="flex items-center gap-3 cursor-pointer">
@@ -838,7 +846,6 @@ export default function CreateCampaign() {
                       </div>
                     )}
 
-                    {/* ✅ DYNAMIC VARIABLE INPUTS */}
                     {!useRandomOtp && (
                       variables.map((v, i) => {
                         const isMapped = selectedVarCols[i] && selectedVarCols[i] !== "skip";
@@ -967,14 +974,30 @@ export default function CreateCampaign() {
                   <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest">
                     Target Audience
                   </label>
-                  <div className="relative w-full sm:w-36">
-                    <Globe className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-                    <input
-                      type="text"
-                      value={countryCode}
-                      onChange={(e) => setCountryCode(e.target.value.replace(/\D/g, ""))}
-                      className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-4 focus:ring-emerald-100 focus:border-emerald-500 focus:bg-white transition-all font-bold shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"
-                    />
+                  
+                  {/* ✅ Country Code Dropdown */}
+                  <div className="flex items-center gap-2 w-full sm:w-auto">
+                    <Globe size={14} className="text-slate-400 hidden sm:block" />
+                    {enabledCountries.length > 0 ? (
+                      <select
+                        value={selectedCountryCode}
+                        onChange={(e) => setSelectedCountryCode(e.target.value)}
+                        disabled={isAtLimit}
+                        className="w-full sm:w-auto px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:ring-4 focus:ring-emerald-100 focus:border-emerald-500 focus:bg-white transition-all shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)] disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {enabledCountries.map((c, i) => (
+                          <option key={i} value={c.code}>{c.name} (+{c.code})</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={selectedCountryCode}
+                        onChange={(e) => setSelectedCountryCode(e.target.value.replace(/\D/g, ""))}
+                        disabled={isAtLimit}
+                        className="w-full sm:w-36 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:ring-4 focus:ring-emerald-100 focus:border-emerald-500 focus:bg-white transition-all shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)] disabled:opacity-50 disabled:cursor-not-allowed"
+                      />
+                    )}
                   </div>
                 </div>
 
@@ -1053,7 +1076,6 @@ export default function CreateCampaign() {
                       ))}
                     </select>
 
-                    {/* ✅ EXCEL VARIABLE MAPPING */}
                     {variables.length > 0 && !useRandomOtp && (
                       <div className="space-y-2 mt-2 pt-2 border-t border-emerald-100">
                         <p className="text-[11px] font-extrabold text-emerald-800 uppercase tracking-widest flex items-center gap-2">
