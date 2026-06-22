@@ -56,13 +56,11 @@ const DEFAULT_USAGE: Record<string, { count: number; resetAt: null }> = {
   forms: { count: 0, resetAt: null }, whatsappNumbers: { count: 0, resetAt: null },
 };
 
-// POST: Verify admin key OR Create new user
 export async function POST(req: Request) {
   try {
     const body = await req.json();
     const { password, action } = body;
 
-    // Handle User Creation
     if (action === "createUser") {
       if (!validateAdminKey(req)) return NextResponse.json({ message: "Unauthorized. Invalid admin key." }, { status: 403 });
 
@@ -74,14 +72,10 @@ export async function POST(req: Request) {
       const existing = await User.findOne({ name });
       if (existing) return NextResponse.json({ message: "Username already exists" }, { status: 400 });
 
-      // ✅ FIX: Removed the logic that links them to TRL automatically.
-      // Users created from the admin button are now independent.
       const newUser = await User.create({ name, password: userPassword });
-
       return NextResponse.json({ success: true, message: "User created successfully", user: { _id: newUser._id.toString(), name: newUser.name } });
     }
 
-    // Handle Admin Verification
     if (password === ADMIN_SECRET) return NextResponse.json({ success: true, message: "Admin verified" });
     return NextResponse.json({ success: false, message: "Invalid admin key" }, { status: 403 });
   } catch (error) {
@@ -90,7 +84,6 @@ export async function POST(req: Request) {
   }
 }
 
-// GET: Fetch all users with full details
 export async function GET(req: Request) {
   try {
     if (!validateAdminKey(req)) return NextResponse.json({ message: "Unauthorized. Invalid admin key." }, { status: 403 });
@@ -103,7 +96,6 @@ export async function GET(req: Request) {
 
     const users = await User.find({}).select("+password +whatsappAccessToken").sort({ createdAt: -1 }).lean();
 
-    // Build a map of tenant balances for shared wallet display
     const tenantBalances: Record<string, { balance: number; totalRecharged: number }> = {};
     for (const u of users) {
       if (u.isTenant && u.tenantId) {
@@ -122,14 +114,12 @@ export async function GET(req: Request) {
         usage[resource] = userUsage[resource] || DEFAULT_USAGE[resource];
       }
 
-      // Fetch sub-users if this user is a tenant
       let subUsersList: { id: string; name: string }[] = [];
       if (u.isTenant && u.tenantId) {
         const subs = await User.find({ parentTenantId: u.tenantId }).select("name").lean();
         subUsersList = subs.map(s => ({ id: s._id.toString(), name: s.name }));
       }
 
-      // 🔴 SHARED WALLET LOGIC: If sub-user, use parent's balance for display
       const isSubUser = !!u.parentTenantId;
       const parentTenantId = (u as any).parentTenantId;
       const sharedWallet = isSubUser && parentTenantId ? tenantBalances[parentTenantId] : null;
@@ -161,10 +151,10 @@ export async function GET(req: Request) {
         parentTenantId: (u as any).parentTenantId || null,
         maxSubUsers: (u as any).maxSubUsers || 0,
         subUsersList, 
-        
-        // ✅ NEW: Return Google Sheet & Hide Integrations flags
         googleSheetId: (u as any).googleSheetId || null,
         hideIntegrations: (u as any).hideIntegrations || false,
+        maxEnabledCountries: (u as any).maxEnabledCountries || 0,
+        enabledCountries: (u as any).enabledCountries || [],
       });
     }
 
@@ -175,7 +165,6 @@ export async function GET(req: Request) {
   }
 }
 
-// PUT: Update user billing, plan, status, credentials, limits, or tenancy
 export async function PUT(req: Request) {
   try {
     if (!validateAdminKey(req)) return NextResponse.json({ message: "Unauthorized. Invalid admin key." }, { status: 403 });
@@ -191,18 +180,12 @@ export async function PUT(req: Request) {
 
     const updateData: any = {};
 
-    // ==========================================
-    // ✅ NEW: HANDLE INTEGRATIONS & DISCONNECT
-    // ==========================================
     if (action === "integrations" || body.hideIntegrations !== undefined) {
       updateData.hideIntegrations = body.hideIntegrations;
     }
 
     if (action === "disconnectGoogle" || body.disconnectGoogle === true) {
-      updateData.$unset = { 
-        googleSheetId: "", 
-        googleTokens: "" 
-      };
+      updateData.$unset = { googleSheetId: "", googleTokens: "" };
     }
 
     if (isTenant !== undefined) {
@@ -210,14 +193,31 @@ export async function PUT(req: Request) {
       if (isTenant && !user.tenantId) updateData.tenantId = new mongoose.Types.ObjectId().toString();
     }
     if (maxSubUsers !== undefined) updateData.maxSubUsers = Number(maxSubUsers) || 0;
-    if (priceMarketing !== undefined && priceMarketing !== null) updateData.priceMarketing = Math.round(Number(priceMarketing) * 100) / 100;
-    if (priceUtility !== undefined && priceUtility !== null) updateData.priceUtility = Math.round(Number(priceUtility) * 100) / 100;
-    if (priceAuthentication !== undefined && priceAuthentication !== null) updateData.priceAuthentication = Math.round(Number(priceAuthentication) * 100) / 100;
-    if (pricePerMessage !== undefined && pricePerMessage !== null) updateData.pricePerMessage = Math.round(Number(pricePerMessage) * 100) / 100;
     
-    if (rechargeAmount !== undefined && rechargeAmount !== null && Number(rechargeAmount) > 0) {
-      updateData.balance = Math.round(((user.balance || 0) + Number(rechargeAmount)) * 100) / 100;
-      updateData.totalRecharged = Math.round(((user.totalRecharged || 0) + Number(rechargeAmount)) * 100) / 100;
+    if (action === "billing") {
+      if (priceMarketing !== undefined && priceMarketing !== null) updateData.priceMarketing = Math.round(Number(priceMarketing) * 100) / 100;
+      if (priceUtility !== undefined && priceUtility !== null) updateData.priceUtility = Math.round(Number(priceUtility) * 100) / 100;
+      if (priceAuthentication !== undefined && priceAuthentication !== null) updateData.priceAuthentication = Math.round(Number(priceAuthentication) * 100) / 100;
+      if (pricePerMessage !== undefined && pricePerMessage !== null) updateData.pricePerMessage = Math.round(Number(pricePerMessage) * 100) / 100;
+      
+      if (rechargeAmount !== undefined && rechargeAmount !== null && Number(rechargeAmount) > 0) {
+        updateData.balance = Math.round(((user.balance || 0) + Number(rechargeAmount)) * 100) / 100;
+        updateData.totalRecharged = Math.round(((user.totalRecharged || 0) + Number(rechargeAmount)) * 100) / 100;
+      }
+
+      // ✅ FIX: Explicitly map and cast all country data to correct types before saving
+      if (body.maxEnabledCountries !== undefined) {
+        updateData.maxEnabledCountries = Number(body.maxEnabledCountries) || 0;
+      }
+      if (body.enabledCountries !== undefined && Array.isArray(body.enabledCountries)) {
+        updateData.enabledCountries = body.enabledCountries.map((c: any) => ({
+          name: String(c.name || ""),
+          code: String(c.code || "").replace(/\D/g, ""),
+          priceMarketing: Number(c.priceMarketing) || 0,
+          priceUtility: Number(c.priceUtility) || 0,
+          priceAuthentication: Number(c.priceAuthentication) || 0
+        }));
+      }
     }
 
     if (activatePlan && planDuration) {
@@ -279,7 +279,6 @@ export async function PUT(req: Request) {
   }
 }
 
-// DELETE: Remove a user
 export async function DELETE(req: Request) {
   try {
     if (!validateAdminKey(req)) return NextResponse.json({ message: "Unauthorized" }, { status: 403 });
