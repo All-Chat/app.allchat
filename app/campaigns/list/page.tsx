@@ -8,7 +8,7 @@ import Sidebar from "@/components/Sidebar";
 import {
   Play, Clock, CheckCircle, Loader2, XCircle, FileText, Trash2, Eye, X,
   Pencil, RotateCcw, Send, BarChart3, Zap, Users, CheckCheck, AlertTriangle,
-  Search, Filter, Radio, Wallet, AlertCircle, Pause, Square,
+  Search, Filter, Radio, Wallet, AlertCircle, Pause, Square, Globe,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -87,6 +87,10 @@ export default function CampaignList() {
   const [balance, setBalance] = useState(0);
   const [canSendMessage, setCanSendMessage] = useState(true);
 
+  // ✅ NEW: Country Code Dropdown State
+  const [enabledCountries, setEnabledCountries] = useState<any[]>([]);
+  const [selectedCountryCode, setSelectedCountryCode] = useState("91");
+
   // ✅ Pagination State
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 6;
@@ -103,10 +107,24 @@ export default function CampaignList() {
     } catch (error) { console.error("Failed to fetch billing", error); }
   };
 
+  // ✅ NEW: Fetch Settings for Enabled Countries
+  const fetchSettings = async () => {
+    try {
+      const res = await fetch("/api/settings");
+      if (res.status === 401) return;
+      const data = await res.json();
+      if (data.success && data.settings?.enabledCountries && data.settings.enabledCountries.length > 0) {
+        setEnabledCountries(data.settings.enabledCountries);
+        setSelectedCountryCode(data.settings.enabledCountries[0].code);
+      }
+    } catch (error) { console.error("Failed to fetch settings", error); }
+  };
+
   useEffect(() => {
     if (status === "authenticated") {
       loadCampaigns();
       fetchBilling();
+      fetchSettings(); // ✅ Fetch settings on mount
       const interval = setInterval(loadCampaigns, 3000); // Refreshes every 3s
       return () => clearInterval(interval);
     } else if (status === "unauthenticated") { router.push("/"); }
@@ -315,8 +333,11 @@ export default function CampaignList() {
         variablesToSend = c.mappedVariables[0];
       }
 
+      // ✅ Combine Country Code and Phone
+      const fullPhone = `${selectedCountryCode}${quickPhone.replace(/\D/g, "")}`;
+
       const payload: any = {
-        phone: quickPhone.replace(/\D/g, ""),
+        phone: fullPhone,
         templateName: c.templateName,
         variables: variablesToSend,
         languageCode: c.languageCode || "en",
@@ -449,13 +470,27 @@ export default function CampaignList() {
                   <Zap className="w-3.5 h-3.5 text-amber-500" /> Quick Test Send
                 </label>
                 <div className="flex flex-col sm:flex-row gap-2">
-                  <input
-                    type="text"
-                    value={quickPhone}
-                    onChange={(e) => setQuickPhone(e.target.value)}
-                    placeholder="919876543210"
-                    className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
-                  />
+                  <div className="flex gap-2 flex-1">
+                    {/* ✅ NEW: Country Code Dropdown */}
+                    {enabledCountries.length > 0 && (
+                      <select
+                        value={selectedCountryCode}
+                        onChange={(e) => setSelectedCountryCode(e.target.value)}
+                        className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none font-bold whitespace-nowrap"
+                      >
+                        {enabledCountries.map((c, i) => (
+                          <option key={i} value={c.code}>+{c.code}</option>
+                        ))}
+                      </select>
+                    )}
+                    <input
+                      type="text"
+                      value={quickPhone}
+                      onChange={(e) => setQuickPhone(e.target.value.replace(/\D/g, ""))}
+                      placeholder="9876543210"
+                      className="flex-1 w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                    />
+                  </div>
                   <button
                     onClick={() => quickTestSend(viewCampaign)}
                     disabled={!canSendMessage}
