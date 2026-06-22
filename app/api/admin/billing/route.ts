@@ -49,8 +49,6 @@ const DEFAULT_LIMITS: Record<string, { max: number; period: string }> = {
   forms: { max: -1, period: "unlimited" }, whatsappNumbers: { max: -1, period: "unlimited" },
 };
 
-
-
 const DEFAULT_USAGE: Record<string, { count: number; resetAt: null }> = {
   tags: { count: 0, resetAt: null }, workflows: { count: 0, resetAt: null },
   templates: { count: 0, resetAt: null }, testMessages: { count: 0, resetAt: null },
@@ -173,6 +171,10 @@ export async function GET(req: Request) {
         parentTenantId: (u as any).parentTenantId || null,
         maxSubUsers: (u as any).maxSubUsers || 0,
         subUsersList, 
+        
+        // ✅ NEW: Return Google Sheet & Hide Integrations flags
+        googleSheetId: (u as any).googleSheetId || null,
+        hideIntegrations: (u as any).hideIntegrations || false,
       });
     }
 
@@ -190,7 +192,7 @@ export async function PUT(req: Request) {
     await connectDB();
 
     const body = await req.json();
-    const { userId, isTenant, maxSubUsers, priceMarketing, priceUtility, priceAuthentication, pricePerMessage, rechargeAmount, planDuration, activatePlan, clearPlan, suspendAccount, suspendReason, reactivateAccount, whatsappPhoneNumberId, wabaId, limits, resetUsage, resetAllUsage } = body;
+    const { userId, action, isTenant, maxSubUsers, priceMarketing, priceUtility, priceAuthentication, pricePerMessage, rechargeAmount, planDuration, activatePlan, clearPlan, suspendAccount, suspendReason, reactivateAccount, whatsappPhoneNumberId, wabaId, limits, resetUsage, resetAllUsage } = body;
 
     if (!userId) return NextResponse.json({ message: "User ID is required" }, { status: 400 });
 
@@ -198,6 +200,20 @@ export async function PUT(req: Request) {
     if (!user) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
     const updateData: any = {};
+
+    // ==========================================
+    // ✅ NEW: HANDLE INTEGRATIONS & DISCONNECT
+    // ==========================================
+    if (action === "integrations" || body.hideIntegrations !== undefined) {
+      updateData.hideIntegrations = body.hideIntegrations;
+    }
+
+    if (action === "disconnectGoogle" || body.disconnectGoogle === true) {
+      updateData.$unset = { 
+        googleSheetId: "", 
+        googleTokens: "" 
+      };
+    }
 
     if (isTenant !== undefined) {
       updateData.isTenant = isTenant;
