@@ -26,6 +26,8 @@ import FormResponse from "@/models/FormResponse";
 // Utilities
 import { sendWhatsAppMessage } from "@/lib/sendWhatsApp";
 import { getPriceForCategory } from "@/lib/billing";
+// ✅ NEW: Import Google Sheet Sync Helper
+import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -438,6 +440,18 @@ export async function POST(req: Request) {
               
               camp.markModified("reportData");
               await camp.save();
+
+              // ✅ NEW: PUSH REPLY TO GOOGLE SHEETS INSTANTLY
+              if (ownerUser) {
+                try {
+                  await syncCampaignToGoogleSheet(ownerUser._id.toString(), {
+                    name: camp.name,
+                    reportData: camp.reportData
+                  });
+                } catch (syncErr) {
+                  console.error("⚠️ Google Sheet Sync Error (Webhook):", syncErr);
+                }
+              }
 
               if (detectedTags.length > 0 && userId) {
                 try {
