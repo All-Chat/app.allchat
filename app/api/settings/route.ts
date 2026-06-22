@@ -38,6 +38,8 @@ export async function GET() {
         pendingRequest: latestRequest ? { status: latestRequest.status, createdAt: latestRequest.createdAt } : null,
         // ✅ NEW: Return Google Sheet ID so the frontend can show the "Open Sheet" button
         googleSheetId: user.googleSheetId || null,
+        // ✅ NEW: Return Hide Integrations flag so frontend can hide the section
+        hideIntegrations: user.hideIntegrations || false,
       },
     });
   } catch (error) {
