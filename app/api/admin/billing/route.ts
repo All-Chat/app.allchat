@@ -171,108 +171,154 @@ export async function PUT(req: Request) {
     await connectDB();
 
     const body = await req.json();
-    const { userId, action, isTenant, maxSubUsers, priceMarketing, priceUtility, priceAuthentication, pricePerMessage, rechargeAmount, planDuration, activatePlan, clearPlan, suspendAccount, suspendReason, reactivateAccount, whatsappPhoneNumberId, wabaId, limits, resetUsage, resetAllUsage } = body;
+    const { userId, action } = body;
 
     if (!userId) return NextResponse.json({ message: "User ID is required" }, { status: 400 });
 
+    // Fetch the user first so we can use .save() which prevents silent Mongoose failures
     const user = await User.findById(userId);
     if (!user) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
-    const updateData: any = {};
-
+    // ==========================================
+    // HANDLE INTEGRATIONS & DISCONNECT
+    // ==========================================
     if (action === "integrations" || body.hideIntegrations !== undefined) {
-      updateData.hideIntegrations = body.hideIntegrations;
+      user.hideIntegrations = body.hideIntegrations;
     }
 
     if (action === "disconnectGoogle" || body.disconnectGoogle === true) {
-      updateData.$unset = { googleSheetId: "", googleTokens: "" };
+      user.googleSheetId = undefined;
+      user.googleTokens = undefined;
     }
 
-    if (isTenant !== undefined) {
-      updateData.isTenant = isTenant;
-      if (isTenant && !user.tenantId) updateData.tenantId = new mongoose.Types.ObjectId().toString();
+    // ==========================================
+    // HANDLE TENANCY
+    // ==========================================
+    if (body.isTenant !== undefined) {
+      user.isTenant = body.isTenant;
+      if (body.isTenant && !user.tenantId) user.tenantId = new mongoose.Types.ObjectId().toString();
     }
-    if (maxSubUsers !== undefined) updateData.maxSubUsers = Number(maxSubUsers) || 0;
-    
+    if (body.maxSubUsers !== undefined) user.maxSubUsers = Number(body.maxSubUsers) || 0;
+
+    // ==========================================
+    // HANDLE BILLING (INCLUDING COUNTRIES)
+    // ==========================================
     if (action === "billing") {
-      if (priceMarketing !== undefined && priceMarketing !== null) updateData.priceMarketing = Math.round(Number(priceMarketing) * 100) / 100;
-      if (priceUtility !== undefined && priceUtility !== null) updateData.priceUtility = Math.round(Number(priceUtility) * 100) / 100;
-      if (priceAuthentication !== undefined && priceAuthentication !== null) updateData.priceAuthentication = Math.round(Number(priceAuthentication) * 100) / 100;
-      if (pricePerMessage !== undefined && pricePerMessage !== null) updateData.pricePerMessage = Math.round(Number(pricePerMessage) * 100) / 100;
+      if (body.priceMarketing !== undefined && body.priceMarketing !== null) user.priceMarketing = Math.round(Number(body.priceMarketing) * 100) / 100;
+      if (body.priceUtility !== undefined && body.priceUtility !== null) user.priceUtility = Math.round(Number(body.priceUtility) * 100) / 100;
+      if (body.priceAuthentication !== undefined && body.priceAuthentication !== null) user.priceAuthentication = Math.round(Number(body.priceAuthentication) * 100) / 100;
+      if (body.pricePerMessage !== undefined && body.pricePerMessage !== null) user.pricePerMessage = Math.round(Number(body.pricePerMessage) * 100) / 100;
       
-      if (rechargeAmount !== undefined && rechargeAmount !== null && Number(rechargeAmount) > 0) {
-        updateData.balance = Math.round(((user.balance || 0) + Number(rechargeAmount)) * 100) / 100;
-        updateData.totalRecharged = Math.round(((user.totalRecharged || 0) + Number(rechargeAmount)) * 100) / 100;
+      if (body.rechargeAmount !== undefined && body.rechargeAmount !== null && Number(body.rechargeAmount) > 0) {
+        user.balance = Math.round(((user.balance || 0) + Number(body.rechargeAmount)) * 100) / 100;
+        user.totalRecharged = Math.round(((user.totalRecharged || 0) + Number(body.rechargeAmount)) * 100) / 100;
       }
 
-      // ✅ FIX: Explicitly map and cast all country data to correct types before saving
+      // ✅ FIX: Assign array directly and mark as modified so Mongoose saves it
       if (body.maxEnabledCountries !== undefined) {
-        updateData.maxEnabledCountries = Number(body.maxEnabledCountries) || 0;
+        user.maxEnabledCountries = Number(body.maxEnabledCountries) || 0;
       }
       if (body.enabledCountries !== undefined && Array.isArray(body.enabledCountries)) {
-        updateData.enabledCountries = body.enabledCountries.map((c: any) => ({
+        user.enabledCountries = body.enabledCountries.map((c: any) => ({
           name: String(c.name || ""),
           code: String(c.code || "").replace(/\D/g, ""),
           priceMarketing: Number(c.priceMarketing) || 0,
           priceUtility: Number(c.priceUtility) || 0,
           priceAuthentication: Number(c.priceAuthentication) || 0
         }));
+        // Explicitly mark the array as modified so Mongoose saves it
+        user.markModified("enabledCountries");
       }
     }
 
-    if (activatePlan && planDuration) {
-      updateData.planDuration = planDuration;
-      updateData.planActivatedAt = new Date();
-      updateData.planExpiry = parseDuration(planDuration);
-      updateData.accountStatus = "active";
-      updateData.suspendedAt = null;
-      updateData.suspendedReason = null;
+    // ==========================================
+    // HANDLE PLAN
+    // ==========================================
+    if (body.activatePlan && body.planDuration) {
+      user.planDuration = body.planDuration;
+      user.planActivatedAt = new Date();
+      user.planExpiry = parseDuration(body.planDuration);
+      user.accountStatus = "active";
+      user.suspendedAt = null;
+      user.suspendedReason = null;
     }
-    if (clearPlan) { updateData.planDuration = null; updateData.planActivatedAt = null; updateData.planExpiry = null; updateData.accountStatus = "active"; }
-    if (body.name !== undefined && body.name !== null && body.name !== "") updateData.name = body.name;
-    if (body.password !== undefined && body.password !== null && body.password !== "") updateData.password = body.password;
-    if (body.whatsappAccessToken !== undefined && body.whatsappAccessToken !== null && body.whatsappAccessToken !== "") updateData.whatsappAccessToken = body.whatsappAccessToken;
-    if (suspendAccount) { updateData.accountStatus = "suspended"; updateData.suspendedAt = new Date(); updateData.suspendedReason = suspendReason || "Suspended by admin"; }
-    if (reactivateAccount) { updateData.accountStatus = "active"; updateData.suspendedAt = null; updateData.suspendedReason = null; }
-    if (whatsappPhoneNumberId !== undefined) updateData.whatsappPhoneNumberId = whatsappPhoneNumberId?.trim() || null;
-    if (wabaId !== undefined) updateData.wabaId = wabaId?.trim() || null;
+    if (body.clearPlan) { 
+      user.planDuration = null; 
+      user.planActivatedAt = null; 
+      user.planExpiry = null; 
+      user.accountStatus = "active"; 
+    }
+    
+    // ==========================================
+    // HANDLE CREDENTIALS
+    // ==========================================
+    if (body.name !== undefined && body.name !== null && body.name !== "") user.name = body.name;
+    if (body.password !== undefined && body.password !== null && body.password !== "") user.password = body.password;
+    if (body.whatsappAccessToken !== undefined && body.whatsappAccessToken !== null && body.whatsappAccessToken !== "") user.whatsappAccessToken = body.whatsappAccessToken;
+    if (body.whatsappPhoneNumberId !== undefined) user.whatsappPhoneNumberId = body.whatsappPhoneNumberId?.trim() || null;
+    if (body.wabaId !== undefined) user.wabaId = body.wabaId?.trim() || null;
 
-    if (limits && typeof limits === "object") {
+    // ==========================================
+    // HANDLE ACCOUNT STATUS
+    // ==========================================
+    if (body.suspendAccount) { 
+      user.accountStatus = "suspended"; 
+      user.suspendedAt = new Date(); 
+      user.suspendedReason = body.suspendReason || "Suspended by admin"; 
+    }
+    if (body.reactivateAccount) { 
+      user.accountStatus = "active"; 
+      user.suspendedAt = null; 
+      user.suspendedReason = null; 
+    }
+
+    // ==========================================
+    // HANDLE LIMITS
+    // ==========================================
+    if (body.limits && typeof body.limits === "object") {
       const currentLimits = (user as any).limits || {};
       const newLimits: any = {};
       for (const resource of LIMIT_RESOURCES) {
-        if (limits[resource] !== undefined) {
-          const { max, period } = limits[resource];
-          newLimits[resource] = { max: period === "unlimited" ? -1 : Math.max(0, Number(max) || 0), period: ["day", "month", "year", "total", "unlimited"].includes(period) ? period : "unlimited" };
-        } else { newLimits[resource] = currentLimits[resource] || DEFAULT_LIMITS[resource]; }
+        if (body.limits[resource] !== undefined) {
+          const { max, period } = body.limits[resource];
+          newLimits[resource] = { 
+            max: period === "unlimited" ? -1 : Math.max(0, Number(max) || 0), 
+            period: ["day", "month", "year", "total", "unlimited"].includes(period) ? period : "unlimited" 
+          };
+        } else { 
+          newLimits[resource] = currentLimits[resource] || DEFAULT_LIMITS[resource]; 
+        }
       }
-      updateData.limits = newLimits;
+      user.limits = newLimits;
+      user.markModified("limits");
     }
 
-    if (resetUsage && typeof resetUsage === "object") {
+    if (body.resetUsage && typeof body.resetUsage === "object") {
       const currentUsage = (user as any).usage || {};
       const currentLimits = (user as any).limits || {};
       const newUsage: any = {};
       for (const resource of LIMIT_RESOURCES) newUsage[resource] = currentUsage[resource] || DEFAULT_USAGE[resource];
-      for (const resource of Object.keys(resetUsage)) {
-        if (resetUsage[resource] && LIMIT_RESOURCES.includes(resource)) {
+      for (const resource of Object.keys(body.resetUsage)) {
+        if (body.resetUsage[resource] && LIMIT_RESOURCES.includes(resource)) {
           newUsage[resource] = { count: 0, resetAt: getNextResetDate(currentLimits[resource]?.period || "unlimited") };
         }
       }
-      updateData.usage = newUsage;
+      user.usage = newUsage;
+      user.markModified("usage");
     }
 
-    if (resetAllUsage) {
+    if (body.resetAllUsage) {
       const currentLimits = (user as any).limits || {};
       const newUsage: any = {};
       for (const resource of LIMIT_RESOURCES) newUsage[resource] = { count: 0, resetAt: getNextResetDate(currentLimits[resource]?.period || "unlimited") };
-      updateData.usage = newUsage;
+      user.usage = newUsage;
+      user.markModified("usage");
     }
 
-    const updatedUser = await User.findByIdAndUpdate(userId, updateData, { returnDocument: "after" });
-    if (!updatedUser) return NextResponse.json({ message: "Failed to update user" }, { status: 500 });
+    // ✅ SAVE USER (This forces Mongoose to validate and persist everything)
+    await user.save();
 
-    return NextResponse.json({ success: true, message: "User updated successfully", user: updatedUser });
+    return NextResponse.json({ success: true, message: "User updated successfully", user: user.toObject() });
   } catch (error) {
     console.error("Error updating user billing:", error);
     return NextResponse.json({ message: "Internal server error" }, { status: 500 });
