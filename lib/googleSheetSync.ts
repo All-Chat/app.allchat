@@ -161,11 +161,29 @@ export async function syncTestMessageToGoogleSheet(
   if (rowIndexToUpdate !== -1) {
     // Update existing row, preserving fields not provided
     const currentRow = rows[rowIndexToUpdate] || [];
+    
+    // ✅ FIX: Append replies with " | " separator (Max 5)
+    let finalReply = currentRow[3] || "No Reply";
+    if (data.reply) {
+      const existingReplyStr = currentRow[3] && currentRow[3] !== "No Reply" ? currentRow[3] : "";
+      if (existingReplyStr) {
+        let repliesArray = existingReplyStr.split(" | ");
+        repliesArray.push(data.reply);
+        // Keep only the latest 5 replies
+        if (repliesArray.length > 5) {
+          repliesArray = repliesArray.slice(repliesArray.length - 5);
+        }
+        finalReply = repliesArray.join(" | ");
+      } else {
+        finalReply = data.reply;
+      }
+    }
+
     const rowData = [
       data.name || currentRow[0] || "-",
       data.phone,
       data.status || currentRow[2] || "sent",
-      data.reply || currentRow[3] || "No Reply",
+      finalReply,
       data.templateName || currentRow[4] || "N/A"
     ];
 
