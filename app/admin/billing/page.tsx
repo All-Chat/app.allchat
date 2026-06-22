@@ -3,7 +3,6 @@
 
 import { useState } from "react";
 import Sidebar from "@/components/Sidebar";
-import Link from "next/link";
 import {
   Loader2, Shield, Wallet, IndianRupee, Save, RefreshCw,
   Users, AlertCircle, Eye, EyeOff, LogIn,
@@ -13,7 +12,7 @@ import {
   Timer, Infinity as InfinityIcon, AlertTriangle, BadgeCheck,
   User, Lock, Megaphone, Wrench, ShieldCheck,
   Tag, GitBranch, FileText, Send, UserPlus, ClipboardList,
-  RotateCcw, Gauge, Package, Trash2, Check,
+  RotateCcw, Gauge, Package, Trash2, Check, Globe
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -90,6 +89,10 @@ export default function AdminBillingPage() {
   const [editPriceUtility, setEditPriceUtility] = useState("0.50");
   const [editPriceAuthentication, setEditPriceAuthentication] = useState("0.30");
 
+  // ✅ Country Pricing State
+  const [editMaxCountries, setEditMaxCountries] = useState("0");
+  const [editEnabledCountries, setEditEnabledCountries] = useState<any[]>([]);
+
   const [editName, setEditName] = useState("");
   const [editPassword, setEditPassword] = useState("");
   const [editPhoneNumberId, setEditPhoneNumberId] = useState("");
@@ -104,7 +107,6 @@ export default function AdminBillingPage() {
   const [editIsTenant, setEditIsTenant] = useState(false);
   const [editMaxSubUsers, setEditMaxSubUsers] = useState("0");
 
-  // ✅ NEW: Integrations State
   const [editHideIntegrations, setEditHideIntegrations] = useState(false);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -112,7 +114,6 @@ export default function AdminBillingPage() {
   const [creatingUser, setCreatingUser] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  // Settings Requests State
   const [requests, setRequests] = useState<any[]>([]);
   const [processingReqId, setProcessingReqId] = useState<string | null>(null);
 
@@ -206,9 +207,7 @@ export default function AdminBillingPage() {
         toast.success(data.message);
         fetchRequests();
         fetchUsers(); 
-      } else {
-        toast.error(data.message || "Failed to process request");
-      }
+      } else { toast.error(data.message || "Failed to process request"); }
     } catch { toast.error("Error processing request"); } finally { setProcessingReqId(null); }
   };
 
@@ -218,13 +217,16 @@ export default function AdminBillingPage() {
     setEditPriceMarketing(user.priceMarketing?.toString() || "0.90");
     setEditPriceUtility(user.priceUtility?.toString() || "0.50");
     setEditPriceAuthentication(user.priceAuthentication?.toString() || "0.30");
+    
+    // ✅ Set Country State
+    setEditMaxCountries(user.maxEnabledCountries?.toString() || "0");
+    setEditEnabledCountries(user.enabledCountries || []);
+
     setEditRecharge(""); setEditPlanDuration(user.planDuration || "1mo"); setEditCustomDuration(""); setEditSuspendReason("");
     setEditName(user.name || ""); setEditPassword(user.password || ""); setEditPhoneNumberId(user.whatsappPhoneNumberId || "");
     setEditWabaId(user.wabaId || ""); setEditAccessToken(user.whatsappAccessToken || "");
     setShowPassword(false); setShowAccessToken(false);
     setEditIsTenant(user.isTenant || false); setEditMaxSubUsers(user.maxSubUsers?.toString() || "0");
-    
-    // ✅ NEW: Set Integrations State
     setEditHideIntegrations(user.hideIntegrations || false);
 
     const userLimits: Record<string, LimitValue> = {};
@@ -254,8 +256,20 @@ export default function AdminBillingPage() {
     try {
       const body: any = { userId, ...extraData };
       if (action === "billing") {
-        body.priceMarketing = Number(editPriceMarketing); body.priceUtility = Number(editPriceUtility); body.priceAuthentication = Number(editPriceAuthentication);
+        body.priceMarketing = Number(editPriceMarketing); 
+        body.priceUtility = Number(editPriceUtility); 
+        body.priceAuthentication = Number(editPriceAuthentication);
         if (editRecharge !== "" && Number(editRecharge) > 0) body.rechargeAmount = Number(editRecharge);
+        
+        // ✅ Force convert to Numbers on the frontend before sending
+        body.maxEnabledCountries = Number(editMaxCountries) || 0;
+        body.enabledCountries = editEnabledCountries.map((c: any) => ({
+          name: String(c.name || ""),
+          code: String(c.code || "").replace(/\D/g, ""),
+          priceMarketing: Number(c.priceMarketing) || 0,
+          priceUtility: Number(c.priceUtility) || 0,
+          priceAuthentication: Number(c.priceAuthentication) || 0
+        }));
       }
       if (action === "plan") { body.activatePlan = true; body.planDuration = editCustomDuration || editPlanDuration; }
       if (action === "clearPlan") body.clearPlan = true;
@@ -269,10 +283,7 @@ export default function AdminBillingPage() {
       if (action === "limits") body.limits = editLimits;
       if (action === "tenancy") { body.isTenant = editIsTenant; body.maxSubUsers = Number(editMaxSubUsers); }
       
-      // ✅ NEW: Handle Integrations Save
-      if (action === "integrations") { 
-        body.hideIntegrations = extraData?.hideIntegrations !== undefined ? extraData.hideIntegrations : editHideIntegrations; 
-      }
+      if (action === "integrations") { body.hideIntegrations = extraData?.hideIntegrations !== undefined ? extraData.hideIntegrations : editHideIntegrations; }
       if (action === "disconnectGoogle") { body.disconnectGoogle = true; }
 
       if (action === "resetUsage") { body.resetUsage = extraData?.resetUsage || {}; body.limits = editLimits; }
@@ -291,7 +302,6 @@ export default function AdminBillingPage() {
     } catch { toast.error("Error updating user"); } finally { setSaving(null); }
   };
 
-  // ✅ NEW: Toggle and Save Instantly
   const toggleHideIntegrations = (userId: string) => {
     const newVal = !editHideIntegrations;
     setEditHideIntegrations(newVal);
@@ -348,17 +358,12 @@ export default function AdminBillingPage() {
             <button onClick={() => setShowCreateModal(true)} className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-500 to-blue-500 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md hover:from-indigo-600 hover:to-blue-600 transition-all w-full sm:w-auto">
               <UserPlus size={16} /> Create User
             </button>
-            {/* ✅ NEW: White Label Button */}
-            <Link href="/admin/whitelabel" className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md hover:from-violet-600 hover:to-purple-600 transition-all w-full sm:w-auto">
-              <Building2 size={16} /> White Label
-            </Link>
             <button onClick={() => { fetchUsers(); fetchRequests(); }} disabled={loading} className="flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-medium hover:bg-slate-50 shadow-sm transition-all w-full sm:w-auto justify-center">
               <RefreshCw size={16} className={loading ? "animate-spin text-amber-500" : ""} /> Refresh
             </button>
           </div>
         </div>
 
-        {/* PENDING CONFIGURATION REQUESTS SECTION */}
         {requests.length > 0 && (
           <div className="mb-6 bg-white rounded-2xl border border-amber-200 shadow-sm p-5">
             <h2 className="text-lg font-bold text-amber-700 mb-4 flex items-center gap-2">
@@ -521,13 +526,55 @@ export default function AdminBillingPage() {
                         {editTab === "billing" && (
                           <div className="space-y-5 sm:space-y-6 max-w-2xl">
                             <div>
-                              <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-3 flex items-center gap-1.5"><IndianRupee size={12} /> Category-Based Message Pricing</p>
+                              <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-3 flex items-center gap-1.5"><IndianRupee size={12} /> Category-Based Message Pricing (Global Default)</p>
                               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
                                 <div className="p-3 sm:p-4 bg-orange-50 border border-orange-200 rounded-xl"><label className="text-[10px] font-bold text-orange-600 uppercase tracking-widest mb-2 flex items-center gap-1.5"><Megaphone size={12} /> Marketing</label><input type="number" step="0.01" min="0" value={editPriceMarketing} onChange={e => setEditPriceMarketing(e.target.value)} className="w-full px-3 py-2.5 bg-white border border-orange-200 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-400 transition-all text-sm font-bold" /><p className="text-[9px] text-orange-400 mt-1">Promotional messages</p></div>
                                 <div className="p-3 sm:p-4 bg-blue-50 border border-blue-200 rounded-xl"><label className="text-[10px] font-bold text-blue-600 uppercase tracking-widest mb-2 flex items-center gap-1.5"><Wrench size={12} /> Utility</label><input type="number" step="0.01" min="0" value={editPriceUtility} onChange={e => setEditPriceUtility(e.target.value)} className="w-full px-3 py-2.5 bg-white border border-blue-200 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 transition-all text-sm font-bold" /><p className="text-[9px] text-blue-400 mt-1">Account updates, alerts</p></div>
                                 <div className="p-3 sm:p-4 bg-purple-50 border border-purple-200 rounded-xl"><label className="text-[10px] font-bold text-purple-600 uppercase tracking-widest mb-2 flex items-center gap-1.5"><ShieldCheck size={12} /> Authentication</label><input type="number" step="0.01" min="0" value={editPriceAuthentication} onChange={e => setEditPriceAuthentication(e.target.value)} className="w-full px-3 py-2.5 bg-white border border-purple-200 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-purple-500/30 focus:border-purple-400 transition-all text-sm font-bold" /><p className="text-[9px] text-purple-400 mt-1">OTP, verification codes</p></div>
                               </div>
                             </div>
+
+                            {/* ✅ COUNTRY PRICING SECTION INSIDE BILLING TAB */}
+                            <div className="border-t border-slate-200 pt-5">
+                              <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Globe size={12} /> Country-Specific Pricing</p>
+                              <div className="mb-4">
+                                <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Max Allowed Countries</label>
+                                <input type="number" min="0" value={editMaxCountries} onChange={e => setEditMaxCountries(e.target.value)} className="w-36 px-3 py-2 bg-white border border-slate-200 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-400 transition-all text-sm font-bold" />
+                                <p className="text-[9px] text-slate-400 mt-1">Set 0 for unlimited countries (Global pricing applies).</p>
+                              </div>
+                              <div className="space-y-3">
+                                {editEnabledCountries.map((c, idx) => (
+                                  <div key={idx} className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end p-3 bg-slate-50 rounded-xl border border-slate-100">
+                                    <div className="sm:col-span-3">
+                                      <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Country Name</label>
+                                      <input type="text" placeholder="India" value={c.name} onChange={e => { const n=[...editEnabledCountries]; n[idx].name=e.target.value; setEditEnabledCountries(n); }} className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-sm" />
+                                    </div>
+                                    <div className="sm:col-span-2">
+                                      <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Code (e.g. 91)</label>
+                                      <input type="text" placeholder="91" value={c.code} onChange={e => { const n=[...editEnabledCountries]; n[idx].code=e.target.value.replace(/\D/g,''); setEditEnabledCountries(n); }} className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-sm" />
+                                    </div>
+                                    <div className="sm:col-span-2">
+                                      <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Mkt ₹</label>
+                                      <input type="number" step="0.01" value={c.priceMarketing} onChange={e => { const n=[...editEnabledCountries]; n[idx].priceMarketing=e.target.value; setEditEnabledCountries(n); }} className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-sm" />
+                                    </div>
+                                    <div className="sm:col-span-2">
+                                      <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Util ₹</label>
+                                      <input type="number" step="0.01" value={c.priceUtility} onChange={e => { const n=[...editEnabledCountries]; n[idx].priceUtility=e.target.value; setEditEnabledCountries(n); }} className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-sm" />
+                                    </div>
+                                    <div className="sm:col-span-2">
+                                      <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Auth ₹</label>
+                                      <input type="number" step="0.01" value={c.priceAuthentication} onChange={e => { const n=[...editEnabledCountries]; n[idx].priceAuthentication=e.target.value; setEditEnabledCountries(n); }} className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-sm" />
+                                    </div>
+                                    <div className="sm:col-span-1 flex justify-end">
+                                      <button onClick={() => setEditEnabledCountries(editEnabledCountries.filter((_, i) => i !== idx))} className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg h-9"><Trash2 size={14} /></button>
+                                    </div>
+                                  </div>
+                                ))}
+                                {editEnabledCountries.length === 0 && <p className="text-xs text-slate-400 text-center py-4">No countries added. Base pricing will apply globally.</p>}
+                              </div>
+                              <button onClick={() => setEditEnabledCountries([...editEnabledCountries, { name: "", code: "", priceMarketing: "0.90", priceUtility: "0.50", priceAuthentication: "0.30" }])} className="mt-3 text-xs font-bold text-indigo-600 hover:bg-indigo-50 px-3 py-1.5 rounded-lg border border-indigo-200">+ Add Country</button>
+                            </div>
+
                             <div className="border-t border-slate-200 pt-4">
                               <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2 block">Add Balance (₹)</label>
                               <input type="number" step="1" min="0" value={editRecharge} onChange={e => setEditRecharge(e.target.value)} placeholder="100" className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-gray-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 transition-all text-sm" />
@@ -631,7 +678,6 @@ export default function AdminBillingPage() {
                           </div>
                         )}
                         
-                        {/* ✅ NEW: INTEGRATIONS TAB (INSTANT SAVE BUTTON) */}
                         {editTab === "integrations" && (
                           <div className="space-y-5 max-w-2xl">
                             <div className="p-4 bg-white rounded-xl border border-slate-200">
