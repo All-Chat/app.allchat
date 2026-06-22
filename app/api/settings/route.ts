@@ -28,8 +28,6 @@ export async function GET() {
     return NextResponse.json({
       success: true,
       settings: {
-        // ✅ NEW: Return enabled countries for the dropdown
-        enabledCountries: user.enabledCountries || [],
         wabaId: user.wabaId || "",
         whatsappPhoneNumberId: user.whatsappPhoneNumberId || "",
         whatsappAccessToken: user.whatsappAccessToken ? `${user.whatsappAccessToken.substring(0, 5)}${"*".repeat(15)}${user.whatsappAccessToken.slice(-4)}` : "",
@@ -38,10 +36,9 @@ export async function GET() {
         balance: billingUser.balance || 0,
         totalRecharged: billingUser.totalRecharged || 0,
         pendingRequest: latestRequest ? { status: latestRequest.status, createdAt: latestRequest.createdAt } : null,
-        // ✅ NEW: Return Google Sheet ID so the frontend can show the "Open Sheet" button
         googleSheetId: user.googleSheetId || null,
-        // ✅ NEW: Return Hide Integrations flag so frontend can hide the section
         hideIntegrations: user.hideIntegrations || false,
+        enabledCountries: user.enabledCountries || [], // ✅ RETURN COUNTRIES
       },
     });
   } catch (error) {
@@ -177,7 +174,6 @@ export async function DELETE(req: Request) {
     if (!numberToDelete) return NextResponse.json({ message: "Number not found" }, { status: 404 });
 
     const wasActive = numberToDelete.isActive;
-    // Filter out the deleted number. Cast to any to satisfy TS typing for Mongoose DocumentArray.
     user.whatsappNumbers = user.whatsappNumbers.filter((n: any) => n._id.toString() !== numberId) as any;
 
     if (wasActive) {
