@@ -26,8 +26,8 @@ import FormResponse from "@/models/FormResponse";
 // Utilities
 import { sendWhatsAppMessage } from "@/lib/sendWhatsApp";
 import { getPriceForCategory } from "@/lib/billing";
-// ✅ NEW: Import Google Sheet Sync Helper
-import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
+// ✅ NEW: Import Google Sheet Sync Helpers
+import { syncCampaignToGoogleSheet, syncTestMessageToGoogleSheet } from "@/lib/googleSheetSync";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -274,6 +274,16 @@ export async function POST(req: Request) {
               }
             }
           }
+
+          // ✅ NEW: Update Test Message Status in Google Sheet
+          if (userId) {
+            try {
+              await syncTestMessageToGoogleSheet(userId, {
+                phone: statusPhone,
+                status: newStatus,
+              }, false); // false = only update if row exists, don't create new
+            } catch (e) { console.error("Sheet sync error on status:", e); }
+          }
         }
       } catch (statusErr) {
         console.error("⚠️ Status Update Error:", statusErr);
@@ -441,7 +451,7 @@ export async function POST(req: Request) {
               camp.markModified("reportData");
               await camp.save();
 
-              // ✅ NEW: PUSH REPLY TO GOOGLE SHEETS INSTANTLY
+              // ✅ NEW: PUSH REPLY TO GOOGLE SHEETS INSTANTLY (Campaign)
               if (ownerUser) {
                 try {
                   await syncCampaignToGoogleSheet(ownerUser._id.toString(), {
@@ -466,6 +476,18 @@ export async function POST(req: Request) {
             }
           }
         }
+
+        // ✅ NEW: Update Test Message Reply in Google Sheet
+        if (userId) {
+          try {
+            await syncTestMessageToGoogleSheet(userId, {
+              phone: phone,
+              status: "read",
+              reply: textToSave
+            }, false); // false = only update if row exists, don't create new
+          } catch (e) { console.error("Sheet sync error on reply:", e); }
+        }
+
       } catch (reportErr) {
         console.error("⚠️ Campaign Report Update Failed:", reportErr);
       }
@@ -496,7 +518,6 @@ export async function POST(req: Request) {
           if (session) {
             const wf = await Workflow.findById(session.workflowId);
             
-            // ✅ FIX: Check if workflow exists AND is active
             if (wf && wf.active && wf.steps) {
               let clickedBtn = null;
               for (const stepId in wf.steps) {
@@ -554,13 +575,11 @@ export async function POST(req: Request) {
                 return NextResponse.json({ success: true }); 
               }
             } else { 
-              // Workflow is inactive or deleted, kill session
               await Session.deleteOne({ _id: session._id }); 
             }
           }
         }
 
-        // ✅ FIX: Only find workflows that are active!
         const workflowQuery: any = { active: true };
         if (userId) workflowQuery.userId = userId;
         
