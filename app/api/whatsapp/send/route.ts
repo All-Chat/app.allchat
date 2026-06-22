@@ -28,9 +28,6 @@ export async function POST(req: Request) {
     const user = await User.findById(session.user.id);
     if (!user) return NextResponse.json({ success: false, message: "User not found" }, { status: 404 });
 
-    // ==========================================
-    // 🔴 SHARED WALLET LOGIC
-    // ==========================================
     let payer = user;
     if (user.parentTenantId) {
       const parent = await User.findOne({ tenantId: user.parentTenantId });
@@ -74,15 +71,28 @@ export async function POST(req: Request) {
     category = (category || "MARKETING").toUpperCase().trim();
     if (!["MARKETING", "UTILITY", "AUTHENTICATION"].includes(category)) category = "MARKETING";
 
-    const messagePrice = getPriceForCategory(payer, category);
-    const currentBalance = payer.balance || 0;
+    // ✅ NEW: COUNTRY-BASED PRICING LOGIC
+    let messagePrice = 0;
+    if (payer.enabledCountries && payer.enabledCountries.length > 0) {
+      const matchedCountry = payer.enabledCountries.find((c: any) => phone.startsWith(c.code));
+      if (!matchedCountry) {
+        return NextResponse.json({ success: false, message: `Messaging to this country is not enabled. Please contact admin.` }, { status: 403 });
+      }
+      
+      if (category === "MARKETING") messagePrice = matchedCountry.priceMarketing || 0;
+      else if (category === "UTILITY") messagePrice = matchedCountry.priceUtility || 0;
+      else if (category === "AUTHENTICATION") messagePrice = matchedCountry.priceAuthentication || 0;
+    } else {
+      // Fallback to base pricing if no countries are configured
+      messagePrice = getPriceForCategory(payer, category);
+    }
 
+    const currentBalance = payer.balance || 0;
     if (messagePrice > 0 && currentBalance < messagePrice) {
       return NextResponse.json({ success: false, message: `Insufficient balance. Required: ₹${messagePrice}, Available: ₹${currentBalance}.` }, { status: 402 });
     }
 
     const sanitizedPhone = phone.replace(/\+/g, "");
-
     variables = variables.filter((v: any) => v && String(v).trim() !== "");
 
     if (category === "AUTHENTICATION" && variables.length === 0) {
@@ -144,8 +154,6 @@ export async function POST(req: Request) {
     let data = await response.json();
 
     if (!response.ok && data.error?.code === 131008 && category === "AUTHENTICATION" && variables.length > 0) {
-      console.log("⚠️ Auth template requires URL button parameter. Retrying with Body + Button...");
-      
       const retryPayload = {
         messaging_product: "whatsapp",
         to: sanitizedPhone,
@@ -154,16 +162,8 @@ export async function POST(req: Request) {
           name: templateName,
           language: { code: languageCode },
           components: [
-            {
-              type: "body",
-              parameters: variables.map((value: string) => ({ type: "text", text: value })),
-            },
-            {
-              type: "button",
-              sub_type: "url",
-              index: 0,
-              parameters: [{ type: "text", text: variables[0] }],
-            },
+            { type: "body", parameters: variables.map((value: string) => ({ type: "text", text: value })) },
+            { type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: variables[0] }] },
           ],
         },
       };
@@ -173,7 +173,6 @@ export async function POST(req: Request) {
         headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, "Content-Type": "application/json" },
         body: JSON.stringify(retryPayload),
       });
-
       data = await response.json();
     }
 
@@ -182,7 +181,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, error: data.error, message: data.error?.message || "Failed to send message" }, { status: 400 });
     }
 
-    // Deduct from PAYER's wallet
     if (messagePrice > 0) {
       payer.balance = Math.round((currentBalance - messagePrice) * 100) / 100;
       payer.balance = Math.max(payer.balance, 0);
