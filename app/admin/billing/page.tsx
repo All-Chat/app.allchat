@@ -3,6 +3,7 @@
 
 import { useState } from "react";
 import Sidebar from "@/components/Sidebar";
+import Link from "next/link";
 import {
   Loader2, Shield, Wallet, IndianRupee, Save, RefreshCw,
   Users, AlertCircle, Eye, EyeOff, LogIn,
@@ -347,6 +348,10 @@ export default function AdminBillingPage() {
             <button onClick={() => setShowCreateModal(true)} className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-500 to-blue-500 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md hover:from-indigo-600 hover:to-blue-600 transition-all w-full sm:w-auto">
               <UserPlus size={16} /> Create User
             </button>
+            {/* ✅ NEW: White Label Button */}
+            <Link href="/admin/whitelabel" className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md hover:from-violet-600 hover:to-purple-600 transition-all w-full sm:w-auto">
+              <Building2 size={16} /> White Label
+            </Link>
             <button onClick={() => { fetchUsers(); fetchRequests(); }} disabled={loading} className="flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-medium hover:bg-slate-50 shadow-sm transition-all w-full sm:w-auto justify-center">
               <RefreshCw size={16} className={loading ? "animate-spin text-amber-500" : ""} /> Refresh
             </button>
@@ -378,14 +383,20 @@ export default function AdminBillingPage() {
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 w-full sm:w-auto">
-                    <button onClick={() => handleProcessRequest(req._id, "approve")} disabled={processingReqId === req._id} className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 bg-emerald-500 text-white rounded-lg text-xs font-bold hover:bg-emerald-600 transition-all disabled:opacity-50">
-                      {processingReqId === req._id ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Approve
-                    </button>
-                    <button onClick={() => handleProcessRequest(req._id, "reject")} disabled={processingReqId === req._id} className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 bg-red-500 text-white rounded-lg text-xs font-bold hover:bg-red-600 transition-all disabled:opacity-50">
-                      <X size={14} /> Reject
-                    </button>
-                  </div>
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <button onClick={() => setShowCreateModal(true)} className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-500 to-blue-500 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md hover:from-indigo-600 hover:to-blue-600 transition-all w-full sm:w-auto">
+              <UserPlus size={16} /> Create User
+            </button>
+            
+            {/* ✅ NEW: White Label Button */}
+            <Link href="/admin/whitelabel" className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-violet-500 to-purple-500 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md hover:from-violet-600 hover:to-purple-600 transition-all w-full sm:w-auto">
+              <Building2 size={16} /> White Label
+            </Link>
+
+            <button onClick={() => { fetchUsers(); fetchRequests(); }} disabled={loading} className="flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-medium hover:bg-slate-50 shadow-sm transition-all w-full sm:w-auto justify-center">
+              <RefreshCw size={16} className={loading ? "animate-spin text-amber-500" : ""} /> Refresh
+            </button>
+          </div>
                 </div>
               ))}
             </div>
