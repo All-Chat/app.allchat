@@ -5,7 +5,7 @@ import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 
-const META_API_VERSION = "v19.0";
+const META_API_VERSION = "v21.0";
 
 export async function POST(req: Request) {
   try {
@@ -16,7 +16,7 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    // ✅ Accept both `code` and optional `wabaId` / `phoneNumberId` from the frontend extras
+    // ✅ Accept both `code` and optional `wabaId` / `phoneNumberId` from the frontend
     const { code, wabaId: frontendWabaId, phoneNumberId: frontendPhoneNumberId } = body;
 
     if (!code || typeof code !== "string") {
@@ -127,7 +127,7 @@ export async function POST(req: Request) {
     }
 
     // ─── STEP 3: Resolve WABA ID ───────────────────────────────────
-    // ✅ Priority 1: Use WABA ID sent from the frontend (captured from FB.login extras)
+    // ✅ Priority 1: Use WABA ID sent from the frontend (captured from postMessage listener)
     console.log("[Embedded Signup] Step 3: Resolving WABA ID...");
     console.log("[Embedded Signup] Frontend-provided wabaId:", frontendWabaId);
     console.log("[Embedded Signup] Frontend-provided phoneNumberId:", frontendPhoneNumberId);
@@ -146,6 +146,28 @@ export async function POST(req: Request) {
       if (wabaData1.data && wabaData1.data.length > 0) {
         wabaId = wabaData1.data[0].id;
         console.log("[Embedded Signup] ✓ WABA found via /me/whatsapp_business_accounts:", wabaId);
+      }
+    }
+
+    // ✅ Priority 2.5 — debug_token se WABA ID nikalo (Most Reliable)
+    if (!wabaId) {
+      console.log("[Embedded Signup] Trying debug_token granular scopes...");
+      const debugRes = await fetch(
+        `https://graph.facebook.com/${META_API_VERSION}/debug_token?` +
+        `input_token=${accessToken}` +
+        `&access_token=${appId}|${appSecret}`
+      );
+      const debugData = await debugRes.json();
+      console.log("[Embedded Signup] Debug token:", JSON.stringify(debugData, null, 2));
+
+      const granularScopes = debugData.data?.granular_scopes || [];
+      const wabaScope = granularScopes.find(
+        (s: any) => s.scope === "whatsapp_business_management"
+      );
+
+      if (wabaScope?.target_ids?.length > 0) {
+        wabaId = wabaScope.target_ids[0];
+        console.log("[Embedded Signup] ✓ WABA ID from debug_token:", wabaId);
       }
     }
 
