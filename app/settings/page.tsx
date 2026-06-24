@@ -18,6 +18,8 @@ declare global {
   interface Window {
     FB: any;
     fbAsyncInit: () => void;
+    _wabaId: string | null;
+    _phoneNumberId: string | null;
   }
 }
 
@@ -142,7 +144,7 @@ export default function SettingsPage() {
         appId: process.env.NEXT_PUBLIC_META_APP_ID || "",
         cookie: true,
         xfbml: true,
-        version: "v19.0",
+        version: "v21.0",
       });
       setFbReady(true);
     };
@@ -186,17 +188,52 @@ export default function SettingsPage() {
     setNewAccessToken("");
   };
 
-  // ✅ KEY FIX: Capture wabaId and phoneNumberId from FB.login extras response
+  // ✅ Embedded Signup — uses postMessage listener to capture WABA/Phone IDs
   const handleEmbeddedSignup = () => {
     if (!fbReady || !window.FB) {
-      toast.error("Facebook SDK is still loading. Please wait a few seconds and try again.");
+      toast.error("Facebook SDK is still loading. Please wait.");
       return;
     }
 
     setSigningUp(true);
 
+    // ✅ Listen for session info message from Meta popup
+    const sessionInfoListener = (event: MessageEvent) => {
+      if (event.origin !== "https://www.facebook.com") return;
+      try {
+        const data = typeof event.data === "string"
+          ? JSON.parse(event.data)
+          : event.data;
+
+        console.log("[SessionInfo] Message received:", data);
+
+        if (data.type === "WA_EMBEDDED_SIGNUP") {
+          if (data.event === "FINISH") {
+            const { phone_number_id, waba_id } = data.data;
+            console.log("[SessionInfo] WABA ID:", waba_id);
+            console.log("[SessionInfo] Phone Number ID:", phone_number_id);
+
+            // Store in window for FB.login callback to use
+            window._wabaId = waba_id;
+            window._phoneNumberId = phone_number_id;
+          } else if (data.event === "CANCEL") {
+            console.log("[SessionInfo] User cancelled at step:", data.data?.current_step);
+          } else if (data.event === "ERROR") {
+            console.error("[SessionInfo] Error:", data.data);
+          }
+        }
+      } catch (e) {
+        console.log("[SessionInfo] Non-JSON message:", event.data);
+      }
+    };
+
+    window.addEventListener("message", sessionInfoListener);
+
     window.FB.login(
       (response: any) => {
+        // Cleanup listener
+        window.removeEventListener("message", sessionInfoListener);
+
         console.log("[FB.login] Full response:", JSON.stringify(response, null, 2));
 
         if (!response.authResponse) {
@@ -205,28 +242,20 @@ export default function SettingsPage() {
           return;
         }
 
-        const authResponse = response.authResponse;
-
-        // ✅ The code is in authResponse.code when response_type: "code"
-        const code = authResponse.code;
+        const code = response.authResponse.code;
         if (!code) {
-          toast.error("No authorization code received from Meta. Please try again.");
+          toast.error("No authorization code received. Please try again.");
           setSigningUp(false);
           return;
         }
 
-        // ✅ WABA ID and Phone Number ID come from authResponse.extra_data
-        // These are populated automatically by the Embedded Signup flow
-        const extraData = authResponse.extra_data || {};
-        const wabaId = extraData.waba_id || null;
-        const phoneNumberId = extraData.phone_number_id || null;
+        // ✅ Get WABA data from window (set by message listener)
+        const wabaId = window._wabaId || null;
+        const phoneNumberId = window._phoneNumberId || null;
 
-        console.log("[FB.login] Code:", code.substring(0, 20) + "...");
-        console.log("[FB.login] Extra data:", JSON.stringify(extraData, null, 2));
-        console.log("[FB.login] WABA ID from extras:", wabaId);
-        console.log("[FB.login] Phone Number ID from extras:", phoneNumberId);
+        console.log("[FB.login] Final WABA ID:", wabaId);
+        console.log("[FB.login] Final Phone Number ID:", phoneNumberId);
 
-        // Send all captured data to the backend
         fetch("/api/settings/embedded-signup", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -235,14 +264,17 @@ export default function SettingsPage() {
           .then((res) => res.json())
           .then((data) => {
             if (data.success) {
-              toast.success(data.message || "WhatsApp number connected successfully!");
+              toast.success(data.message || "WhatsApp connected!");
+              // Cleanup
+              window._wabaId = null;
+              window._phoneNumberId = null;
               fetchSettings();
             } else {
-              toast.error(data.message || "Failed to connect WhatsApp number.");
+              toast.error(data.message || "Failed to connect.");
             }
           })
           .catch((err) => {
-            console.error("[Embedded Signup] Fetch error:", err);
+            console.error("[Embedded Signup] Error:", err);
             toast.error("Error connecting WhatsApp. Please try again.");
           })
           .finally(() => setSigningUp(false));
@@ -254,7 +286,7 @@ export default function SettingsPage() {
         extras: {
           setup: {},
           featureType: "",
-          sessionInfoVersion: "3", // ✅ Required for extra_data to be populated
+          sessionInfoVersion: "3",
         },
       }
     );
