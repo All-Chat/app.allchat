@@ -1,48 +1,22 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 // app/api/settings/embedded-signup/route.ts
-//
-// ═══════════════════════════════════════════════════════════════
-// REQUIRED ENV VARIABLES (add to your .env.local):
-//
-//   META_APP_ID=your_meta_app_id            ← Same as NEXT_PUBLIC_META_APP_ID
-//   META_APP_SECRET=your_meta_app_secret    ← Server-only, from Meta App Dashboard
-//
-// Meta App Dashboard → Settings → Basic → App Secret
-// Also ensure "WhatsApp Business Management" permission is added
-// to your app and the Embedded Signup config is published.
-// ═══════════════════════════════════════════════════════════════
 
-import { NextRequest, NextResponse } from "next/server";
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { NextResponse } from "next/server";
+import { connectDB } from "@/lib/mongodb";
+import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-// 👇 Adjust this import path to match your project structure
-import User from "@/models/User";
 
-const META_API_VERSION = "v19.0"; // Keep in sync with your frontend FB.init version
+const META_API_VERSION = "v19.0";
 
-interface EmbeddedSignupResponse {
-  success: boolean;
-  message: string;
-  data?: {
-    name: string;
-    phoneNumberId: string;
-    displayPhone: string;
-    isActive: boolean;
-  };
-}
-
-export async function POST(req: NextRequest): Promise<NextResponse<EmbeddedSignupResponse>> {
+export async function POST(req: Request) {
   try {
-    // ─── 1. AUTHENTICATION CHECK ──────────────────────────────────
+    await connectDB();
     const session = await getServerSession(authOptions);
-    if (!session?.user?.email) {
-      return NextResponse.json(
-        { success: false, message: "Unauthorized" },
-        { status: 401 }
-      );
+    if (!session?.user?.id) {
+      return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
     }
 
-    // ─── 2. PARSE & VALIDATE REQUEST BODY ─────────────────────────
     const body = await req.json();
     const { code } = body;
 
@@ -53,162 +27,137 @@ export async function POST(req: NextRequest): Promise<NextResponse<EmbeddedSignu
       );
     }
 
-    // ─── 3. VERIFY META CREDENTIALS ───────────────────────────────
     const appId = process.env.META_APP_ID;
     const appSecret = process.env.META_APP_SECRET;
 
     if (!appId || !appSecret) {
-      console.error("[Embedded Signup] META_APP_ID or META_APP_SECRET is missing from environment variables.");
+      console.error("[Embedded Signup] META_APP_ID or META_APP_SECRET missing from .env.local");
       return NextResponse.json(
-        { success: false, message: "Server is not configured for Meta Embedded Signup. Contact your administrator." },
+        { success: false, message: "Meta credentials not configured on server." },
         { status: 500 }
       );
     }
 
-    // ─── 4. EXCHANGE CODE → SHORT-LIVED ACCESS TOKEN ──────────────
-    //    For Embedded Signup, redirect_uri MUST be an empty string.
-    //    This is different from standard OAuth where you pass a URL.
-    console.log("[Embedded Signup] Step 1: Exchanging authorization code for access token...");
+    // ─── STEP 1: Exchange code for short-lived token ──────────────
+    console.log("[Embedded Signup] Step 1: Exchanging code for token...");
 
-    const tokenExchangeUrl = new URL(
-      `https://graph.facebook.com/${META_API_VERSION}/oauth/access_token`
-    );
-    tokenExchangeUrl.searchParams.set("client_id", appId);
-    tokenExchangeUrl.searchParams.set("redirect_uri", "");
-    tokenExchangeUrl.searchParams.set("client_secret", appSecret);
-    tokenExchangeUrl.searchParams.set("code", code);
+    const tokenUrl =
+      `https://graph.facebook.com/${META_API_VERSION}/oauth/access_token` +
+      `?client_id=${appId}` +
+      `&redirect_uri=` +
+      `&client_secret=${appSecret}` +
+      `&code=${encodeURIComponent(code)}`;
 
-    const tokenRes = await fetch(tokenExchangeUrl.toString(), { method: "GET" });
+    const tokenRes = await fetch(tokenUrl, { method: "GET" });
     const tokenData = await tokenRes.json();
 
     if (!tokenData.access_token) {
-      console.error("[Embedded Signup] Token exchange failed:", JSON.stringify(tokenData, null, 2));
-      const errorMsg = tokenData.error?.message || "Failed to exchange the authorization code. Please try again.";
-      return NextResponse.json({ success: false, message: errorMsg }, { status: 400 });
+      console.error("[Embedded Signup] Token exchange failed:", JSON.stringify(tokenData));
+      return NextResponse.json(
+        { success: false, message: tokenData.error?.message || "Failed to exchange authorization code." },
+        { status: 400 }
+      );
     }
 
     let accessToken: string = tokenData.access_token;
     console.log("[Embedded Signup] ✓ Short-lived token obtained");
 
-    // ─── 5. EXCHANGE SHORT-LIVED → LONG-LIVED TOKEN ───────────────
-    //    Short-lived tokens expire in ~1 hour. Long-lived tokens
-    //    last ~60 days. This is critical for persistent access.
-    console.log("[Embedded Signup] Step 2: Exchanging for long-lived token...");
+    // ─── STEP 2: Upgrade to long-lived token (~60 days) ──────────
+    console.log("[Embedded Signup] Step 2: Upgrading to long-lived token...");
 
     try {
-      const longLivedUrl = new URL(
-        `https://graph.facebook.com/${META_API_VERSION}/oauth/access_token`
-      );
-      longLivedUrl.searchParams.set("grant_type", "fb_exchange_token");
-      longLivedUrl.searchParams.set("client_id", appId);
-      longLivedUrl.searchParams.set("client_secret", appSecret);
-      longLivedUrl.searchParams.set("fb_exchange_token", accessToken);
+      const llUrl =
+        `https://graph.facebook.com/${META_API_VERSION}/oauth/access_token` +
+        `?grant_type=fb_exchange_token` +
+        `&client_id=${appId}` +
+        `&client_secret=${appSecret}` +
+        `&fb_exchange_token=${accessToken}`;
 
-      const llRes = await fetch(longLivedUrl.toString());
+      const llRes = await fetch(llUrl);
       const llData = await llRes.json();
-
       if (llData.access_token) {
         accessToken = llData.access_token;
         console.log("[Embedded Signup] ✓ Long-lived token obtained");
-      } else {
-        console.warn("[Embedded Signup] Long-lived token exchange returned no token, keeping short-lived one.");
       }
-    } catch (llError) {
-      console.warn("[Embedded Signup] Long-lived token exchange failed:", llError);
-      // Non-fatal — we continue with the short-lived token
+    } catch (e) {
+      console.warn("[Embedded Signup] Long-lived upgrade skipped:", e);
     }
 
-    // ─── 6. FETCH WHATSAPP BUSINESS ACCOUNTS ──────────────────────
-    //    The token grants access to WABAs the user selected during
-    //    the embedded signup flow.
-    console.log("[Embedded Signup] Step 3: Fetching WhatsApp Business Accounts...");
+    // ─── STEP 3: Get WhatsApp Business Accounts ───────────────────
+    console.log("[Embedded Signup] Step 3: Fetching WABAs...");
 
     const wabaRes = await fetch(
-      `https://graph.facebook.com/${META_API_VERSION}/me/whatsapp_business_accounts?access_token=${accessToken}`,
-      { method: "GET" }
+      `https://graph.facebook.com/${META_API_VERSION}/me/whatsapp_business_accounts?access_token=${accessToken}`
     );
     const wabaData = await wabaRes.json();
 
     if (!wabaData.data || wabaData.data.length === 0) {
-      console.error("[Embedded Signup] No WhatsApp Business Accounts found:", JSON.stringify(wabaData, null, 2));
+      console.error("[Embedded Signup] No WABA found:", JSON.stringify(wabaData));
       return NextResponse.json(
         {
           success: false,
-          message:
-            "No WhatsApp Business Account was linked. During the Meta popup, make sure you select a WhatsApp Business Account. Create one at business.facebook.com if needed.",
+          message: "No WhatsApp Business Account linked. During the Meta popup, select a WhatsApp Business Account.",
         },
         { status: 400 }
       );
     }
 
-    // Use the first WABA (embedded signup typically links exactly one)
-    const waba = wabaData.data[0];
-    const wabaId: string = waba.id;
-    console.log(`[Embedded Signup] ✓ WABA found: ${wabaId}`);
+    const wabaId: string = wabaData.data[0].id;
+    console.log("[Embedded Signup] ✓ WABA:", wabaId);
 
-    // ─── 7. FETCH PHONE NUMBERS FROM THE WABA ─────────────────────
+    // ─── STEP 4: Get phone numbers from WABA ──────────────────────
     console.log("[Embedded Signup] Step 4: Fetching phone numbers...");
 
     const phonesRes = await fetch(
-      `https://graph.facebook.com/${META_API_VERSION}/${wabaId}/phone_numbers?access_token=${accessToken}`,
-      { method: "GET" }
+      `https://graph.facebook.com/${META_API_VERSION}/${wabaId}/phone_numbers?access_token=${accessToken}`
     );
     const phonesData = await phonesRes.json();
 
     if (!phonesData.data || phonesData.data.length === 0) {
-      console.error(`[Embedded Signup] No phone numbers in WABA ${wabaId}:`, JSON.stringify(phonesData, null, 2));
+      console.error("[Embedded Signup] No phones:", JSON.stringify(phonesData));
       return NextResponse.json(
         {
           success: false,
-          message:
-            "The selected WhatsApp Business Account has no phone numbers. Add a phone number in Meta Business Manager → WhatsApp Accounts first.",
+          message: "No phone numbers in this WABA. Add a number in Meta Business Manager first.",
         },
         { status: 400 }
       );
     }
 
-    // Prefer a verified phone number; fall back to the first one
     const selectedPhone =
-      phonesData.data.find((p: Record<string, any>) => p.verified_name) || phonesData.data[0];
+      phonesData.data.find((p: any) => p.verified_name) || phonesData.data[0];
 
     const phoneNumberId: string = selectedPhone.id;
-    const displayPhone: string = selectedPhone.display_phone_number || selectedPhone.phone_number || "Unknown Number";
+    const displayPhone: string = selectedPhone.display_phone_number || selectedPhone.phone_number || "Unknown";
     const verifiedName: string = selectedPhone.verified_name || "";
     const phoneStatus: string = selectedPhone.status || "UNKNOWN";
 
-    console.log(
-      `[Embedded Signup] ✓ Phone found: ${displayPhone} (ID: ${phoneNumberId}, Status: ${phoneStatus})`
-    );
+    console.log("[Embedded Signup] ✓ Phone:", displayPhone, "| Status:", phoneStatus);
 
-    // ─── 8. LOOK UP THE USER IN DATABASE ──────────────────────────
-    const user = await User.findOne({ email: session.user.email });
+    // ─── STEP 5: Save to user database ────────────────────────────
+    const user = await User.findById(session.user.id);
     if (!user) {
       return NextResponse.json(
-        { success: false, message: "Your account was not found in the database." },
+        { success: false, message: "User not found." },
         { status: 404 }
       );
     }
 
-    // ─── 9. DUPLICATE CHECK ───────────────────────────────────────
     const existingNumbers: any[] = Array.isArray(user.whatsappNumbers) ? user.whatsappNumbers : [];
 
-    const duplicate = existingNumbers.find(
+    const isDuplicate = existingNumbers.some(
       (n: any) => n.whatsappPhoneNumberId === phoneNumberId
     );
-    if (duplicate) {
+    if (isDuplicate) {
       return NextResponse.json(
-        {
-          success: false,
-          message: `The number ${displayPhone} is already connected to your account.`,
-        },
-        { status: 409 } // Conflict
+        { success: false, message: `Number ${displayPhone} is already connected.` },
+        { status: 409 }
       );
     }
 
-    // ─── 10. BUILD & SAVE THE NEW NUMBER ──────────────────────────
     const isFirstNumber = existingNumbers.length === 0;
 
-    const newNumber: Record<string, any> = {
+    const newNumber: any = {
       name: verifiedName || `WhatsApp ${displayPhone}`,
       wabaId: wabaId,
       whatsappPhoneNumberId: phoneNumberId,
@@ -216,38 +165,40 @@ export async function POST(req: NextRequest): Promise<NextResponse<EmbeddedSignu
       displayPhoneNumber: displayPhone,
       verifiedName: verifiedName,
       phoneStatus: phoneStatus,
-      isActive: isFirstNumber, // Auto-activate only if it's the very first number
+      isActive: isFirstNumber,
       addedAt: new Date(),
       source: "embedded_signup",
     };
 
+    if (!user.whatsappNumbers || !Array.isArray(user.whatsappNumbers)) {
+      user.whatsappNumbers = [] as any;
+    }
     user.whatsappNumbers.push(newNumber);
+
+    // Also set top-level fields so existing code keeps working
+    if (isFirstNumber) {
+      user.wabaId = wabaId;
+      user.whatsappPhoneNumberId = phoneNumberId;
+      user.whatsappAccessToken = accessToken;
+    }
+
     await user.save();
 
     console.log(
-      `[Embedded Signup] ✓ Saved number "${newNumber.name}" for user ${session.user.email}` +
-        (isFirstNumber ? " (auto-activated as first number)" : "")
+      `[Embedded Signup] ✓ Saved "${newNumber.name}" for user ${session.user.id}` +
+        (isFirstNumber ? " (auto-activated)" : "")
     );
 
-    // ─── 11. RETURN SUCCESS ───────────────────────────────────────
     return NextResponse.json({
       success: true,
-      message: `WhatsApp number ${displayPhone} connected successfully!` +
-        (isFirstNumber ? " It has been set as your active number." : ""),
-      data: {
-        name: newNumber.name,
-        phoneNumberId,
-        displayPhone,
-        isActive: newNumber.isActive,
-      },
+      message:
+        `WhatsApp number ${displayPhone} connected successfully!` +
+        (isFirstNumber ? " Set as active number." : ""),
     });
   } catch (error: any) {
-    console.error("[Embedded Signup] UNEXPECTED ERROR:", error);
+    console.error("[Embedded Signup] ERROR:", error);
     return NextResponse.json(
-      {
-        success: false,
-        message: error?.message || "An unexpected error occurred during the signup process.",
-      },
+      { success: false, message: error?.message || "Unexpected error occurred." },
       { status: 500 }
     );
   }
