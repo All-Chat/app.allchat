@@ -1,4 +1,4 @@
-/* eslint-disable prefer-const */
+/* eslint-disable no-var */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
@@ -10,6 +10,66 @@ import { getPriceForCategory } from "@/lib/billing";
 import { checkLimit, incrementUsage } from "@/lib/limits";
 
 export const runtime = "nodejs";
+
+/* ============================================================================
+   ✅ UNIVERSAL CREDENTIAL RESOLVER (Same logic as webhook)
+   Finds the correct Phone Number ID and Access Token regardless of 
+   where they are stored in the user document.
+   ============================================================================ */
+function resolveCredentials(user: any, payer: any, explicitPhoneId?: string): { PHONE_NUMBER_ID: string; ACCESS_TOKEN: string } {
+  let PHONE_NUMBER_ID = explicitPhoneId || "";
+  let ACCESS_TOKEN = "";
+
+  // 1. If explicitly provided, just find the token for it
+  if (PHONE_NUMBER_ID) {
+    // Check user's array first
+    if (user?.whatsappNumbers?.length > 0) {
+      const m = user.whatsappNumbers.find((n: any) => n.whatsappPhoneNumberId === PHONE_NUMBER_ID || n.phoneNumberId === PHONE_NUMBER_ID || n.id === PHONE_NUMBER_ID);
+      if (m) { ACCESS_TOKEN = m.whatsappAccessToken || m.accessToken || ""; }
+    }
+    // Check payer's array
+    if (!ACCESS_TOKEN && payer?.whatsappNumbers?.length > 0) {
+      const m = payer.whatsappNumbers.find((n: any) => n.whatsappPhoneNumberId === PHONE_NUMBER_ID || n.phoneNumberId === PHONE_NUMBER_ID || n.id === PHONE_NUMBER_ID);
+      if (m) { ACCESS_TOKEN = m.whatsappAccessToken || m.accessToken || ""; }
+    }
+    // Fall back to top-level
+    if (!ACCESS_TOKEN) ACCESS_TOKEN = user?.whatsappAccessToken || payer?.whatsappAccessToken || "";
+    if (!ACCESS_TOKEN) ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || "";
+    return { PHONE_NUMBER_ID, ACCESS_TOKEN };
+  }
+
+  // 2. Try user's top-level
+  if (user?.whatsappPhoneNumberId) {
+    PHONE_NUMBER_ID = user.whatsappPhoneNumberId;
+    ACCESS_TOKEN = user.whatsappAccessToken || "";
+  }
+
+  // 3. Try user's array (first active, or first item)
+  if (!PHONE_NUMBER_ID && user?.whatsappNumbers?.length > 0) {
+    const active = user.whatsappNumbers.find((n: any) => n.isActive) || user.whatsappNumbers[0];
+    PHONE_NUMBER_ID = active.whatsappPhoneNumberId || active.phoneNumberId || active.id || "";
+    ACCESS_TOKEN = active.whatsappAccessToken || active.accessToken || user.whatsappAccessToken || "";
+  }
+
+  // 4. Try payer's top-level
+  if (!PHONE_NUMBER_ID && payer?.whatsappPhoneNumberId) {
+    PHONE_NUMBER_ID = payer.whatsappPhoneNumberId;
+    ACCESS_TOKEN = payer.whatsappAccessToken || "";
+  }
+
+  // 5. Try payer's array
+  if (!PHONE_NUMBER_ID && payer?.whatsappNumbers?.length > 0) {
+    const active = payer.whatsappNumbers.find((n: any) => n.isActive) || payer.whatsappNumbers[0];
+    PHONE_NUMBER_ID = active.whatsappPhoneNumberId || active.phoneNumberId || active.id || "";
+    ACCESS_TOKEN = active.whatsappAccessToken || active.accessToken || payer.whatsappAccessToken || "";
+  }
+
+  // 6. Final env fallback
+  if (!PHONE_NUMBER_ID) PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || "";
+  if (!ACCESS_TOKEN) ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || "";
+
+  return { PHONE_NUMBER_ID, ACCESS_TOKEN };
+}
 
 async function fetchFullTemplate(phoneNumberId: string, accessToken: string, templateName: string, languageCode: string): Promise<any | null> {
   try {
@@ -72,75 +132,49 @@ export async function POST(req: Request) {
       body = await req.json();
     }
 
-    let phone = formData?.get("phone") as string || body.phone || "";
-    let templateName = formData?.get("templateName") as string || body.templateName || "";
-    let languageCode = formData?.get("languageCode") as string || body.languageCode || "en";
+    const phone = formData?.get("phone") as string || body.phone || "";
+    const templateName = formData?.get("templateName") as string || body.templateName || "";
+    const languageCode = formData?.get("languageCode") as string || body.languageCode || "en";
     let variables = JSON.parse(formData?.get("variables") as string || "[]") || body.variables || [];
-    let headerMediaType = formData?.get("headerMediaType") as string || body.headerMediaType || body.mediaType || "none";
-    let file = formData?.get("file") as File | null || null;
-    let mediaUrl = formData?.get("mediaUrl") as string || body.mediaUrl || null;
-    let category = formData?.get("category") as string || body.category || "MARKETING";
-
-    // ✅ Allow frontend to explicitly pass the whatsappPhoneNumberId to use
-    // eslint-disable-next-line prefer-const
-    let explicitPhoneId = formData?.get("whatsappPhoneNumberId") as string || body.whatsappPhoneNumberId || "";
+    const headerMediaType = formData?.get("headerMediaType") as string || body.headerMediaType || body.mediaType || "none";
+    const file = formData?.get("file") as File | null || null;
+    const mediaUrl = formData?.get("mediaUrl") as string || body.mediaUrl || null;
+    const category = formData?.get("category") as string || body.category || "MARKETING";
+    const explicitPhoneId = formData?.get("whatsappPhoneNumberId") as string || body.whatsappPhoneNumberId || "";
 
     if (!phone || !templateName) return NextResponse.json({ success: false, message: "Phone and templateName are required" }, { status: 400 });
-    category = (category || "MARKETING").toUpperCase().trim();
-    if (!["MARKETING", "UTILITY", "AUTHENTICATION"].includes(category)) category = "MARKETING";
 
-    /* ══════════════════════════════════════════════════════════════════════════
-       ✅ FIX: MULTI-ACCOUNT CREDENTIAL RESOLUTION
-       If the user's number is stored in the `whatsappNumbers` array instead of 
-       the top-level field, we must look inside the array to find the correct 
-       Phone Number ID and Access Token for Account B.
-       ══════════════════════════════════════════════════════════════════════════ */
-    let PHONE_NUMBER_ID = explicitPhoneId || user.whatsappPhoneNumberId || payer.whatsappPhoneNumberId || "";
-    let ACCESS_TOKEN = user.whatsappAccessToken || payer.whatsappAccessToken || "";
+    const finalCategory = (category || "MARKETING").toUpperCase().trim();
+    let cat = finalCategory;
+    if (!["MARKETING", "UTILITY", "AUTHENTICATION"].includes(finalCategory)) cat = "MARKETING";
 
-    if (!PHONE_NUMBER_ID) {
-      const findInArray = (u: any) => {
-        if (u?.whatsappNumbers?.length > 0) {
-          return u.whatsappNumbers.find((n: any) => n.isActive) || u.whatsappNumbers[0];
-        }
-        return null;
-      };
-      const matchedNum = findInArray(user) || findInArray(payer);
-      if (matchedNum) {
-        PHONE_NUMBER_ID = matchedNum.whatsappPhoneNumberId || "";
-        if (!ACCESS_TOKEN && matchedNum.whatsappAccessToken) ACCESS_TOKEN = matchedNum.whatsappAccessToken;
-      }
-    }
+    // ✅ UNIVERSAL CREDENTIAL RESOLUTION
+    const { PHONE_NUMBER_ID, ACCESS_TOKEN } = resolveCredentials(user.toObject(), payer.toObject(), explicitPhoneId);
 
-    if (!PHONE_NUMBER_ID) PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || "";
-    if (!ACCESS_TOKEN) ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || "";
+    if (!PHONE_NUMBER_ID || !ACCESS_TOKEN) return NextResponse.json({ success: false, message: "WhatsApp credentials not configured. Make sure your WABA number is added in Settings." }, { status: 400 });
 
-    if (!PHONE_NUMBER_ID || !ACCESS_TOKEN) return NextResponse.json({ success: false, message: "WhatsApp credentials not configured" }, { status: 400 });
-
-    // ─── Country-based pricing ───
+    // Pricing
     let messagePrice = 0;
     if (payer.enabledCountries && payer.enabledCountries.length > 0) {
       const matchedCountry = payer.enabledCountries.find((c: any) => phone.startsWith(c.code));
       if (!matchedCountry) return NextResponse.json({ success: false, message: `Messaging to this country is not enabled.` }, { status: 403 });
-      if (category === "MARKETING") messagePrice = matchedCountry.priceMarketing || 0;
-      else if (category === "UTILITY") messagePrice = matchedCountry.priceUtility || 0;
-      else if (category === "AUTHENTICATION") messagePrice = matchedCountry.priceAuthentication || 0;
-    } else {
-      messagePrice = getPriceForCategory(payer, category);
-    }
+      if (cat === "MARKETING") messagePrice = matchedCountry.priceMarketing || 0;
+      else if (cat === "UTILITY") messagePrice = matchedCountry.priceUtility || 0;
+      else if (cat === "AUTHENTICATION") messagePrice = matchedCountry.priceAuthentication || 0;
+    } else { messagePrice = getPriceForCategory(payer, cat); }
 
     const currentBalance = payer.balance || 0;
     if (messagePrice > 0 && currentBalance < messagePrice) return NextResponse.json({ success: false, message: `Insufficient balance. Required: ₹${messagePrice}, Available: ₹${currentBalance}.` }, { status: 402 });
 
     const sanitizedPhone = phone.replace(/\+/g, "");
     variables = variables.filter((v: any) => v && String(v).trim() !== "");
-    if (category === "AUTHENTICATION" && variables.length === 0) variables = [Math.floor(1000 + Math.random() * 9000).toString()];
-    
-    headerMediaType = (headerMediaType || "none").toLowerCase().trim();
-    if (headerMediaType === "" || headerMediaType === "undefined") headerMediaType = "none";
+    if (cat === "AUTHENTICATION" && variables.length === 0) variables = [Math.floor(1000 + Math.random() * 9000).toString()];
+
+    let finalHeaderType = (headerMediaType || "none").toLowerCase().trim();
+    if (finalHeaderType === "" || finalHeaderType === "undefined") finalHeaderType = "none";
 
     let uploadedMediaId: string | null = null;
-    if (headerMediaType !== "none" && file) {
+    if (finalHeaderType !== "none" && file) {
       const mediaFormData = new FormData();
       mediaFormData.append("file", file);
       mediaFormData.append("messaging_product", "whatsapp");
@@ -151,8 +185,8 @@ export async function POST(req: Request) {
     }
 
     const components: any[] = [];
-    if (headerMediaType !== "none") {
-      const type = headerMediaType;
+    if (finalHeaderType !== "none") {
+      const type = finalHeaderType;
       let mediaObj = null;
       if (uploadedMediaId) mediaObj = { id: uploadedMediaId };
       else if (mediaUrl) mediaObj = mediaUrl.startsWith("http") ? { link: mediaUrl } : { id: mediaUrl };
@@ -168,7 +202,7 @@ export async function POST(req: Request) {
     });
     let data = await response.json();
 
-    if (!response.ok && data.error?.code === 131008 && category === "AUTHENTICATION" && variables.length > 0) {
+    if (!response.ok && data.error?.code === 131008 && cat === "AUTHENTICATION" && variables.length > 0) {
       const retryPayload = { messaging_product: "whatsapp", to: sanitizedPhone, type: "template", template: { name: templateName, language: { code: languageCode }, components: [ { type: "body", parameters: variables.map((v: string) => ({ type: "text", text: v })) }, { type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: variables[0] }] } ] } };
       response = await fetch(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, { method: "POST", headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify(retryPayload) });
       data = await response.json();
@@ -182,10 +216,7 @@ export async function POST(req: Request) {
     if (messagePrice > 0) { payer.balance = Math.max(0, Math.round((currentBalance - messagePrice) * 100) / 100); await payer.save(); }
     await incrementUsage(session.user.id, "testMessages");
 
-    /* ══════════════════════════════════════════════════════════════════════════
-       ✅ FIX: SAVE TO DB FOR LIVE CHAT
-       Using the EXACT PHONE_NUMBER_ID we used to send, so Account B sees it.
-       ══════════════════════════════════════════════════════════════════════════ */
+    // ✅ SAVE TO DB WITH THE EXACT PHONE_NUMBER_ID USED TO SEND
     try {
       const wamid = data?.messages?.[0]?.id || null;
       const metaTemplate = await fetchFullTemplate(PHONE_NUMBER_ID, ACCESS_TOKEN, templateName, languageCode);
@@ -200,21 +231,20 @@ export async function POST(req: Request) {
         mediaUrl: uploadedMediaId || mediaUrl || null,
         whatsappMessageId: wamid,
         status: "sent",
-        templateName: templateName,
+        templateName,
         templateLanguage: languageCode,
         templateHeaderType: displayData.templateHeaderType || "none",
         templateHeaderText: displayData.templateHeaderText || undefined,
         templateBodyText: displayData.templateBodyText || undefined,
         templateFooter: displayData.templateFooter || undefined,
         templateButtons: displayData.templateButtons?.length > 0 ? displayData.templateButtons : undefined,
-        // ✅ THE CRITICAL FIX: This links the message to Account B in the DB
         whatsappPhoneNumberId: PHONE_NUMBER_ID,
       });
     } catch (dbErr) {
       console.error("⚠️ DB save failed (message still sent):", dbErr);
     }
 
-    return NextResponse.json({ success: true, data, balance: payer.balance, chargedAmount: messagePrice, category });
+    return NextResponse.json({ success: true, data, balance: payer.balance, chargedAmount: messagePrice, category: cat });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("❌ Send Error:", message);
