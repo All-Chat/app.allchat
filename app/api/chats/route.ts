@@ -1,9 +1,5 @@
 /* =====================================================================
-   GET /api/chats - FETCH CHAT LIST
-   =====================================================================
-   ✅ FIX: When a specific WABA is selected, include messages that have
-   whatsappPhoneNumberId = null/undefined (legacy messages saved before
-   the webhook was tagging them). This matches the behavior of /api/chat.
+   GET /api/chats - 100% STRICT ISOLATION + AUTO-BACKFILL
    ===================================================================== */
 
 import { NextResponse } from "next/server";
@@ -25,21 +21,28 @@ export async function GET(req: Request) {
     const wabaId = searchParams.get("whatsappPhoneNumberId") || "";
     const userId = session.user.id;
 
-    // ── STEP 1: Find all phone IDs that have messages from this user
-    // When a WABA is selected, find phones that have at least one message
-    // from that WABA OR with no WABA tag (legacy messages)
+    // ── AUTO-BACKFILL: Fix legacy null messages for the selected WABA ──
+    // This runs silently in the background so old chats instantly appear
+    if (wabaId && wabaId !== "all") {
+      Message.updateMany(
+        {
+          userId: new mongoose.Types.ObjectId(userId),
+          whatsappPhoneNumberId: { $in: [null, undefined, ""] },
+          direction: "out", // Outgoing nulls are the main culprit
+        },
+        { $set: { whatsappPhoneNumberId: wabaId } }
+      ).lean(); // .lean() makes it fire-and-forget (doesn't block the response)
+    }
+
+    // ── STEP 1: Find phone numbers ──
     const phoneMatchStage: Record<string, unknown> = {
       userId: new mongoose.Types.ObjectId(userId),
     };
 
+    // ✅ STRICT ISOLATION: NO $or, NO null fallback. 
+    // If Tata is selected, ONLY look for Tata's exact ID.
     if (wabaId && wabaId !== "all") {
-      // ✅ FIX: Use $or to include untagged (null/undefined) messages
-      // This ensures legacy messages (saved before webhook fix) still show up
-      phoneMatchStage.$or = [
-        { whatsappPhoneNumberId: wabaId },
-        { whatsappPhoneNumberId: null },
-        { whatsappPhoneNumberId: { $exists: false } },
-      ];
+      phoneMatchStage.whatsappPhoneNumberId = wabaId;
     }
 
     const matchingPhones = await Message.distinct("phone", phoneMatchStage).lean();
@@ -48,15 +51,17 @@ export async function GET(req: Request) {
       return NextResponse.json({ success: true, chats: [] });
     }
 
-    // ── STEP 2: Aggregate those phone IDs to build the chat list
+    // ── STEP 2: Aggregate chat list ──
     const chats = await Message.aggregate([
       {
         $match: {
           userId: new mongoose.Types.ObjectId(userId),
           phone: { $in: matchingPhones },
+          // Strict filter inside aggregate too
+          ...(wabaId && wabaId !== "all" ? { whatsappPhoneNumberId: wabaId } : {})
         },
       },
-      { $sort: { phone: 1, createdAt: -1 } },
+      { $sort: { createdAt: -1 } },
       {
         $group: {
           _id: "$phone",
@@ -69,7 +74,7 @@ export async function GET(req: Request) {
           whatsappPhoneNumberId: { $first: "$whatsappPhoneNumberId" },
         },
       },
-      { $sort: { updatedAt: -1, _id: 1 } },
+      { $sort: { updatedAt: -1 } },
     ]);
 
     return NextResponse.json({ success: true, chats });
