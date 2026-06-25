@@ -1,3 +1,17 @@
+/* =====================================================================
+   LIVE CHAT PAGE - MULTI-WABA SUPPORT
+   =====================================================================
+   Flow:
+   1. User logs in → session.user.id = MongoDB _id
+   2. Fetch user document → get name
+   3. Fetch whatsappNumbers[] from /api/user/whatsapp-numbers
+   4. Dropdown shows: "All Numbers" + each number's `name` field
+   5. User selects a number → we use its `whatsappPhoneNumberId` to:
+      - Filter /api/chats and /api/chat
+      - Pass to /api/whatsapp when sending free-text messages
+   6. Outgoing messages show sender name based on `whatsappPhoneNumberId`
+   ===================================================================== */
+
 /* eslint-disable react-hooks/set-state-in-effect */
 /* eslint-disable react/jsx-no-undef */
 "use client";
@@ -8,13 +22,14 @@ import {
   Search, Send, Loader2, MessageSquare, CheckCheck,
   MoreVertical, Paperclip, Smile, Mic, Phone, Video,
   FileText, ArrowDown, X, Lock, Tag, ExternalLink,
-  Check, Image as ImageIcon, ArrowLeft, ChevronDown,
-  Radio, AlertCircle
+  Image as ImageIcon, ArrowLeft, ChevronDown, Radio, AlertCircle,
+  Check,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { useSession } from "next-auth/react";
 
+// ─── Type Definitions ───────────────────────────────────────────────────────
 type TemplateButton = {
   type: "quick_reply" | "url" | "phone_number";
   text: string;
@@ -58,6 +73,7 @@ type Chat = {
   whatsappPhoneNumberId?: string;
 };
 
+// ─── WhatsApp Number type (matches your DB schema exactly) ─────────────
 type WhatsappNumber = {
   _id: string;
   name: string;
@@ -65,10 +81,9 @@ type WhatsappNumber = {
   whatsappPhoneNumberId?: string;
   whatsappAccessToken?: string;
   isActive?: boolean;
-  phoneNumber?: string;
-  displayPhoneNumber?: string;
 };
 
+// ─── Utility Functions ──────────────────────────────────────────────────────
 const getAvatarGradient = (id: string) => {
   const colors = [
     "from-pink-500 to-rose-500",
@@ -79,19 +94,13 @@ const getAvatarGradient = (id: string) => {
     "from-indigo-500 to-blue-600",
   ];
   let hash = 0;
-  for (let i = 0; i < id.length; i++)
-    hash = id.charCodeAt(i) + ((hash << 5) - hash);
+  for (let i = 0; i < id.length; i++) hash = id.charCodeAt(i) + ((hash << 5) - hash);
   return colors[Math.abs(hash) % colors.length];
 };
 
-const getAvatarText = (name: string | undefined, identifier: string | undefined) => {
-  if (name && name.trim() !== "" && name !== "Unknown") {
-    return name.trim().charAt(0).toUpperCase();
-  }
-  if (identifier) {
-    const digits = identifier.replace(/\D/g, "");
-    return digits.substring(0, 2);
-  }
+const getAvatarText = (name: string | undefined, id: string | undefined) => {
+  if (name && name.trim() !== "" && name !== "Unknown") return name.trim().charAt(0).toUpperCase();
+  if (id) return id.replace(/\D/g, "").substring(0, 2);
   return "?";
 };
 
@@ -99,22 +108,22 @@ const getMessageDate = (msg: Message) => msg.createdAt || msg.timestamp || "";
 
 const parseTemplateButtons = (buttons: TemplateButton[] | string | undefined): TemplateButton[] => {
   if (!buttons) return [];
-  if (typeof buttons === "string") {
-    try { return JSON.parse(buttons); } catch { return []; }
-  }
+  if (typeof buttons === "string") { try { return JSON.parse(buttons); } catch { return []; } }
   return Array.isArray(buttons) ? buttons : [];
 };
 
 const handleUnauthorized = (res: Response) => {
-  if (res.status === 401) {
-    window.location.href = "/signin";
-    return true;
-  }
+  if (res.status === 401) { window.location.href = "/signin"; return true; }
   return false;
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAIN COMPONENT
+// ═══════════════════════════════════════════════════════════════════════════════
 export default function ChatPage() {
   const { data: session, status } = useSession();
+
+  // ─── State ────────────────────────────────────────────────────────────────
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChat, setActiveChat] = useState<string | null>(null);
   const [activeChatData, setActiveChatData] = useState<Chat | null>(null);
@@ -127,14 +136,14 @@ export default function ChatPage() {
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [contactNames, setContactNames] = useState<Record<string, string>>({});
+  const [searchQuery, setSearchQuery] = useState("");
 
   // ✅ WABA Number state
   const [whatsappNumbers, setWhatsappNumbers] = useState<WhatsappNumber[]>([]);
-  const [selectedWhatsappNumberId, setSelectedWhatsappNumberId] = useState<string>("all");
+  const [selectedWabaId, setSelectedWabaId] = useState<string>("all");
   const [loadingNumbers, setLoadingNumbers] = useState(true);
 
   const [showChatList, setShowChatList] = useState(true);
-  const [searchQuery, setSearchQuery] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const prevMessageCount = useRef(0);
@@ -143,14 +152,14 @@ export default function ChatPage() {
   const isFetchingChats = useRef(false);
   const isFetchingMessages = useRef(false);
 
-  // ─── ✅ Fetch WhatsApp numbers ───
+  // ─── ✅ Fetch WhatsApp Numbers from DB ─────────────────────────────────
+  // Calls /api/user/whatsapp-numbers which returns user.whatsappNumbers[]
+  // Each item has: _id, name, wabaId, whatsappPhoneNumberId, whatsappAccessToken, isActive
   const fetchWhatsappNumbers = useCallback(async () => {
     setLoadingNumbers(true);
     try {
       const res = await fetch("/api/user/whatsapp-numbers");
       if (!res.ok) { setLoadingNumbers(false); return; }
-      const contentType = res.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) { setLoadingNumbers(false); return; }
       const data = await res.json();
 
       let numbers: WhatsappNumber[] = [];
@@ -161,31 +170,24 @@ export default function ChatPage() {
 
       setWhatsappNumbers(numbers);
 
-      // Auto-select first if only one
+      // Auto-select first number if only one exists
       if (numbers.length === 1 && numbers[0].whatsappPhoneNumberId) {
-        setSelectedWhatsappNumberId(numbers[0].whatsappPhoneNumberId);
-      }
-
-      // If previously selected number no longer exists, reset
-      if (selectedWhatsappNumberId !== "all") {
-        const stillExists = numbers.some(
-          (n) => n.whatsappPhoneNumberId === selectedWhatsappNumberId
-        );
-        if (!stillExists) {
-          setSelectedWhatsappNumberId(numbers.length > 0 ? (numbers[0].whatsappPhoneNumberId || "all") : "all");
-        }
+        setSelectedWabaId(numbers[0].whatsappPhoneNumberId);
       }
     } catch (err) {
-      console.error("Failed to fetch WhatsApp numbers", err);
+      console.error("Failed to fetch WhatsApp numbers:", err);
     } finally {
       setLoadingNumbers(false);
     }
-  }, [selectedWhatsappNumberId]);
+  }, []);
 
-  // ─── ✅ Get sender name for outgoing messages ───
+  // ─── ✅ Get Sender Name for Outgoing Messages ────────────────────────────
+  // Matches message.whatsappPhoneNumberId to a number in whatsappNumbers[]
+  // Returns the number's `name` field (e.g. "The Real Leads" or "TataMotors")
   const getSenderName = useCallback((msg: Message): string | null => {
     if (msg.direction !== "out") return null;
 
+    // Exact match by whatsappPhoneNumberId
     if (msg.whatsappPhoneNumberId) {
       const match = whatsappNumbers.find(
         (n) => n.whatsappPhoneNumberId === msg.whatsappPhoneNumberId
@@ -193,31 +195,21 @@ export default function ChatPage() {
       if (match?.name) return match.name;
     }
 
-    const senderNum = msg.senderNumber || msg.fromPhone || msg.phone;
-    if (senderNum) {
-      const cleaned = senderNum.replace(/\D/g, "");
-      const match = whatsappNumbers.find((n) => {
-        const n1 = (n.phoneNumber || n.displayPhoneNumber || "").replace(/\D/g, "");
-        return (n1 && cleaned.includes(n1)) || (n1 && n1.includes(cleaned));
-      });
-      if (match?.name) return match.name;
-    }
-
-    // If a specific number is selected, use its name
-    if (selectedWhatsappNumberId !== "all") {
-      const sel = whatsappNumbers.find((n) => n.whatsappPhoneNumberId === selectedWhatsappNumberId);
+    // If a specific number is selected in dropdown, use its name
+    if (selectedWabaId !== "all") {
+      const sel = whatsappNumbers.find((n) => n.whatsappPhoneNumberId === selectedWabaId);
       if (sel?.name) return sel.name;
     }
 
-    // Fallback to first only if exactly one
+    // Fallback: first number if only one
     if (whatsappNumbers.length === 1 && whatsappNumbers[0]?.name) {
       return whatsappNumbers[0].name;
     }
 
     return null;
-  }, [whatsappNumbers, selectedWhatsappNumberId]);
+  }, [whatsappNumbers, selectedWabaId]);
 
-  // ─── Fetch contact name ───
+  // ─── Fetch Contact Name ─────────────────────────────────────────────────────
   const fetchContactName = useCallback(async (phoneId: string) => {
     if (fetchedContacts.current.has(phoneId)) return;
     fetchedContacts.current.add(phoneId);
@@ -227,7 +219,7 @@ export default function ChatPage() {
       if (handleUnauthorized(res)) return;
       const data = await res.json();
       if (data.success && data.contact?.name && data.contact.name.trim() !== "") {
-        setContactNames(prev => {
+        setContactNames((prev) => {
           if (prev[phoneId] === data.contact.name) return prev;
           return { ...prev, [phoneId]: data.contact.name };
         });
@@ -235,76 +227,67 @@ export default function ChatPage() {
     } catch { /* silent */ }
   }, []);
 
-  // ─── Resolve display name ───
+  // ─── Resolve Display Name ────────────────────────────────────────────────────
   const getResolvedName = useCallback((chat: Chat): string => {
-    if (contactNames[chat._id] && contactNames[chat._id].trim() !== "") return contactNames[chat._id];
-    if (chat.name && chat.name.trim() !== "" && chat.name !== "Unknown") return chat.name;
-    if (chat.phone && chat.phone.trim() !== "" && chat.phone !== "Unknown") return chat.phone;
+    if (contactNames[chat._id]?.trim()) return contactNames[chat._id];
+    if (chat.name?.trim() && chat.name !== "Unknown") return chat.name;
+    if (chat.phone?.trim() && chat.phone !== "Unknown") return chat.phone;
     return chat._id;
   }, [contactNames]);
 
   const getDisplayName = (chat: Chat | null) => {
     if (!chat) return "";
     const name = getResolvedName(chat);
-    return name && name !== "Unknown" ? name : chat._id;
+    return name !== "Unknown" ? name : chat._id;
   };
 
-  const getAvatarLabel = (chat: Chat) => {
-    const resolved = getResolvedName(chat);
-    return getAvatarText(resolved, chat.phone || chat._id);
-  };
+  const getAvatarLabel = (chat: Chat) => getAvatarText(getResolvedName(chat), chat.phone || chat._id);
 
-  // ─── Scroll helpers ───
+  // ─── Scroll Helpers ──────────────────────────────────────────────────────────
   const checkScrollPosition = () => {
-    const container = chatContainerRef.current;
-    if (!container) return;
-    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120;
-    setShowScrollBtn(!isNearBottom);
+    const c = chatContainerRef.current;
+    if (!c) return;
+    setShowScrollBtn(c.scrollHeight - c.scrollTop - c.clientHeight >= 120);
   };
 
   const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
-    chatContainerRef.current?.scrollTo({ top: chatContainerRef.current.scrollHeight, behavior });
+    chatContainerRef.current?.scrollTo({ top: chatContainerRef.current?.scrollHeight, behavior });
   };
 
   useEffect(() => {
-    const container = chatContainerRef.current;
-    if (!container) return;
-    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120;
-    if (isNearBottom) scrollToBottom("smooth");
+    const c = chatContainerRef.current;
+    if (!c) return;
+    if (c.scrollHeight - c.scrollTop - c.clientHeight < 120) scrollToBottom("smooth");
   }, [messages]);
 
   useEffect(() => {
     if (activeChat) setTimeout(() => scrollToBottom("instant"), 50);
   }, [activeChat]);
 
-  // ─── ✅ Load chats (with WABA filter) ───
+  // ─── ✅ Load Chats (passes whatsappPhoneNumberId to filter) ─────────────────
   const loadChats = useCallback(async () => {
     if (isFetchingChats.current) return;
     isFetchingChats.current = true;
     try {
       const params = new URLSearchParams();
-      if (selectedWhatsappNumberId && selectedWhatsappNumberId !== "all") {
-        params.set("whatsappPhoneNumberId", selectedWhatsappNumberId);
+      if (selectedWabaId && selectedWabaId !== "all") {
+        params.set("whatsappPhoneNumberId", selectedWabaId);
       }
 
       const res = await fetch(`/api/chats?${params.toString()}`);
       if (handleUnauthorized(res)) return;
       const data = await res.json();
+
       if (data.success && data.chats) {
-        setChats(prev => {
+        setChats((prev) => {
           if (prev.length === data.chats.length) {
             let changed = false;
             for (let i = 0; i < prev.length; i++) {
               if (
                 prev[i]._id !== data.chats[i]._id ||
                 prev[i].lastMessage !== data.chats[i].lastMessage ||
-                prev[i].updatedAt !== data.chats[i].updatedAt ||
-                prev[i].lastDirection !== data.chats[i].lastDirection ||
-                prev[i].name !== data.chats[i].name
-              ) {
-                changed = true;
-                break;
-              }
+                prev[i].updatedAt !== data.chats[i].updatedAt
+              ) { changed = true; break; }
             }
             if (!changed) return prev;
           }
@@ -312,7 +295,7 @@ export default function ChatPage() {
         });
 
         data.chats.forEach((chat: Chat) => {
-          if (!chat.name || chat.name === "Unknown" || chat.name.trim() === "") {
+          if (!chat.name || chat.name === "Unknown" || !chat.name.trim()) {
             fetchContactName(chat._id);
           }
         });
@@ -326,35 +309,33 @@ export default function ChatPage() {
         }
       }
     } catch (err) {
-      console.error("Failed to load chats", err);
+      console.error("Failed to load chats:", err);
     } finally {
       setLoading(false);
       isFetchingChats.current = false;
     }
-  }, [activeChat, fetchContactName, selectedWhatsappNumberId]);
+  }, [activeChat, fetchContactName, selectedWabaId]);
 
-  // ─── ✅ Load messages (with WABA filter) ───
+  // ─── ✅ Load Messages (passes whatsappPhoneNumberId to filter) ───────────────
   const loadMessages = useCallback(async () => {
     if (!activeChat || isFetchingMessages.current) return;
     isFetchingMessages.current = true;
     try {
       const cleanPhone = activeChat.replace(/\+/g, "");
       const params = new URLSearchParams({ phone: cleanPhone });
-      if (selectedWhatsappNumberId && selectedWhatsappNumberId !== "all") {
-        params.set("whatsappPhoneNumberId", selectedWhatsappNumberId);
+      if (selectedWabaId && selectedWabaId !== "all") {
+        params.set("whatsappPhoneNumberId", selectedWabaId);
       }
 
       const res = await fetch(`/api/chat?${params.toString()}`);
-      if (handleUnauthorized(res)) {
-        isFetchingMessages.current = false;
-        return;
-      }
+      if (handleUnauthorized(res)) { isFetchingMessages.current = false; return; }
       const data = await res.json();
+
       if (data.success) {
         const newMessages: Message[] = data.messages || [];
         if (newMessages.length > prevMessageCount.current) {
-          const latestMsg = newMessages[newMessages.length - 1];
-          if (latestMsg.direction === "in") {
+          const latest = newMessages[newMessages.length - 1];
+          if (latest.direction === "in") {
             setIsTyping(true);
             setTimeout(() => setIsTyping(false), 1500);
           }
@@ -363,26 +344,27 @@ export default function ChatPage() {
         setMessages(newMessages);
 
         for (const msg of newMessages) {
-          if (msg.contactName && msg.contactName.trim() !== "" && msg.contactName !== "Unknown") {
+          if (msg.contactName?.trim() && msg.contactName !== "Unknown") {
             const key = activeChat!;
-            setContactNames(prev => {
-              if (prev[key] === msg.contactName) return prev;
-              return { ...prev, [key]: msg.contactName } as Record<string, string>;
+            const contactName = msg.contactName.trim();
+            setContactNames((prev) => {
+              if (prev[key] === contactName) return prev;
+              return { ...prev, [key]: contactName };
             });
             break;
           }
         }
       }
     } catch (err) {
-      console.error("Failed to load messages", err);
+      console.error("Failed to load messages:", err);
     } finally {
       isFetchingMessages.current = false;
     }
-  }, [activeChat, selectedWhatsappNumberId]);
+  }, [activeChat, selectedWabaId]);
 
-  // ─── ✅ Handle WABA number change ───
-  const handleWhatsappNumberChange = (newId: string) => {
-    setSelectedWhatsappNumberId(newId);
+  // ─── ✅ Handle WABA Number Change ─────────────────────────────────────────
+  const handleWabaChange = (newId: string) => {
+    setSelectedWabaId(newId);
     setActiveChat(null);
     setActiveChatData(null);
     setMessages([]);
@@ -390,7 +372,7 @@ export default function ChatPage() {
     setShowChatList(true);
   };
 
-  // ─── Effects ───
+  // ─── Effects ────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (status === "authenticated") {
       fetchWhatsappNumbers();
@@ -399,12 +381,12 @@ export default function ChatPage() {
     }
   }, [status, fetchWhatsappNumbers]);
 
-  // ✅ Load chats AFTER numbers are fetched
+  // Load chats AFTER numbers are fetched
   useEffect(() => {
     if (status === "authenticated" && !loadingNumbers) {
       loadChats();
     }
-  }, [status, loadingNumbers, selectedWhatsappNumberId, loadChats]);
+  }, [status, loadingNumbers, selectedWabaId, loadChats]);
 
   useEffect(() => {
     prevMessageCount.current = 0;
@@ -416,6 +398,7 @@ export default function ChatPage() {
     }
   }, [activeChat, loadMessages, fetchContactName]);
 
+  // Poll for new messages every 3 seconds
   useEffect(() => {
     if (status !== "authenticated" || loadingNumbers) return;
     const interval = setInterval(() => {
@@ -425,29 +408,26 @@ export default function ChatPage() {
     return () => clearInterval(interval);
   }, [activeChat, loadChats, loadMessages, status, loadingNumbers]);
 
-  // ─── File handling ───
+  // ─── File Handling ────────────────────────────────────────────────────────────
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) setSelectedFile(file);
   };
 
-  // ─── ✅ Send message (with WABA number) ───
+  // ─── ✅ Send Free-Text Message (passes whatsappPhoneNumberId) ─────────────────
   const sendMessage = async () => {
     if ((!text && !selectedFile) || !activeChat) return;
     setSending(true);
     try {
       const cleanPhone = activeChat.replace(/\+/g, "");
-      let data;
 
-      // Build the request body with whatsappPhoneNumberId
-      const baseBody: Record<string, string> = {
-        phone: cleanPhone,
-        text: text || "",
-      };
-      if (selectedWhatsappNumberId && selectedWhatsappNumberId !== "all") {
-        baseBody.whatsappPhoneNumberId = selectedWhatsappNumberId;
+      // Build body with whatsappPhoneNumberId
+      const baseBody: Record<string, string> = { phone: cleanPhone, text: text || "" };
+      if (selectedWabaId && selectedWabaId !== "all") {
+        baseBody.whatsappPhoneNumberId = selectedWabaId;
       }
 
+      let data;
       if (selectedFile) {
         const formData = new FormData();
         Object.entries(baseBody).forEach(([k, v]) => formData.append(k, v));
@@ -464,6 +444,7 @@ export default function ChatPage() {
         if (handleUnauthorized(res)) return;
         data = await res.json();
       }
+
       if (data.success) {
         setText("");
         setSelectedFile(null);
@@ -480,18 +461,15 @@ export default function ChatPage() {
     }
   };
 
-  // ─── Chat selection handlers ───
   const handleChatSelect = (chat: Chat) => {
     setActiveChat(chat._id);
     setActiveChatData(chat);
     setShowChatList(false);
   };
 
-  const handleBackToChats = () => {
-    setShowChatList(true);
-  };
+  const handleBackToChats = () => setShowChatList(true);
 
-  // ─── Formatting ───
+  // ─── Formatting ───────────────────────────────────────────────────────────────
   const formatTime = (d: string | undefined) => {
     if (!d) return "";
     const date = new Date(d);
@@ -514,8 +492,8 @@ export default function ChatPage() {
     const groups: { date: string; messages: Message[] }[] = [];
     messages.forEach((msg) => {
       const dateStr = formatDate(getMessageDate(msg));
-      const existingGroup = groups.find((g) => g.date === dateStr);
-      if (existingGroup) existingGroup.messages.push(msg);
+      const existing = groups.find((g) => g.date === dateStr);
+      if (existing) existing.messages.push(msg);
       else groups.push({ date: dateStr, messages: [msg] });
     });
     return groups;
@@ -536,31 +514,31 @@ export default function ChatPage() {
 
   const renderMediaContent = (msg: Message) => {
     const type = msg.messageType || "text";
-    const mediaSrc = getMediaSrc(msg.mediaUrl);
+    const src = getMediaSrc(msg.mediaUrl);
 
-    if (type === "image" && mediaSrc)
+    if (type === "image" && src)
       return (
         <div className="mb-1 max-w-[220px] sm:max-w-[300px]">
-          <img src={mediaSrc} alt="Image" className="rounded-xl max-w-full object-cover shadow-sm" />
+          <img src={src} alt="Image" className="rounded-xl max-w-full object-cover shadow-sm" />
           {msg.text && <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words mt-1.5">{msg.text}</p>}
         </div>
       );
-    if (type === "video" && mediaSrc)
+    if (type === "video" && src)
       return (
         <div className="mb-1 max-w-[220px] sm:max-w-[300px]">
-          <video src={mediaSrc} controls className="rounded-xl max-w-full object-cover shadow-sm" />
+          <video src={src} controls className="rounded-xl max-w-full object-cover shadow-sm" />
           {msg.text && <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words mt-1.5">{msg.text}</p>}
         </div>
       );
-    if (type === "audio" && mediaSrc)
+    if (type === "audio" && src)
       return (
         <div className="mb-1 w-56 sm:w-72">
-          <audio controls className="w-full outline-none"><source src={mediaSrc} type="audio/ogg" /></audio>
+          <audio controls className="w-full outline-none"><source src={src} type="audio/ogg" /></audio>
         </div>
       );
-    if (type === "document" && mediaSrc)
+    if (type === "document" && src)
       return (
-        <a href={mediaSrc} target="_blank" rel="noopener noreferrer" className="mb-1 flex items-center gap-3 bg-white/80 rounded-xl p-3 hover:bg-white transition-colors shadow-sm">
+        <a href={src} target="_blank" rel="noopener noreferrer" className="mb-1 flex items-center gap-3 bg-white/80 rounded-xl p-3 hover:bg-white transition-colors shadow-sm">
           <FileText className="w-8 h-8 text-red-500 shrink-0" />
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold text-gray-900 truncate">{msg.text || "Document.pdf"}</p>
@@ -571,35 +549,44 @@ export default function ChatPage() {
     return <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words">{msg.text}</p>;
   };
 
+  // ─── ✅ Render Template Bubble (exactly like WhatsApp) ────────────────────
   const renderTemplateContent = (msg: Message) => {
-    const mediaSrc = getMediaSrc(msg.mediaUrl);
+    const src = getMediaSrc(msg.mediaUrl);
     const buttons = parseTemplateButtons(msg.templateButtons);
-    const headerType = msg.templateHeaderType || (msg.messageType === "image" || msg.messageType === "video" || msg.messageType === "document" ? msg.messageType : undefined);
-    const hasImageHeader = (headerType === "image" || msg.messageType === "image") && mediaSrc;
-    const hasVideoHeader = (headerType === "video" || msg.messageType === "video") && mediaSrc;
-    const hasDocHeader = (headerType === "document" || msg.messageType === "document") && mediaSrc;
+    const headerType = msg.templateHeaderType ||
+      (msg.messageType === "image" || msg.messageType === "video" || msg.messageType === "document" ? msg.messageType : undefined);
+    const hasImg = (headerType === "image" || msg.messageType === "image") && src;
+    const hasVid = (headerType === "video" || msg.messageType === "video") && src;
+    const hasDoc = (headerType === "document" || msg.messageType === "document") && src;
 
     return (
       <>
         <div className="flex items-center gap-1.5 mb-1.5">
           <Tag size={10} className="text-emerald-600 shrink-0" />
-          <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700 whitespace-nowrap">{msg.templateName}</span>
+          <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700 whitespace-nowrap">
+            {msg.templateName}
+          </span>
         </div>
 
-        {hasImageHeader && (
+        {hasImg && (
           <div className="mb-2 -mx-2.5 -mt-0.5 overflow-hidden rounded-t-xl">
-            <img src={mediaSrc!} alt="" className="w-full max-h-56 sm:max-h-72 object-cover" />
+            <img src={src!} alt="" className="w-full max-h-56 sm:max-h-72 object-cover" />
           </div>
         )}
 
-        {hasVideoHeader && (
+        {hasVid && (
           <div className="mb-2">
-            <video src={mediaSrc!} controls className="rounded-xl max-w-full max-h-56 sm:max-h-72 object-cover" />
+            <video src={src!} controls className="rounded-xl max-w-full max-h-56 sm:max-h-72 object-cover" />
           </div>
         )}
 
-        {hasDocHeader && (
-          <a href={mediaSrc!} target="_blank" rel="noopener noreferrer" className="mb-2 flex items-center gap-3 bg-white/80 rounded-xl p-3 hover:bg-white transition-colors shadow-sm">
+        {hasDoc && (
+          <a
+            href={src!}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mb-2 flex items-center gap-3 bg-white/80 rounded-xl p-3 hover:bg-white transition-colors shadow-sm"
+          >
             <FileText className="w-8 h-8 text-red-500 shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-gray-900 truncate">{msg.templateHeaderText || "Document"}</p>
@@ -609,14 +596,20 @@ export default function ChatPage() {
         )}
 
         {headerType === "text" && msg.templateHeaderText && (
-          <p className="text-[14px] font-bold text-gray-900 whitespace-pre-wrap break-words mb-1">{msg.templateHeaderText}</p>
+          <p className="text-[14px] font-bold text-gray-900 whitespace-pre-wrap break-words mb-1">
+            {msg.templateHeaderText}
+          </p>
         )}
 
         {(msg.templateBodyText || msg.text) && (
-          <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words">{msg.templateBodyText || msg.text}</p>
+          <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words">
+            {msg.templateBodyText || msg.text}
+          </p>
         )}
 
-        {msg.templateFooter && <p className="text-[11px] text-gray-500 mt-1.5 leading-snug">{msg.templateFooter}</p>}
+        {msg.templateFooter && (
+          <p className="text-[11px] text-gray-500 mt-1.5 leading-snug">{msg.templateFooter}</p>
+        )}
 
         {buttons.length > 0 && (
           <div className="mt-2 border-t border-gray-200/80 pt-1">
@@ -646,6 +639,7 @@ export default function ChatPage() {
     return renderMediaContent(msg);
   };
 
+  // ─── Loading / Unauthenticated ─────────────────────────────────────────────────
   if (status === "loading") {
     return (
       <div className="flex min-h-screen bg-slate-50 items-center justify-center">
@@ -662,6 +656,9 @@ export default function ChatPage() {
     );
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // RENDER
+  // ═══════════════════════════════════════════════════════════════════════
   return (
     <>
       <Sidebar />
@@ -669,22 +666,11 @@ export default function ChatPage() {
       <div className="flex flex-col md:flex-row h-screen bg-[#f0f2f5] text-gray-900 font-sans overflow-hidden">
         <div className="flex-1 md:ml-64 flex overflow-hidden">
 
-          {/* ═══════ LEFT: CHAT LIST PANEL ═══════ */}
+          {/* ═══════ LEFT PANEL: CHAT LIST ═══════ */}
           <div className={`w-full md:w-[380px] bg-white md:border-r border-gray-200 flex flex-col flex-shrink-0 ${
             showChatList ? "flex" : "hidden md:flex"
           }`}>
-            <div className="md:hidden h-14 bg-[#f0f2f5] flex items-center px-4 border-b border-gray-200 flex-shrink-0">
-              <span className="font-bold text-gray-800 text-lg tracking-tight flex-1">Chats</span>
-              <div className="flex gap-1">
-                <button className="p-2 hover:bg-gray-200 rounded-full transition-colors">
-                  <MessageSquare className="w-5 h-5 text-gray-600" />
-                </button>
-                <button className="p-2 hover:bg-gray-200 rounded-full transition-colors">
-                  <MoreVertical className="w-5 h-5 text-gray-600" />
-                </button>
-              </div>
-            </div>
-
+            {/* Desktop Header */}
             <div className="hidden md:flex h-[60px] bg-[#f0f2f5] items-center justify-between px-4 text-gray-600 z-10 flex-shrink-0 border-b border-gray-200">
               <span className="font-bold text-gray-800 text-lg tracking-tight">Chats</span>
               <div className="flex gap-1">
@@ -693,7 +679,7 @@ export default function ChatPage() {
               </div>
             </div>
 
-            {/* ✅ WABA NUMBER SELECTOR */}
+            {/* ✅ WABA NUMBER SELECTOR DROPDOWN */}
             <div className="px-3 py-2 bg-white border-b border-gray-100 flex-shrink-0">
               {loadingNumbers ? (
                 <div className="flex items-center gap-2 text-xs text-gray-400 py-1">
@@ -708,30 +694,34 @@ export default function ChatPage() {
                 <div className="relative">
                   <div className="flex items-center gap-2 mb-1">
                     <Radio size={11} className="text-emerald-600 shrink-0" />
-                    <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">WhatsApp Number</span>
+                    <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">
+                      WhatsApp Number
+                    </span>
                   </div>
                   <div className="relative">
                     <select
-                      value={selectedWhatsappNumberId}
-                      onChange={(e) => handleWhatsappNumberChange(e.target.value)}
+                      value={selectedWabaId}
+                      onChange={(e) => handleWabaChange(e.target.value)}
                       className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 transition appearance-none cursor-pointer pr-8 text-gray-800"
                     >
                       {whatsappNumbers.length > 1 && (
                         <option value="all">📋 All Numbers ({whatsappNumbers.length})</option>
                       )}
                       {whatsappNumbers.map((n) => (
-                        <option key={n._id || n.whatsappPhoneNumberId} value={n.whatsappPhoneNumberId || n._id}>
+                        <option key={n._id} value={n.whatsappPhoneNumberId || n._id}>
                           {n.name}
                         </option>
                       ))}
                     </select>
                     <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                   </div>
-                  {selectedWhatsappNumberId !== "all" && (
+
+                  {/* Show which number is selected */}
+                  {selectedWabaId !== "all" && (
                     <p className="text-[10px] text-gray-400 mt-1 flex items-center gap-1">
                       <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full inline-block" />
-                      Viewing chats for: <span className="font-semibold text-gray-600">
-                        {whatsappNumbers.find(n => n.whatsappPhoneNumberId === selectedWhatsappNumberId)?.name || "Selected"}
+                      Viewing: <span className="font-semibold text-gray-600">
+                        {whatsappNumbers.find((n) => n.whatsappPhoneNumberId === selectedWabaId)?.name || "Selected"}
                       </span>
                     </p>
                   )}
@@ -739,7 +729,7 @@ export default function ChatPage() {
               )}
             </div>
 
-            {/* Search */}
+            {/* Search Bar */}
             <div className="px-3 py-2 bg-[#f0f2f5] flex-shrink-0">
               <div className="relative">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -756,7 +746,9 @@ export default function ChatPage() {
             {/* Chat List */}
             <div className="flex-1 overflow-y-auto scrollbar-hide bg-white">
               {loading || loadingNumbers ? (
-                <div className="p-6 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-emerald-600" /></div>
+                <div className="p-6 text-center">
+                  <Loader2 className="w-6 h-6 animate-spin mx-auto text-emerald-600" />
+                </div>
               ) : whatsappNumbers.length === 0 ? (
                 <div className="p-6 text-center">
                   <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-3">
@@ -767,47 +759,53 @@ export default function ChatPage() {
                 </div>
               ) : (
                 chats
-                .filter((chat) => {
-                  if (!searchQuery) return true;
-                  const name = getResolvedName(chat).toLowerCase();
-                  const phone = (chat.phone || chat._id).toLowerCase();
-                  const query = searchQuery.toLowerCase();
-                  return name.includes(query) || phone.includes(query);
-                })
-                .map((chat) => (
-                  <div
-                    key={chat._id}
-                    onClick={() => handleChatSelect(chat)}
-                    className={`flex items-center gap-3 px-3 sm:px-4 py-3 cursor-pointer transition-all duration-150 border-b border-gray-50 ${
-                      activeChat === chat._id
-                        ? "bg-emerald-50 border-l-4 border-l-emerald-500"
-                        : "hover:bg-gray-50 border-l-4 border-l-transparent"
-                    }`}
-                  >
-                    <div className={`w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-gradient-to-br ${getAvatarGradient(chat._id)} flex items-center justify-center font-bold text-white text-sm shadow-md flex-shrink-0`}>
-                      {getAvatarLabel(chat)}
-                    </div>
-                    <div className="flex-1 min-w-0 overflow-hidden">
-                      <div className="flex justify-between items-center">
-                        <h3 className="font-semibold text-[14px] sm:text-[15px] text-gray-900 truncate">{getDisplayName(chat)}</h3>
-                        <span className={`text-[11px] font-medium ml-2 flex-shrink-0 ${chat.lastDirection === "out" ? "text-gray-400" : "text-emerald-600"}`}>
-                          {formatTime(chat.updatedAt)}
-                        </span>
+                  .filter((chat) => {
+                    if (!searchQuery) return true;
+                    const name = getResolvedName(chat).toLowerCase();
+                    const phone = (chat.phone || chat._id).toLowerCase();
+                    const query = searchQuery.toLowerCase();
+                    return name.includes(query) || phone.includes(query);
+                  })
+                  .map((chat) => (
+                    <div
+                      key={chat._id}
+                      onClick={() => handleChatSelect(chat)}
+                      className={`flex items-center gap-3 px-3 sm:px-4 py-3 cursor-pointer transition-all duration-150 border-b border-gray-50 ${
+                        activeChat === chat._id
+                          ? "bg-emerald-50 border-l-4 border-l-emerald-500"
+                          : "hover:bg-gray-50 border-l-4 border-l-transparent"
+                      }`}
+                    >
+                      <div
+                        className={`w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-gradient-to-br ${getAvatarGradient(chat._id)} flex items-center justify-center font-bold text-white text-sm shadow-md flex-shrink-0`}
+                      >
+                        {getAvatarLabel(chat)}
                       </div>
-                      <div className="flex items-center gap-1.5 mt-0.5">
-                        {chat.lastDirection === "out" && <CheckCheck className="w-4 h-4 text-blue-500 shrink-0" />}
-                        <p className="text-sm text-gray-500 truncate leading-tight">
-                          {chat.lastMessageType === "template" ? `[Template]` : chat.lastMessage}
-                        </p>
+                      <div className="flex-1 min-w-0 overflow-hidden">
+                        <div className="flex justify-between items-center">
+                          <h3 className="font-semibold text-[14px] sm:text-[15px] text-gray-900 truncate">
+                            {getDisplayName(chat)}
+                          </h3>
+                          <span className={`text-[11px] font-medium ml-2 flex-shrink-0 ${
+                            chat.lastDirection === "out" ? "text-gray-400" : "text-emerald-600"
+                          }`}>
+                            {formatTime(chat.updatedAt)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          {chat.lastDirection === "out" && <CheckCheck className="w-4 h-4 text-blue-500 shrink-0" />}
+                          <p className="text-sm text-gray-500 truncate leading-tight">
+                            {chat.lastMessageType === "template" ? "[Template]" : chat.lastMessage}
+                          </p>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))
+                  ))
               )}
             </div>
           </div>
 
-          {/* ═══════ RIGHT: CHAT WINDOW ═══════ */}
+          {/* ═══════ RIGHT PANEL: CHAT WINDOW ═══════ */}
           <div className={`flex-1 flex flex-col relative bg-[#efeae2] overflow-hidden ${
             !showChatList ? "flex" : "hidden md:flex"
           }`}>
@@ -834,11 +832,15 @@ export default function ChatPage() {
                     onClick={() => setShowProfile(true)}
                     className="flex items-center gap-2 md:gap-3 cursor-pointer hover:bg-gray-200 rounded-lg px-1 md:px-2 py-1 -ml-1 md:-ml-2 transition-colors flex-1 min-w-0"
                   >
-                    <div className={`w-9 h-9 md:w-10 md:h-10 rounded-full bg-gradient-to-br ${getAvatarGradient(activeChatData._id)} flex items-center justify-center font-bold text-white text-xs shadow flex-shrink-0`}>
+                    <div
+                      className={`w-9 h-9 md:w-10 md:h-10 rounded-full bg-gradient-to-br ${getAvatarGradient(activeChatData._id)} flex items-center justify-center font-bold text-white text-xs shadow flex-shrink-0`}
+                    >
                       {getAvatarLabel(activeChatData)}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-[14px] md:text-[15px] text-gray-900 truncate">{getDisplayName(activeChatData)}</p>
+                      <p className="font-semibold text-[14px] md:text-[15px] text-gray-900 truncate">
+                        {getDisplayName(activeChatData)}
+                      </p>
                       <div className="h-4 flex items-center gap-1">
                         {isTyping ? (
                           <div className="flex items-center gap-1 text-emerald-600">
@@ -856,13 +858,24 @@ export default function ChatPage() {
                     </div>
                   </div>
                   <div className="flex gap-0.5 md:gap-1 text-gray-500 flex-shrink-0">
-                    <button className="p-2 md:p-2.5 hover:bg-gray-200 rounded-full transition-colors"><Video className="w-5 h-5" /></button>
-                    <button className="hidden sm:block p-2 md:p-2.5 hover:bg-gray-200 rounded-full transition-colors"><Search className="w-5 h-5" /></button>
-                    <button onClick={() => setShowProfile(true)} className="p-2 md:p-2.5 hover:bg-gray-200 rounded-full transition-colors"><MoreVertical className="w-5 h-5" /></button>
+                    <button className="p-2 md:p-2.5 hover:bg-gray-200 rounded-full transition-colors">
+                      <Video className="w-5 h-5" />
+                    </button>
+                    <button className="hidden sm:block p-2 md:p-2.5 hover:bg-gray-200 rounded-full transition-colors">
+                      <Search className="w-5 h-5" />
+                    </button>
+                    <button
+                      onClick={() => setShowProfile(true)}
+                      className="p-2 md:p-2.5 hover:bg-gray-200 rounded-full transition-colors"
+                    >
+                      <MoreVertical className="w-5 h-5" />
+                    </button>
                   </div>
                 </>
               ) : (
-                <div className="text-gray-400 mx-auto font-medium text-sm md:text-base">Select a chat to start messaging</div>
+                <div className="text-gray-400 mx-auto font-medium text-sm md:text-base">
+                  Select a chat to start messaging
+                </div>
               )}
             </div>
 
@@ -878,11 +891,17 @@ export default function ChatPage() {
                     <div className="w-48 h-48 sm:w-[300px] sm:h-[300px] bg-emerald-100 rounded-full flex items-center justify-center mb-6 opacity-10 shadow-inner">
                       <MessageSquare className="w-20 h-20 sm:w-32 sm:h-32 text-emerald-800" />
                     </div>
-                    <h2 className="text-2xl sm:text-4xl font-light mb-2 text-transparent bg-clip-text bg-gradient-to-r from-emerald-600 to-teal-500 text-center">WatiX Web</h2>
-                    <p className="text-sm text-gray-400 flex items-center gap-1.5 mt-1"><Lock size={12} /> End-to-end encrypted</p>
+                    <h2 className="text-2xl sm:text-4xl font-light mb-2 text-transparent bg-clip-text bg-gradient-to-r from-emerald-600 to-teal-500 text-center">
+                      WatiX Web
+                    </h2>
+                    <p className="text-sm text-gray-400 flex items-center gap-1.5 mt-1">
+                      <Lock size={12} /> End-to-end encrypted
+                    </p>
                   </div>
                 ) : messages.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-gray-400 text-sm flex-col gap-2"><Lock size={16} />No messages yet. Send one!</div>
+                  <div className="h-full flex items-center justify-center text-gray-400 text-sm flex-col gap-2">
+                    <Lock size={16} /> No messages yet. Send one!
+                  </div>
                 ) : (
                   <div className="space-y-1 max-w-full overflow-hidden">
                     {groupedMessages().map((group, gIndex) => (
@@ -897,12 +916,18 @@ export default function ChatPage() {
                           const showTail = !nextMsg || nextMsg.direction !== msg.direction;
                           const senderName = getSenderName(msg);
                           const prevMsg = group.messages[mIndex - 1];
-                          const showSenderName = msg.direction === "out" && senderName && (!prevMsg || prevMsg.direction !== "out" || getSenderName(prevMsg) !== senderName);
+                          const showSenderName = msg.direction === "out" && senderName && (
+                            !prevMsg ||
+                            prevMsg.direction !== "out" ||
+                            getSenderName(prevMsg) !== senderName
+                          );
 
                           return (
                             <div
                               key={msg._id || mIndex}
-                              className={`flex w-full relative group ${msg.direction === "out" ? "justify-end" : "justify-start"}`}
+                              className={`flex w-full relative group ${
+                                msg.direction === "out" ? "justify-end" : "justify-start"
+                              }`}
                             >
                               <div
                                 className={`relative max-w-[85%] sm:max-w-[65%] px-2.5 py-1.5 shadow-sm mt-0.5 min-w-0 transition-shadow hover:shadow-md ${
@@ -913,14 +938,26 @@ export default function ChatPage() {
                               >
                                 {showTail && (
                                   <span
-                                    className={`absolute bottom-0 w-4 h-4 ${msg.direction === "out" ? "right-0 translate-x-1 bg-[#D9FDD3]" : "left-0 -translate-x-1 bg-white"}`}
-                                    style={{ clipPath: msg.direction === "out" ? "polygon(100% 0, 0 100%, 100% 100%)" : "polygon(0 0, 100% 100%, 0 100%)" }}
+                                    className={`absolute bottom-0 w-4 h-4 ${
+                                      msg.direction === "out"
+                                        ? "right-0 translate-x-1 bg-[#D9FDD3]"
+                                        : "left-0 -translate-x-1 bg-white"
+                                    }`}
+                                    style={{
+                                      clipPath:
+                                        msg.direction === "out"
+                                          ? "polygon(100% 0, 0 100%, 100% 100%)"
+                                          : "polygon(0 0, 100% 100%, 0 100%)",
+                                    }}
                                   />
                                 )}
                                 <div className="min-w-0 overflow-hidden">
+                                  {/* ✅ SENDER NAME BADGE (e.g. "The Real Leads") */}
                                   {showSenderName && (
                                     <div className="flex items-center gap-1.5 mb-1 pb-1 border-b border-emerald-200/60">
-                                      <div className={`w-5 h-5 rounded-full bg-gradient-to-br ${getAvatarGradient(senderName!)} flex items-center justify-center font-bold text-white text-[9px] shadow-sm shrink-0`}>
+                                      <div
+                                        className={`w-5 h-5 rounded-full bg-gradient-to-br ${getAvatarGradient(senderName!)} flex items-center justify-center font-bold text-white text-[9px] shadow-sm shrink-0`}
+                                      >
                                         {senderName!.charAt(0).toUpperCase()}
                                       </div>
                                       <span className="text-[11px] font-bold text-emerald-700 truncate">
@@ -928,9 +965,14 @@ export default function ChatPage() {
                                       </span>
                                     </div>
                                   )}
+
                                   {renderMessageContent(msg)}
+
+                                  {/* Timestamp + Status */}
                                   <div className="flex items-center justify-end gap-1 ml-3 float-right mt-1 translate-y-1">
-                                    <span className="text-[10px] text-gray-500 font-light whitespace-nowrap">{formatTime(getMessageDate(msg))}</span>
+                                    <span className="text-[10px] text-gray-500 font-light whitespace-nowrap">
+                                      {formatTime(getMessageDate(msg))}
+                                    </span>
                                     {renderStatusIcon(msg)}
                                   </div>
                                   <div className="clear-both" />
@@ -945,6 +987,7 @@ export default function ChatPage() {
                 )}
               </div>
 
+              {/* Scroll-to-bottom button */}
               {showScrollBtn && activeChat && (
                 <button
                   onClick={() => scrollToBottom("smooth")}
@@ -962,14 +1005,32 @@ export default function ChatPage() {
                   <div className="flex items-center gap-2 bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-full text-xs font-medium border border-emerald-200 w-fit mb-2 shadow-sm">
                     <ImageIcon size={14} className="shrink-0" />
                     <span className="truncate max-w-[120px] sm:max-w-[200px]">{selectedFile.name}</span>
-                    <button onClick={() => setSelectedFile(null)} className="ml-1 hover:bg-emerald-200 rounded-full p-0.5 transition-colors"><X size={12} /></button>
+                    <button
+                      onClick={() => setSelectedFile(null)}
+                      className="ml-1 hover:bg-emerald-200 rounded-full p-0.5 transition-colors"
+                    >
+                      <X size={12} />
+                    </button>
                   </div>
                 )}
 
                 <div className="flex items-center gap-1.5 sm:gap-2.5">
-                  <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept="image/*,video/*,audio/*,.pdf" />
-                  <button className="p-2 text-gray-500 hover:text-emerald-600 transition-colors"><Smile className="w-5 h-5 sm:w-6 sm:h-6" /></button>
-                  <button onClick={() => fileInputRef.current?.click()} className="p-2 text-gray-500 hover:text-emerald-600 transition-colors"><Paperclip className="w-5 h-5 sm:w-6 sm:h-6 rotate-45" /></button>
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileChange}
+                    className="hidden"
+                    accept="image/*,video/*,audio/*,.pdf"
+                  />
+                  <button className="p-2 text-gray-500 hover:text-emerald-600 transition-colors">
+                    <Smile className="w-5 h-5 sm:w-6 sm:h-6" />
+                  </button>
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="p-2 text-gray-500 hover:text-emerald-600 transition-colors"
+                  >
+                    <Paperclip className="w-5 h-5 sm:w-6 sm:h-6 rotate-45" />
+                  </button>
                   <div className="flex-1 flex items-center bg-white rounded-2xl px-3 sm:px-5 shadow-sm border border-gray-100 focus-within:ring-2 focus-within:ring-emerald-500/20 transition-all min-w-0">
                     <input
                       type="text"
@@ -984,34 +1045,51 @@ export default function ChatPage() {
                     onClick={sendMessage}
                     disabled={sending || (!text && !selectedFile)}
                     className={`p-2 sm:p-2.5 rounded-full transition-all duration-300 flex-shrink-0 ${
-                      text || selectedFile ? "bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg scale-105" : "bg-transparent hover:bg-gray-200 text-gray-500"
+                      text || selectedFile
+                        ? "bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg scale-105"
+                        : "bg-transparent hover:bg-gray-200 text-gray-500"
                     }`}
                   >
-                    {sending ? <Loader2 className="w-5 h-5 sm:w-6 sm:h-6 animate-spin" /> : text || selectedFile ? <Send className="w-5 h-5 sm:w-6 sm:h-6" /> : <Mic className="w-5 h-5 sm:w-6 sm:h-6" />}
+                    {sending ? (
+                      <Loader2 className="w-5 h-5 sm:w-6 sm:h-6 animate-spin" />
+                    ) : text || selectedFile ? (
+                      <Send className="w-5 h-5 sm:w-6 sm:h-6" />
+                    ) : (
+                      <Mic className="w-5 h-5 sm:w-6 sm:h-6" />
+                    )}
                   </button>
                 </div>
               </div>
             )}
 
-            {/* Profile Drawer */}
+            {/* Contact Info Drawer */}
             <div
               className={`absolute right-0 top-0 h-full w-full sm:w-[380px] bg-[#f0f2f5] shadow-2xl z-30 transition-transform duration-300 ease-in-out flex flex-col ${
                 showProfile ? "translate-x-0" : "translate-x-full"
               }`}
             >
               <div className="h-14 md:h-[60px] bg-[#00a884] flex items-center px-4 text-white shadow-sm gap-4 md:gap-6 flex-shrink-0">
-                <button onClick={() => setShowProfile(false)} className="hover:bg-white/10 rounded-full p-1.5 transition-colors">
+                <button
+                  onClick={() => setShowProfile(false)}
+                  className="hover:bg-white/10 rounded-full p-1.5 transition-colors"
+                >
                   <ArrowLeft className="w-5 h-5" />
                 </button>
                 <p className="font-medium text-lg">Contact info</p>
               </div>
               <div className="flex-1 overflow-y-auto">
                 <div className="bg-white p-6 sm:p-8 flex flex-col items-center shadow-sm">
-                  <div className={`w-24 h-24 sm:w-32 sm:h-32 rounded-full bg-gradient-to-br ${getAvatarGradient(activeChatData?._id || "")} flex items-center justify-center font-bold text-white text-3xl sm:text-5xl shadow-inner mb-4`}>
+                  <div
+                    className={`w-24 h-24 sm:w-32 sm:h-32 rounded-full bg-gradient-to-br ${getAvatarGradient(activeChatData?._id || "")} flex items-center justify-center font-bold text-white text-3xl sm:text-5xl shadow-inner mb-4`}
+                  >
                     {activeChatData ? getAvatarLabel(activeChatData) : "?"}
                   </div>
-                  <h2 className="text-lg sm:text-xl font-semibold text-gray-900">{getDisplayName(activeChatData)}</h2>
-                  <p className="text-sm text-gray-600 mt-1 font-medium">+{activeChatData?._id}</p>
+                  <h2 className="text-lg sm:text-xl font-semibold text-gray-900">
+                    {getDisplayName(activeChatData)}
+                  </h2>
+                  <p className="text-sm text-gray-600 mt-1 font-medium">
+                    +{activeChatData?._id}
+                  </p>
                 </div>
                 <div className="bg-white mt-3 p-4 sm:p-5 shadow-sm">
                   <p className="text-sm text-emerald-700 font-medium mb-1">About</p>
