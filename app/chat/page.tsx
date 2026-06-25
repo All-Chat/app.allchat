@@ -704,14 +704,19 @@ export default function ChatPage() {
                       onChange={(e) => handleWabaChange(e.target.value)}
                       className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 transition appearance-none cursor-pointer pr-8 text-gray-800"
                     >
-                      {whatsappNumbers.length > 1 && (
-                        <option value="all">📋 All Numbers ({whatsappNumbers.length})</option>
-                      )}
-                      {whatsappNumbers.map((n) => (
-                        <option key={n._id} value={n.whatsappPhoneNumberId || n._id}>
-                          {n.name}
-                        </option>
-                      ))}
+{/* ✅ FIX: Only show numbers that actually have a whatsappPhoneNumberId.
+    Without this, numbers without a phone ID would send their MongoDB _id
+    as the value, which would never match any message in the DB. */}
+{whatsappNumbers.length > 1 && (
+  <option value="all">📋 All Numbers ({whatsappNumbers.length})</option>
+)}
+{whatsappNumbers
+  .filter((n) => n.whatsappPhoneNumberId && n.whatsappPhoneNumberId.trim() !== "")
+  .map((n) => (
+    <option key={n._id} value={n.whatsappPhoneNumberId}>
+      {n.name}
+    </option>
+  ))}
                     </select>
                     <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                   </div>
