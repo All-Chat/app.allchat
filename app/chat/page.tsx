@@ -897,7 +897,7 @@ export default function ChatPage() {
                       <MessageSquare className="w-20 h-20 sm:w-32 sm:h-32 text-emerald-800" />
                     </div>
                     <h2 className="text-2xl sm:text-4xl font-light mb-2 text-transparent bg-clip-text bg-gradient-to-r from-emerald-600 to-teal-500 text-center">
-                      WatiX Web
+                      All Chat Web
                     </h2>
                     <p className="text-sm text-gray-400 flex items-center gap-1.5 mt-1">
                       <Lock size={12} /> End-to-end encrypted
