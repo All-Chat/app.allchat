@@ -9,19 +9,12 @@ export async function GET() {
   try {
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
-
-    if (!userId) {
-      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
-    }
+    if (!userId) return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
 
     await connectDB();
 
     const campaigns = await Campaign.find({ userId })
-      .select(
-        "name templateName templateCategory variables phoneNumbers names " +
-        "mediaUrl mediaType languageCode " +
-        "status totalMessages sentCount failedCount totalDeducted scheduledAt createdAt reportData"
-      )
+      .select("name templateName templateCategory variables phoneNumbers names mediaUrl mediaType languageCode status totalMessages sentCount failedCount totalDeducted scheduledAt createdAt reportData")
       .sort({ createdAt: -1 })
       .lean();
 
