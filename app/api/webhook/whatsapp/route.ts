@@ -1,19 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* =====================================================================
-   WHATSAPP WEBHOOK - MULTI-ACCOUNT SUPPORT
-   =====================================================================
-   Flow:
-   1. Meta sends webhook with metadata.phone_number_id
-   2. We look up which user owns that phone_number_id
-   3. We save the message WITH whatsappPhoneNumberId set
-   
-   ✅ CRITICAL: whatsappPhoneNumberId is saved on EVERY incoming message.
-   Without this, the chat page can't filter messages by WABA number.
-   
-   Setup:
-   - Set WHATSAPP_VERIFY_TOKEN in .env
-   - In Meta App Dashboard → Webhooks → subscribe to "messages" field
-   - Callback URL: https://yourdomain.com/api/webhook/whatsapp
+   WHATSAPP WEBHOOK - MULTI-ACCOUNT SUPPORT (BULLETPROOF)
    ===================================================================== */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -23,7 +10,6 @@ import Message from "@/models/Message";
 
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "watiX_webhook_verify_2024";
 
-// ─── GET: Webhook Verification (Meta calls this when you set up the webhook) ──
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const mode = searchParams.get("hub.mode");
@@ -31,23 +17,190 @@ export async function GET(req: NextRequest) {
   const challenge = searchParams.get("hub.challenge");
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verified successfully");
+    console.log("✅ Webhook verified");
     return new NextResponse(challenge || "", {
       status: 200,
       headers: { "Content-Type": "text/plain" },
     });
   }
 
-  console.error("❌ Webhook verification failed", { mode, token });
   return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 }
 
-// ─── POST: Incoming Messages from Meta ──────────────────────────────────────
+/* ─── FIND USER WHO OWNS A PHONE_NUMBER_ID ─────────────────────────────
+   Tries 4 different locations where the ID could be stored:
+   1. Inside user.whatsappNumbers[].whatsappPhoneNumberId
+   2. At user.whatsappPhoneNumberId (top-level)
+   3. Inside parent tenant's whatsappNumbers[]
+   4. At parent tenant's whatsappPhoneNumberId (top-level)
+   ────────────────────────────────────────────────────────────────────── */
+async function findUserByPhoneId(phoneNumberId: string): Promise<Record<string, unknown> | null> {
+  // 1. Search inside whatsappNumbers[] array
+  let user = await User.findOne({
+    "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId,
+  }).lean();
+
+  if (user) {
+    console.log(`🔍 Found user [${user._id}] via whatsappNumbers[] array`);
+    return user;
+  }
+
+  // 2. Search at top-level whatsappPhoneNumberId field
+  user = await User.findOne({
+    whatsappPhoneNumberId: phoneNumberId,
+  }).lean();
+
+  if (user) {
+    console.log(`🔍 Found user [${user._id}] via top-level whatsappPhoneNumberId`);
+    return user;
+  }
+
+  // 3. Search inside ALL parent tenants' whatsappNumbers[] arrays
+  // (in case this is a sub-user and the number is on the parent)
+  const allParentTenants = await User.find({
+    parentTenantId: { $exists: false },
+    "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId,
+  }).lean();
+
+  if (allParentTenants.length > 0) {
+    console.log(`🔍 Found parent tenant [${allParentTenants[0]._id}] via parent's whatsappNumbers[] array`);
+    return allParentTenants[0];
+  }
+
+  // 4. Search ALL parent tenants' top-level field
+  const parentTopLevel = await User.findOne({
+    parentTenantId: { $exists: false },
+    whatsappPhoneNumberId: phoneNumberId,
+  }).lean();
+
+  if (parentTopLevel) {
+    console.log(`🔍 Found parent tenant [${parentTopLevel._id}] via parent's top-level whatsappPhoneNumberId`);
+    return parentTopLevel;
+  }
+
+  // 5. BRUTE FORCE: Fetch ALL users and check manually
+  // This handles any weird schema variation
+  const allUsers = await User.find({}).lean();
+  for (const u of allUsers) {
+    // Check array
+    if (u.whatsappNumbers?.length > 0) {
+      for (const n of u.whatsappNumbers) {
+        if (n.whatsappPhoneNumberId === phoneNumberId) {
+          console.log(`🔍 BRUTE FORCE: Found user [${u._id}] in whatsappNumbers[]`);
+          return u;
+        }
+      }
+    }
+    // Check top-level
+    if (u.whatsappPhoneNumberId === phoneNumberId) {
+      console.log(`🔍 BRUTE FORCE: Found user [${u._id}] at top-level`);
+      return u;
+    }
+  }
+
+  return null;
+}
+
+/* ─── PARSE INCOMING MESSAGE ─────────────────────────────────────────── */
+function parseMessage(msg: any) {
+  let text = "";
+  let messageType = "text";
+  let mediaId: string | null = null;
+
+  switch (msg.type) {
+    case "text":
+      text = msg.text?.body || "";
+      messageType = "text";
+      break;
+
+    case "image":
+      text = msg.image?.caption || "";
+      messageType = "image";
+      mediaId = msg.image?.id || null;
+      break;
+
+    case "video":
+      text = msg.video?.caption || "";
+      messageType = "video";
+      mediaId = msg.video?.id || null;
+      break;
+
+    case "document":
+      text = msg.document?.caption || msg.document?.filename || "Document";
+      messageType = "document";
+      mediaId = msg.document?.id || null;
+      break;
+
+    case "audio":
+      text = "";
+      messageType = "audio";
+      mediaId = msg.audio?.id || null;
+      break;
+
+    case "sticker":
+      text = "";
+      messageType = "sticker";
+      mediaId = msg.sticker?.id || null;
+      break;
+
+    case "location":
+      text = `📍 ${msg.location?.latitude?.toFixed(6)}, ${msg.location?.longitude?.toFixed(6)}`;
+      if (msg.location?.name) text += `\n${msg.location.name}`;
+      if (msg.location?.address) text += `\n${msg.location.address}`;
+      messageType = "text";
+      break;
+
+    case "contacts": {
+      const contacts = msg.contacts || [];
+      text = "📇 " + contacts
+        .map((c: any) => {
+          const name = c.name?.formatted_name || "Unknown";
+          const phones = (c.phones || []).map((p: any) => p.phone).join(", ");
+          return `${name}: ${phones}`;
+        })
+        .join("\n");
+      messageType = "text";
+      break;
+    }
+
+    case "interactive": {
+      if (msg.interactive?.type === "button_reply") {
+        text = msg.interactive.button_reply?.title || "";
+      } else if (msg.interactive?.type === "list_reply") {
+        text = msg.interactive.list_reply?.title || "";
+        if (msg.interactive.list_reply?.description) {
+          text += "\n" + msg.interactive.list_reply.description;
+        }
+      }
+      messageType = "text";
+      break;
+    }
+
+    case "button":
+      text = msg.button?.text || "[Button]";
+      messageType = "text";
+      break;
+
+    case "order":
+      text = "🛒 Order received";
+      if (msg.order?.text) text += `\n${msg.order.text}`;
+      messageType = "text";
+      break;
+
+    default:
+      text = `[${msg.type || "unknown"}]`;
+      messageType = "text";
+      break;
+  }
+
+  return { text, messageType, mediaId };
+}
+
+/* ─── POST: INCOMING MESSAGES ────────────────────────────────────────── */
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    // Meta sometimes sends test pings or empty bodies
     if (!body?.entry) {
       return NextResponse.json({ success: true });
     }
@@ -56,163 +209,59 @@ export async function POST(req: NextRequest) {
 
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
-        // We only care about "messages" changes
-        // Other fields: "messages", "messaging_postbacks", "statuses"
         if (change.field !== "messages") continue;
 
         const value = change.value;
         if (!value) continue;
 
-        // ── ✅ EXTRACT PHONE_NUMBER_ID FROM METADATA ──
-        // This is THE key field that links the message to a specific WABA
         const phoneNumberId = value.metadata?.phone_number_id;
         const displayPhoneNumber = value.metadata?.display_phone_number;
 
         if (!phoneNumberId) {
-          console.error("⚠️ Webhook: No phone_number_id in metadata", JSON.stringify(value.metadata));
+          console.error("⚠️ No phone_number_id in metadata", JSON.stringify(value.metadata));
           continue;
         }
 
-        // ── FIND THE USER WHO OWNS THIS PHONE NUMBER ──
-        // Search in the whatsappNumbers[] array across ALL users
-        const user = await User.findOne({
-          "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId,
-        }).lean();
+        // ── FIND USER (tries all 5 strategies) ──
+        const user = await findUserByPhoneId(phoneNumberId);
 
         if (!user) {
-          console.error(`⚠️ Webhook: No user found for phone_number_id: ${phoneNumberId}`);
+          console.error(`❌ NO USER FOUND for phone_number_id: ${phoneNumberId}`);
+          console.error(`   Display phone: ${displayPhoneNumber}`);
+          // Don't continue — log and skip
           continue;
         }
 
-        // ── PROCESS EACH MESSAGE ──
+        // ── PROCESS MESSAGES ──
         for (const msg of value.messages || []) {
-          // Skip reactions — they're not real messages
-          if (msg.type === "reaction") continue;
+          if (msg.type === "reaction" || msg.type === "system") continue;
 
-          // Skip system messages (number changes, etc.)
-          if (msg.type === "system") continue;
-
-          // Find the contact info for this message sender
           const contact = (value.contacts || []).find(
             (c: any) => c.wa_id === msg.from
           );
           const contactName = contact?.profile?.name || null;
           const fromPhone = msg.from;
 
-          // ── PARSE MESSAGE CONTENT ──
-          let text = "";
-          let messageType: string = "text";
-          let mediaId: string | null = null;
+          const { text, messageType, mediaId } = parseMessage(msg);
 
-          switch (msg.type) {
-            case "text":
-              text = msg.text?.body || "";
-              messageType = "text";
-              break;
-
-            case "image":
-              text = msg.image?.caption || "";
-              messageType = "image";
-              mediaId = msg.image?.id || null;
-              break;
-
-            case "video":
-              text = msg.video?.caption || "";
-              messageType = "video";
-              mediaId = msg.video?.id || null;
-              break;
-
-            case "document":
-              text = msg.document?.caption || msg.document?.filename || "Document";
-              messageType = "document";
-              mediaId = msg.document?.id || null;
-              break;
-
-            case "audio":
-              text = "";
-              messageType = "audio";
-              mediaId = msg.audio?.id || null;
-              break;
-
-            case "sticker":
-              text = "";
-              messageType = "sticker";
-              mediaId = msg.sticker?.id || null;
-              break;
-
-            case "location":
-              text = `📍 ${msg.location?.latitude?.toFixed(6)}, ${msg.location?.longitude?.toFixed(6)}`;
-              if (msg.location?.name) text += `\n${msg.location.name}`;
-              if (msg.location?.address) text += `\n${msg.location.address}`;
-              messageType = "text";
-              break;
-
-            case "contacts":
-              const contacts = msg.contacts || [];
-              text = contacts
-                .map((c: any) => {
-                  const name = c.name?.formatted_name || "Unknown";
-                  const phones = (c.phones || []).map((p: any) => p.phone).join(", ");
-                  return `${name}: ${phones}`;
-                })
-                .join("\n");
-              text = "📇 " + text;
-              messageType = "text";
-              break;
-
-            case "interactive": {
-              // Button replies and list replies
-              if (msg.interactive?.type === "button_reply") {
-                text = msg.interactive.button_reply?.title || "";
-              } else if (msg.interactive?.type === "list_reply") {
-                text = msg.interactive.list_reply?.title || "";
-                if (msg.interactive.list_reply?.description) {
-                  text += "\n" + msg.interactive.list_reply.description;
-                }
-              }
-              messageType = "text";
-              break;
-            }
-
-            case "button": {
-              text = msg.button?.text || "[Button]";
-              messageType = "text";
-              break;
-            }
-
-            case "order": {
-              text = "🛒 Order received";
-              if (msg.order?.catalog_id) text += `\nCatalog: ${msg.order.catalog_id}`;
-              if (msg.order?.text) text += `\n${msg.order.text}`;
-              messageType = "text";
-              break;
-            }
-
-            default:
-              text = `[${msg.type || "unknown"}]`;
-              messageType = "text";
-              break;
-          }
-
-          // ── CHECK FOR DUPLICATES ──
-          // Meta may retry webhooks; avoid saving duplicate messages
+          // ── CHECK DUPLICATE ──
           const existing = await Message.findOne({
             whatsappMessageId: msg.id,
           }).lean();
 
           if (existing) {
-            // Update the whatsappPhoneNumberId if it was missing (backfill)
+            // Backfill whatsappPhoneNumberId if missing
             if (!existing.whatsappPhoneNumberId && phoneNumberId) {
               await Message.updateOne(
                 { _id: existing._id },
                 { $set: { whatsappPhoneNumberId: phoneNumberId } }
               );
+              console.log(`📦 Backfilled whatsappPhoneNumberId on existing message ${msg.id}`);
             }
             continue;
           }
 
-          // ── ✅ SAVE MESSAGE WITH whatsappPhoneNumberId ──
-          // This is what makes the chat page filtering work!
+          // ── SAVE ──
           const msgTimestamp = msg.timestamp
             ? new Date(parseInt(msg.timestamp) * 1000)
             : new Date();
@@ -227,24 +276,22 @@ export async function POST(req: NextRequest) {
             contactName,
             whatsappMessageId: msg.id,
             status: "delivered",
-            whatsappPhoneNumberId: phoneNumberId, // ← THE CRITICAL FIELD
+            whatsappPhoneNumberId: phoneNumberId,
             fromPhone: displayPhoneNumber,
             senderNumber: fromPhone,
             createdAt: msgTimestamp,
           });
 
           console.log(
-            `✅ Saved IN message: ${fromPhone} → WABA[${phoneNumberId}] user[${user._id}]`
+            `✅ IN msg saved: ${fromPhone} → WABA[${phoneNumberId.substring(0, 8)}...] user[${user._id}] type=${messageType}`
           );
         }
       }
     }
 
-    // Always return 200 to Meta (even if we couldn't process some messages)
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("❌ Webhook error:", error);
-    // Still return 200 so Meta doesn't retry aggressively
     return NextResponse.json({ success: true });
   }
 }
