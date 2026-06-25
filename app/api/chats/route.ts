@@ -1,3 +1,10 @@
+/* =====================================================================
+   GET /api/chat - FETCH MESSAGES FOR A SPECIFIC CHAT
+   =====================================================================
+   Returns all messages for a phone number, optionally filtered by
+   the WABA number. Same backward-compatible filter as /api/chats.
+   ===================================================================== */
+
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Message from "@/models/Message";
@@ -9,28 +16,65 @@ export async function GET(req: Request) {
   try {
     await connectDB();
     const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+    if (!session?.user?.id) {
+      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+    }
 
     const { searchParams } = new URL(req.url);
+    let phone = searchParams.get("phone") || "";
     const wabaId = searchParams.get("whatsappPhoneNumberId") || "";
 
-    const matchStage: Record<string, unknown> = { userId: new mongoose.Types.ObjectId(session.user.id) };
+    if (!phone) {
+      return NextResponse.json({ success: false, messages: [] }, { status: 400 });
+    }
+    phone = phone.replace(/\+/g, "");
 
+    const filter: Record<string, unknown> = {
+      userId: new mongoose.Types.ObjectId(session.user.id),
+      phone,
+    };
+
+    // Backward-compatible filter for old messages
     if (wabaId && wabaId !== "all") {
-      matchStage.$or = [
+      filter.$or = [
         { whatsappPhoneNumberId: wabaId },
         { whatsappPhoneNumberId: null },
         { whatsappPhoneNumberId: { $exists: false } },
       ];
     }
 
-    const chats = await Message.aggregate([
-      { $match: matchStage },
-      { $sort: { phone: 1, createdAt: -1 } },
-      { $group: { _id: "$phone", phone: { $first: "$phone" }, name: { $first: "$contactName" }, lastMessage: { $first: "$text" }, lastDirection: { $first: "$direction" }, lastMessageType: { $first: "$messageType" }, updatedAt: { $first: "$createdAt" }, whatsappPhoneNumberId: { $first: "$whatsappPhoneNumberId" } } },
-      { $sort: { updatedAt: -1, _id: 1 } },
-    ]);
+    const messages = await Message.find(filter).sort({ createdAt: 1 }).lean();
 
-    return NextResponse.json({ success: true, chats });
-  } catch (error) { console.error("Error in /api/chats:", error); return NextResponse.json({ success: false, chats: [] }, { status: 500 }); }
+    // Map to the format the chat UI expects
+    const mapped = messages.map((m) => ({
+      _id: m._id,
+      phone: m.phone,
+      text: m.text,
+      direction: m.direction,
+      messageType: m.messageType,
+      mediaUrl: m.mediaUrl,
+      contactName: m.contactName,
+      createdAt: m.createdAt,
+      timestamp: m.createdAt,
+      whatsappMessageId: m.whatsappMessageId,
+      status: m.status,
+      // Template fields for rendering in chat bubble
+      templateName: m.templateName || undefined,
+      templateHeaderType: m.templateHeaderType || undefined,
+      templateHeaderText: m.templateHeaderText || undefined,
+      templateBodyText: m.templateBodyText || undefined,
+      templateFooter: m.templateFooter || undefined,
+      templateButtons: m.templateButtons || undefined,
+      templateLanguage: m.templateLanguage || undefined,
+      // WABA fields for sender name display
+      whatsappPhoneNumberId: m.whatsappPhoneNumberId || undefined,
+      fromPhone: m.fromPhone || undefined,
+      senderNumber: m.senderNumber || undefined,
+    }));
+
+    return NextResponse.json({ success: true, messages: mapped });
+  } catch (error) {
+    console.error("Error in /api/chat:", error);
+    return NextResponse.json({ success: false, messages: [] }, { status: 500 });
+  }
 }
