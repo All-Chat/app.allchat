@@ -1,5 +1,5 @@
 /* =====================================================================
-   GET /api/chat - FETCH MESSAGES FOR A SPECIFIC CHAT
+   GET /api/chat - SMART ISOLATION (Includes Legacy Untagged Messages)
    ===================================================================== */
 
 import { NextResponse } from "next/server";
@@ -24,15 +24,17 @@ export async function GET(req: Request) {
     if (!phone) {
       return NextResponse.json({ success: false, messages: [] }, { status: 400 });
     }
+    
     phone = phone.replace(/\+/g, "");
 
-    // ── FIX: Use $or for top-level filter (works with $group)
+    // ── BUILD SMART FILTER ──
     const filter: Record<string, unknown> = {
       userId: new mongoose.Types.ObjectId(session.user.id),
-      phone,
+      phone: phone,
     };
 
     if (wabaId && wabaId !== "all") {
+      // Fetch messages explicitly for THIS WABA + legacy untagged messages
       filter.$or = [
         { whatsappPhoneNumberId: wabaId },
         { whatsappPhoneNumberId: null },
