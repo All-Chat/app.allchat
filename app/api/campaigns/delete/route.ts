@@ -9,28 +9,15 @@ import { authOptions } from "@/lib/auth";
 export async function POST(req: Request) {
   try {
     await connectDB();
-
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
-
-    if (!userId) {
-      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
-    }
+    if (!userId) return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
 
     const { campaignId } = await req.json();
-
-    if (!campaignId) {
-      return NextResponse.json({ success: false, message: "Campaign ID required" }, { status: 400 });
-    }
+    if (!campaignId) return NextResponse.json({ success: false, message: "Campaign ID required" }, { status: 400 });
 
     const campaign = await Campaign.findOneAndDelete({ _id: campaignId, userId });
-
-    if (!campaign) {
-      return NextResponse.json(
-        { success: false, message: "Campaign not found or not authorized" },
-        { status: 404 }
-      );
-    }
+    if (!campaign) return NextResponse.json({ success: false, message: "Campaign not found or not authorized" }, { status: 404 });
 
     await ScheduledTrigger.deleteMany({ campaignId });
 
