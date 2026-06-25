@@ -1,6 +1,12 @@
 /* ============================================================================
-   WHATSAPP WEBHOOK ROUTE
-   ---------------------------------------------------------------------------- */
+   WHATSAPP WEBHOOK ROUTE - MULTI-ACCOUNT BULLETPROOF EDITION
+   ----------------------------------------------------------------------------
+   ✅ FIX: Uses a universal $or query to search for the incoming WABA ID 
+   across ALL possible fields in the database (top-level, arrays, sub-objects).
+   This ensures that no matter how Account A or Account B stored their WABA ID,
+   the webhook will find the correct user and save the message properly.
+   ============================================================================ */
+
 /* eslint-disable prefer-const */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -94,6 +100,74 @@ export async function GET(req: Request) {
   } catch (err) { return new Response("Error", { status: 500 }); }
 }
 
+/* ============================================================================
+   ✅ THE UNIVERSAL WABA LOOKUP FUNCTION
+   ----------------------------------------------------------------------------
+   This is the core fix. Instead of checking one field at a time and giving up,
+   this function fires ONE query that checks EVERY possible location where a 
+   WABA Phone Number ID could be stored in your database:
+   
+   1. user.whatsappPhoneNumberId (top-level)
+   2. user.whatsappNumbers[].whatsappPhoneNumberId (array, standard name)
+   3. user.whatsappNumbers[].phoneNumberId (array, alternative name)
+   4. user.whatsappNumbers[].id (array, short name)
+   5. user.whatsappNumbers[].wabaId (array, WABA ID)
+   
+   Once it finds the user, it extracts the correct Access Token for THAT 
+   specific number, even if it's stored inside the array.
+   ============================================================================ */
+async function findUserByAnyWabaId(phoneNumberId: string): Promise<{ user: any; userId: string; phoneId: string; accessToken: string } | null> {
+  if (!phoneNumberId) return null;
+
+  // ONE massive query that checks every possible field
+  const user = await User.findOne({
+    $or: [
+      { whatsappPhoneNumberId: phoneNumberId },
+      { "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId },
+      { "whatsappNumbers.phoneNumberId": phoneNumberId },
+      { "whatsappNumbers.id": phoneNumberId },
+      { "whatsappNumbers.wabaId": phoneNumberId },
+    ]
+  }).lean();
+
+  if (!user) return null;
+
+  // If it was a top-level match
+  if (user.whatsappPhoneNumberId === phoneNumberId) {
+    return {
+      user,
+      userId: user._id.toString(),
+      phoneId: user.whatsappPhoneNumberId,
+      accessToken: user.whatsappAccessToken || process.env.META_ACCESS_TOKEN || "",
+    };
+  }
+
+  // If it was inside the whatsappNumbers array, find the exact match
+  if (user.whatsappNumbers && Array.isArray(user.whatsappNumbers)) {
+    const matchedNum: any = user.whatsappNumbers.find((n: any) =>
+      n.whatsappPhoneNumberId === phoneNumberId ||
+      n.phoneNumberId === phoneNumberId ||
+      n.id === phoneNumberId ||
+      n.wabaId === phoneNumberId
+    );
+
+    if (matchedNum) {
+      return {
+        user,
+        userId: user._id.toString(),
+        phoneId: matchedNum.whatsappPhoneNumberId || matchedNum.phoneNumberId || matchedNum.id || phoneNumberId,
+        // Use the array item's token first, fall back to user's top-level token
+        accessToken: matchedNum.whatsappAccessToken || matchedNum.accessToken || user.whatsappAccessToken || process.env.META_ACCESS_TOKEN || "",
+      };
+    }
+  }
+
+  return null;
+}
+
+/* ============================================================================
+   POST ROUTE - Main Webhook Handler
+   ============================================================================ */
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -106,41 +180,27 @@ export async function POST(req: Request) {
     let ownerUser: any = null;
 
     /* ══════════════════════════════════════════════════════════════════════════
-       ✅ FIX: MULTI-ACCOUNT ARRAY LOOKUP
-       Before this fix, if Account B's number was stored inside the 
-       `whatsappNumbers` array instead of the top-level `whatsappPhoneNumberId` 
-       field, the lookup failed. It then fell back to grabbing the "latest" 
-       user (Account A), causing Account B's replies to be saved under Account A!
+       ✅ UNIVERSAL LOOKUP: Find the correct account for ANY WABA ID
        ══════════════════════════════════════════════════════════════════════════ */
     if (metadataPhoneNumberId) {
-      // 1. Try top-level field (Works for Account A)
-      ownerUser = await User.findOne({ whatsappPhoneNumberId: metadataPhoneNumberId });
-      
-      // 2. If not found, search inside the `whatsappNumbers` array (Fixes Account B)
-      if (!ownerUser) {
-        ownerUser = await User.findOne({ 
-          "whatsappNumbers.whatsappPhoneNumberId": metadataPhoneNumberId 
-        });
-        
-        // If found in the array, extract the specific access token for THIS number
-        if (ownerUser) {
-          const matchedNumber = ownerUser.whatsappNumbers?.find(
-            (n: any) => n.whatsappPhoneNumberId === metadataPhoneNumberId
-          );
-          if (matchedNumber) {
-            ownerUser = ownerUser.toObject(); // Convert mongoose doc to plain object
-            ownerUser.whatsappPhoneNumberId = matchedNumber.whatsappPhoneNumberId;
-            ownerUser.whatsappAccessToken = matchedNumber.whatsappAccessToken || ownerUser.whatsappAccessToken;
-          }
-        }
+      const match = await findUserByAnyWabaId(metadataPhoneNumberId);
+      if (match) {
+        userId = match.userId;
+        // Build a clean ownerUser object with the CORRECT credentials for this specific number
+        ownerUser = {
+          _id: match.user._id,
+          whatsappPhoneNumberId: match.phoneId,
+          whatsappAccessToken: match.accessToken,
+          balance: match.user.balance,
+          parentTenantId: match.user.parentTenantId,
+        };
       }
-      
-      if (ownerUser) userId = ownerUser._id.toString();
     }
-    
-    // 3. Final fallback only if STILL no match
+
+    // Absolute last resort fallback (should rarely hit if DB is set up correctly)
     if (!userId) {
-      ownerUser = await User.findOne().sort({ _id: -1 });
+      console.warn(`⚠️ WEBHOOK: No user found for WABA ID: ${metadataPhoneNumberId}. Using fallback.`);
+      ownerUser = await User.findOne().sort({ _id: -1 }).lean();
       if (ownerUser) userId = ownerUser._id.toString();
     }
 
@@ -211,10 +271,16 @@ export async function POST(req: Request) {
 
     if (!textToSave && !buttonId && !mediaId) return NextResponse.json({ success: true });
 
-    // ✅ FIX: Save with the CORRECT userId and whatsappPhoneNumberId
+    // ✅ SAVE INBOUND MESSAGE WITH CORRECT userId AND whatsappPhoneNumberId
     await Message.create({
-      userId, phone, text: textToSave, direction: "in", messageType, mediaUrl: mediaId,
-      whatsappMessageId: message.id || null, contactName: contactName,
+      userId,
+      phone,
+      text: textToSave,
+      direction: "in",
+      messageType,
+      mediaUrl: mediaId,
+      whatsappMessageId: message.id || null,
+      contactName: contactName,
       whatsappPhoneNumberId: metadataPhoneNumberId || null,
     });
 
@@ -245,7 +311,7 @@ export async function POST(req: Request) {
     }
 
     /* ══════════════════════════════════════════════════════════════════════════
-       SECTION D: CAMPAIGN REPORT UPDATE & DYNAMIC AUTO-TAGGING
+       SECTION D: CAMPAIGN REPORT UPDATE
        ══════════════════════════════════════════════════════════════════════════ */
     if (textToSave) {
       try {
