@@ -10,8 +10,8 @@ export interface IMessage extends Document {
   contactName?: string;
   profilePicUrl?: string;
   whatsappMessageId?: string;
-  metaMessageId?: string;       // ADDED: To match your webhook inbound payload
-  status?: "sent" | "delivered" | "read" | "failed" | "invalid" | "undelivered"; // ADDED: "invalid" & "undelivered" from webhook
+  metaMessageId?: string;       
+  status?: "sent" | "delivered" | "read" | "failed" | "invalid" | "undelivered"; 
   templateName?: string;
   templateHeaderType?: "text" | "image" | "video" | "document" | "none";
   templateHeaderText?: string;
@@ -19,6 +19,12 @@ export interface IMessage extends Document {
   templateFooter?: string;
   templateButtons?: string;
   templateLanguage?: string;
+  
+  // ✅ THE MISSING FIELDS ADDED HERE
+  whatsappPhoneNumberId?: string;  
+  fromPhone?: string;              
+  senderNumber?: string;           
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -45,10 +51,10 @@ const MessageSchema = new Schema<IMessage>(
     contactName: { type: String, default: null },
     profilePicUrl: { type: String, default: null },
     whatsappMessageId: { type: String, default: null },
-    metaMessageId: { type: String, default: null }, // ADDED: Webhook uses this for inbound
+    metaMessageId: { type: String, default: null }, 
     status: { 
       type: String, 
-      enum: ["sent", "delivered", "read", "failed", "invalid", "undelivered"], // ADDED missing statuses
+      enum: ["sent", "delivered", "read", "failed", "invalid", "undelivered"], 
       default: "sent" 
     },
     templateName: { type: String, default: null },
@@ -58,6 +64,11 @@ const MessageSchema = new Schema<IMessage>(
     templateFooter: { type: String, default: null },
     templateButtons: { type: String, default: null },
     templateLanguage: { type: String, default: null },
+    
+    // ✅ ADDED TO SCHEMA BODY: Now Mongoose knows to save these to MongoDB!
+    whatsappPhoneNumberId: { type: String, default: null },
+    fromPhone: { type: String, default: null },
+    senderNumber: { type: String, default: null },
   },
   { timestamps: true }
 );
@@ -66,6 +77,9 @@ const MessageSchema = new Schema<IMessage>(
 // Sparse index so nulls don't take up index space
 MessageSchema.index({ whatsappMessageId: 1 }, { sparse: true });
 MessageSchema.index({ metaMessageId: 1 }, { sparse: true });
+
+// ✅ ADDED INDEX: Massively speeds up the dropdown filtering
+MessageSchema.index({ whatsappPhoneNumberId: 1 }, { sparse: true });
 
 // Primary query index: Fetching chats and messages for a specific user
 MessageSchema.index({ userId: 1, phone: 1, createdAt: -1 });
