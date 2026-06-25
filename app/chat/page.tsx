@@ -8,8 +8,7 @@ import {
   Search, Send, Loader2, MessageSquare, CheckCheck,
   MoreVertical, Paperclip, Smile, Mic, Phone, Video,
   FileText, ArrowDown, X, Lock, Tag, ExternalLink,
-  Check, Image as ImageIcon, ArrowLeft, ChevronDown,
-  AlertCircle, Radio
+  Check, Image as ImageIcon, ArrowLeft
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -42,6 +41,7 @@ type Message = {
   templateFooter?: string;
   templateButtons?: TemplateButton[] | string;
   templateLanguage?: string;
+  // ✅ NEW: fields to identify which WhatsApp number sent the message
   whatsappPhoneNumberId?: string;
   fromPhone?: string;
   senderNumber?: string;
@@ -57,6 +57,7 @@ type Chat = {
   updatedAt: string;
 };
 
+// ✅ NEW: WhatsApp Number type
 type WhatsappNumber = {
   _id: string;
   name: string;
@@ -66,7 +67,6 @@ type WhatsappNumber = {
   isActive?: boolean;
   phoneNumber?: string;
   displayPhoneNumber?: string;
-  verifiedName?: string;
 };
 
 const getAvatarGradient = (id: string) => {
@@ -128,10 +128,8 @@ export default function ChatPage() {
   const [showProfile, setShowProfile] = useState(false);
   const [contactNames, setContactNames] = useState<Record<string, string>>({});
 
-  // ✅ WhatsApp numbers state
+  // ✅ NEW: State for WhatsApp numbers (the "sent by" names)
   const [whatsappNumbers, setWhatsappNumbers] = useState<WhatsappNumber[]>([]);
-  const [selectedWhatsappNumberId, setSelectedWhatsappNumberId] = useState<string>("all");
-  const [loadingNumbers, setLoadingNumbers] = useState(true);
 
   const [showChatList, setShowChatList] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -143,63 +141,39 @@ export default function ChatPage() {
   const isFetchingChats = useRef(false);
   const isFetchingMessages = useRef(false);
 
-  // ─── ✅ Fetch WhatsApp numbers ───
+  // ─── ✅ Fetch WhatsApp numbers (for "sent by" name) ───
   const fetchWhatsappNumbers = useCallback(async () => {
-    setLoadingNumbers(true);
     try {
       const res = await fetch("/api/user/whatsapp-numbers");
-      if (!res.ok) { setLoadingNumbers(false); return; }
-
+      
+      if (!res.ok) return;
+      
       const contentType = res.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) { setLoadingNumbers(false); return; }
+      if (!contentType || !contentType.includes("application/json")) return;
 
       const data = await res.json();
-
-      let numbers: WhatsappNumber[] = [];
+      
+      // Extract numbers safely no matter how the API wraps them
+      let numbers = [];
       if (data.success && Array.isArray(data.numbers)) numbers = data.numbers;
       else if (Array.isArray(data)) numbers = data;
       else if (data.user?.whatsappNumbers) numbers = data.user.whatsappNumbers;
       else if (Array.isArray(data.whatsappNumbers)) numbers = data.whatsappNumbers;
 
-      setWhatsappNumbers(numbers);
-
-      // ✅ Auto-select the first number if "all" is selected and there are numbers
-      if (numbers.length > 0 && selectedWhatsappNumberId === "all") {
-        // Keep "all" so user sees all chats by default, but if only 1 number, select it
-        if (numbers.length === 1) {
-          setSelectedWhatsappNumberId(numbers[0].whatsappPhoneNumberId || numbers[0]._id);
-        }
-      }
-
-      // ✅ If the previously selected number no longer exists, reset to "all" or first
-      if (selectedWhatsappNumberId !== "all") {
-        const stillExists = numbers.some(
-          (n) => n.whatsappPhoneNumberId === selectedWhatsappNumberId || n._id === selectedWhatsappNumberId
-        );
-        if (!stillExists) {
-          setSelectedWhatsappNumberId(numbers.length > 0 ? (numbers[0].whatsappPhoneNumberId || numbers[0]._id) : "all");
-        }
+      if (numbers.length > 0) {
+        setWhatsappNumbers(numbers);
       }
     } catch (err) {
       console.error("Failed to fetch WhatsApp numbers", err);
-    } finally {
-      setLoadingNumbers(false);
     }
-  }, [selectedWhatsappNumberId]);
+  }, []);
 
-  // ─── ✅ Get selected number object ───
-  const getSelectedNumber = useCallback((): WhatsappNumber | null => {
-    if (selectedWhatsappNumberId === "all") return null;
-    return whatsappNumbers.find(
-      (n) => n.whatsappPhoneNumberId === selectedWhatsappNumberId || n._id === selectedWhatsappNumberId
-    ) || null;
-  }, [selectedWhatsappNumberId, whatsappNumbers]);
-
-  // ─── ✅ Get sender name for outgoing messages ───
+   // ─── ✅ Get sender name for outgoing messages ───
   const getSenderName = useCallback((msg: Message): string | null => {
+    // Only show sender name for messages sent BY the user (outgoing)
     if (msg.direction !== "out") return null;
 
-    // 1. Exact match by whatsappPhoneNumberId
+    // 1. Try to find an exact match by whatsappPhoneNumberId
     if (msg.whatsappPhoneNumberId) {
       const match = whatsappNumbers.find(
         (n) => n.whatsappPhoneNumberId === msg.whatsappPhoneNumberId
@@ -207,7 +181,7 @@ export default function ChatPage() {
       if (match?.name) return match.name;
     }
 
-    // 2. Match by senderNumber / fromPhone
+    // 2. Try to find by senderNumber / fromPhone / phone field
     const senderNum = msg.senderNumber || msg.fromPhone || msg.phone;
     if (senderNum) {
       const cleaned = senderNum.replace(/\D/g, "");
@@ -218,17 +192,15 @@ export default function ChatPage() {
       if (match?.name) return match.name;
     }
 
-    // 3. ✅ If a specific number is selected, use its name
-    const selectedNum = getSelectedNumber();
-    if (selectedNum?.name) return selectedNum.name;
-
-    // 4. Fallback to first number only if there's exactly one
-    if (whatsappNumbers.length === 1 && whatsappNumbers[0]?.name) {
+    // 🚀 3. AGGRESSIVE FALLBACK: 
+    // If no exact match is found, but the user has WhatsApp numbers saved, 
+    // just use the FIRST one's name. This guarantees the label shows up!
+    if (whatsappNumbers.length > 0 && whatsappNumbers[0]?.name) {
       return whatsappNumbers[0].name;
     }
 
     return null;
-  }, [whatsappNumbers, getSelectedNumber]);
+  }, [whatsappNumbers]);
 
   // ─── Fetch contact name ───
   const fetchContactName = useCallback(async (phoneId: string) => {
@@ -290,18 +262,12 @@ export default function ChatPage() {
     if (activeChat) setTimeout(() => scrollToBottom("instant"), 50);
   }, [activeChat]);
 
-  // ─── ✅ Load chats (with WABA filter) ───
+  // ─── Load chats ───
   const loadChats = useCallback(async () => {
     if (isFetchingChats.current) return;
     isFetchingChats.current = true;
     try {
-      // ✅ Build query params with whatsappPhoneNumberId
-      const params = new URLSearchParams();
-      if (selectedWhatsappNumberId && selectedWhatsappNumberId !== "all") {
-        params.set("whatsappPhoneNumberId", selectedWhatsappNumberId);
-      }
-
-      const res = await fetch(`/api/chats?${params.toString()}`);
+      const res = await fetch("/api/chats");
       if (handleUnauthorized(res)) return;
       const data = await res.json();
       if (data.success && data.chats) {
@@ -345,22 +311,15 @@ export default function ChatPage() {
       setLoading(false);
       isFetchingChats.current = false;
     }
-  }, [activeChat, fetchContactName, selectedWhatsappNumberId]);
+  }, [activeChat, fetchContactName]);
 
-  // ─── ✅ Load messages (with WABA filter) ───
+  // ─── Load messages ───
   const loadMessages = useCallback(async () => {
     if (!activeChat || isFetchingMessages.current) return;
     isFetchingMessages.current = true;
     try {
       const cleanPhone = activeChat.replace(/\+/g, "");
-
-      // ✅ Build query params with whatsappPhoneNumberId
-      const params = new URLSearchParams({ phone: cleanPhone });
-      if (selectedWhatsappNumberId && selectedWhatsappNumberId !== "all") {
-        params.set("whatsappPhoneNumberId", selectedWhatsappNumberId);
-      }
-
-      const res = await fetch(`/api/chat?${params.toString()}`);
+      const res = await fetch(`/api/chat?phone=${cleanPhone}`);
       if (handleUnauthorized(res)) {
         isFetchingMessages.current = false;
         return;
@@ -394,33 +353,17 @@ export default function ChatPage() {
     } finally {
       isFetchingMessages.current = false;
     }
-  }, [activeChat, selectedWhatsappNumberId]);
-
-  // ─── ✅ Handle WABA number change ───
-  const handleWhatsappNumberChange = (newId: string) => {
-    setSelectedWhatsappNumberId(newId);
-    setActiveChat(null);
-    setActiveChatData(null);
-    setMessages([]);
-    prevMessageCount.current = 0;
-    setShowChatList(true);
-  };
+  }, [activeChat]);
 
   // ─── Effects ───
   useEffect(() => {
     if (status === "authenticated") {
-      fetchWhatsappNumbers();
+      loadChats();
+      fetchWhatsappNumbers(); // ✅ NEW: fetch WhatsApp numbers on mount
     } else if (status === "unauthenticated") {
       window.location.href = "/signin";
     }
-  }, [status, fetchWhatsappNumbers]);
-
-  // ✅ Load chats after numbers are fetched
-  useEffect(() => {
-    if (status === "authenticated" && !loadingNumbers) {
-      loadChats();
-    }
-  }, [status, loadingNumbers, selectedWhatsappNumberId, loadChats]);
+  }, [status]);
 
   useEffect(() => {
     prevMessageCount.current = 0;
@@ -433,13 +376,13 @@ export default function ChatPage() {
   }, [activeChat, loadMessages, fetchContactName]);
 
   useEffect(() => {
-    if (status !== "authenticated" || loadingNumbers) return;
+    if (status !== "authenticated") return;
     const interval = setInterval(() => {
       loadChats();
       if (activeChat) loadMessages();
     }, 3000);
     return () => clearInterval(interval);
-  }, [activeChat, loadChats, loadMessages, status, loadingNumbers]);
+  }, [activeChat, loadChats, loadMessages, status]);
 
   // ─── File handling ───
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -447,23 +390,17 @@ export default function ChatPage() {
     if (file) setSelectedFile(file);
   };
 
-  // ─── ✅ Send message (with WABA number) ───
+  // ─── Send message ───
   const sendMessage = async () => {
     if ((!text && !selectedFile) || !activeChat) return;
     setSending(true);
     try {
       const cleanPhone = activeChat.replace(/\+/g, "");
-
-      // ✅ Include whatsappPhoneNumberId in the request
-      const baseBody: Record<string, string> = { phone: cleanPhone, text: text || "" };
-      if (selectedWhatsappNumberId && selectedWhatsappNumberId !== "all") {
-        baseBody.whatsappPhoneNumberId = selectedWhatsappNumberId;
-      }
-
       let data;
       if (selectedFile) {
         const formData = new FormData();
-        Object.entries(baseBody).forEach(([k, v]) => formData.append(k, v));
+        formData.append("phone", cleanPhone);
+        formData.append("text", text || "");
         formData.append("file", selectedFile);
         const res = await fetch("/api/whatsapp", { method: "POST", body: formData });
         if (handleUnauthorized(res)) return;
@@ -472,7 +409,7 @@ export default function ChatPage() {
         const res = await fetch("/api/whatsapp", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(baseBody),
+          body: JSON.stringify({ phone: cleanPhone, text }),
         });
         if (handleUnauthorized(res)) return;
         data = await res.json();
@@ -493,6 +430,7 @@ export default function ChatPage() {
     }
   };
 
+  // ─── Chat selection handlers ───
   const handleChatSelect = (chat: Chat) => {
     setActiveChat(chat._id);
     setActiveChatData(chat);
@@ -685,7 +623,6 @@ export default function ChatPage() {
           <div className={`w-full md:w-[380px] bg-white md:border-r border-gray-200 flex flex-col flex-shrink-0 ${
             showChatList ? "flex" : "hidden md:flex"
           }`}>
-            {/* Mobile header */}
             <div className="md:hidden h-14 bg-[#f0f2f5] flex items-center px-4 border-b border-gray-200 flex-shrink-0">
               <span className="font-bold text-gray-800 text-lg tracking-tight flex-1">Chats</span>
               <div className="flex gap-1">
@@ -698,7 +635,6 @@ export default function ChatPage() {
               </div>
             </div>
 
-            {/* Desktop header */}
             <div className="hidden md:flex h-[60px] bg-[#f0f2f5] items-center justify-between px-4 text-gray-600 z-10 flex-shrink-0 border-b border-gray-200">
               <span className="font-bold text-gray-800 text-lg tracking-tight">Chats</span>
               <div className="flex gap-1">
@@ -707,54 +643,6 @@ export default function ChatPage() {
               </div>
             </div>
 
-            {/* ✅ NEW: WABA Number Selector */}
-            <div className="px-3 py-2 bg-white border-b border-gray-100 flex-shrink-0">
-              {loadingNumbers ? (
-                <div className="flex items-center gap-2 text-xs text-gray-400 py-1">
-                  <Loader2 className="w-3 h-3 animate-spin" /> Loading numbers...
-                </div>
-              ) : whatsappNumbers.length === 0 ? (
-                <div className="flex items-center gap-2 text-xs text-amber-600 bg-amber-50 px-3 py-2 rounded-lg border border-amber-100">
-                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                  <span>No WhatsApp numbers configured. Add a WABA ID to start receiving messages.</span>
-                </div>
-              ) : (
-                <div className="relative">
-                  <div className="flex items-center gap-2 mb-1">
-                    <Radio size={11} className="text-emerald-600 shrink-0" />
-                    <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">WhatsApp Number</span>
-                  </div>
-                  <div className="relative">
-                    <select
-                      value={selectedWhatsappNumberId}
-                      onChange={(e) => handleWhatsappNumberChange(e.target.value)}
-                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 transition appearance-none cursor-pointer pr-8 text-gray-800"
-                    >
-                      {whatsappNumbers.length > 1 && (
-                        <option value="all">📋 All Numbers ({whatsappNumbers.length})</option>
-                      )}
-                      {whatsappNumbers.map((n) => {
-                        const phone = n.displayPhoneNumber || n.phoneNumber || n.whatsappPhoneNumberId || "";
-                        return (
-                          <option key={n._id || n.whatsappPhoneNumberId} value={n.whatsappPhoneNumberId || n._id}>
-                            {n.name}{phone ? ` (${phone})` : ""}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-                  </div>
-                  {selectedWhatsappNumberId !== "all" && getSelectedNumber() && (
-                    <p className="text-[10px] text-gray-400 mt-1 flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full inline-block" />
-                      Viewing chats for: <span className="font-semibold text-gray-600">{getSelectedNumber()!.name}</span>
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Search */}
             <div className="px-3 py-2 bg-[#f0f2f5] flex-shrink-0">
               <div className="relative">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -768,18 +656,9 @@ export default function ChatPage() {
               </div>
             </div>
 
-            {/* Chat list */}
             <div className="flex-1 overflow-y-auto scrollbar-hide bg-white">
-              {loading || loadingNumbers ? (
+              {loading ? (
                 <div className="p-6 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-emerald-600" /></div>
-              ) : whatsappNumbers.length === 0 ? (
-                <div className="p-6 text-center">
-                  <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                    <Radio className="w-7 h-7 text-gray-300" />
-                  </div>
-                  <p className="text-sm font-semibold text-gray-500">No WhatsApp Numbers</p>
-                  <p className="text-xs text-gray-400 mt-1 px-4">Add a WhatsApp Business Account (WABA) to start sending and receiving messages.</p>
-                </div>
               ) : (
                 chats
                 .filter((chat) => {
@@ -893,7 +772,7 @@ export default function ChatPage() {
                     <div className="w-48 h-48 sm:w-[300px] sm:h-[300px] bg-emerald-100 rounded-full flex items-center justify-center mb-6 opacity-10 shadow-inner">
                       <MessageSquare className="w-20 h-20 sm:w-32 sm:h-32 text-emerald-800" />
                     </div>
-                    <h2 className="text-2xl sm:text-4xl font-light mb-2 text-transparent bg-clip-text bg-gradient-to-r from-emerald-600 to-teal-500 text-center">AllChat Web</h2>
+                    <h2 className="text-2xl sm:text-4xl font-light mb-2 text-transparent bg-clip-text bg-gradient-to-r from-emerald-600 to-teal-500 text-center">AllChat</h2>
                     <p className="text-sm text-gray-400 flex items-center gap-1.5 mt-1"><Lock size={12} /> End-to-end encrypted</p>
                   </div>
                 ) : messages.length === 0 ? (
@@ -907,13 +786,16 @@ export default function ChatPage() {
                             <Lock size={9} /> {group.date}
                           </div>
                         </div>
-                        {group.messages.map((msg, mIndex) => {
+                                                {group.messages.map((msg, mIndex) => {
                           const nextMsg = group.messages[mIndex + 1];
                           const showTail = !nextMsg || nextMsg.direction !== msg.direction;
+                          
+                          // ✅ Get the sender name
                           const senderName = getSenderName(msg);
+                          // ✅ Only show on the FIRST message of a consecutive group
                           const prevMsg = group.messages[mIndex - 1];
                           const showSenderName = msg.direction === "out" && senderName && (!prevMsg || prevMsg.direction !== "out" || getSenderName(prevMsg) !== senderName);
-
+                          
                           return (
                             <div
                               key={msg._id || mIndex}
@@ -933,6 +815,7 @@ export default function ChatPage() {
                                   />
                                 )}
                                 <div className="min-w-0 overflow-hidden">
+                                  {/* ✅ THIS IS THE LABEL THAT SHOWS "The Real Leads" */}
                                   {showSenderName && (
                                     <div className="flex items-center gap-1.5 mb-1 pb-1 border-b border-emerald-200/60">
                                       <div className={`w-5 h-5 rounded-full bg-gradient-to-br ${getAvatarGradient(senderName!)} flex items-center justify-center font-bold text-white text-[9px] shadow-sm shrink-0`}>
