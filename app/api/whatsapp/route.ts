@@ -1,296 +1,134 @@
+/* =====================================================================
+   FREE-TEXT SEND FROM CHAT - MULTI-ACCOUNT SUPPORT
+   =====================================================================
+   This is the route the chat UI calls when you type a message
+   and press Send. It also needs to use the correct WABA number's
+   credentials and save the message with whatsappPhoneNumberId.
+   ===================================================================== */
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
-import Message from "@/models/Message";
 import User from "@/models/User";
+import Message from "@/models/Message";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 
-const DEFAULT_WHATSAPP_TOKEN = process.env.META_ACCESS_TOKEN!;
-const DEFAULT_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID!;
-const WHATSAPP_API = "https://graph.facebook.com/v21.0";
+export const runtime = "nodejs";
 
-const extractTemplateBody = (components: any[]): string => {
-  const bodyComp = components?.find((c: any) => c.type === "body");
-  if (!bodyComp?.parameters) return "";
-  return bodyComp.parameters.map((p: any) => p.text || p.type || "").join("");
-};
-
-const extractHeaderText = (components: any[]): string => {
-  const headerComp = components?.find((c: any) => c.type === "header");
-  if (!headerComp?.parameters) return "";
-  return headerComp.parameters.map((p: any) => p.text || p.type || "").join("");
-};
-
-const detectHeaderType = (components: any[]): "text" | "image" | "video" | "document" | "none" => {
-  const headerComp = components?.find((c: any) => c.type === "header");
-  if (!headerComp?.parameters?.length) return "none";
-  const param = headerComp.parameters[0];
-  if (param.image) return "image";
-  if (param.video) return "video";
-  if (param.document) return "document";
-  return "text";
-};
-
-const extractHeaderMediaUrl = (components: any[]): string | null => {
-  const headerComp = components?.find((c: any) => c.type === "header");
-  if (!headerComp?.parameters?.length) return null;
-  const param = headerComp.parameters[0];
-  return param.image?.link || param.video?.link || param.document?.link || null;
-};
-
-const extractButtons = (components: any[]): any[] => {
-  const buttonComp = components?.find((c: any) => c.type === "button");
-  if (!buttonComp?.parameters) return [];
-  return buttonComp.parameters.map((p: any, idx: number) => ({
-    type: p.type || "quick_reply",
-    text: p.text || p.title || `Button ${idx + 1}`,
-    url: p.url || undefined,
-    phone_number: p.phone_number || undefined,
-    index: idx,
-  }));
-};
+// Same credential resolution as the send route
+function resolveCredentials(user: any, payer: any, explicitPhoneId?: string) {
+  if (explicitPhoneId) {
+    const uMatch = user?.whatsappNumbers?.find((n: any) => n.whatsappPhoneNumberId === explicitPhoneId);
+    if (uMatch) return { PHONE_NUMBER_ID: uMatch.whatsappPhoneNumberId, ACCESS_TOKEN: uMatch.whatsappAccessToken || user?.whatsappAccessToken };
+    const pMatch = payer?.whatsappNumbers?.find((n: any) => n.whatsappPhoneNumberId === explicitPhoneId);
+    if (pMatch) return { PHONE_NUMBER_ID: pMatch.whatsappPhoneNumberId, ACCESS_TOKEN: pMatch.whatsappAccessToken || payer?.whatsappAccessToken };
+  }
+  const activeNum = user?.whatsappNumbers?.find((n: any) => n.isActive);
+  if (activeNum?.whatsappPhoneNumberId) return { PHONE_NUMBER_ID: activeNum.whatsappPhoneNumberId, ACCESS_TOKEN: activeNum.whatsappAccessToken || user?.whatsappAccessToken };
+  if (user?.whatsappNumbers?.[0]?.whatsappPhoneNumberId) { const f = user.whatsappNumbers[0]; return { PHONE_NUMBER_ID: f.whatsappPhoneNumberId, ACCESS_TOKEN: f.whatsappAccessToken || user?.whatsappAccessToken }; }
+  return { PHONE_NUMBER_ID: user?.whatsappPhoneNumberId || payer?.whatsappPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || "", ACCESS_TOKEN: user?.whatsappAccessToken || payer?.whatsappAccessToken || process.env.META_ACCESS_TOKEN || "" };
+}
 
 export async function POST(req: Request) {
   try {
     await connectDB();
-
     const session = await getServerSession(authOptions);
-    const userId = session?.user?.id;
+    if (!session?.user?.id) return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
 
-    if (!userId) {
-      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+    const user = await User.findById(session.user.id);
+    if (!user) return NextResponse.json({ success: false, message: "User not found" }, { status: 404 });
+
+    let payer = user;
+    if (user.parentTenantId) {
+      const p = await User.findOne({ tenantId: user.parentTenantId });
+      if (p) payer = p;
     }
 
-    const user = await User.findById(userId);
-    const WHATSAPP_TOKEN = user?.whatsappAccessToken || DEFAULT_WHATSAPP_TOKEN;
-    const PHONE_NUMBER_ID = user?.whatsappPhoneNumberId || DEFAULT_PHONE_NUMBER_ID;
+    const ct = req.headers.get("content-type") || "";
+    let phone = "", text = "", file: File | null = null, whatsappPhoneNumberId = "";
 
-    if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
-      return NextResponse.json({
-        success: false,
-        message: "WhatsApp credentials not configured for this user",
-      }, { status: 400 });
-    }
-
-    const contentType = req.headers.get("content-type") || "";
-    let phone: string;
-    let text: string;
-    let file: File | null = null;
-    let templatePayload: any = null;
-
-    if (contentType.includes("multipart/form-data")) {
-      const formData = await req.formData();
-      phone = formData.get("phone") as string;
-      text = (formData.get("text") as string) || "";
-      file = formData.get("file") as File | null;
+    if (ct.includes("multipart/form-data")) {
+      const fd = await req.formData();
+      phone = (fd.get("phone") as string) || "";
+      text = (fd.get("text") as string) || "";
+      file = fd.get("file") as File | null;
+      whatsappPhoneNumberId = (fd.get("whatsappPhoneNumberId") as string) || "";
     } else {
       const body = await req.json();
-      phone = body.phone;
+      phone = body.phone || "";
       text = body.text || "";
-      templatePayload = body.template || null;
+      whatsappPhoneNumberId = body.whatsappPhoneNumberId || "";
     }
 
-    if (!phone) {
-      return NextResponse.json({ success: false, message: "Phone is required" }, { status: 400 });
+    if (!phone) return NextResponse.json({ success: false, message: "Phone is required" }, { status: 400 });
+
+    const { PHONE_NUMBER_ID, ACCESS_TOKEN } = resolveCredentials(user.toObject(), payer.toObject(), whatsappPhoneNumberId);
+    if (!PHONE_NUMBER_ID || !ACCESS_TOKEN) {
+      return NextResponse.json({ success: false, message: "WhatsApp credentials not configured." }, { status: 400 });
     }
 
-    // CRITICAL FIX: Strip the "+" sign to match the inbound webhook format
-    phone = phone.replace(/\+/g, "");
+    const sPhone = phone.replace(/\+/g, "");
 
-    let whatsappRes: any;
-    let storedMessage: any;
-    let messageType: string = "text";
-    const mediaUrl: string | null = null;
-
-    // ─────────────────────────────────────
-    // CASE 1: Sending a TEMPLATE message
-    // ─────────────────────────────────────
-    if (templatePayload) {
-      messageType = "template";
-
-      const waPayload: any = {
-        messaging_product: "whatsapp",
-        to: phone,
-        type: "template",
-        template: {
-          name: templatePayload.name,
-          language: { code: templatePayload.language || "en" },
-          components: templatePayload.components || [],
-        },
-      };
-
-      whatsappRes = await fetch(`${WHATSAPP_API}/${PHONE_NUMBER_ID}/messages`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(waPayload),
-      });
-
-      const waData = await whatsappRes.json();
-
-      if (!whatsappRes.ok || waData.error) {
-        console.error("WhatsApp template error:", waData.error);
-        return NextResponse.json({
-          success: false,
-          message: waData.error?.message || "Failed to send template",
-        }, { status: 500 });
-      }
-
-      const whatsappMessageId = waData.messages?.[0]?.id || null;
-      const components = templatePayload.components || [];
-      const bodyText = extractTemplateBody(components);
-      const headerText = extractHeaderText(components);
-      const headerType = detectHeaderType(components);
-      const headerMediaUrl = extractHeaderMediaUrl(components);
-      const buttons = extractButtons(components);
-      const footer = templatePayload.footer || null;
-      const templateName = templatePayload.name;
-      const displayText = bodyText || headerText || `[Template: ${templateName}]`;
-
-      storedMessage = await Message.create({
-        userId,
-        phone,
-        text: displayText,
-        direction: "out",
-        messageType: "template",
-        mediaUrl: headerMediaUrl,
-        whatsappMessageId,
-        templateName,
-        templateHeaderType: headerType,
-        templateHeaderText: headerType === "text" ? headerText : null,
-        templateBodyText: bodyText,
-        templateFooter: footer,
-        templateButtons: buttons.length > 0 ? JSON.stringify(buttons) : null,
-        templateLanguage: templatePayload.language || "en",
-      });
-
-      return NextResponse.json({ success: true, message: storedMessage });
-    }
-
-    // ─────────────────────────────────────
-    // CASE 2: Sending a MEDIA message
-    // ─────────────────────────────────────
+    // Upload media if attached
+    let mediaId: string | null = null;
     if (file) {
-      const mediaFormData = new FormData();
-      mediaFormData.append("file", file);
-      mediaFormData.append("messaging_product", "whatsapp");
-
-      const uploadRes = await fetch(`${WHATSAPP_API}/${PHONE_NUMBER_ID}/media`, {
+      const mfd = new FormData();
+      mfd.append("file", file);
+      mfd.append("messaging_product", "whatsapp");
+      const ur = await fetch(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/media`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-        body: mediaFormData,
+        headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+        body: mfd,
       });
-
-      const uploadData = await uploadRes.json();
-
-      if (!uploadRes.ok || uploadData.error || !uploadData.id) {
-        console.error("Media upload error:", uploadData.error);
-        return NextResponse.json({
-          success: false,
-          message: uploadData.error?.message || "Failed to upload media",
-        }, { status: 500 });
+      const ud = await ur.json();
+      if (!ur.ok || !ud.id) {
+        return NextResponse.json({ success: false, message: "Media upload failed" }, { status: 500 });
       }
-
-      const mediaId = uploadData.id;
-      const fileMime = file.type || "";
-      if (fileMime.startsWith("image/")) messageType = "image";
-      else if (fileMime.startsWith("video/")) messageType = "video";
-      else if (fileMime.startsWith("audio/")) messageType = "audio";
-      else messageType = "document";
-
-      const waPayload: any = {
-        messaging_product: "whatsapp",
-        to: phone,
-        type: messageType,
-        [messageType]: {
-          id: mediaId,
-          ...(text ? { caption: text } : {}),
-        },
-      };
-
-      whatsappRes = await fetch(`${WHATSAPP_API}/${PHONE_NUMBER_ID}/messages`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(waPayload),
-      });
-
-      const waData = await whatsappRes.json();
-
-      if (!whatsappRes.ok || waData.error) {
-        console.error("WhatsApp media send error:", waData.error);
-        return NextResponse.json({
-          success: false,
-          message: waData.error?.message || "Failed to send media",
-        }, { status: 500 });
-      }
-
-      const whatsappMessageId = waData.messages?.[0]?.id || null;
-
-      storedMessage = await Message.create({
-        userId,
-        phone,
-        text: text || "",
-        direction: "out",
-        messageType: messageType as any,
-        mediaUrl: mediaId,
-        whatsappMessageId,
-      });
-
-      return NextResponse.json({ success: true, message: storedMessage });
+      mediaId = ud.id;
     }
 
-    // ─────────────────────────────────────
-    // CASE 3: Sending a TEXT message
-    // ─────────────────────────────────────
-    const waPayload = {
-      messaging_product: "whatsapp",
-      to: phone,
-      type: "text",
-      text: { body: text },
-    };
+    // Build the message payload
+    const mp: any = { messaging_product: "whatsapp", to: sPhone, type: "text", text };
 
-    whatsappRes = await fetch(`${WHATSAPP_API}/${PHONE_NUMBER_ID}/messages`, {
+    if (mediaId) {
+      mp.type = file?.type?.startsWith("image") ? "image" : file?.type?.startsWith("video") ? "video" : "document";
+      mp[mp.type] = { id: mediaId };
+    } else if (text) {
+      mp.text = text;
+    }
+
+    const response = await fetch(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(waPayload),
+      headers: { Authorization: `Bearer ${ACCESS_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify(mp),
     });
+    const data = await response.json();
 
-    const waData = await whatsappRes.json();
-
-    if (!whatsappRes.ok || waData.error) {
-      console.error("WhatsApp text send error:", waData.error);
-      return NextResponse.json({
-        success: false,
-        message: waData.error?.message || "Failed to send message",
-      }, { status: 500 });
+    if (!response.ok) {
+      return NextResponse.json({ success: false, message: data.error?.message || "Failed to send" }, { status: 400 });
     }
 
-    const whatsappMessageId = waData.messages?.[0]?.id || null;
+    // ✅ SAVE TO DB FOR CHAT DISPLAY
+    try {
+      await Message.create({
+        userId: session.user.id,
+        phone: sPhone,
+        text: text || (file ? `[${file.type}]` : ""),
+        direction: "out",
+        messageType: mediaId ? (file?.type?.startsWith("image") ? "image" : file?.type?.startsWith("video") ? "video" : "document") : "text",
+        mediaUrl: mediaId,
+        whatsappMessageId: data?.messages?.[0]?.id || null,
+        status: "sent",
+        whatsappPhoneNumberId: PHONE_NUMBER_ID,
+      });
+    } catch (dbErr) {
+      console.error("⚠️ DB save failed:", dbErr);
+    }
 
-    storedMessage = await Message.create({
-      userId,
-      phone,
-      text,
-      direction: "out",
-      messageType: "text",
-      whatsappMessageId,
-    });
-
-    return NextResponse.json({ success: true, message: storedMessage });
-  } catch (error: any) {
-    console.error("Error in /api/whatsapp POST:", error);
-    return NextResponse.json({
-      success: false,
-      message: error.message || "Internal server error",
-    }, { status: 500 });
+    return NextResponse.json({ success: true, data });
+  } catch (error) {
+    const m = error instanceof Error ? error.message : "Unknown error";
+    return NextResponse.json({ success: false, message: m }, { status: 500 });
   }
 }
