@@ -1,25 +1,43 @@
+/* eslint-disable react-hooks/preserve-manual-memoization */
 /* eslint-disable react-hooks/set-state-in-effect */
 /* eslint-disable react-hooks/immutability */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import Sidebar from "@/components/Sidebar";
 import {
   Send, Phone, FileText, Loader2, AlertCircle,
   Image, Video, Upload, X, Variable, Wallet,
-  Gauge, Infinity as InfinityIcon, Globe 
+  Gauge, Infinity as InfinityIcon, Globe, Eye, Tag,
+  ExternalLink
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { useSession } from "next-auth/react";
+
+type TemplateButton = {
+  type: "quick_reply" | "url" | "phone_number";
+  text: string;
+  url?: string;
+  phone_number?: string;
+  index?: number;
+};
+
+type TemplateComponent = {
+  type: string;
+  text?: string;
+  format?: string;
+  example?: { header_handle?: string[]; body_text?: string[][] };
+  buttons?: TemplateButton[];
+};
 
 export default function SendMessagePage() {
   const { data: session, status } = useSession();
   const [phone, setPhone] = useState("");
   const [selectedCountryCode, setSelectedCountryCode] = useState("");
   const [enabledCountries, setEnabledCountries] = useState<any[]>([]);
-  
+
   const [templates, setTemplates] = useState<any[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -52,18 +70,62 @@ export default function SendMessagePage() {
     }
   };
 
-  // ✅ NEW: Calculate estimated cost based on country and template
-  const estimatedCost = (() => {
+  const estimatedCost = useMemo(() => {
     if (!selectedTemplate || !selectedCountryCode) return 0;
     const country = enabledCountries.find(c => c.code === selectedCountryCode);
     if (!country) return 0;
-    
     const cat = selectedTemplate.category?.toUpperCase();
     if (cat === "MARKETING") return country.priceMarketing || 0;
     if (cat === "UTILITY") return country.priceUtility || 0;
     if (cat === "AUTHENTICATION") return country.priceAuthentication || 0;
     return 0;
-  })();
+  }, [selectedTemplate, selectedCountryCode, enabledCountries]);
+
+  // ✅ PARSE TEMPLATE COMPONENTS
+  const parsedTemplate = useMemo(() => {
+    if (!selectedTemplate?.components) return { header: null, body: null, footer: null, buttons: [] as TemplateButton[] };
+    const comps: TemplateComponent[] = selectedTemplate.components;
+    return {
+      header: comps.find(c => c.type === "HEADER") || null,
+      body: comps.find(c => c.type === "BODY") || null,
+      footer: comps.find(c => c.type === "FOOTER") || null,
+      buttons: comps.find(c => c.type === "BUTTONS")?.buttons || [],
+    };
+  }, [selectedTemplate]);
+
+  // ✅ RENDER BODY TEXT WITH VARIABLE HIGHLIGHTING
+  const renderBodyWithVariables = (bodyText: string) => {
+    if (!bodyText) return null;
+    const parts = bodyText.split(/(\{\{\d+\}\})/g);
+    return parts.map((part, i) => {
+      const match = part.match(/\{\{(\d+)\}\}/);
+      if (match) {
+        const varIndex = parseInt(match[1]) - 1;
+        const value = variables[varIndex];
+        if (value && value.trim() !== "") {
+          return (
+            <span key={i} className="font-bold text-emerald-700 bg-emerald-100 px-1 py-0.5 rounded">
+              {value}
+            </span>
+          );
+        }
+        return (
+          <span key={i} className="font-bold text-red-500 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded text-xs">
+            {part}
+          </span>
+        );
+      }
+      return <span key={i}>{part}</span>;
+    });
+  };
+
+  // ✅ CHECK IF ALL REQUIRED VARIABLES ARE FILLED
+  const allVariablesFilled = useMemo(() => {
+    if (!parsedTemplate.body?.text) return true;
+    const matches = parsedTemplate.body.text.match(/\{\{\d+\}\}/g) || [];
+    if (matches.length === 0) return true;
+    return matches.every((_, idx) => variables[idx] && variables[idx].trim() !== "");
+  }, [parsedTemplate.body?.text, variables]);
 
   const fetchBilling = async () => {
     try {
@@ -94,7 +156,6 @@ export default function SendMessagePage() {
     } catch (error) { console.error("Failed to fetch limits", error); }
   };
 
-  // ✅ NEW: Fetch Settings to get Enabled Countries
   const fetchSettings = async () => {
     try {
       const res = await fetch("/api/settings");
@@ -112,8 +173,8 @@ export default function SendMessagePage() {
     if (status === "authenticated") {
       fetchTemplates();
       fetchBilling();
-      fetchLimits(); 
-      fetchSettings(); // ✅ NEW
+      fetchLimits();
+      fetchSettings();
     } else if (status === "unauthenticated") {
       window.location.href = "/signin";
     }
@@ -147,7 +208,7 @@ export default function SendMessagePage() {
     }
     const [name, language] = compositeValue.split("|");
     const template = templates.find((t: any) => t.name === name && t.language === language) || null;
-    
+
     setSelectedTemplate(template);
     setMediaFile(null);
     setMediaPreview(null);
@@ -157,7 +218,7 @@ export default function SendMessagePage() {
       if (headerComp && ["IMAGE", "VIDEO", "DOCUMENT"].includes(headerComp.format)) {
         setHeaderMediaType(headerComp.format);
       } else { setHeaderMediaType("none"); }
-      
+
       if (template.category === "AUTHENTICATION") {
         setVariables([""]);
       } else {
@@ -200,16 +261,16 @@ export default function SendMessagePage() {
     if (!phone) { toast.error("Please enter a phone number"); return; }
     if (!selectedTemplate) { toast.error("Please select a template"); return; }
     if (headerMediaType !== "none" && !mediaFile) { toast.error("Please upload the required media file"); return; }
+    if (!allVariablesFilled) { toast.error("Please fill in all template variables"); return; }
     if (!canSendMessage) { toast.error(`Insufficient balance. ${parentTenantName ? `Please contact ${parentTenantName} to recharge.` : "Please recharge your account to send messages."}`); return; }
     if (isAtLimit) { toast.error("Test message limit reached. Contact admin to increase your limit."); return; }
 
     setSending(true);
     try {
       const formData = new FormData();
-      // ✅ NEW: Combine Country Code and Phone
       const fullPhone = `${selectedCountryCode}${phone.replace(/\D/g, "")}`;
       formData.append("phone", fullPhone);
-      
+
       formData.append("templateName", selectedTemplate.name);
       formData.append("languageCode", selectedTemplate.language || "en");
       formData.append("category", selectedTemplate.category || "MARKETING");
@@ -244,10 +305,8 @@ export default function SendMessagePage() {
       }
 
       toast.success("Message sent successfully! 🚀");
-
       fetchBilling();
-      fetchLimits(); 
-
+      fetchLimits();
       setPhone("");
       setSelectedTemplate(null);
       setHeaderMediaType("none");
@@ -330,7 +389,7 @@ export default function SendMessagePage() {
             </div>
           )}
 
-          {/* LOW BALANCE WARNING BANNER */}
+          {/* LOW BALANCE WARNING */}
           {!canSendMessage && (
             <div className="mb-6 p-3 sm:p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
               <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
@@ -357,8 +416,8 @@ export default function SendMessagePage() {
             </div>
 
             <div className="p-5 sm:p-8 space-y-6 sm:space-y-8">
-              
-              {/* ✅ NEW: COUNTRY DROPDOWN & PHONE INPUT */}
+
+              {/* RECIPIENT NUMBER */}
               <div>
                 <label className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
                   <Phone className="w-4 h-4 text-gray-400" /> Recipient Number
@@ -385,7 +444,7 @@ export default function SendMessagePage() {
                     placeholder="e.g. 9876543210"
                     value={phone}
                     onChange={(e) => setPhone(e.target.value.replace(/\D/g, ""))}
-                    disabled={isAtLimit} 
+                    disabled={isAtLimit}
                     className="flex-1 px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition shadow-sm text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                 </div>
@@ -407,7 +466,7 @@ export default function SendMessagePage() {
                   <select
                     value={dropdownValue}
                     onChange={(e) => handleTemplateChange(e.target.value)}
-                    disabled={isAtLimit} 
+                    disabled={isAtLimit}
                     className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition appearance-none cursor-pointer shadow-sm text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <option value="" disabled>{templates.length > 0 ? "-- Choose an approved template --" : "No approved templates available"}</option>
@@ -431,7 +490,6 @@ export default function SendMessagePage() {
                         📋 {selectedTemplate.category}
                       </span>
                     )}
-                    {/* ✅ NEW: Estimated Cost Badge */}
                     {estimatedCost > 0 && (
                       <span className="text-[11px] sm:text-xs font-bold px-3 py-1.5 rounded-lg border flex items-center gap-1.5 bg-slate-50 text-slate-600 border-slate-200">
                         <Wallet size={12} /> Est. Cost: {formatINR(estimatedCost)}
@@ -446,8 +504,7 @@ export default function SendMessagePage() {
                   </div>
                 )}
               </div>
-
-              {/* DYNAMIC MEDIA UPLOAD */}
+              {/* MEDIA UPLOAD */}
               {headerMediaType !== "none" && (
                 <div className="space-y-3">
                   <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
@@ -455,6 +512,7 @@ export default function SendMessagePage() {
                     {headerMediaType === "VIDEO" && <Video className="w-4 h-4 text-purple-500" />}
                     {headerMediaType === "DOCUMENT" && <FileText className="w-4 h-4 text-red-500" />}
                     Upload {headerMediaType.charAt(0) + headerMediaType.slice(1).toLowerCase()} Media
+                    <span className="text-[10px] font-normal text-red-500 bg-red-50 px-2 py-0.5 rounded-full border border-red-100">Required</span>
                   </label>
                   {!mediaFile ? (
                     <label className={`flex flex-col items-center justify-center w-full h-36 sm:h-40 border-2 border-dashed border-gray-300 rounded-xl cursor-pointer bg-gray-50 hover:bg-gray-100 transition ${isAtLimit ? "opacity-50 pointer-events-none" : ""}`}>
@@ -485,24 +543,62 @@ export default function SendMessagePage() {
                 </div>
               )}
 
-              {/* DYNAMIC VARIABLES INPUT */}
+              {/* VARIABLES INPUT */}
               {selectedTemplate && variables.length > 0 && (
                 <div className="space-y-3">
                   <label className="text-sm font-semibold text-gray-700 flex items-center gap-2">
                     <Variable className="w-4 h-4 text-gray-400" /> {selectedTemplate.category === "AUTHENTICATION" ? "OTP Code" : "Template Variables"}
                   </label>
                   <div className="space-y-3">
-                    {variables.map((v, i) => (
-                      <input key={i} type="text" placeholder={selectedTemplate.category === "AUTHENTICATION" ? "Enter OTP Code (e.g. 1234)" : `Variable {{${i + 1}}}`} value={v} onChange={(e) => handleVariableChange(i, e.target.value)} disabled={isAtLimit} className="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition shadow-sm text-sm disabled:opacity-50 disabled:cursor-not-allowed" />
-                    ))}
+                    {variables.map((v, i) => {
+                      const isFilled = v && v.trim() !== "";
+                      return (
+                        <div key={i} className="relative">
+                          <input
+                            type="text"
+                            placeholder={selectedTemplate.category === "AUTHENTICATION" ? "Enter OTP Code (e.g. 1234)" : `Variable {{${i + 1}}}`}
+                            value={v}
+                            onChange={(e) => handleVariableChange(i, e.target.value)}
+                            disabled={isAtLimit}
+                            className={`w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent transition shadow-sm text-sm disabled:opacity-50 disabled:cursor-not-allowed pr-12 ${
+                              isFilled ? "bg-emerald-50 border-emerald-200" : "bg-gray-50 border-gray-300"
+                            }`}
+                          />
+                          <span className={`absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            isFilled ? "bg-emerald-200 text-emerald-700" : "bg-red-100 text-red-500"
+                          }`}>
+                            {isFilled ? "✓" : `{{${i + 1}}}`}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
 
               {/* SEND BUTTON */}
               <div className="pt-2 sm:pt-4">
-                <button onClick={sendMessage} disabled={sending || loading || templates.length === 0 || !canSendMessage || isAtLimit} className={`w-full flex items-center justify-center gap-2 px-4 sm:px-6 py-3.5 sm:py-4 font-bold rounded-xl shadow-lg transition-all duration-300 hover:shadow-xl hover:shadow-green-500/20 disabled:opacity-60 disabled:cursor-not-allowed text-sm sm:text-base ${isAtLimit ? "bg-slate-400 text-white" : "bg-green-600 text-white hover:bg-green-700"}`}>
-                  {sending ? (<><Loader2 className="w-5 h-5 animate-spin" /> Sending Message...</>) : isAtLimit ? (<><AlertCircle className="w-5 h-5" /> Limit Reached — Contact Admin</>) : !canSendMessage ? (<><AlertCircle className="w-5 h-5" /> Insufficient Balance — Recharge to Send</>) : (<><Send className="w-5 h-5" /> Send WhatsApp Message</>)}
+                <button
+                  onClick={sendMessage}
+                  disabled={sending || loading || templates.length === 0 || !canSendMessage || isAtLimit || !allVariablesFilled}
+                  className={`w-full flex items-center justify-center gap-2 px-4 sm:px-6 py-3.5 sm:py-4 font-bold rounded-xl shadow-lg transition-all duration-300 hover:shadow-xl hover:shadow-green-500/20 disabled:opacity-60 disabled:cursor-not-allowed text-sm sm:text-base ${
+                    isAtLimit ? "bg-slate-400 text-white" :
+                    !allVariablesFilled ? "bg-gray-400 text-white" :
+                    !canSendMessage ? "bg-red-400 text-white" :
+                    "bg-green-600 text-white hover:bg-green-700"
+                  }`}
+                >
+                  {sending ? (
+                    <><Loader2 className="w-5 h-5 animate-spin" /> Sending Message...</>
+                  ) : isAtLimit ? (
+                    <><AlertCircle className="w-5 h-5" /> Limit Reached — Contact Admin</>
+                  ) : !allVariablesFilled ? (
+                    <><Variable className="w-5 h-5" /> Fill All Variables to Send</>
+                  ) : !canSendMessage ? (
+                    <><AlertCircle className="w-5 h-5" /> Insufficient Balance — Recharge to Send</>
+                  ) : (
+                    <><Send className="w-5 h-5" /> Send WhatsApp Message</>
+                  )}
                 </button>
               </div>
             </div>
