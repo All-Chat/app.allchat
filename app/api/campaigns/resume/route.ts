@@ -12,12 +12,8 @@ export async function POST(req: Request) {
     if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { campaignId } = await req.json();
-    await Campaign.findOneAndUpdate(
-      { _id: campaignId, userId: session.user.id, status: "paused" },
-      { status: "running" }
-    );
+    await Campaign.findOneAndUpdate({ _id: campaignId, userId: session.user.id, status: "paused" }, { status: "running" });
 
-    // Note: If you use a cron job/queue to send messages, you'd trigger it here again.
     return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
