@@ -8,26 +8,14 @@ import mongoose from "mongoose";
 export async function GET(req: Request) {
   try {
     await connectDB();
-
     const session = await getServerSession(authOptions);
-    const userId = session?.user?.id;
-
-    if (!userId) {
-      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
-    }
+    if (!session?.user?.id) return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
 
     const { searchParams } = new URL(req.url);
     const wabaId = searchParams.get("whatsappPhoneNumberId") || "";
 
-    // Base filter: always filter by userId
-    const matchStage: Record<string, unknown> = {
-      userId: new mongoose.Types.ObjectId(userId),
-    };
+    const matchStage: Record<string, unknown> = { userId: new mongoose.Types.ObjectId(session.user.id) };
 
-    // ✅ WABA FILTER: If a specific number is selected, include:
-    // 1. Messages that MATCH this WABA ID (new messages)
-    // 2. Messages that have NO WABA ID (old messages sent before the fix)
-    // This ensures old chats don't disappear when you select a number
     if (wabaId && wabaId !== "all") {
       matchStage.$or = [
         { whatsappPhoneNumberId: wabaId },
@@ -39,26 +27,10 @@ export async function GET(req: Request) {
     const chats = await Message.aggregate([
       { $match: matchStage },
       { $sort: { phone: 1, createdAt: -1 } },
-      {
-        $group: {
-          _id: "$phone",
-          phone: { $first: "$phone" },
-          name: { $first: "$contactName" },
-          profilePicUrl: { $first: "$profilePicUrl" },
-          lastMessage: { $first: "$text" },
-          lastDirection: { $first: "$direction" },
-          lastMessageType: { $first: "$messageType" },
-          lastMediaUrl: { $first: "$mediaUrl" },
-          updatedAt: { $first: "$createdAt" },
-          whatsappPhoneNumberId: { $first: "$whatsappPhoneNumberId" },
-        },
-      },
+      { $group: { _id: "$phone", phone: { $first: "$phone" }, name: { $first: "$contactName" }, lastMessage: { $first: "$text" }, lastDirection: { $first: "$direction" }, lastMessageType: { $first: "$messageType" }, updatedAt: { $first: "$createdAt" }, whatsappPhoneNumberId: { $first: "$whatsappPhoneNumberId" } } },
       { $sort: { updatedAt: -1, _id: 1 } },
     ]);
 
     return NextResponse.json({ success: true, chats });
-  } catch (error) {
-    console.error("Error in /api/chats:", error);
-    return NextResponse.json({ success: false, chats: [] }, { status: 500 });
-  }
+  } catch (error) { console.error("Error in /api/chats:", error); return NextResponse.json({ success: false, chats: [] }, { status: 500 }); }
 }
