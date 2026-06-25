@@ -1,8 +1,9 @@
 /* =====================================================================
-   GET /api/chat - FETCH MESSAGES FOR A SPECIFIC CHAT
+   GET /api/chats - FETCH CHAT LIST
    =====================================================================
-   Returns all messages for a phone number, optionally filtered by
-   the WABA number. Same backward-compatible filter as /api/chats.
+   ✅ FIX: When a specific WABA is selected, include messages that have
+   whatsappPhoneNumberId = null/undefined (legacy messages saved before
+   the webhook was tagging them). This matches the behavior of /api/chat.
    ===================================================================== */
 
 import { NextResponse } from "next/server";
@@ -21,60 +22,59 @@ export async function GET(req: Request) {
     }
 
     const { searchParams } = new URL(req.url);
-    let phone = searchParams.get("phone") || "";
     const wabaId = searchParams.get("whatsappPhoneNumberId") || "";
+    const userId = session.user.id;
 
-    if (!phone) {
-      return NextResponse.json({ success: false, messages: [] }, { status: 400 });
-    }
-    phone = phone.replace(/\+/g, "");
-
-    const filter: Record<string, unknown> = {
-      userId: new mongoose.Types.ObjectId(session.user.id),
-      phone,
+    // ── STEP 1: Find all phone IDs that have messages from this user
+    // When a WABA is selected, find phones that have at least one message
+    // from that WABA OR with no WABA tag (legacy messages)
+    const phoneMatchStage: Record<string, unknown> = {
+      userId: new mongoose.Types.ObjectId(userId),
     };
 
-    // Backward-compatible filter for old messages
     if (wabaId && wabaId !== "all") {
-      filter.$or = [
+      // ✅ FIX: Use $or to include untagged (null/undefined) messages
+      // This ensures legacy messages (saved before webhook fix) still show up
+      phoneMatchStage.$or = [
         { whatsappPhoneNumberId: wabaId },
         { whatsappPhoneNumberId: null },
         { whatsappPhoneNumberId: { $exists: false } },
       ];
     }
 
-    const messages = await Message.find(filter).sort({ createdAt: 1 }).lean();
+    const matchingPhones = await Message.distinct("phone", phoneMatchStage).lean();
 
-    // Map to the format the chat UI expects
-    const mapped = messages.map((m) => ({
-      _id: m._id,
-      phone: m.phone,
-      text: m.text,
-      direction: m.direction,
-      messageType: m.messageType,
-      mediaUrl: m.mediaUrl,
-      contactName: m.contactName,
-      createdAt: m.createdAt,
-      timestamp: m.createdAt,
-      whatsappMessageId: m.whatsappMessageId,
-      status: m.status,
-      // Template fields for rendering in chat bubble
-      templateName: m.templateName || undefined,
-      templateHeaderType: m.templateHeaderType || undefined,
-      templateHeaderText: m.templateHeaderText || undefined,
-      templateBodyText: m.templateBodyText || undefined,
-      templateFooter: m.templateFooter || undefined,
-      templateButtons: m.templateButtons || undefined,
-      templateLanguage: m.templateLanguage || undefined,
-      // WABA fields for sender name display
-      whatsappPhoneNumberId: m.whatsappPhoneNumberId || undefined,
-      fromPhone: m.fromPhone || undefined,
-      senderNumber: m.senderNumber || undefined,
-    }));
+    if (matchingPhones.length === 0) {
+      return NextResponse.json({ success: true, chats: [] });
+    }
 
-    return NextResponse.json({ success: true, messages: mapped });
+    // ── STEP 2: Aggregate those phone IDs to build the chat list
+    const chats = await Message.aggregate([
+      {
+        $match: {
+          userId: new mongoose.Types.ObjectId(userId),
+          phone: { $in: matchingPhones },
+        },
+      },
+      { $sort: { phone: 1, createdAt: -1 } },
+      {
+        $group: {
+          _id: "$phone",
+          phone: { $first: "$phone" },
+          name: { $first: "$contactName" },
+          lastMessage: { $first: "$text" },
+          lastDirection: { $first: "$direction" },
+          lastMessageType: { $first: "$messageType" },
+          updatedAt: { $first: "$createdAt" },
+          whatsappPhoneNumberId: { $first: "$whatsappPhoneNumberId" },
+        },
+      },
+      { $sort: { updatedAt: -1, _id: 1 } },
+    ]);
+
+    return NextResponse.json({ success: true, chats });
   } catch (error) {
-    console.error("Error in /api/chat:", error);
-    return NextResponse.json({ success: false, messages: [] }, { status: 500 });
+    console.error("Error in /api/chats:", error);
+    return NextResponse.json({ success: false, chats: [] }, { status: 500 });
   }
 }
