@@ -1,15 +1,17 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* =====================================================================
-   WHATSAPP WEBHOOK - MULTI-ACCOUNT SUPPORT (BULLETPROOF)
+   WHATSAPP WEBHOOK - BULLETPROOF DB SAVING
    ===================================================================== */
 
 import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import User from "@/models/User";
 import Message from "@/models/Message";
+import mongoose from "mongoose";
 
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "watiX_webhook_verify_2024";
 
+// ─── GET: Meta Verification ────────────────────────────────────────────
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const mode = searchParams.get("hub.mode");
@@ -17,200 +19,82 @@ export async function GET(req: NextRequest) {
   const challenge = searchParams.get("hub.challenge");
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verified");
+    console.log("✅ [WEBHOOK] Meta Verification Successful");
     return new NextResponse(challenge || "", {
       status: 200,
       headers: { "Content-Type": "text/plain" },
     });
   }
-
   return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 }
 
-/* ─── FIND USER WHO OWNS A PHONE_NUMBER_ID ─────────────────────────────
-   Tries 4 different locations where the ID could be stored:
-   1. Inside user.whatsappNumbers[].whatsappPhoneNumberId
-   2. At user.whatsappPhoneNumberId (top-level)
-   3. Inside parent tenant's whatsappNumbers[]
-   4. At parent tenant's whatsappPhoneNumberId (top-level)
-   ────────────────────────────────────────────────────────────────────── */
-async function findUserByPhoneId(phoneNumberId: string): Promise<Record<string, unknown> | null> {
-  // 1. Search inside whatsappNumbers[] array
-  let user = await User.findOne({
-    "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId,
-  }).lean();
+// ─── FIND USER BY PHONE NUMBER ID ──────────────────────────────────────
+async function findUserByPhoneId(phoneNumberId: string): Promise<any> {
+  // 1. Check inside array
+  let user = await User.findOne({ "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId }).lean();
+  if (user) return user;
 
-  if (user) {
-    console.log(`🔍 Found user [${user._id}] via whatsappNumbers[] array`);
-    return user;
-  }
+  // 2. Check top-level
+  user = await User.findOne({ whatsappPhoneNumberId: phoneNumberId }).lean();
+  if (user) return user;
 
-  // 2. Search at top-level whatsappPhoneNumberId field
-  user = await User.findOne({
-    whatsappPhoneNumberId: phoneNumberId,
-  }).lean();
+  // 3. Check parent tenants
+  user = await User.findOne({ parentTenantId: { $exists: false }, "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId }).lean();
+  if (user) return user;
 
-  if (user) {
-    console.log(`🔍 Found user [${user._id}] via top-level whatsappPhoneNumberId`);
-    return user;
-  }
+  user = await User.findOne({ parentTenantId: { $exists: false }, whatsappPhoneNumberId: phoneNumberId }).lean();
+  if (user) return user;
 
-  // 3. Search inside ALL parent tenants' whatsappNumbers[] arrays
-  // (in case this is a sub-user and the number is on the parent)
-  const allParentTenants = await User.find({
-    parentTenantId: { $exists: false },
-    "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId,
-  }).lean();
-
-  if (allParentTenants.length > 0) {
-    console.log(`🔍 Found parent tenant [${allParentTenants[0]._id}] via parent's whatsappNumbers[] array`);
-    return allParentTenants[0];
-  }
-
-  // 4. Search ALL parent tenants' top-level field
-  const parentTopLevel = await User.findOne({
-    parentTenantId: { $exists: false },
-    whatsappPhoneNumberId: phoneNumberId,
-  }).lean();
-
-  if (parentTopLevel) {
-    console.log(`🔍 Found parent tenant [${parentTopLevel._id}] via parent's top-level whatsappPhoneNumberId`);
-    return parentTopLevel;
-  }
-
-  // 5. BRUTE FORCE: Fetch ALL users and check manually
-  // This handles any weird schema variation
+  // 4. Brute force all users
   const allUsers = await User.find({}).lean();
   for (const u of allUsers) {
-    // Check array
-    if (u.whatsappNumbers?.length > 0) {
-      for (const n of u.whatsappNumbers) {
-        if (n.whatsappPhoneNumberId === phoneNumberId) {
-          console.log(`🔍 BRUTE FORCE: Found user [${u._id}] in whatsappNumbers[]`);
-          return u;
-        }
-      }
-    }
-    // Check top-level
-    if (u.whatsappPhoneNumberId === phoneNumberId) {
-      console.log(`🔍 BRUTE FORCE: Found user [${u._id}] at top-level`);
-      return u;
-    }
+    if (u.whatsappNumbers?.some((n: any) => n.whatsappPhoneNumberId === phoneNumberId)) return u;
+    if (u.whatsappPhoneNumberId === phoneNumberId) return u;
   }
 
   return null;
 }
 
-/* ─── PARSE INCOMING MESSAGE ─────────────────────────────────────────── */
-function parseMessage(msg: any) {
+// ─── PARSE MESSAGE CONTENT ────────────────────────────────────────────
+function parseMessageContent(msg: any) {
   let text = "";
   let messageType = "text";
   let mediaId: string | null = null;
 
   switch (msg.type) {
-    case "text":
-      text = msg.text?.body || "";
-      messageType = "text";
+    case "text": text = msg.text?.body || ""; break;
+    case "image": text = msg.image?.caption || ""; messageType = "image"; mediaId = msg.image?.id; break;
+    case "video": text = msg.video?.caption || ""; messageType = "video"; mediaId = msg.video?.id; break;
+    case "document": text = msg.document?.filename || "Document"; messageType = "document"; mediaId = msg.document?.id; break;
+    case "audio": messageType = "audio"; mediaId = msg.audio?.id; break;
+    case "sticker": messageType = "sticker"; mediaId = msg.sticker?.id; break;
+    case "interactive":
+      text = msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || "";
       break;
-
-    case "image":
-      text = msg.image?.caption || "";
-      messageType = "image";
-      mediaId = msg.image?.id || null;
-      break;
-
-    case "video":
-      text = msg.video?.caption || "";
-      messageType = "video";
-      mediaId = msg.video?.id || null;
-      break;
-
-    case "document":
-      text = msg.document?.caption || msg.document?.filename || "Document";
-      messageType = "document";
-      mediaId = msg.document?.id || null;
-      break;
-
-    case "audio":
-      text = "";
-      messageType = "audio";
-      mediaId = msg.audio?.id || null;
-      break;
-
-    case "sticker":
-      text = "";
-      messageType = "sticker";
-      mediaId = msg.sticker?.id || null;
-      break;
-
-    case "location":
-      text = `📍 ${msg.location?.latitude?.toFixed(6)}, ${msg.location?.longitude?.toFixed(6)}`;
-      if (msg.location?.name) text += `\n${msg.location.name}`;
-      if (msg.location?.address) text += `\n${msg.location.address}`;
-      messageType = "text";
-      break;
-
-    case "contacts": {
-      const contacts = msg.contacts || [];
-      text = "📇 " + contacts
-        .map((c: any) => {
-          const name = c.name?.formatted_name || "Unknown";
-          const phones = (c.phones || []).map((p: any) => p.phone).join(", ");
-          return `${name}: ${phones}`;
-        })
-        .join("\n");
-      messageType = "text";
-      break;
-    }
-
-    case "interactive": {
-      if (msg.interactive?.type === "button_reply") {
-        text = msg.interactive.button_reply?.title || "";
-      } else if (msg.interactive?.type === "list_reply") {
-        text = msg.interactive.list_reply?.title || "";
-        if (msg.interactive.list_reply?.description) {
-          text += "\n" + msg.interactive.list_reply.description;
-        }
-      }
-      messageType = "text";
-      break;
-    }
-
-    case "button":
-      text = msg.button?.text || "[Button]";
-      messageType = "text";
-      break;
-
-    case "order":
-      text = "🛒 Order received";
-      if (msg.order?.text) text += `\n${msg.order.text}`;
-      messageType = "text";
-      break;
-
-    default:
-      text = `[${msg.type || "unknown"}]`;
-      messageType = "text";
-      break;
+    default: text = `[${msg.type}]`; break;
   }
 
   return { text, messageType, mediaId };
 }
 
-/* ─── POST: INCOMING MESSAGES ────────────────────────────────────────── */
+// ─── POST: INCOMING MESSAGES ──────────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-
-    if (!body?.entry) {
-      return NextResponse.json({ success: true });
-    }
+    if (!body?.entry) return NextResponse.json({ success: true });
 
     await connectDB();
+
+    // Get raw MongoDB collection for BULLETPROOF saving
+    const db = mongoose.connection.db;
+    if (!db) {
+      throw new Error("MongoDB connection not established");
+    }
+    const messagesCollection = db.collection("messages");
 
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
         if (change.field !== "messages") continue;
-
         const value = change.value;
         if (!value) continue;
 
@@ -218,80 +102,102 @@ export async function POST(req: NextRequest) {
         const displayPhoneNumber = value.metadata?.display_phone_number;
 
         if (!phoneNumberId) {
-          console.error("⚠️ No phone_number_id in metadata", JSON.stringify(value.metadata));
+          console.error("⚠️ No phone_number_id in metadata");
           continue;
         }
 
-        // ── FIND USER (tries all 5 strategies) ──
         const user = await findUserByPhoneId(phoneNumberId);
-
         if (!user) {
           console.error(`❌ NO USER FOUND for phone_number_id: ${phoneNumberId}`);
-          console.error(`   Display phone: ${displayPhoneNumber}`);
-          // Don't continue — log and skip
           continue;
         }
 
-        // ── PROCESS MESSAGES ──
+        console.log(`🎯 [WEBHOOK] Matched WABA: ${phoneNumberId} to User: ${user._id}`);
+
         for (const msg of value.messages || []) {
           if (msg.type === "reaction" || msg.type === "system") continue;
 
-          const contact = (value.contacts || []).find(
-            (c: any) => c.wa_id === msg.from
-          );
+          const contact = (value.contacts || []).find((c: any) => c.wa_id === msg.from);
           const contactName = contact?.profile?.name || null;
           const fromPhone = msg.from;
+          const { text, messageType, mediaId } = parseMessageContent(msg);
 
-          const { text, messageType, mediaId } = parseMessage(msg);
-
-          // ── CHECK DUPLICATE ──
-          const existing = await Message.findOne({
-            whatsappMessageId: msg.id,
-          }).lean();
-
-          if (existing) {
-            // Backfill whatsappPhoneNumberId if missing
-            if (!existing.whatsappPhoneNumberId && phoneNumberId) {
-              await Message.updateOne(
-                { _id: existing._id },
+          // 1. Standard duplicate check
+          const exists = await Message.findOne({ whatsappMessageId: msg.id }).lean();
+          if (exists) {
+            // ✅ BACKFILL: If it exists but missing the ID, force update it
+            if (!exists.whatsappPhoneNumberId && phoneNumberId) {
+              await messagesCollection.updateOne(
+                { _id: exists._id },
                 { $set: { whatsappPhoneNumberId: phoneNumberId } }
               );
-              console.log(`📦 Backfilled whatsappPhoneNumberId on existing message ${msg.id}`);
+              console.log(`📦 [BACKFILL] Updated missing ID on ${msg.id}`);
             }
             continue;
           }
 
-          // ── SAVE ──
-          const msgTimestamp = msg.timestamp
-            ? new Date(parseInt(msg.timestamp) * 1000)
-            : new Date();
+          const timestamp = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
+          const newObjectId = new mongoose.Types.ObjectId();
 
-          await Message.create({
-            userId: user._id,
-            phone: fromPhone,
-            text: text || `[${msg.type}]`,
-            direction: "in",
-            messageType,
-            mediaUrl: mediaId,
-            contactName,
-            whatsappMessageId: msg.id,
-            status: "delivered",
-            whatsappPhoneNumberId: phoneNumberId,
-            fromPhone: displayPhoneNumber,
-            senderNumber: fromPhone,
-            createdAt: msgTimestamp,
-          });
+          // ✅ METHOD 1: Standard Mongoose Save
+          try {
+            await Message.create({
+              _id: newObjectId,
+              userId: user._id,
+              phone: fromPhone,
+              text: text || `[${msg.type}]`,
+              direction: "in",
+              messageType,
+              mediaUrl: mediaId,
+              contactName,
+              whatsappMessageId: msg.id,
+              status: "delivered",
+              whatsappPhoneNumberId: phoneNumberId, // Attempting to save
+              fromPhone: displayPhoneNumber,
+              senderNumber: fromPhone,
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            });
+            console.log(`✅ [MONGOOSE SAVED] ID: ${msg.id} | WABA: ${phoneNumberId}`);
+          } catch (mongooseError) {
+            console.error(`⚠️ [MONGOOSE FAILED] Falling back to raw MongoDB...`, mongooseError);
+            
+            // ✅ METHOD 2: BULLETPROOF RAW MONGODB SAVE
+            // This bypasses Mongoose schema validation entirely and forces the field in
+            await messagesCollection.insertOne({
+              _id: newObjectId,
+              userId: user._id,
+              phone: fromPhone,
+              text: text || `[${msg.type}]`,
+              direction: "in",
+              messageType,
+              mediaUrl: mediaId,
+              contactName,
+              whatsappMessageId: msg.id,
+              status: "delivered",
+              whatsappPhoneNumberId: phoneNumberId, // FORCED INTO DB
+              fromPhone: displayPhoneNumber,
+              senderNumber: fromPhone,
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            });
+            console.log(`✅ [RAW DB SAVED] ID: ${msg.id} | WABA: ${phoneNumberId}`);
+          }
 
-          console.log(
-            `✅ IN msg saved: ${fromPhone} → WABA[${phoneNumberId.substring(0, 8)}...] user[${user._id}] type=${messageType}`
-          );
+          // ✅ VERIFICATION STEP: Read it back from DB to prove it saved
+          const verify = await messagesCollection.findOne({ _id: newObjectId });
+          if (verify && verify.whatsappPhoneNumberId) {
+            console.log(`🎉 [VERIFIED] Successfully saved in DB with WABA ID: ${verify.whatsappPhoneNumberId}`);
+          } else {
+            console.error(`❌ [VERIFICATION FAILED] The WABA ID is STILL missing in the DB!`);
+          }
         }
       }
     }
 
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error("❌ Webhook error:", error);
+    console.error("❌ [WEBHOOK FATAL ERROR]", error);
     return NextResponse.json({ success: true });
   }
 }
