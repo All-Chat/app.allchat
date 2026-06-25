@@ -32,41 +32,8 @@ type Campaign = {
   sentCount: number;
   failedCount: number;
   templateName?: string;
+  createdAt?: string;
   [x: string]: any;
-};
-
-const getRepliesList = (d: ReportItem): string[] => {
-  if (d.replies && d.replies.length > 0) return d.replies;
-  if (d.reply) return [d.reply];
-  return [];
-};
-
-const getCampaignStats = (reportData: ReportItem[] = []) => {
-  let deliveredRead = 0, sent = 0, failedInvalid = 0, pending = 0;
-  reportData.forEach(d => {
-    const replies = getRepliesList(d);
-    if (replies.length > 0 || d.status === 'read' || d.status === 'delivered') deliveredRead++;
-    else if (d.status === 'sent') sent++;
-    else if (d.status === 'failed' || d.status === 'invalid') failedInvalid++;
-    else pending++;
-  });
-  return { deliveredRead, sent, failedInvalid, pending };
-};
-
-const getStatusConfig = (status: string, replies: string[]) => {
-  if (replies.length > 0) {
-    return { color: "bg-indigo-50 text-indigo-700 border-indigo-200", icon: <MessageSquare size={10} className="inline mr-1" />, label: `Replied (${replies.length})`, isWaiting: false };
-  }
-  switch (status) {
-    case "read": return { color: "bg-blue-50 text-blue-700 border-blue-200", icon: <Eye size={10} className="inline mr-1" />, label: "Read", isWaiting: false };
-    case "delivered": return { color: "bg-cyan-50 text-cyan-700 border-cyan-200", icon: <CheckCheck size={10} className="inline mr-1" />, label: "Delivered", isWaiting: false };
-    case "sent": return { color: "bg-emerald-50 text-emerald-700 border-emerald-200", icon: <CheckCircle size={10} className="inline mr-1" />, label: "Sent", isWaiting: true };
-    case "failed": return { color: "bg-red-50 text-red-700 border-red-200", icon: <XCircle size={10} className="inline mr-1" />, label: "Failed", isWaiting: false };
-    case "invalid": return { color: "bg-orange-50 text-orange-700 border-orange-200", icon: <AlertTriangle size={10} className="inline mr-1" />, label: "Invalid Number", isWaiting: false };
-    case "duplicate": return { color: "bg-slate-100 text-slate-500 border-slate-200", icon: <Copy size={10} className="inline mr-1" />, label: "Duplicate", isWaiting: false };
-    case "pending": return { color: "bg-amber-50 text-amber-700 border-amber-200", icon: <Clock size={10} className="inline mr-1" />, label: "Pending", isWaiting: true };
-    default: return { color: "bg-gray-50 text-gray-700 border-gray-200", icon: <Ban size={10} className="inline mr-1" />, label: status.charAt(0).toUpperCase() + status.slice(1), isWaiting: false };
-  }
 };
 
 export default function ReportsPage() {
@@ -78,37 +45,71 @@ export default function ReportsPage() {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
 
-  // ✅ NEW: State for WhatsApp Numbers (Sender Names)
-  const [whatsappNumbers, setWhatsappNumbers] = useState<any[]>([]);
-
-  // Responsive toggle state
-  const [showCampaignList, setShowCampaignList] = useState(true);
+  // Live replies from Messages collection
+  const [repliesMap, setRepliesMap] = useState<Record<string, string[]>>({});
   
-  // Modal & Tags State
+  const [whatsappNumbers, setWhatsappNumbers] = useState<any[]>([]);
+  const [showCampaignList, setShowCampaignList] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [tags, setTags] = useState<any[]>([]);
   const [tagFilter, setTagFilter] = useState("all");
+
+  const getRepliesList = (d: ReportItem): string[] => {
+    if (d.replies && d.replies.length > 0) return d.replies;
+    if (d.reply) return [d.reply];
+    if (d.phone && repliesMap[d.phone]?.length > 0) return repliesMap[d.phone];
+    return [];
+  };
+
+  const getCampaignStats = (reportData: ReportItem[] = []) => {
+    let deliveredRead = 0, sent = 0, failedInvalid = 0, pending = 0;
+    reportData.forEach(d => {
+      const replies = getRepliesList(d);
+      if (replies.length > 0 || d.status === 'read' || d.status === 'delivered') deliveredRead++;
+      else if (d.status === 'sent') sent++;
+      else if (d.status === 'failed' || d.status === 'invalid') failedInvalid++;
+      else pending++;
+    });
+    return { deliveredRead, sent, failedInvalid, pending };
+  };
+
+  const getStatusConfig = (status: string, replies: string[]) => {
+    if (replies.length > 0) {
+      return { color: "bg-indigo-50 text-indigo-700 border-indigo-200", icon: <MessageSquare size={10} className="inline mr-1" />, label: `Replied (${replies.length})`, isWaiting: false };
+    }
+    switch (status) {
+      case "read": return { color: "bg-blue-50 text-blue-700 border-blue-200", icon: <Eye size={10} className="inline mr-1" />, label: "Read", isWaiting: false };
+      case "delivered": return { color: "bg-cyan-50 text-cyan-700 border-cyan-200", icon: <CheckCheck size={10} className="inline mr-1" />, label: "Delivered", isWaiting: false };
+      case "sent": return { color: "bg-emerald-50 text-emerald-700 border-emerald-200", icon: <CheckCircle size={10} className="inline mr-1" />, label: "Sent", isWaiting: true };
+      case "failed": return { color: "bg-red-50 text-red-700 border-red-200", icon: <XCircle size={10} className="inline mr-1" />, label: "Failed", isWaiting: false };
+      case "invalid": return { color: "bg-orange-50 text-orange-700 border-orange-200", icon: <AlertTriangle size={10} className="inline mr-1" />, label: "Invalid Number", isWaiting: false };
+      case "duplicate": return { color: "bg-slate-100 text-slate-500 border-slate-200", icon: <Copy size={10} className="inline mr-1" />, label: "Duplicate", isWaiting: false };
+      case "pending": return { color: "bg-amber-50 text-amber-700 border-amber-200", icon: <Clock size={10} className="inline mr-1" />, label: "Pending", isWaiting: true };
+      default: return { color: "bg-gray-50 text-gray-700 border-gray-200", icon: <Ban size={10} className="inline mr-1" />, label: status.charAt(0).toUpperCase() + status.slice(1), isWaiting: false };
+    }
+  };
 
   useEffect(() => {
     if (status === "authenticated") {
       fetchCampaigns();
       fetchTags();
-      fetchWhatsappNumbers(); // ✅ Fetch numbers on load
+      fetchWhatsappNumbers();
     } else if (status === "unauthenticated") {
       window.location.href = "/";
     }
   }, [status]);
 
-  // ✅ NEW: Poll every 5 seconds for live updates AND sync Google Sheet
   useEffect(() => {
     if (!selectedId) return;
     
     fetchReportData(selectedId);
+    fetchReplies(selectedId);
     
     const interval = setInterval(async () => {
       fetchReportData(selectedId);
+      fetchReplies(selectedId);
       
-      // Tell the backend to push the latest data to Google Sheets
+      // Always sync sheet to ensure statuses (sent/delivered) update properly
       try {
         await fetch("/api/campaigns/sync-sheet", {
           method: "POST",
@@ -118,7 +119,7 @@ export default function ReportsPage() {
       } catch (err) {
         console.error("Sheet sync error:", err);
       }
-    }, 5000); // 5000ms = 5 seconds
+    }, 5000); // 5 seconds
     
     return () => clearInterval(interval);
   }, [selectedId]);
@@ -140,39 +141,42 @@ export default function ReportsPage() {
     }
   };
 
-  // ✅ NEW: Fetch WhatsApp Numbers Function
+  const fetchReplies = async (id: string) => {
+    try {
+      const res = await fetch(`/api/campaigns/report-replies?campaignId=${id}`);
+      const data = await res.json();
+      if (data.success) {
+        setRepliesMap(data.replies || {});
+      }
+    } catch (err) {
+      console.error("Failed to fetch replies", err);
+    }
+  };
+
   const fetchWhatsappNumbers = async () => {
     try {
       const res = await fetch("/api/user/whatsapp-numbers");
       if (!res.ok) return;
-      
       const contentType = res.headers.get("content-type");
       if (!contentType || !contentType.includes("application/json")) return;
-
       const data = await res.json();
       let numbers = [];
       if (data.success && Array.isArray(data.numbers)) numbers = data.numbers;
       else if (Array.isArray(data)) numbers = data;
       else if (data.user?.whatsappNumbers) numbers = data.user.whatsappNumbers;
       else if (Array.isArray(data.whatsappNumbers)) numbers = data.whatsappNumbers;
-
       if (numbers.length > 0) setWhatsappNumbers(numbers);
     } catch (err) {
       console.error("Failed to fetch WhatsApp numbers", err);
     }
   };
 
-  // ✅ NEW: Helper to get sender name for a campaign
   const getCampaignSenderName = (c: Campaign | undefined) => {
     if (!c) return "Unknown";
-    
-    // 1. Try matching by whatsappNumberId stored in campaign
     if (c.whatsappNumberId) {
       const match = whatsappNumbers.find(n => n.whatsappPhoneNumberId === c.whatsappNumberId);
       if (match?.name) return match.name;
     }
-    
-    // 2. Try matching by senderPhone stored in campaign
     if (c.senderPhone) {
       const match = whatsappNumbers.find(n => 
         (n.phoneNumber && n.phoneNumber.includes(c.senderPhone)) || 
@@ -180,12 +184,7 @@ export default function ReportsPage() {
       );
       if (match?.name) return match.name;
     }
-
-    // 3. Aggressive fallback: If user has numbers, use the first one's name
-    if (whatsappNumbers.length > 0 && whatsappNumbers[0]?.name) {
-      return whatsappNumbers[0].name;
-    }
-    
+    if (whatsappNumbers.length > 0 && whatsappNumbers[0]?.name) return whatsappNumbers[0].name;
     return "Unknown Sender";
   };
 
@@ -224,7 +223,6 @@ export default function ReportsPage() {
       return d.phone.includes(search) || d.name?.toLowerCase().includes(search.toLowerCase()) || replies.some(r => r.toLowerCase().includes(search.toLowerCase()));
     });
 
-  // Modal Filter Logic
   const modalFilteredData = reportData.filter(d => {
     if (tagFilter === "all") return true;
     if (tagFilter === "untagged") return !d.tags || d.tags.length === 0;
@@ -234,14 +232,18 @@ export default function ReportsPage() {
   const downloadExcel = () => {
     if (filteredData.length === 0) { toast.error("No data to download"); return; }
     const wsData = filteredData.map(d => {
-      const replies = getRepliesList(d);
+      const replies = getRepliesList(d).slice(0, 5); // Max 5
       const statusConfig = getStatusConfig(d.status, replies);
       return { 
         "Name": d.name || "N/A", 
         "Phone Number": d.phone, 
         "Status": statusConfig.label, 
         "Tags": d.tags?.join(", ") || "None",
-        "Replies (Max 5)": replies.length > 0 ? replies.join(" | ") : "No Reply" 
+        "Reply 1": replies[0] || "",
+        "Reply 2": replies[1] || "",
+        "Reply 3": replies[2] || "",
+        "Reply 4": replies[3] || "",
+        "Reply 5": replies[4] || ""
       };
     });
     const ws = XLSX.utils.json_to_sheet(wsData);
@@ -297,7 +299,6 @@ export default function ReportsPage() {
                     }`}
                   >
                     <p className="font-semibold text-sm truncate">{c.name}</p>
-
                     <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5 text-[10px]">
                       {stats.deliveredRead > 0 && <span className="flex items-center gap-1 text-cyan-600 font-medium"><CheckCheck size={10}/> {stats.deliveredRead} Delivered</span>}
                       {stats.sent > 0 && <span className="flex items-center gap-1 text-emerald-600 font-medium"><CheckCircle size={10}/> {stats.sent} Sent</span>}
@@ -342,7 +343,6 @@ export default function ReportsPage() {
                         </span>
                       )}
                     </div>
-                    {/* ✅ NEW: Sender Name Displayed in Header Also */}
                     <p className="text-[11px] text-slate-500 mt-0.5 truncate">
                       Template: {selectedCamp.templateName} • Auto-updates
                     </p>
@@ -379,7 +379,6 @@ export default function ReportsPage() {
                       <option value="duplicate">Duplicate</option>
                     </select>
                     
-                    {/* NEW: View Details Button */}
                     <button 
                       onClick={() => setIsModalOpen(true)} 
                       className="px-4 py-2 bg-indigo-500 text-white rounded-lg text-xs font-bold hover:bg-indigo-600 flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0"
@@ -433,12 +432,16 @@ export default function ReportsPage() {
                             <td className="px-4 py-3 text-xs">
                               {replies.length > 0 ? (
                                 <div className="flex flex-col gap-1.5">
-                                  {replies.slice(0, 3).map((reply, idx) => (
-                                    <span key={idx} className="bg-indigo-50 text-indigo-700 px-2 py-1 rounded-md font-medium border border-indigo-100 flex items-center gap-1.5 w-fit max-w-[200px]">
+                                  {/* ✅ Show exactly 5 replies max */}
+                                  {replies.slice(0, 5).map((reply, idx) => (
+                                    <span key={idx} className="bg-indigo-50 text-indigo-700 px-2 py-1 rounded-md font-medium border border-indigo-100 flex items-center gap-1.5 w-fit max-w-[220px]">
                                       <MessageSquare size={10} className="flex-shrink-0"/> 
                                       <span className="truncate">{reply}</span>
                                     </span>
                                   ))}
+                                  {replies.length > 5 && (
+                                    <span className="text-[10px] text-indigo-500 font-medium">+{replies.length - 5} more</span>
+                                  )}
                                 </div>
                               ) : (
                                 <span className="text-slate-300">No reply</span>
@@ -463,8 +466,6 @@ export default function ReportsPage() {
       {isModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
-            
-            {/* Modal Header */}
             <div className="flex items-center justify-between p-5 border-b border-slate-200">
               <div>
                 <h3 className="text-lg font-bold text-slate-900">Audience Details</h3>
@@ -475,7 +476,6 @@ export default function ReportsPage() {
               </button>
             </div>
 
-            {/* Modal Filter Bar */}
             <div className="flex items-center gap-3 p-4 bg-slate-50 border-b border-slate-200">
               <div className="relative flex-1">
                 <TagIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -496,7 +496,6 @@ export default function ReportsPage() {
               </span>
             </div>
 
-            {/* Modal Table */}
             <div className="flex-1 overflow-y-auto">
               <table className="w-full text-sm">
                 <thead className="bg-white sticky top-0 border-b border-slate-200">
