@@ -1,17 +1,20 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* =====================================================================
-   WHATSAPP WEBHOOK - BULLETPROOF DB SAVING
+   WHATSAPP WEBHOOK - FORCED MULTI-ACCOUNT (PULL + PUSH HYBRID)
+   =====================================================================
+   1. GET  -> Meta verification
+   2. POST -> Receives webhooks from Meta AND can be triggered to pull
+   3. CRON -> Calls POST every 1 second to force-fetch from ALL numbers
    ===================================================================== */
 
 import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import User from "@/models/User";
 import Message from "@/models/Message";
-import mongoose from "mongoose";
 
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "watiX_webhook_verify_2024";
 
-// ─── GET: Meta Verification ────────────────────────────────────────────
+// ─── GET: Meta Webhook Verification ────────────────────────────────────
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const mode = searchParams.get("hub.mode");
@@ -28,35 +31,96 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 }
 
-// ─── FIND USER BY PHONE NUMBER ID ──────────────────────────────────────
-async function findUserByPhoneId(phoneNumberId: string): Promise<any> {
-  // 1. Check inside array
-  let user = await User.findOne({ "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId }).lean();
-  if (user) return user;
+// ─── EXTRACT ALL UNIQUE WHATSAPP NUMBERS FROM DB ───────────────────────
+// Returns array of { userId, name, phoneNumberId, accessToken, wabaId }
+async function getAllWhatsappNumbersFromDB() {
+  await connectDB();
+  const users = await User.find({}).lean();
+  const numbers: any[] = [];
 
-  // 2. Check top-level
-  user = await User.findOne({ whatsappPhoneNumberId: phoneNumberId }).lean();
-  if (user) return user;
+  for (const user of users) {
+    // 1. Extract from array
+    if (user.whatsappNumbers && user.whatsappNumbers.length > 0) {
+      for (const n of user.whatsappNumbers) {
+        if (n.whatsappPhoneNumberId && n.whatsappAccessToken) {
+          numbers.push({
+            userId: user._id,
+            name: n.name || user.name || "Unknown",
+            phoneNumberId: n.whatsappPhoneNumberId,
+            accessToken: n.whatsappAccessToken,
+            wabaId: n.wabaId || user.wabaId,
+          });
+        }
+      }
+    }
 
-  // 3. Check parent tenants
-  user = await User.findOne({ parentTenantId: { $exists: false }, "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId }).lean();
-  if (user) return user;
-
-  user = await User.findOne({ parentTenantId: { $exists: false }, whatsappPhoneNumberId: phoneNumberId }).lean();
-  if (user) return user;
-
-  // 4. Brute force all users
-  const allUsers = await User.find({}).lean();
-  for (const u of allUsers) {
-    if (u.whatsappNumbers?.some((n: any) => n.whatsappPhoneNumberId === phoneNumberId)) return u;
-    if (u.whatsappPhoneNumberId === phoneNumberId) return u;
+    // 2. Extract from top-level (if different from array)
+    if (user.whatsappPhoneNumberId && user.whatsappAccessToken) {
+      const alreadyExists = numbers.some(
+        (n) => n.phoneNumberId === user.whatsappPhoneNumberId
+      );
+      if (!alreadyExists) {
+        numbers.push({
+          userId: user._id,
+          name: user.name || "Unknown",
+          phoneNumberId: user.whatsappPhoneNumberId,
+          accessToken: user.whatsappAccessToken,
+          wabaId: user.wabaId,
+        });
+      }
+    }
   }
 
-  return null;
+  return numbers;
 }
 
-// ─── PARSE MESSAGE CONTENT ────────────────────────────────────────────
-function parseMessageContent(msg: any) {
+// ─── FORCE PULL MESSAGES FROM A SINGLE NUMBER ──────────────────────────
+async function forcePullMessages(num: any) {
+  try {
+    const since = Math.floor((Date.now() - 5000) / 1000); // Last 5 seconds
+    const url = `https://graph.facebook.com/v21.0/${num.phoneNumberId}/messages?fields=id,from,to,type,text,image,video,audio,document,location,contacts,interactive,button,stamp,timestamp,reply_to&limit=50&since=${since}`;
+    
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${num.accessToken}` },
+    });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      console.error(`❌ [PULL] API Error for ${num.name} (${num.phoneNumberId}):`, errData.error?.message || res.statusText);
+      return;
+    }
+
+    const data = await res.json();
+    const msgs = data.data || [];
+
+    if (msgs.length === 0) return; // Silent exit if no messages
+
+    console.log(`📨 [PULL] Found ${msgs.length} new message(s) for ${num.name} (${num.phoneNumberId})`);
+
+    for (const msg of msgs) {
+      // Only process INCOMING messages (where 'from' is not our number)
+      if (!msg.from || msg.from === num.phoneNumberId.replace(/^\d+/, "")) continue;
+
+      await processAndSaveMessage(msg, num);
+    }
+  } catch (err) {
+    console.error(`❌ [PULL] Exception pulling for ${num.name}:`, err);
+  }
+}
+
+// ─── PROCESS AND SAVE SINGLE MESSAGE ──────────────────────────────────
+async function processAndSaveMessage(msg: any, num: any) {
+  // 1. Duplicate check
+  const exists = await Message.findOne({ whatsappMessageId: msg.id }).lean();
+  if (exists) {
+    // Backfill phoneNumberId if missing
+    if (!exists.whatsappPhoneNumberId && num.phoneNumberId) {
+      await Message.updateOne({ _id: exists._id }, { $set: { whatsappPhoneNumberId: num.phoneNumberId } });
+    }
+    return;
+  }
+
+  // 2. Parse message content
   let text = "";
   let messageType = "text";
   let mediaId: string | null = null;
@@ -74,23 +138,64 @@ function parseMessageContent(msg: any) {
     default: text = `[${msg.type}]`; break;
   }
 
-  return { text, messageType, mediaId };
+  // 3. Save to DB
+  const timestamp = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
+
+  await Message.create({
+    userId: num.userId,
+    phone: msg.from,
+    text: text,
+    direction: "in",
+    messageType: messageType,
+    mediaUrl: mediaId,
+    whatsappMessageId: msg.id,
+    status: "delivered",
+    whatsappPhoneNumberId: num.phoneNumberId, // FORCED SAVE
+    senderNumber: msg.from,
+    createdAt: timestamp,
+  });
+
+  console.log(
+    `   ✅ [SAVED] From: ${msg.from} | Type: ${msg.type} | Text: "${text.substring(0, 40)}..." | WABA: ${num.name}`
+  );
 }
 
-// ─── POST: INCOMING MESSAGES ──────────────────────────────────────────
+// ─── POST: WEBHOOK RECEIVER + FORCED PULL TRIGGER ──────────────────────
 export async function POST(req: NextRequest) {
   try {
+    await connectDB();
+
+    // 🚀 FORCE PULL TRIGGER: If called without body (by cron), pull from ALL numbers
+    const contentType = req.headers.get("content-type") || "";
+    
+    if (!contentType.includes("application/json")) {
+      console.log("🔄 [CRON] Triggering forced pull for ALL WhatsApp numbers...");
+      const allNumbers = await getAllWhatsappNumbersFromDB();
+      
+      if (allNumbers.length === 0) {
+        console.log("⚠️ [CRON] No WhatsApp numbers found in DB!");
+        return NextResponse.json({ success: true, pulled: 0 });
+      }
+
+      console.log(`📋 [CRON] Found ${allNumbers.length} number(s) to poll:`);
+      allNumbers.forEach(n => console.log(`   → ${n.name} (${n.phoneNumberId})`));
+
+      // Pull from all numbers concurrently
+      await Promise.all(allNumbers.map(num => forcePullMessages(num)));
+
+      return NextResponse.json({ success: true, pulled: allNumbers.length, numbers: allNumbers.map(n => n.name) });
+    }
+
+    // 📨 META WEBHOOK RECEIVER: Process incoming payload from Meta
     const body = await req.json();
     if (!body?.entry) return NextResponse.json({ success: true });
 
-    await connectDB();
+    console.log("📥 [WEBHOOK] Received payload from Meta");
 
-    // Get raw MongoDB collection for BULLETPROOF saving
-    const db = mongoose.connection.db;
-    if (!db) {
-      throw new Error("MongoDB connection not established");
-    }
-    const messagesCollection = db.collection("messages");
+    // First, get all numbers to map phone_number_id to userId
+    const allNumbers = await getAllWhatsappNumbersFromDB();
+    const numberMap = new Map<string, any>();
+    allNumbers.forEach(n => numberMap.set(n.phoneNumberId, n));
 
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
@@ -99,105 +204,28 @@ export async function POST(req: NextRequest) {
         if (!value) continue;
 
         const phoneNumberId = value.metadata?.phone_number_id;
-        const displayPhoneNumber = value.metadata?.display_phone_number;
-
-        if (!phoneNumberId) {
-          console.error("⚠️ No phone_number_id in metadata");
+        
+        // FIND THE NUMBER
+        const num = numberMap.get(phoneNumberId);
+        
+        if (!num) {
+          console.error(`❌ [WEBHOOK] Received message for UNREGISTERED phone_number_id: ${phoneNumberId}`);
+          console.error(`   Please ensure this ID is in your User DB (top-level or whatsappNumbers array).`);
           continue;
         }
 
-        const user = await findUserByPhoneId(phoneNumberId);
-        if (!user) {
-          console.error(`❌ NO USER FOUND for phone_number_id: ${phoneNumberId}`);
-          continue;
-        }
-
-        console.log(`🎯 [WEBHOOK] Matched WABA: ${phoneNumberId} to User: ${user._id}`);
+        console.log(`🎯 [WEBHOOK] Matched to: ${num.name} (${phoneNumberId})`);
 
         for (const msg of value.messages || []) {
           if (msg.type === "reaction" || msg.type === "system") continue;
-
-          const contact = (value.contacts || []).find((c: any) => c.wa_id === msg.from);
-          const contactName = contact?.profile?.name || null;
-          const fromPhone = msg.from;
-          const { text, messageType, mediaId } = parseMessageContent(msg);
-
-          // 1. Standard duplicate check
-          const exists = await Message.findOne({ whatsappMessageId: msg.id }).lean();
-          if (exists) {
-            // ✅ BACKFILL: If it exists but missing the ID, force update it
-            if (!exists.whatsappPhoneNumberId && phoneNumberId) {
-              await messagesCollection.updateOne(
-                { _id: exists._id },
-                { $set: { whatsappPhoneNumberId: phoneNumberId } }
-              );
-              console.log(`📦 [BACKFILL] Updated missing ID on ${msg.id}`);
-            }
-            continue;
-          }
-
-          const timestamp = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
-          const newObjectId = new mongoose.Types.ObjectId();
-
-          // ✅ METHOD 1: Standard Mongoose Save
-          try {
-            await Message.create({
-              _id: newObjectId,
-              userId: user._id,
-              phone: fromPhone,
-              text: text || `[${msg.type}]`,
-              direction: "in",
-              messageType,
-              mediaUrl: mediaId,
-              contactName,
-              whatsappMessageId: msg.id,
-              status: "delivered",
-              whatsappPhoneNumberId: phoneNumberId, // Attempting to save
-              fromPhone: displayPhoneNumber,
-              senderNumber: fromPhone,
-              createdAt: timestamp,
-              updatedAt: timestamp,
-            });
-            console.log(`✅ [MONGOOSE SAVED] ID: ${msg.id} | WABA: ${phoneNumberId}`);
-          } catch (mongooseError) {
-            console.error(`⚠️ [MONGOOSE FAILED] Falling back to raw MongoDB...`, mongooseError);
-            
-            // ✅ METHOD 2: BULLETPROOF RAW MONGODB SAVE
-            // This bypasses Mongoose schema validation entirely and forces the field in
-            await messagesCollection.insertOne({
-              _id: newObjectId,
-              userId: user._id,
-              phone: fromPhone,
-              text: text || `[${msg.type}]`,
-              direction: "in",
-              messageType,
-              mediaUrl: mediaId,
-              contactName,
-              whatsappMessageId: msg.id,
-              status: "delivered",
-              whatsappPhoneNumberId: phoneNumberId, // FORCED INTO DB
-              fromPhone: displayPhoneNumber,
-              senderNumber: fromPhone,
-              createdAt: timestamp,
-              updatedAt: timestamp,
-            });
-            console.log(`✅ [RAW DB SAVED] ID: ${msg.id} | WABA: ${phoneNumberId}`);
-          }
-
-          // ✅ VERIFICATION STEP: Read it back from DB to prove it saved
-          const verify = await messagesCollection.findOne({ _id: newObjectId });
-          if (verify && verify.whatsappPhoneNumberId) {
-            console.log(`🎉 [VERIFIED] Successfully saved in DB with WABA ID: ${verify.whatsappPhoneNumberId}`);
-          } else {
-            console.error(`❌ [VERIFICATION FAILED] The WABA ID is STILL missing in the DB!`);
-          }
+          await processAndSaveMessage(msg, num);
         }
       }
     }
 
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error("❌ [WEBHOOK FATAL ERROR]", error);
-    return NextResponse.json({ success: true });
+    console.error("❌ [WEBHOOK] Fatal Error:", error);
+    return NextResponse.json({ success: true }); // Always return 200 to Meta
   }
 }
