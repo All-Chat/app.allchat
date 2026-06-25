@@ -8,33 +8,16 @@ import mongoose from "mongoose";
 export async function GET(req: Request) {
   try {
     await connectDB();
-
     const session = await getServerSession(authOptions);
-    const userId = session?.user?.id;
-
-    if (!userId) {
-      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
-    }
+    if (!session?.user?.id) return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
 
     const { searchParams } = new URL(req.url);
     let phone = searchParams.get("phone") || "";
     const wabaId = searchParams.get("whatsappPhoneNumberId") || "";
-
-    if (!phone) {
-      return NextResponse.json({ success: false, messages: [] }, { status: 400 });
-    }
-
-    // Strip "+" so it matches the webhook's inbound format
+    if (!phone) return NextResponse.json({ success: false, messages: [] }, { status: 400 });
     phone = phone.replace(/\+/g, "");
 
-    // Base filter: always filter by userId + phone
-    const filter: Record<string, unknown> = {
-      userId: new mongoose.Types.ObjectId(userId),
-      phone,
-    };
-
-    // ✅ WABA FILTER: Same backward-compatible logic as /api/chats
-    // Shows messages for this WABA ID + old messages without the field
+    const filter: Record<string, unknown> = { userId: new mongoose.Types.ObjectId(session.user.id), phone };
     if (wabaId && wabaId !== "all") {
       filter.$or = [
         { whatsappPhoneNumberId: wabaId },
@@ -43,38 +26,18 @@ export async function GET(req: Request) {
       ];
     }
 
-    const messages = await Message.find(filter)
-      .sort({ createdAt: 1 })
-      .lean();
-
-    const mapped = messages.map((msg) => ({
-      _id: msg._id,
-      phone: msg.phone,
-      text: msg.text,
-      direction: msg.direction,
-      messageType: msg.messageType,
-      mediaUrl: msg.mediaUrl,
-      contactName: msg.contactName,
-      createdAt: msg.createdAt,
-      timestamp: msg.createdAt,
-      whatsappMessageId: msg.whatsappMessageId,
-      status: msg.status,
-      templateName: msg.templateName || undefined,
-      templateHeaderType: msg.templateHeaderType || undefined,
-      templateHeaderText: msg.templateHeaderText || undefined,
-      templateBodyText: msg.templateBodyText || undefined,
-      templateFooter: msg.templateFooter || undefined,
-      templateButtons: msg.templateButtons || undefined,
-      templateLanguage: msg.templateLanguage || undefined,
-      // ✅ Include these so the chat UI can show "sent by" labels
-      whatsappPhoneNumberId: msg.whatsappPhoneNumberId || undefined,
-      fromPhone: msg.fromPhone || undefined,
-      senderNumber: msg.senderNumber || undefined,
+    const messages = await Message.find(filter).sort({ createdAt: 1 }).lean();
+    const mapped = messages.map((m) => ({
+      _id: m._id, phone: m.phone, text: m.text, direction: m.direction, messageType: m.messageType,
+      mediaUrl: m.mediaUrl, contactName: m.contactName, createdAt: m.createdAt, timestamp: m.createdAt,
+      whatsappMessageId: m.whatsappMessageId, status: m.status,
+      templateName: m.templateName || undefined, templateHeaderType: m.templateHeaderType || undefined,
+      templateHeaderText: m.templateHeaderText || undefined, templateBodyText: m.templateBodyText || undefined,
+      templateFooter: m.templateFooter || undefined, templateButtons: m.templateButtons || undefined,
+      templateLanguage: m.templateLanguage || undefined, whatsappPhoneNumberId: m.whatsappPhoneNumberId || undefined,
+      fromPhone: m.fromPhone || undefined, senderNumber: m.senderNumber || undefined,
     }));
 
     return NextResponse.json({ success: true, messages: mapped });
-  } catch (error) {
-    console.error("Error in /api/chat:", error);
-    return NextResponse.json({ success: false, messages: [] }, { status: 500 });
-  }
+  } catch (error) { console.error("Error in /api/chat:", error); return NextResponse.json({ success: false, messages: [] }, { status: 500 }); }
 }
