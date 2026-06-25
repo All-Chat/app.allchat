@@ -1,4 +1,3 @@
-// /api/chat/route.ts
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Message from "@/models/Message";
@@ -9,32 +8,44 @@ import mongoose from "mongoose";
 export async function GET(req: Request) {
   try {
     await connectDB();
+
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
-    if (!userId) return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+
+    if (!userId) {
+      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+    }
 
     const { searchParams } = new URL(req.url);
     let phone = searchParams.get("phone") || "";
     const wabaId = searchParams.get("whatsappPhoneNumberId") || "";
 
-    if (!phone) return NextResponse.json({ success: false, messages: [] }, { status: 400 });
+    if (!phone) {
+      return NextResponse.json({ success: false, messages: [] }, { status: 400 });
+    }
+
+    // Strip "+" so it matches the webhook's inbound format
     phone = phone.replace(/\+/g, "");
 
+    // Base filter: always filter by userId + phone
     const filter: Record<string, unknown> = {
       userId: new mongoose.Types.ObjectId(userId),
       phone,
     };
 
-    // ✅ FIX: Same backward-compatible filter
+    // ✅ WABA FILTER: Same backward-compatible logic as /api/chats
+    // Shows messages for this WABA ID + old messages without the field
     if (wabaId && wabaId !== "all") {
       filter.$or = [
         { whatsappPhoneNumberId: wabaId },
         { whatsappPhoneNumberId: null },
-        { whatsappPhoneNumberId: { $exists: false } }
+        { whatsappPhoneNumberId: { $exists: false } },
       ];
     }
 
-    const messages = await Message.find(filter).sort({ createdAt: 1 }).lean();
+    const messages = await Message.find(filter)
+      .sort({ createdAt: 1 })
+      .lean();
 
     const mapped = messages.map((msg) => ({
       _id: msg._id,
@@ -55,6 +66,7 @@ export async function GET(req: Request) {
       templateFooter: msg.templateFooter || undefined,
       templateButtons: msg.templateButtons || undefined,
       templateLanguage: msg.templateLanguage || undefined,
+      // ✅ Include these so the chat UI can show "sent by" labels
       whatsappPhoneNumberId: msg.whatsappPhoneNumberId || undefined,
       fromPhone: msg.fromPhone || undefined,
       senderNumber: msg.senderNumber || undefined,
