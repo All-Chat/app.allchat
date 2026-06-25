@@ -1,4 +1,3 @@
-// /api/chats/route.ts
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Message from "@/models/Message";
@@ -9,22 +8,31 @@ import mongoose from "mongoose";
 export async function GET(req: Request) {
   try {
     await connectDB();
+
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
-    if (!userId) return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+
+    if (!userId) {
+      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+    }
 
     const { searchParams } = new URL(req.url);
     const wabaId = searchParams.get("whatsappPhoneNumberId") || "";
 
-    const matchStage: Record<string, unknown> = { userId: new mongoose.Types.ObjectId(userId) };
+    // Base filter: always filter by userId
+    const matchStage: Record<string, unknown> = {
+      userId: new mongoose.Types.ObjectId(userId),
+    };
 
-    // ✅ FIX: If filtering by specific number, ALSO include messages that don't 
-    // have the field yet (backward compatibility with old messages)
+    // ✅ WABA FILTER: If a specific number is selected, include:
+    // 1. Messages that MATCH this WABA ID (new messages)
+    // 2. Messages that have NO WABA ID (old messages sent before the fix)
+    // This ensures old chats don't disappear when you select a number
     if (wabaId && wabaId !== "all") {
       matchStage.$or = [
         { whatsappPhoneNumberId: wabaId },
         { whatsappPhoneNumberId: null },
-        { whatsappPhoneNumberId: { $exists: false } }
+        { whatsappPhoneNumberId: { $exists: false } },
       ];
     }
 
@@ -36,9 +44,11 @@ export async function GET(req: Request) {
           _id: "$phone",
           phone: { $first: "$phone" },
           name: { $first: "$contactName" },
+          profilePicUrl: { $first: "$profilePicUrl" },
           lastMessage: { $first: "$text" },
           lastDirection: { $first: "$direction" },
           lastMessageType: { $first: "$messageType" },
+          lastMediaUrl: { $first: "$mediaUrl" },
           updatedAt: { $first: "$createdAt" },
           whatsappPhoneNumberId: { $first: "$whatsappPhoneNumberId" },
         },
