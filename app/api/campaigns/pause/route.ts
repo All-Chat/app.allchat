@@ -12,10 +12,7 @@ export async function POST(req: Request) {
     if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { campaignId } = await req.json();
-    await Campaign.findOneAndUpdate(
-      { _id: campaignId, userId: session.user.id, status: "running" },
-      { status: "paused" }
-    );
+    await Campaign.findOneAndUpdate({ _id: campaignId, userId: session.user.id, status: "running" }, { status: "paused" });
 
     return NextResponse.json({ success: true });
   } catch (error: any) {
