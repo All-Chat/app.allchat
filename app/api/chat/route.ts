@@ -1,3 +1,4 @@
+// /api/chat/route.ts
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Message from "@/models/Message";
@@ -8,39 +9,32 @@ import mongoose from "mongoose";
 export async function GET(req: Request) {
   try {
     await connectDB();
-
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
-
-    if (!userId) {
-      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
-    }
+    if (!userId) return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
 
     const { searchParams } = new URL(req.url);
     let phone = searchParams.get("phone") || "";
-    const whatsappPhoneNumberId = searchParams.get("whatsappPhoneNumberId") || "";
+    const wabaId = searchParams.get("whatsappPhoneNumberId") || "";
 
-    if (!phone) {
-      return NextResponse.json({ success: false, messages: [] }, { status: 400 });
-    }
-
-    // Strip the "+" sign so it matches the webhook's inbound format
+    if (!phone) return NextResponse.json({ success: false, messages: [] }, { status: 400 });
     phone = phone.replace(/\+/g, "");
 
-    // ✅ BUILD FILTER: always filter by userId + phone
     const filter: Record<string, unknown> = {
       userId: new mongoose.Types.ObjectId(userId),
       phone,
     };
 
-    // ✅ FILTER BY WHATSAPP PHONE NUMBER ID (if provided and not "all")
-    if (whatsappPhoneNumberId && whatsappPhoneNumberId !== "all") {
-      filter.whatsappPhoneNumberId = whatsappPhoneNumberId;
+    // ✅ FIX: Same backward-compatible filter
+    if (wabaId && wabaId !== "all") {
+      filter.$or = [
+        { whatsappPhoneNumberId: wabaId },
+        { whatsappPhoneNumberId: null },
+        { whatsappPhoneNumberId: { $exists: false } }
+      ];
     }
 
-    const messages = await Message.find(filter)
-      .sort({ createdAt: 1 })
-      .lean();
+    const messages = await Message.find(filter).sort({ createdAt: 1 }).lean();
 
     const mapped = messages.map((msg) => ({
       _id: msg._id,
@@ -61,7 +55,6 @@ export async function GET(req: Request) {
       templateFooter: msg.templateFooter || undefined,
       templateButtons: msg.templateButtons || undefined,
       templateLanguage: msg.templateLanguage || undefined,
-      // ✅ INCLUDE whatsappPhoneNumberId so the chat UI can show "sent by" labels
       whatsappPhoneNumberId: msg.whatsappPhoneNumberId || undefined,
       fromPhone: msg.fromPhone || undefined,
       senderNumber: msg.senderNumber || undefined,
