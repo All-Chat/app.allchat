@@ -8,7 +8,7 @@ import mongoose from "mongoose";
 export async function GET(req: Request) {
   try {
     await connectDB();
-    
+
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
 
@@ -18,18 +18,27 @@ export async function GET(req: Request) {
 
     const { searchParams } = new URL(req.url);
     let phone = searchParams.get("phone") || "";
+    const whatsappPhoneNumberId = searchParams.get("whatsappPhoneNumberId") || "";
 
     if (!phone) {
       return NextResponse.json({ success: false, messages: [] }, { status: 400 });
     }
 
-    // CRITICAL FIX: Strip the "+" sign so it matches the webhook's inbound format
+    // Strip the "+" sign so it matches the webhook's inbound format
     phone = phone.replace(/\+/g, "");
 
-    const messages = await Message.find({ 
-      userId: new mongoose.Types.ObjectId(userId), 
-      phone 
-    })
+    // ✅ BUILD FILTER: always filter by userId + phone
+    const filter: Record<string, unknown> = {
+      userId: new mongoose.Types.ObjectId(userId),
+      phone,
+    };
+
+    // ✅ FILTER BY WHATSAPP PHONE NUMBER ID (if provided and not "all")
+    if (whatsappPhoneNumberId && whatsappPhoneNumberId !== "all") {
+      filter.whatsappPhoneNumberId = whatsappPhoneNumberId;
+    }
+
+    const messages = await Message.find(filter)
       .sort({ createdAt: 1 })
       .lean();
 
@@ -52,6 +61,10 @@ export async function GET(req: Request) {
       templateFooter: msg.templateFooter || undefined,
       templateButtons: msg.templateButtons || undefined,
       templateLanguage: msg.templateLanguage || undefined,
+      // ✅ INCLUDE whatsappPhoneNumberId so the chat UI can show "sent by" labels
+      whatsappPhoneNumberId: msg.whatsappPhoneNumberId || undefined,
+      fromPhone: msg.fromPhone || undefined,
+      senderNumber: msg.senderNumber || undefined,
     }));
 
     return NextResponse.json({ success: true, messages: mapped });
