@@ -58,7 +58,7 @@ async function findUserByPhoneNumberId(phoneNumberId: string) {
       whatsappAccessToken: user.whatsappAccessToken,
       wabaId: user.wabaId,
       name: "Default Number",
-    };
+    } as any;
   }
 
   if (!matchedNumber) return null;
