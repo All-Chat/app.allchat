@@ -4,9 +4,121 @@ import { connectDB } from "@/lib/mongodb";
 import User from "@/models/User";
 import Message from "@/models/Message";
 import Workflow from "@/models/Workflow";
+import Session from "@/models/Session";
+import Form from "@/models/Form";
+import FormResponse from "@/models/FormResponse";
 
 const VERIFY_TOKEN =
   process.env.WHATSAPP_VERIFY_TOKEN || "watiX_webhook_verify_2024";
+
+/* ============================================================================
+   GLOBAL INACTIVITY TIMERS MAP
+   ---------------------------------------------------------------------------- */
+const workflowTimers = new Map<string, NodeJS.Timeout>();
+
+const clearWorkflowTimer = (phone: string) => {
+  const timerId = workflowTimers.get(phone);
+  if (timerId) {
+    clearInterval(timerId);
+    workflowTimers.delete(phone);
+  }
+};
+
+const startWorkflowInactivityTimer = (
+  phone: string,
+  userId: string,
+  workflowId: string,
+  accessToken: string,
+  phoneNumberId: string
+) => {
+  clearWorkflowTimer(phone);
+
+  (async () => {
+    try {
+      await connectDB();
+      const wf = await Workflow.findById(workflowId);
+      if (!wf || !wf.steps) return;
+      
+      const inactivityNode = Object.values(wf.steps).find(
+        (s: any) => s.stepType === "inactivity_node"
+      ) as any;
+      
+      if (!inactivityNode) return;
+
+      const delaySeconds = inactivityNode.delaySeconds || 30;
+      const repeatCount = inactivityNode.repeatCount || 1;
+      const message = inactivityNode.message || "Are you still there?";
+      let sentCount = 0;
+
+      const timerId = setInterval(async () => {
+        try {
+          const session = await Session.findOne({ phone, userId });
+          if (!session || session.formId) {
+            clearWorkflowTimer(phone);
+            return;
+          }
+          if (sentCount < repeatCount) {
+            await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, { message, stepType: "text" });
+            sentCount++;
+          } else {
+            clearWorkflowTimer(phone);
+          }
+        } catch (err) {
+          console.error("Inactivity timer execution error:", err);
+          clearWorkflowTimer(phone);
+        }
+      }, delaySeconds * 1000);
+
+      workflowTimers.set(phone, timerId);
+    } catch (err) {
+      console.error("Failed to start inactivity timer:", err);
+    }
+  })();
+};
+
+const startFormInactivityTimer = (
+  phone: string,
+  userId: string,
+  formId: string,
+  fieldIndex: number,
+  field: any,
+  form: any,
+  accessToken: string,
+  phoneNumberId: string
+) => {
+  if (field.delaySeconds > 0 && field.repeatCount > 0 && field.delayMessage) {
+    let remindersSent = 0;
+    const intervalId = setInterval(async () => {
+      try {
+        await connectDB();
+        const checkSession = await Session.findOne({ phone, userId });
+        if (!checkSession || !checkSession.formId || checkSession.formFieldIndex !== fieldIndex) {
+          clearInterval(intervalId);
+          return;
+        }
+        if (remindersSent < field.repeatCount) {
+          await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, { message: field.delayMessage, stepType: "text" });
+          remindersSent++;
+        } else {
+          clearInterval(intervalId);
+          const abandonmentStep = {
+            message: form.abandonmentMessage || "It seems you are busy right now. We have paused the form. Click the button below whenever you are ready to start over.",
+            stepType: "message",
+            buttons: [{ id: `restart_form_${formId}`, label: "🔄 Restart Form", nextStepId: null }],
+          };
+          await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, abandonmentStep);
+          checkSession.formId = null;
+          checkSession.formFieldIndex = 0;
+          await checkSession.save();
+          await FormResponse.updateOne({ formId, phone, status: "incomplete" }, { $set: { status: "abandoned" } });
+        }
+      } catch (err) {
+        console.error("Form timer error:", err);
+        clearInterval(intervalId);
+      }
+    }, field.delaySeconds * 1000);
+  }
+};
 
 // ─── GET: Webhook Verification ─────────────────────────────────────────
 export async function GET(req: NextRequest) {
@@ -288,10 +400,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       active: true,
     });
 
-    console.log(
-      `📋 [WORKFLOW] Found ${workflows.length} workflows for user ${num.userId} on number ${num.phoneNumberId}`
-    );
-
     // ──────────────────────────────────────────────────
     // 🔴 FALLBACK: Check workflows with NO wabaPhoneNumberId
     // ──────────────────────────────────────────────────
@@ -311,7 +419,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
           `⚠️ [WORKFLOW] Using ${legacyWorkflows.length} legacy workflow(s) for user ${num.userId}`
         );
 
-        // AUTO-FIX: Link these legacy workflows to this number
         try {
           await Workflow.updateMany(
             {
@@ -329,9 +436,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
               },
             }
           );
-          console.log(
-            `🔧 [WORKFLOW] Auto-linked legacy workflows to number ${num.phoneNumberId}`
-          );
         } catch (fixErr) {
           console.error("Failed to auto-fix legacy workflows:", fixErr);
         }
@@ -345,26 +449,106 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       return;
     }
 
-    // ──────────────────────────────────────────────────
-    // MATCH AGAINST WORKFLOW TRIGGERS
-    // ──────────────────────────────────────────────────
     let matchedWorkflow: any = null;
     let matchedByButton = false;
 
-    // Priority 1: Button click
+    // Priority 1: Button click (forms and session continuations)
     if (buttonPayload) {
+      // 1A: Handle Restart Form Button
+      if (buttonPayload.startsWith("restart_form_")) {
+        const formId = buttonPayload.replace("restart_form_", "");
+        const formData = await Form.findById(formId);
+        if (formData && formData.fields.length > 0) {
+          await Session.findOneAndUpdate(
+            { phone: msg.from, userId: num.userId }, 
+            { formId: formData._id, formFieldIndex: 0, updatedAt: new Date() }, 
+            { upsert: true, new: true }
+          );
+          await FormResponse.create({ formId: formData._id, userId: num.userId, phone: msg.from, data: {}, status: "incomplete" });
+          const textMsg = `*${formData.name}*\n\n${formData.fields[0].label}`;
+          await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: textMsg, stepType: "text" });
+          startFormInactivityTimer(msg.from, num.userId.toString(), formData._id.toString(), 0, formData.fields[0], formData, num.accessToken, num.phoneNumberId);
+          return;
+        }
+      }
+
+      // 1B: Handle Active Session Button Replies
+      const activeSession = await Session.findOne({ phone: msg.from, userId: num.userId });
+      if (activeSession && activeSession.workflowId) {
+        const wf = await Workflow.findById(activeSession.workflowId);
+        
+        if (wf && wf.active && wf.steps) {
+          let clickedBtn = null;
+          for (const stepId of Object.keys(wf.steps)) {
+            const step = wf.steps[stepId];
+            const btn = step.buttons?.find((b: any) => b.id === buttonPayload) || 
+                        step.buttons?.find((b: any) => b.label?.toLowerCase() === incomingText.toLowerCase());
+            if (btn) { clickedBtn = btn; break; }
+          }
+          
+          if (clickedBtn) {
+            if (clickedBtn.applyTagId) {
+              await applyTagToContact(msg.from, clickedBtn.applyTagId, num.userId.toString());
+            }
+            if (clickedBtn.optInNodeId) {
+              await addOptInNumber(msg.from, num.userId.toString());
+            }
+            
+            if (clickedBtn.nextStepId) {
+              let nextStep = wf.steps[clickedBtn.nextStepId];
+              while (nextStep && nextStep.stepType === "delay_node") {
+                const delaySeconds = nextStep.delaySeconds || 0;
+                if (delaySeconds > 0) await new Promise((resolve) => setTimeout(resolve, delaySeconds * 1000));
+                nextStep = nextStep.nextStepId ? wf.steps[nextStep.nextStepId] : null;
+              }
+              
+              if (nextStep) {
+                if (nextStep.stepType === "form_node" && nextStep.selectedForm) {
+                  const formData = await Form.findById(nextStep.selectedForm);
+                  if (formData && formData.fields.length > 0) {
+                    activeSession.formId = formData._id; activeSession.formFieldIndex = 0; await activeSession.save();
+                    await FormResponse.create({ formId: formData._id, userId: num.userId, phone: msg.from, data: {}, status: "incomplete" });
+                    const textMsg = `*${formData.name}*\n\n${formData.fields[0].label}`;
+                    await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: textMsg, stepType: "text" });
+                    startFormInactivityTimer(msg.from, num.userId.toString(), formData._id.toString(), 0, formData.fields[0], formData, num.accessToken, num.phoneNumberId);
+                    return;
+                  }
+                }
+                activeSession.currentStepId = nextStep.id;
+                await activeSession.save();
+                await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, nextStep);
+                await Message.create({ userId: num.userId, phone: msg.from, text: nextStep.message || `[${nextStep.stepType?.toUpperCase()}]`, direction: "out", messageType: "text" });
+                if (nextStep.buttons && nextStep.buttons.length > 0) {
+                  startWorkflowInactivityTimer(msg.from, num.userId.toString(), wf._id.toString(), num.accessToken, num.phoneNumberId);
+                }
+                return;
+              } else { 
+                await Session.deleteOne({ _id: activeSession._id }); 
+                return; 
+              }
+            } else { 
+              await Session.deleteOne({ _id: activeSession._id }); 
+              return; 
+            }
+          } else { 
+            await Session.deleteOne({ _id: activeSession._id }); 
+          }
+        } else { 
+          if(activeSession) await Session.deleteOne({ _id: activeSession._id }); 
+        }
+      }
+
+      // 1C: Match button inside any workflow triggers directly
       for (const wf of workflows) {
         for (const stepId of Object.keys(wf.steps)) {
           const step = wf.steps[stepId];
           const clickedBtn = step.buttons?.find(
-            (b: any) => b.id === buttonPayload || b.label === incomingText
+            (b: any) => b.id === buttonPayload || b.label?.toLowerCase() === incomingText.toLowerCase()
           );
           if (clickedBtn?.nextStepId) {
             matchedWorkflow = wf;
             matchedByButton = true;
-            console.log(
-              `🎯 [WORKFLOW] Button "${incomingText}" matched in workflow ${wf._id}`
-            );
+            console.log(`🎯 [WORKFLOW] Button "${incomingText}" matched in workflow ${wf._id}`);
             break;
           }
         }
@@ -376,30 +560,35 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
     if (!matchedWorkflow) {
       for (const wf of workflows) {
         const isMatch = wf.triggers.some((trigger: any) => {
-          const keyword = trigger.keyword?.toLowerCase().trim();
-          if (keyword === "*" || keyword === "") return true;
-          const text = incomingText.toLowerCase().trim();
-          if (trigger.matchMode === "exact") {
-            return text === keyword;
+          const triggerKeyword = (trigger.keyword || "").trim();
+          const mode = (trigger.matchMode || "contains").toLowerCase();
+
+          if (mode === "exists") {
+            // 🔥 NEW: "Exists" trigger. Fires if ANY message comes in
+            return true;
+          }
+          
+          if (triggerKeyword === "*" || triggerKeyword === "") return true;
+          
+          if (mode === "exact") {
+            // 🔥 FIX: Strictly compare EXACT string (CASE-SENSITIVE)
+            return incomingText.trim() === triggerKeyword;
           } else {
-            return text.includes(keyword);
+            // "contains"
+            return incomingText.toLowerCase().trim().includes(triggerKeyword.toLowerCase());
           }
         });
 
         if (isMatch) {
           matchedWorkflow = wf;
-          console.log(
-            `🎯 [WORKFLOW] Keyword trigger matched workflow ${wf._id}`
-          );
+          console.log(`🎯 [WORKFLOW] Keyword trigger matched workflow ${wf._id}`);
           break;
         }
       }
     }
 
     if (!matchedWorkflow) {
-      console.log(
-        `⚠️ [WORKFLOW] No trigger matched for: "${incomingText?.substring(0, 30)}"`
-      );
+      console.log(`⚠️ [WORKFLOW] No trigger matched for: "${incomingText?.substring(0, 30)}"`);
       return;
     }
 
@@ -413,17 +602,13 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       for (const stepId of Object.keys(steps)) {
         const step = steps[stepId];
         const clickedBtn = step.buttons?.find(
-          (b: any) => b.id === buttonPayload || b.label === incomingText
+          (b: any) => b.id === buttonPayload || b.label?.toLowerCase() === incomingText.toLowerCase()
         );
         if (clickedBtn?.nextStepId) {
           currentStepId = clickedBtn.nextStepId;
 
           if (clickedBtn.applyTagId) {
-            await applyTagToContact(
-              msg.from,
-              clickedBtn.applyTagId,
-              num.userId.toString()
-            );
+            await applyTagToContact(msg.from, clickedBtn.applyTagId, num.userId.toString());
           }
           if (clickedBtn.optInNodeId) {
             await addOptInNumber(msg.from, num.userId.toString());
@@ -440,16 +625,16 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       return;
     }
 
-    console.log(
-      `🚀 [WORKFLOW] Executing workflow ${matchedWorkflow._id} for user ${num.userId}, step ${currentStepId}`
-    );
+    console.log(`🚀 [WORKFLOW] Executing workflow ${matchedWorkflow._id} for user ${num.userId}, step ${currentStepId}`);
 
     await processWorkflowStep(
       currentStepId,
       steps,
+      matchedWorkflow,
       num.accessToken,
       num.phoneNumberId,
-      msg.from
+      msg.from,
+      num.userId.toString()
     );
   } catch (err) {
     console.error("❌ [WORKFLOW] Execution error:", err);
@@ -460,9 +645,11 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
 async function processWorkflowStep(
   stepId: string,
   steps: Record<string, any>,
+  matchedWorkflow: any,
   accessToken: string,
   phoneNumberId: string,
-  customerNumber: string
+  customerNumber: string,
+  userId: string
 ) {
   const step = steps[stepId];
   if (!step) return;
@@ -476,31 +663,63 @@ async function processWorkflowStep(
       await processWorkflowStep(
         step.nextStepId,
         steps,
+        matchedWorkflow,
         accessToken,
         phoneNumberId,
-        customerNumber
+        customerNumber,
+        userId
       );
     }
     return;
   }
 
-  // 🔴 SKIP non-sending nodes (handled elsewhere)
+  // 🔴 HANDLE FORM NODE
+  if (step.stepType === "form_node" && step.selectedForm) {
+    const formData = await Form.findById(step.selectedForm);
+    if (formData && formData.fields.length > 0) {
+      await Session.findOneAndUpdate(
+        { phone: customerNumber, userId }, 
+        { formId: formData._id, formFieldIndex: 0, workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() }, 
+        { upsert: true, new: true }
+      );
+      await FormResponse.create({ formId: formData._id, userId, phone: customerNumber, data: {}, status: "incomplete" });
+      const textMsg = `*${formData.name}*\n\n${formData.fields[0].label}`;
+      await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, { message: textMsg, stepType: "text" });
+      startFormInactivityTimer(customerNumber, userId, formData._id.toString(), 0, formData.fields[0], formData, accessToken, phoneNumberId);
+    }
+    return;
+  }
+
+  // 🔴 SKIP non-sending nodes
   if (
     step.stepType === "inactivity_node" ||
     step.stepType === "tag_node" ||
-    step.stepType === "opt_in_node" ||
-    step.stepType === "form_node"
+    step.stepType === "opt_in_node"
   ) {
     return;
   }
 
   // 🔴 SEND THE MESSAGE
-  await sendWorkflowWhatsAppMessage(
-    accessToken,
-    phoneNumberId,
-    customerNumber,
-    step
+  await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step);
+  
+  // Save to DB & update session
+  await Message.create({ 
+    userId, 
+    phone: customerNumber, 
+    text: step.message || `[${step.stepType?.toUpperCase()}]`, 
+    direction: "out", 
+    messageType: "text" 
+  });
+  
+  await Session.findOneAndUpdate(
+    { phone: customerNumber, userId }, 
+    { workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() }, 
+    { upsert: true, new: true }
   );
+
+  if (step.buttons && step.buttons.length > 0) {
+    startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId);
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -515,17 +734,11 @@ async function sendWorkflowWhatsAppMessage(
   const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
   let payload: any;
 
-  // ──────────────────────────────────────────────────
-  // ✅ HELPER: Detect if mediaUrl is a WhatsApp media ID or a public URL
-  // ──────────────────────────────────────────────────
   const isMediaId = (val: string | null | undefined): boolean => {
     if (!val) return false;
-    // WhatsApp media IDs are numeric strings, NOT URLs
     return !val.startsWith("http://") && !val.startsWith("https://");
   };
 
-  // ✅ HELPER: Build correct media object for WhatsApp API
-  // Media IDs use { id: "..." }, URLs use { link: "..." }
   const buildMediaObj = (mediaType: string, mediaUrl: string | null) => {
     if (!mediaUrl) return null;
     if (isMediaId(mediaUrl)) {
@@ -535,9 +748,6 @@ async function sendWorkflowWhatsAppMessage(
     }
   };
 
-  // ──────────────────────────────────────────────────
-  // URL ACTION
-  // ──────────────────────────────────────────────────
   if (step.stepType === "url_action" && step.url) {
     payload = {
       messaging_product: "whatsapp",
@@ -550,11 +760,7 @@ async function sendWorkflowWhatsAppMessage(
         cta: { title: step.urlLabel || "Open Link", url: step.url },
       },
     };
-  }
-  // ──────────────────────────────────────────────────
-  // CALL ACTION
-  // ──────────────────────────────────────────────────
-  else if (step.stepType === "call_action" && step.phoneNumber) {
+  } else if (step.stepType === "call_action" && step.phoneNumber) {
     payload = {
       messaging_product: "whatsapp",
       to,
@@ -569,15 +775,10 @@ async function sendWorkflowWhatsAppMessage(
         },
       },
     };
-  }
-  // ──────────────────────────────────────────────────
-  // MESSAGE WITH BUTTONS (>3 = list, ≤3 = buttons)
-  // ──────────────────────────────────────────────────
-  else if (step.buttons && step.buttons.length > 0) {
+  } else if (step.buttons && step.buttons.length > 0) {
     const validButtons = step.buttons.filter((b: any) => b.label?.trim());
 
     if (validButtons.length > 3) {
-      // ── LIST MODE ──
       const rows = validButtons.slice(0, 10).map((btn: any) => ({
         id: btn.id,
         title: btn.label.substring(0, 24),
@@ -589,9 +790,7 @@ async function sendWorkflowWhatsAppMessage(
         interactive: {
           type: "list",
           header: { type: "text", text: "Options" },
-          body: {
-            text: step.message || "Please select an option",
-          },
+          body: { text: step.message || "Please select an option" },
           action: {
             button: step.listButtonText || "Options",
             sections: [{ title: "Choices", rows }],
@@ -599,30 +798,19 @@ async function sendWorkflowWhatsAppMessage(
         },
       };
 
-      // ✅ FIX: Add media header for list if present
       if (step.mediaUrl && step.mediaType) {
         const mediaObj = buildMediaObj(step.mediaType, step.mediaUrl);
         if (mediaObj) {
           if (step.mediaType === "image") {
-            payload.interactive.header = {
-              type: "image",
-              image: mediaObj,
-            };
+            payload.interactive.header = { type: "image", image: mediaObj };
           } else if (step.mediaType === "video") {
-            payload.interactive.header = {
-              type: "video",
-              video: mediaObj,
-            };
+            payload.interactive.header = { type: "video", video: mediaObj };
           } else if (step.mediaType === "document") {
-            payload.interactive.header = {
-              type: "document",
-              document: { ...mediaObj, filename: "Document" },
-            };
+            payload.interactive.header = { type: "document", document: { ...mediaObj, filename: "Document" } };
           }
         }
       }
     } else {
-      // ── BUTTON MODE ──
       const buttons = validButtons.slice(0, 3).map((btn: any) => ({
         type: "reply",
         reply: { id: btn.id, title: btn.label.substring(0, 20) },
@@ -638,34 +826,20 @@ async function sendWorkflowWhatsAppMessage(
         },
       };
 
-      // ✅ FIX: Add media header for buttons — properly handles both IDs and URLs
       if (step.mediaUrl && step.mediaType) {
         const mediaObj = buildMediaObj(step.mediaType, step.mediaUrl);
         if (mediaObj) {
           if (step.mediaType === "image") {
-            payload.interactive.header = {
-              type: "image",
-              image: mediaObj,
-            };
+            payload.interactive.header = { type: "image", image: mediaObj };
           } else if (step.mediaType === "video") {
-            payload.interactive.header = {
-              type: "video",
-              video: mediaObj,
-            };
+            payload.interactive.header = { type: "video", video: mediaObj };
           } else if (step.mediaType === "document") {
-            payload.interactive.header = {
-              type: "document",
-              document: { ...mediaObj, filename: "Document" },
-            };
+            payload.interactive.header = { type: "document", document: { ...mediaObj, filename: "Document" } };
           }
         }
       }
     }
-  }
-  // ──────────────────────────────────────────────────
-  // PLAIN MEDIA OR TEXT MESSAGE (no buttons)
-  // ──────────────────────────────────────────────────
-  else {
+  } else {
     if (step.mediaUrl && step.mediaType) {
       const mediaObj = buildMediaObj(step.mediaType, step.mediaUrl);
 
@@ -674,20 +848,14 @@ async function sendWorkflowWhatsAppMessage(
           messaging_product: "whatsapp",
           to,
           type: "image",
-          image: {
-            ...mediaObj,
-            ...(step.message ? { caption: step.message } : {}),
-          },
+          image: { ...mediaObj, ...(step.message ? { caption: step.message } : {}) },
         };
       } else if (step.mediaType === "video") {
         payload = {
           messaging_product: "whatsapp",
           to,
           type: "video",
-          video: {
-            ...mediaObj,
-            ...(step.message ? { caption: step.message } : {}),
-          },
+          video: { ...mediaObj, ...(step.message ? { caption: step.message } : {}) },
         };
       } else if (step.mediaType === "audio") {
         payload = {
@@ -701,28 +869,16 @@ async function sendWorkflowWhatsAppMessage(
           messaging_product: "whatsapp",
           to,
           type: "document",
-          document: {
-            ...mediaObj,
-            filename: "Document",
-            ...(step.message ? { caption: step.message } : {}),
-          },
+          document: { ...mediaObj, filename: "Document", ...(step.message ? { caption: step.message } : {}) },
         };
       } else if (step.mediaType === "link") {
-        // Link type — send as text with URL preview
         payload = {
           messaging_product: "whatsapp",
           to,
           type: "text",
-          text: {
-            body: step.message
-              ? `${step.message}\n\n${step.mediaUrl}`
-              : step.mediaUrl,
-            preview_url: true,
-          },
+          text: { body: step.message ? `${step.message}\n\n${step.mediaUrl}` : step.mediaUrl, preview_url: true },
         };
-      }
-      // Fallback: just send as text with the URL
-      else {
+      } else {
         payload = {
           messaging_product: "whatsapp",
           to,
@@ -730,9 +886,7 @@ async function sendWorkflowWhatsAppMessage(
           text: { body: step.message || "" },
         };
       }
-    }
-    // Simple text message
-    else {
+    } else {
       payload = {
         messaging_product: "whatsapp",
         to,
@@ -742,9 +896,6 @@ async function sendWorkflowWhatsAppMessage(
     }
   }
 
-  // ──────────────────────────────────────────────────
-  // SEND VIA WHATSAPP API
-  // ──────────────────────────────────────────────────
   try {
     const response = await fetch(url, {
       method: "POST",
@@ -756,14 +907,9 @@ async function sendWorkflowWhatsAppMessage(
     });
     const result = await response.json();
     if (response.ok) {
-      console.log(
-        `✅ [WORKFLOW] Sent to ${to}: "${(step.message || "").substring(0, 50)}..."${step.mediaUrl ? ` (media: ${step.mediaType})` : ""}`
-      );
+      console.log(`✅ [WORKFLOW] Sent to ${to}: "${(step.message || "").substring(0, 50)}..."${step.mediaUrl ? ` (media: ${step.mediaType})` : ""}`);
     } else {
-      console.error(
-        `❌ [WORKFLOW] WhatsApp API error:`,
-        JSON.stringify(result, null, 2)
-      );
+      console.error(`❌ [WORKFLOW] WhatsApp API error:`, JSON.stringify(result, null, 2));
     }
   } catch (err: any) {
     console.error(`❌ [WORKFLOW] Failed to send:`, err.message);
@@ -771,15 +917,11 @@ async function sendWorkflowWhatsAppMessage(
 }
 
 // ─── HELPERS ────────────────────────────────────────────────────────────
-async function applyTagToContact(
-  phoneNumber: string,
-  tagId: string,
-  userId: string
-) {
+async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try {
     const { default: Contact } = await import("@/models/Contact");
     await Contact.findOneAndUpdate(
-      { phoneNumber, userId },
+      { phone: phoneNumber, userId },
       { $addToSet: { tags: tagId } },
       { upsert: true }
     );
@@ -790,10 +932,10 @@ async function applyTagToContact(
 
 async function addOptInNumber(phoneNumber: string, userId: string) {
   try {
-    const { default: OptInNumber } = await import("@/models/OptNumber");
-    await OptInNumber.findOneAndUpdate(
-      { phoneNumber, userId },
-      { phoneNumber, userId, optedIn: true },
+    const { default: OptNumber } = await import("@/models/OptNumber");
+    await OptNumber.findOneAndUpdate(
+      { phone: phoneNumber, userId },
+      { phone: phoneNumber, userId, optedIn: true },
       { upsert: true }
     );
   } catch (err) {
@@ -812,9 +954,7 @@ export async function POST(req: NextRequest) {
 
     // ─── CRON PULL MODE ────────────────────────────────
     if (!contentType.includes("application/json")) {
-      console.log(
-        "🔄 [CRON] Triggering forced pull for ALL WhatsApp numbers..."
-      );
+      console.log("🔄 [CRON] Triggering forced pull for ALL WhatsApp numbers...");
       const allNumbers = await getAllWhatsappNumbersFromDB();
       if (allNumbers.length === 0) {
         return NextResponse.json({ success: true, pulled: 0 });
@@ -846,32 +986,16 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        console.log(
-          `📱 [WEBHOOK] Message received on phone_number_id: ${phoneNumberId}`
-        );
-
         // 🔴 DIRECT DB QUERY — finds the CORRECT user every time
         const num = await findUserByPhoneNumberId(phoneNumberId);
 
         if (!num) {
-          console.error(
-            `❌ [WEBHOOK] No user found for phone_number_id: ${phoneNumberId}. Message will be lost!`
-          );
+          console.error(`❌ [WEBHOOK] No user found for phone_number_id: ${phoneNumberId}. Message will be lost!`);
           continue;
         }
 
-        console.log(
-          `🎯 [WEBHOOK] Matched: User ${num.userId} (${num.name}) for number ${phoneNumberId}`
-        );
-
         for (const msg of value.messages || []) {
           if (msg.type === "reaction" || msg.type === "system") continue;
-          if (msg.type === "button") {
-            console.log(
-              `🔘 [BUTTON] Raw payload:`,
-              JSON.stringify(msg, null, 2)
-            );
-          }
 
           // SAVE MESSAGE
           await processAndSaveMessage(msg, num);
