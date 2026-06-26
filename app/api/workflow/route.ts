@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Workflow from "@/models/Workflow";
+import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { checkLimit, incrementUsage } from "@/lib/limits";
@@ -15,7 +16,10 @@ export async function GET() {
     const userId = session?.user?.id;
 
     if (!userId) {
-      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(
+        { success: false, message: "Unauthorized" },
+        { status: 401 }
+      );
     }
 
     const workflows = await Workflow.find({ userId });
@@ -37,7 +41,10 @@ export async function POST(req: Request) {
     const userId = session?.user?.id;
 
     if (!userId) {
-      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(
+        { success: false, message: "Unauthorized" },
+        { status: 401 }
+      );
     }
 
     const limitCheck = await checkLimit(userId, "workflows");
@@ -59,7 +66,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const { triggers, steps, rootStepId } = await req.json();
+    const { triggers, steps, rootStepId, wabaPhoneNumberId: bodyWabaPhoneNumberId } = await req.json();
 
     if (!triggers || triggers.length === 0) {
       return NextResponse.json(
@@ -78,16 +85,79 @@ export async function POST(req: Request) {
     // ==========================================
     // 🔴 MULTI-TENANT DATA ISOLATION
     // ==========================================
-    const tenantId = (session?.user as any)?.parentTenantId || (session?.user as any)?.tenantId || null;
+    const tenantId =
+      (session?.user as any)?.parentTenantId ||
+      (session?.user as any)?.tenantId ||
+      null;
+
+    // ==========================================
+    // 🔴 WABA PHONE NUMBER RESOLUTION
+    // Priority:
+    //   1. Frontend explicitly selected number
+    //   2. First active number from whatsappNumbers array
+    //   3. ANY number from whatsappNumbers array (even if not active)
+    //   4. Default whatsappPhoneNumberId on user doc
+    // ==========================================
+    let wabaPhoneNumberId: string | null = null;
+    let wabaPhoneNumber: string | null = null;
+
+    const userDoc = await User.findById(userId).select(
+      "whatsappPhoneNumberId whatsappNumbers name"
+    );
+
+    if (userDoc) {
+      // Priority 1: Frontend explicitly selected
+      if (bodyWabaPhoneNumberId) {
+        wabaPhoneNumberId = bodyWabaPhoneNumberId;
+        // Find the name from the array
+        const matchNum = userDoc.whatsappNumbers?.find(
+          (n: any) => n.whatsappPhoneNumberId === bodyWabaPhoneNumberId
+        );
+        wabaPhoneNumber = matchNum?.name || null;
+      }
+      // Priority 2: First active number from array
+      else if (userDoc.whatsappNumbers && userDoc.whatsappNumbers.length > 0) {
+        const activeNum = userDoc.whatsappNumbers.find(
+          (n: any) => n.isActive && n.whatsappPhoneNumberId
+        );
+        // Priority 3: ANY number with a phone ID (even if not active)
+        const anyNum = activeNum || userDoc.whatsappNumbers.find(
+          (n: any) => n.whatsappPhoneNumberId
+        );
+
+        if (anyNum && anyNum.whatsappPhoneNumberId) {
+          wabaPhoneNumberId = anyNum.whatsappPhoneNumberId;
+          wabaPhoneNumber = anyNum.name || null;
+        }
+      }
+
+      // Priority 4: Default number on user doc
+      if (!wabaPhoneNumberId && userDoc.whatsappPhoneNumberId) {
+        wabaPhoneNumberId = userDoc.whatsappPhoneNumberId;
+        wabaPhoneNumber = null;
+      }
+    }
+
+    if (!wabaPhoneNumberId) {
+      console.warn(
+        `⚠️ User ${userId} has no WABA phone number linked. Workflow created but won't execute until a number is connected.`
+      );
+    } else {
+      console.log(
+        `✅ Workflow will be linked to WABA number: ${wabaPhoneNumberId} (${wabaPhoneNumber || "unnamed"})`
+      );
+    }
 
     const wf = await Workflow.create({
       userId,
-      tenantId, // ✅ ATTACH TENANT ID FOR AGGREGATED VIEWS
-      createdBy: userId, // ✅ TRACK WHO CREATED IT
+      tenantId,
+      createdBy: userId,
+      wabaPhoneNumberId,
+      wabaPhoneNumber,
       triggers,
       steps,
       rootStepId,
-      active: true, // ✅ Explicitly set to active on creation
+      active: true,
     });
 
     await incrementUsage(userId, "workflows");
@@ -110,10 +180,13 @@ export async function PUT(req: Request) {
     const userId = session?.user?.id;
 
     if (!userId) {
-      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(
+        { success: false, message: "Unauthorized" },
+        { status: 401 }
+      );
     }
 
-    const { id, triggers, steps, rootStepId, active } = await req.json();
+    const { id, triggers, steps, rootStepId, active, wabaPhoneNumberId: bodyWabaPhoneNumberId } = await req.json();
 
     if (!id) {
       return NextResponse.json(
@@ -122,17 +195,31 @@ export async function PUT(req: Request) {
       );
     }
 
-    // ✅ DYNAMIC UPDATE OBJECT: Only update fields that are actually provided.
-    // This prevents overwriting steps/triggers with undefined when just toggling active status.
     const updateData: any = {};
     if (triggers !== undefined) updateData.triggers = triggers;
     if (steps !== undefined) updateData.steps = steps;
     if (rootStepId !== undefined) updateData.rootStepId = rootStepId;
     if (active !== undefined) updateData.active = active;
 
+    // ✅ Allow updating the linked WABA number
+    if (bodyWabaPhoneNumberId !== undefined) {
+      updateData.wabaPhoneNumberId = bodyWabaPhoneNumberId || null;
+
+      // Also resolve the name
+      if (bodyWabaPhoneNumberId) {
+        const userDoc = await User.findById(userId).select("whatsappNumbers");
+        const matchNum = userDoc?.whatsappNumbers?.find(
+          (n: any) => n.whatsappPhoneNumberId === bodyWabaPhoneNumberId
+        );
+        updateData.wabaPhoneNumber = matchNum?.name || null;
+      } else {
+        updateData.wabaPhoneNumber = null;
+      }
+    }
+
     const updatedWf = await Workflow.findOneAndUpdate(
       { _id: id, userId: userId },
-      updateData, 
+      updateData,
       { new: true, runValidators: true }
     );
 
