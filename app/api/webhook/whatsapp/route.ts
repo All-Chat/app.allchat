@@ -93,7 +93,6 @@ async function forcePullMessages(num: any) {
     for (const msg of msgs) {
       if (!msg.from) continue;
       await processAndSaveMessage(msg, num);
-      // ✅ ALSO EXECUTE WORKFLOWS FOR PULLED MESSAGES
       await executeWorkflowsForMessage(msg, num);
     }
   } catch (err) {
@@ -219,7 +218,7 @@ async function processAndSaveMessage(msg: any, num: any) {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// 🔴 WORKFLOW EXECUTION ENGINE
+// 🔴 WORKFLOW EXECUTION ENGINE — FIXED FOR MULTI-USER
 // ════════════════════════════════════════════════════════════════════════
 async function executeWorkflowsForMessage(msg: any, num: any) {
   try {
@@ -233,39 +232,82 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
     if (!incomingText && !buttonPayload) return;
 
     console.log(
-      `🔄 [WORKFLOW] Checking workflows for user ${num.userId} on number ${num.phoneNumberId} | Text: "${incomingText?.substring(0, 40)}" | BtnPayload: ${buttonPayload}`
+      `🔄 [WORKFLOW] Checking for user ${num.userId} on number ${num.phoneNumberId} | Text: "${incomingText?.substring(0, 40)}" | BtnPayload: ${buttonPayload}`
     );
 
-    // ──────────────────────────────────────
-    // 🔴 FIND ACTIVE WORKFLOWS FOR THIS USER + THIS WABA NUMBER
-    // This is the critical query that makes multi-user work.
-    // ──────────────────────────────────────
+    // ──────────────────────────────────────────────────
+    // 🔴 CRITICAL FIX: FIND WORKFLOWS FOR THIS USER + THIS EXACT NUMBER
+    // ──────────────────────────────────────────────────
     let workflows = await Workflow.find({
       userId: num.userId,
       wabaPhoneNumberId: num.phoneNumberId,
       active: true,
     });
 
-    // Fallback: Also check workflows without wabaPhoneNumberId
-    // (supports workflows created before the wabaPhoneNumberId field was added)
+    console.log(
+      `📋 [WORKFLOW] Found ${workflows.length} workflows for user ${num.userId} on number ${num.phoneNumberId}`
+    );
+
+    // ──────────────────────────────────────────────────
+    // 🔴 FALLBACK: Also check workflows with NO wabaPhoneNumberId set
+    // This supports:
+    //   - Legacy workflows created before the wabaPhoneNumberId field existed
+    //   - Workflows where the number linking failed
+    // ──────────────────────────────────────────────────
     if (workflows.length === 0) {
-      workflows = await Workflow.find({
+      const legacyWorkflows = await Workflow.find({
         userId: num.userId,
-        wabaPhoneNumberId: null,
+        $or: [
+          { wabaPhoneNumberId: null },
+          { wabaPhoneNumberId: { $exists: false } },
+        ],
         active: true,
       });
-      if (workflows.length > 0) {
+
+      if (legacyWorkflows.length > 0) {
+        workflows = legacyWorkflows;
         console.log(
-          `⚠️ [WORKFLOW] Found ${workflows.length} legacy workflows (no wabaPhoneNumberId) for user ${num.userId}`
+          `⚠️ [WORKFLOW] No exact number match. Using ${legacyWorkflows.length} legacy workflow(s) for user ${num.userId}`
         );
+
+        // 🔴 AUTO-FIX: Update these legacy workflows to link them to this number
+        // so next time they're found by the exact query (faster)
+        try {
+          await Workflow.updateMany(
+            {
+              userId: num.userId,
+              $or: [
+                { wabaPhoneNumberId: null },
+                { wabaPhoneNumberId: { $exists: false } },
+              ],
+              active: true,
+            },
+            {
+              $set: {
+                wabaPhoneNumberId: num.phoneNumberId,
+                wabaPhoneNumber: num.name || null,
+              },
+            }
+          );
+          console.log(
+            `🔧 [WORKFLOW] Auto-linked ${legacyWorkflows.length} legacy workflow(s) to number ${num.phoneNumberId}`
+          );
+        } catch (fixErr) {
+          console.error("Failed to auto-fix legacy workflows:", fixErr);
+        }
       }
     }
 
-    if (workflows.length === 0) return;
+    if (workflows.length === 0) {
+      console.log(
+        `⚠️ [WORKFLOW] No active workflows for user ${num.userId} on number ${num.phoneNumberId}`
+      );
+      return;
+    }
 
-    // ──────────────────────────────────────
+    // ──────────────────────────────────────────────────
     // MATCH AGAINST WORKFLOW TRIGGERS
-    // ──────────────────────────────────────
+    // ──────────────────────────────────────────────────
     let matchedWorkflow: any = null;
     let matchedByButton = false;
 
@@ -324,15 +366,13 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       return;
     }
 
-    // ──────────────────────────────────────
+    // ──────────────────────────────────────────────────
     // EXECUTE THE MATCHED WORKFLOW
-    // ──────────────────────────────────────
+    // ──────────────────────────────────────────────────
     const steps = matchedWorkflow.steps;
     let currentStepId: string | null = null;
 
-    // Determine starting point
     if (matchedByButton && buttonPayload) {
-      // Find the next step after the clicked button
       for (const stepId of Object.keys(steps)) {
         const step = steps[stepId];
         const clickedBtn = step.buttons?.find(
@@ -342,11 +382,13 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
         if (clickedBtn?.nextStepId) {
           currentStepId = clickedBtn.nextStepId;
 
-          // ✅ Apply tag if button has tagNodeId
           if (clickedBtn.applyTagId) {
-            await applyTagToContact(msg.from, clickedBtn.applyTagId, num.userId.toString());
+            await applyTagToContact(
+              msg.from,
+              clickedBtn.applyTagId,
+              num.userId.toString()
+            );
           }
-          // ✅ Opt-in if button has optInNodeId
           if (clickedBtn.optInNodeId) {
             await addOptInNumber(msg.from, num.userId.toString());
           }
@@ -354,7 +396,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
         }
       }
     } else {
-      // New conversation → start from root
       currentStepId = matchedWorkflow.rootStepId;
     }
 
@@ -367,7 +408,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       `🚀 [WORKFLOW] Executing workflow ${matchedWorkflow._id}, starting at step ${currentStepId}`
     );
 
-    // Process the step chain (handles delays recursively)
     await processWorkflowStep(
       currentStepId,
       steps,
@@ -391,18 +431,16 @@ async function processWorkflowStep(
   const step = steps[stepId];
   if (!step) return;
 
-  // 🔴 HANDLE DELAY NODE
+  // HANDLE DELAY NODE
   if (step.stepType === "delay_node") {
     const delaySeconds = step.delaySeconds || 10;
     console.log(
       `⏱️ [WORKFLOW] Delaying for ${delaySeconds} seconds...`
     );
-
     await new Promise((resolve) =>
       setTimeout(resolve, delaySeconds * 1000)
     );
 
-    // Continue to the next step after delay
     if (step.nextStepId && steps[step.nextStepId]) {
       await processWorkflowStep(
         step.nextStepId,
@@ -415,7 +453,7 @@ async function processWorkflowStep(
     return;
   }
 
-  // 🔴 SKIP non-sending nodes (handled elsewhere)
+  // SKIP non-sending nodes
   if (
     step.stepType === "inactivity_node" ||
     step.stepType === "tag_node" ||
@@ -425,7 +463,7 @@ async function processWorkflowStep(
     return;
   }
 
-  // 🔴 SEND THE MESSAGE
+  // SEND THE MESSAGE
   await sendWorkflowWhatsAppMessage(
     accessToken,
     phoneNumberId,
@@ -442,10 +480,8 @@ async function sendWorkflowWhatsAppMessage(
   step: any
 ) {
   const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
-
   let payload: any;
 
-  // URL Action
   if (step.stepType === "url_action" && step.url) {
     payload = {
       messaging_product: "whatsapp",
@@ -464,9 +500,7 @@ async function sendWorkflowWhatsAppMessage(
         },
       },
     };
-  }
-  // Call Action
-  else if (step.stepType === "call_action" && step.phoneNumber) {
+  } else if (step.stepType === "call_action" && step.phoneNumber) {
     payload = {
       messaging_product: "whatsapp",
       to,
@@ -484,20 +518,16 @@ async function sendWorkflowWhatsAppMessage(
         },
       },
     };
-  }
-  // Message with buttons (>3 = list, ≤3 = buttons)
-  else if (step.buttons && step.buttons.length > 0) {
+  } else if (step.buttons && step.buttons.length > 0) {
     const validButtons = step.buttons.filter(
       (b: any) => b.label?.trim()
     );
 
     if (validButtons.length > 3) {
-      // LIST MODE
       const rows = validButtons.slice(0, 10).map((btn: any) => ({
         id: btn.id,
         title: btn.label.substring(0, 24),
       }));
-
       payload = {
         messaging_product: "whatsapp",
         to,
@@ -510,17 +540,11 @@ async function sendWorkflowWhatsAppMessage(
           },
           action: {
             button: step.listButtonText || "Options",
-            sections: [
-              {
-                title: "Choices",
-                rows,
-              },
-            ],
+            sections: [{ title: "Choices", rows }],
           },
         },
       };
     } else {
-      // BUTTON MODE
       const buttons = validButtons.slice(0, 3).map((btn: any) => ({
         type: "reply",
         reply: {
@@ -528,7 +552,6 @@ async function sendWorkflowWhatsAppMessage(
           title: btn.label.substring(0, 20),
         },
       }));
-
       payload = {
         messaging_product: "whatsapp",
         to,
@@ -539,8 +562,6 @@ async function sendWorkflowWhatsAppMessage(
           action: { buttons },
         },
       };
-
-      // Add media header if exists
       if (step.mediaUrl && step.mediaType === "image") {
         payload.interactive.header = {
           type: "image",
@@ -551,22 +572,14 @@ async function sendWorkflowWhatsAppMessage(
           type: "video",
           video: { link: step.mediaUrl },
         };
-      } else if (
-        step.mediaUrl &&
-        step.mediaType === "document"
-      ) {
+      } else if (step.mediaUrl && step.mediaType === "document") {
         payload.interactive.header = {
           type: "document",
-          document: {
-            link: step.mediaUrl,
-            filename: "Document",
-          },
+          document: { link: step.mediaUrl, filename: "Document" },
         };
       }
     }
-  }
-  // Plain text or media message (no buttons)
-  else {
+  } else {
     if (step.mediaUrl && step.mediaType) {
       payload = {
         messaging_product: "whatsapp",
@@ -574,9 +587,7 @@ async function sendWorkflowWhatsAppMessage(
         type: step.mediaType,
         [step.mediaType]: {
           link: step.mediaUrl,
-          ...(step.mediaType === "document" && {
-            filename: "Document",
-          }),
+          ...(step.mediaType === "document" && { filename: "Document" }),
           ...(step.message && { caption: step.message }),
         },
       };
@@ -590,7 +601,6 @@ async function sendWorkflowWhatsAppMessage(
     }
   }
 
-  // Send via WhatsApp API
   try {
     const response = await fetch(url, {
       method: "POST",
@@ -600,12 +610,10 @@ async function sendWorkflowWhatsAppMessage(
       },
       body: JSON.stringify(payload),
     });
-
     const result = await response.json();
-
     if (response.ok) {
       console.log(
-        `✅ [WORKFLOW] Message sent to ${to}: "${(step.message || "").substring(0, 50)}..."`
+        `✅ [WORKFLOW] Sent to ${to}: "${(step.message || "").substring(0, 50)}..."`
       );
     } else {
       console.error(
@@ -618,7 +626,7 @@ async function sendWorkflowWhatsAppMessage(
   }
 }
 
-// ─── HELPER: Apply tag to contact ──────────────────────────────────────
+// ─── HELPERS ────────────────────────────────────────────────────────────
 async function applyTagToContact(
   phoneNumber: string,
   tagId: string,
@@ -637,12 +645,9 @@ async function applyTagToContact(
   }
 }
 
-// ─── HELPER: Add opt-in number ─────────────────────────────────────────
 async function addOptInNumber(phoneNumber: string, userId: string) {
   try {
-    const { default: OptInNumber } = await import(
-      "@/models/OptNumber"
-    );
+    const { default: OptInNumber } = await import("@/models/OptNumber");
     await OptInNumber.findOneAndUpdate(
       { phoneNumber, userId },
       { phoneNumber, userId, optedIn: true },
@@ -674,9 +679,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ success: true, pulled: 0 });
       }
 
-      await Promise.all(
-        allNumbers.map((num) => forcePullMessages(num))
-      );
+      await Promise.all(allNumbers.map((num) => forcePullMessages(num)));
 
       return NextResponse.json({
         success: true,
@@ -716,8 +719,7 @@ export async function POST(req: NextRequest) {
         );
 
         for (const msg of value.messages || []) {
-          if (msg.type === "reaction" || msg.type === "system")
-            continue;
+          if (msg.type === "reaction" || msg.type === "system") continue;
           if (msg.type === "button") {
             console.log(
               `🔘 [BUTTON] Raw payload:`,
@@ -725,14 +727,10 @@ export async function POST(req: NextRequest) {
             );
           }
 
-          // ✅ SAVE MESSAGE FIRST
+          // SAVE MESSAGE
           await processAndSaveMessage(msg, num);
 
-          // ══════════════════════════════════════════════
-          // 🔴 EXECUTE WORKFLOW IF MATCHED
-          // This is the NEW addition that makes workflows
-          // actually fire when a message comes in.
-          // ══════════════════════════════════════════════
+          // 🔴 EXECUTE WORKFLOW
           await executeWorkflowsForMessage(msg, num);
         }
       }
