@@ -26,10 +26,7 @@ export async function GET(req: NextRequest) {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// 🔴 CRITICAL FIX: FIND USER BY PHONE_NUMBER_ID VIA DB QUERY
-// Instead of loading ALL users into memory and risking Map collisions,
-// we query the database directly for the exact phone_number_id.
-// This guarantees the message goes to the CORRECT user.
+// 🔴 FIND USER BY PHONE_NUMBER_ID VIA DB QUERY
 // ════════════════════════════════════════════════════════════════════════
 async function findUserByPhoneNumberId(phoneNumberId: string) {
   const user = await User.findOne({
@@ -41,13 +38,15 @@ async function findUserByPhoneNumberId(phoneNumberId: string) {
 
   if (!user) return null;
 
-  // Find the matching number config within this user
-  let matchedNumber = user.whatsappNumbers?.find(
-    (n: any) =>
-      n.whatsappPhoneNumberId === phoneNumberId && n.whatsappAccessToken
-  );
+  let matchedNumber: any = null;
 
-  // Fallback to default number on user doc
+  if (user.whatsappNumbers && user.whatsappNumbers.length > 0) {
+    matchedNumber = user.whatsappNumbers.find(
+      (n: any) =>
+        n.whatsappPhoneNumberId === phoneNumberId && n.whatsappAccessToken
+    );
+  }
+
   if (
     !matchedNumber &&
     user.whatsappPhoneNumberId === phoneNumberId &&
@@ -58,17 +57,17 @@ async function findUserByPhoneNumberId(phoneNumberId: string) {
       whatsappAccessToken: user.whatsappAccessToken,
       wabaId: user.wabaId,
       name: "Default Number",
-    } as any;
+    };
   }
 
   if (!matchedNumber) return null;
 
   return {
     userId: user._id,
-    name: matchedNumber.name || user.name || "Unknown",
-    phoneNumberId: matchedNumber.whatsappPhoneNumberId,
-    accessToken: matchedNumber.whatsappAccessToken,
-    wabaId: matchedNumber.wabaId || user.wabaId,
+    name: (matchedNumber as any).name || user.name || "Unknown",
+    phoneNumberId: (matchedNumber as any).whatsappPhoneNumberId,
+    accessToken: (matchedNumber as any).whatsappAccessToken,
+    wabaId: (matchedNumber as any).wabaId || user.wabaId,
   };
 }
 
@@ -245,7 +244,7 @@ async function processAndSaveMessage(msg: any, num: any) {
     : new Date();
 
   await Message.create({
-    userId: num.userId, // ✅ This is now the CORRECT user from the DB query
+    userId: num.userId,
     phone: msg.from,
     text,
     direction: "in",
@@ -468,6 +467,7 @@ async function processWorkflowStep(
   const step = steps[stepId];
   if (!step) return;
 
+  // 🔴 HANDLE DELAY NODE
   if (step.stepType === "delay_node") {
     const delaySeconds = step.delaySeconds || 10;
     console.log(`⏱️ [WORKFLOW] Delaying for ${delaySeconds} seconds...`);
@@ -484,6 +484,7 @@ async function processWorkflowStep(
     return;
   }
 
+  // 🔴 SKIP non-sending nodes (handled elsewhere)
   if (
     step.stepType === "inactivity_node" ||
     step.stepType === "tag_node" ||
@@ -493,6 +494,7 @@ async function processWorkflowStep(
     return;
   }
 
+  // 🔴 SEND THE MESSAGE
   await sendWorkflowWhatsAppMessage(
     accessToken,
     phoneNumberId,
@@ -501,7 +503,9 @@ async function processWorkflowStep(
   );
 }
 
-// ─── SEND WHATSAPP MESSAGE ─────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════
+// 🔴 SEND WHATSAPP MESSAGE — WITH FULL MEDIA SUPPORT
+// ════════════════════════════════════════════════════════════════════════
 async function sendWorkflowWhatsAppMessage(
   accessToken: string,
   phoneNumberId: string,
@@ -511,6 +515,29 @@ async function sendWorkflowWhatsAppMessage(
   const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
   let payload: any;
 
+  // ──────────────────────────────────────────────────
+  // ✅ HELPER: Detect if mediaUrl is a WhatsApp media ID or a public URL
+  // ──────────────────────────────────────────────────
+  const isMediaId = (val: string | null | undefined): boolean => {
+    if (!val) return false;
+    // WhatsApp media IDs are numeric strings, NOT URLs
+    return !val.startsWith("http://") && !val.startsWith("https://");
+  };
+
+  // ✅ HELPER: Build correct media object for WhatsApp API
+  // Media IDs use { id: "..." }, URLs use { link: "..." }
+  const buildMediaObj = (mediaType: string, mediaUrl: string | null) => {
+    if (!mediaUrl) return null;
+    if (isMediaId(mediaUrl)) {
+      return { id: mediaUrl };
+    } else {
+      return { link: mediaUrl };
+    }
+  };
+
+  // ──────────────────────────────────────────────────
+  // URL ACTION
+  // ──────────────────────────────────────────────────
   if (step.stepType === "url_action" && step.url) {
     payload = {
       messaging_product: "whatsapp",
@@ -523,7 +550,11 @@ async function sendWorkflowWhatsAppMessage(
         cta: { title: step.urlLabel || "Open Link", url: step.url },
       },
     };
-  } else if (step.stepType === "call_action" && step.phoneNumber) {
+  }
+  // ──────────────────────────────────────────────────
+  // CALL ACTION
+  // ──────────────────────────────────────────────────
+  else if (step.stepType === "call_action" && step.phoneNumber) {
     payload = {
       messaging_product: "whatsapp",
       to,
@@ -532,12 +563,21 @@ async function sendWorkflowWhatsAppMessage(
         type: "cta_url",
         header: { type: "text", text: step.urlLabel || "Call Us" },
         body: { text: step.message || "Click to call" },
-        cta: { title: step.urlLabel || "Call Now", url: `tel:${step.phoneNumber}` },
+        cta: {
+          title: step.urlLabel || "Call Now",
+          url: `tel:${step.phoneNumber}`,
+        },
       },
     };
-  } else if (step.buttons && step.buttons.length > 0) {
+  }
+  // ──────────────────────────────────────────────────
+  // MESSAGE WITH BUTTONS (>3 = list, ≤3 = buttons)
+  // ──────────────────────────────────────────────────
+  else if (step.buttons && step.buttons.length > 0) {
     const validButtons = step.buttons.filter((b: any) => b.label?.trim());
+
     if (validButtons.length > 3) {
+      // ── LIST MODE ──
       const rows = validButtons.slice(0, 10).map((btn: any) => ({
         id: btn.id,
         title: btn.label.substring(0, 24),
@@ -549,11 +589,40 @@ async function sendWorkflowWhatsAppMessage(
         interactive: {
           type: "list",
           header: { type: "text", text: "Options" },
-          body: { text: step.message || "Please select an option" },
-          action: { button: step.listButtonText || "Options", sections: [{ title: "Choices", rows }] },
+          body: {
+            text: step.message || "Please select an option",
+          },
+          action: {
+            button: step.listButtonText || "Options",
+            sections: [{ title: "Choices", rows }],
+          },
         },
       };
+
+      // ✅ FIX: Add media header for list if present
+      if (step.mediaUrl && step.mediaType) {
+        const mediaObj = buildMediaObj(step.mediaType, step.mediaUrl);
+        if (mediaObj) {
+          if (step.mediaType === "image") {
+            payload.interactive.header = {
+              type: "image",
+              image: mediaObj,
+            };
+          } else if (step.mediaType === "video") {
+            payload.interactive.header = {
+              type: "video",
+              video: mediaObj,
+            };
+          } else if (step.mediaType === "document") {
+            payload.interactive.header = {
+              type: "document",
+              document: { ...mediaObj, filename: "Document" },
+            };
+          }
+        }
+      }
     } else {
+      // ── BUTTON MODE ──
       const buttons = validButtons.slice(0, 3).map((btn: any) => ({
         type: "reply",
         reply: { id: btn.id, title: btn.label.substring(0, 20) },
@@ -568,27 +637,102 @@ async function sendWorkflowWhatsAppMessage(
           action: { buttons },
         },
       };
-      if (step.mediaUrl && step.mediaType === "image") {
-        payload.interactive.header = { type: "image", image: { link: step.mediaUrl } };
-      } else if (step.mediaUrl && step.mediaType === "video") {
-        payload.interactive.header = { type: "video", video: { link: step.mediaUrl } };
-      } else if (step.mediaUrl && step.mediaType === "document") {
-        payload.interactive.header = { type: "document", document: { link: step.mediaUrl, filename: "Document" } };
+
+      // ✅ FIX: Add media header for buttons — properly handles both IDs and URLs
+      if (step.mediaUrl && step.mediaType) {
+        const mediaObj = buildMediaObj(step.mediaType, step.mediaUrl);
+        if (mediaObj) {
+          if (step.mediaType === "image") {
+            payload.interactive.header = {
+              type: "image",
+              image: mediaObj,
+            };
+          } else if (step.mediaType === "video") {
+            payload.interactive.header = {
+              type: "video",
+              video: mediaObj,
+            };
+          } else if (step.mediaType === "document") {
+            payload.interactive.header = {
+              type: "document",
+              document: { ...mediaObj, filename: "Document" },
+            };
+          }
+        }
       }
     }
-  } else {
+  }
+  // ──────────────────────────────────────────────────
+  // PLAIN MEDIA OR TEXT MESSAGE (no buttons)
+  // ──────────────────────────────────────────────────
+  else {
     if (step.mediaUrl && step.mediaType) {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: step.mediaType,
-        [step.mediaType]: {
-          link: step.mediaUrl,
-          ...(step.mediaType === "document" && { filename: "Document" }),
-          ...(step.message && { caption: step.message }),
-        },
-      };
-    } else {
+      const mediaObj = buildMediaObj(step.mediaType, step.mediaUrl);
+
+      if (step.mediaType === "image") {
+        payload = {
+          messaging_product: "whatsapp",
+          to,
+          type: "image",
+          image: {
+            ...mediaObj,
+            ...(step.message ? { caption: step.message } : {}),
+          },
+        };
+      } else if (step.mediaType === "video") {
+        payload = {
+          messaging_product: "whatsapp",
+          to,
+          type: "video",
+          video: {
+            ...mediaObj,
+            ...(step.message ? { caption: step.message } : {}),
+          },
+        };
+      } else if (step.mediaType === "audio") {
+        payload = {
+          messaging_product: "whatsapp",
+          to,
+          type: "audio",
+          audio: mediaObj,
+        };
+      } else if (step.mediaType === "document") {
+        payload = {
+          messaging_product: "whatsapp",
+          to,
+          type: "document",
+          document: {
+            ...mediaObj,
+            filename: "Document",
+            ...(step.message ? { caption: step.message } : {}),
+          },
+        };
+      } else if (step.mediaType === "link") {
+        // Link type — send as text with URL preview
+        payload = {
+          messaging_product: "whatsapp",
+          to,
+          type: "text",
+          text: {
+            body: step.message
+              ? `${step.message}\n\n${step.mediaUrl}`
+              : step.mediaUrl,
+            preview_url: true,
+          },
+        };
+      }
+      // Fallback: just send as text with the URL
+      else {
+        payload = {
+          messaging_product: "whatsapp",
+          to,
+          type: "text",
+          text: { body: step.message || "" },
+        };
+      }
+    }
+    // Simple text message
+    else {
       payload = {
         messaging_product: "whatsapp",
         to,
@@ -598,6 +742,9 @@ async function sendWorkflowWhatsAppMessage(
     }
   }
 
+  // ──────────────────────────────────────────────────
+  // SEND VIA WHATSAPP API
+  // ──────────────────────────────────────────────────
   try {
     const response = await fetch(url, {
       method: "POST",
@@ -609,9 +756,14 @@ async function sendWorkflowWhatsAppMessage(
     });
     const result = await response.json();
     if (response.ok) {
-      console.log(`✅ [WORKFLOW] Sent to ${to}: "${(step.message || "").substring(0, 50)}..."`);
+      console.log(
+        `✅ [WORKFLOW] Sent to ${to}: "${(step.message || "").substring(0, 50)}..."${step.mediaUrl ? ` (media: ${step.mediaType})` : ""}`
+      );
     } else {
-      console.error(`❌ [WORKFLOW] WhatsApp API error:`, JSON.stringify(result, null, 2));
+      console.error(
+        `❌ [WORKFLOW] WhatsApp API error:`,
+        JSON.stringify(result, null, 2)
+      );
     }
   } catch (err: any) {
     console.error(`❌ [WORKFLOW] Failed to send:`, err.message);
@@ -619,10 +771,18 @@ async function sendWorkflowWhatsAppMessage(
 }
 
 // ─── HELPERS ────────────────────────────────────────────────────────────
-async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
+async function applyTagToContact(
+  phoneNumber: string,
+  tagId: string,
+  userId: string
+) {
   try {
     const { default: Contact } = await import("@/models/Contact");
-    await Contact.findOneAndUpdate({ phoneNumber, userId }, { $addToSet: { tags: tagId } }, { upsert: true });
+    await Contact.findOneAndUpdate(
+      { phoneNumber, userId },
+      { $addToSet: { tags: tagId } },
+      { upsert: true }
+    );
   } catch (err) {
     console.error("Failed to apply tag:", err);
   }
@@ -631,7 +791,11 @@ async function applyTagToContact(phoneNumber: string, tagId: string, userId: str
 async function addOptInNumber(phoneNumber: string, userId: string) {
   try {
     const { default: OptInNumber } = await import("@/models/OptNumber");
-    await OptInNumber.findOneAndUpdate({ phoneNumber, userId }, { phoneNumber, userId, optedIn: true }, { upsert: true });
+    await OptInNumber.findOneAndUpdate(
+      { phoneNumber, userId },
+      { phoneNumber, userId, optedIn: true },
+      { upsert: true }
+    );
   } catch (err) {
     console.error("Failed to add opt-in:", err);
   }
@@ -648,7 +812,9 @@ export async function POST(req: NextRequest) {
 
     // ─── CRON PULL MODE ────────────────────────────────
     if (!contentType.includes("application/json")) {
-      console.log("🔄 [CRON] Triggering forced pull for ALL WhatsApp numbers...");
+      console.log(
+        "🔄 [CRON] Triggering forced pull for ALL WhatsApp numbers..."
+      );
       const allNumbers = await getAllWhatsappNumbersFromDB();
       if (allNumbers.length === 0) {
         return NextResponse.json({ success: true, pulled: 0 });
@@ -673,12 +839,6 @@ export async function POST(req: NextRequest) {
         const value = change.value;
         if (!value) continue;
 
-        // ════════════════════════════════════════════════════════════
-        // 🔴 CRITICAL FIX: GET phone_number_id FROM WEBHOOK PAYLOAD
-        // Then do a DIRECT DB QUERY to find the user who owns this number.
-        // This eliminates the Map collision bug where User B's ID
-        // was overwriting User A's ID for the same phone_number_id.
-        // ════════════════════════════════════════════════════════════
         const phoneNumberId = value.metadata?.phone_number_id;
 
         if (!phoneNumberId) {
@@ -686,7 +846,9 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        console.log(`📱 [WEBHOOK] Message received on phone_number_id: ${phoneNumberId}`);
+        console.log(
+          `📱 [WEBHOOK] Message received on phone_number_id: ${phoneNumberId}`
+        );
 
         // 🔴 DIRECT DB QUERY — finds the CORRECT user every time
         const num = await findUserByPhoneNumberId(phoneNumberId);
@@ -705,10 +867,13 @@ export async function POST(req: NextRequest) {
         for (const msg of value.messages || []) {
           if (msg.type === "reaction" || msg.type === "system") continue;
           if (msg.type === "button") {
-            console.log(`🔘 [BUTTON] Raw payload:`, JSON.stringify(msg, null, 2));
+            console.log(
+              `🔘 [BUTTON] Raw payload:`,
+              JSON.stringify(msg, null, 2)
+            );
           }
 
-          // SAVE MESSAGE — now uses the CORRECT userId from the DB query
+          // SAVE MESSAGE
           await processAndSaveMessage(msg, num);
 
           // EXECUTE WORKFLOW
