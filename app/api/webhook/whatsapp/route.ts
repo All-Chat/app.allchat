@@ -25,9 +25,55 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 }
 
-// ─── GET ALL WHATSAPP NUMBERS FROM DB ──────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════
+// 🔴 CRITICAL FIX: FIND USER BY PHONE_NUMBER_ID VIA DB QUERY
+// Instead of loading ALL users into memory and risking Map collisions,
+// we query the database directly for the exact phone_number_id.
+// This guarantees the message goes to the CORRECT user.
+// ════════════════════════════════════════════════════════════════════════
+async function findUserByPhoneNumberId(phoneNumberId: string) {
+  const user = await User.findOne({
+    $or: [
+      { whatsappPhoneNumberId: phoneNumberId },
+      { "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId },
+    ],
+  }).lean();
+
+  if (!user) return null;
+
+  // Find the matching number config within this user
+  let matchedNumber = user.whatsappNumbers?.find(
+    (n: any) =>
+      n.whatsappPhoneNumberId === phoneNumberId && n.whatsappAccessToken
+  );
+
+  // Fallback to default number on user doc
+  if (
+    !matchedNumber &&
+    user.whatsappPhoneNumberId === phoneNumberId &&
+    user.whatsappAccessToken
+  ) {
+    matchedNumber = {
+      whatsappPhoneNumberId: user.whatsappPhoneNumberId,
+      whatsappAccessToken: user.whatsappAccessToken,
+      wabaId: user.wabaId,
+      name: "Default Number",
+    };
+  }
+
+  if (!matchedNumber) return null;
+
+  return {
+    userId: user._id,
+    name: matchedNumber.name || user.name || "Unknown",
+    phoneNumberId: matchedNumber.whatsappPhoneNumberId,
+    accessToken: matchedNumber.whatsappAccessToken,
+    wabaId: matchedNumber.wabaId || user.wabaId,
+  };
+}
+
+// ─── GET ALL WHATSAPP NUMBERS FROM DB (FOR CRON ONLY) ──────────────────
 async function getAllWhatsappNumbersFromDB() {
-  await connectDB();
   const users = await User.find({}).lean();
   const numbers: any[] = [];
 
@@ -199,7 +245,7 @@ async function processAndSaveMessage(msg: any, num: any) {
     : new Date();
 
   await Message.create({
-    userId: num.userId,
+    userId: num.userId, // ✅ This is now the CORRECT user from the DB query
     phone: msg.from,
     text,
     direction: "in",
@@ -213,16 +259,15 @@ async function processAndSaveMessage(msg: any, num: any) {
   });
 
   console.log(
-    `   ✅ [SAVED] From: ${msg.from} | Type: ${msg.type} | Text: "${text.substring(0, 60)}" | WABA: ${num.name}`
+    `   ✅ [SAVED] From: ${msg.from} → User: ${num.userId} | Number: ${num.name} (${num.phoneNumberId}) | Text: "${text.substring(0, 60)}"`
   );
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// 🔴 WORKFLOW EXECUTION ENGINE — FIXED FOR MULTI-USER
+// 🔴 WORKFLOW EXECUTION ENGINE
 // ════════════════════════════════════════════════════════════════════════
 async function executeWorkflowsForMessage(msg: any, num: any) {
   try {
-    // Only process text, button, and interactive messages for workflows
     const supportedTypes = ["text", "button", "interactive"];
     if (!supportedTypes.includes(msg.type)) return;
 
@@ -236,7 +281,7 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
     );
 
     // ──────────────────────────────────────────────────
-    // 🔴 CRITICAL FIX: FIND WORKFLOWS FOR THIS USER + THIS EXACT NUMBER
+    // 🔴 FIND WORKFLOWS FOR THIS EXACT USER + THIS EXACT NUMBER
     // ──────────────────────────────────────────────────
     let workflows = await Workflow.find({
       userId: num.userId,
@@ -249,10 +294,7 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
     );
 
     // ──────────────────────────────────────────────────
-    // 🔴 FALLBACK: Also check workflows with NO wabaPhoneNumberId set
-    // This supports:
-    //   - Legacy workflows created before the wabaPhoneNumberId field existed
-    //   - Workflows where the number linking failed
+    // 🔴 FALLBACK: Check workflows with NO wabaPhoneNumberId
     // ──────────────────────────────────────────────────
     if (workflows.length === 0) {
       const legacyWorkflows = await Workflow.find({
@@ -267,11 +309,10 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       if (legacyWorkflows.length > 0) {
         workflows = legacyWorkflows;
         console.log(
-          `⚠️ [WORKFLOW] No exact number match. Using ${legacyWorkflows.length} legacy workflow(s) for user ${num.userId}`
+          `⚠️ [WORKFLOW] Using ${legacyWorkflows.length} legacy workflow(s) for user ${num.userId}`
         );
 
-        // 🔴 AUTO-FIX: Update these legacy workflows to link them to this number
-        // so next time they're found by the exact query (faster)
+        // AUTO-FIX: Link these legacy workflows to this number
         try {
           await Workflow.updateMany(
             {
@@ -290,7 +331,7 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
             }
           );
           console.log(
-            `🔧 [WORKFLOW] Auto-linked ${legacyWorkflows.length} legacy workflow(s) to number ${num.phoneNumberId}`
+            `🔧 [WORKFLOW] Auto-linked legacy workflows to number ${num.phoneNumberId}`
           );
         } catch (fixErr) {
           console.error("Failed to auto-fix legacy workflows:", fixErr);
@@ -311,14 +352,13 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
     let matchedWorkflow: any = null;
     let matchedByButton = false;
 
-    // Priority 1: Button click → navigate to next step
+    // Priority 1: Button click
     if (buttonPayload) {
       for (const wf of workflows) {
         for (const stepId of Object.keys(wf.steps)) {
           const step = wf.steps[stepId];
           const clickedBtn = step.buttons?.find(
-            (b: any) =>
-              b.id === buttonPayload || b.label === incomingText
+            (b: any) => b.id === buttonPayload || b.label === incomingText
           );
           if (clickedBtn?.nextStepId) {
             matchedWorkflow = wf;
@@ -333,15 +373,13 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       }
     }
 
-    // Priority 2: Keyword trigger → new conversation
+    // Priority 2: Keyword trigger
     if (!matchedWorkflow) {
       for (const wf of workflows) {
         const isMatch = wf.triggers.some((trigger: any) => {
           const keyword = trigger.keyword?.toLowerCase().trim();
           if (keyword === "*" || keyword === "") return true;
-
           const text = incomingText.toLowerCase().trim();
-
           if (trigger.matchMode === "exact") {
             return text === keyword;
           } else {
@@ -376,8 +414,7 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       for (const stepId of Object.keys(steps)) {
         const step = steps[stepId];
         const clickedBtn = step.buttons?.find(
-          (b: any) =>
-            b.id === buttonPayload || b.label === incomingText
+          (b: any) => b.id === buttonPayload || b.label === incomingText
         );
         if (clickedBtn?.nextStepId) {
           currentStepId = clickedBtn.nextStepId;
@@ -405,7 +442,7 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
     }
 
     console.log(
-      `🚀 [WORKFLOW] Executing workflow ${matchedWorkflow._id}, starting at step ${currentStepId}`
+      `🚀 [WORKFLOW] Executing workflow ${matchedWorkflow._id} for user ${num.userId}, step ${currentStepId}`
     );
 
     await processWorkflowStep(
@@ -431,16 +468,10 @@ async function processWorkflowStep(
   const step = steps[stepId];
   if (!step) return;
 
-  // HANDLE DELAY NODE
   if (step.stepType === "delay_node") {
     const delaySeconds = step.delaySeconds || 10;
-    console.log(
-      `⏱️ [WORKFLOW] Delaying for ${delaySeconds} seconds...`
-    );
-    await new Promise((resolve) =>
-      setTimeout(resolve, delaySeconds * 1000)
-    );
-
+    console.log(`⏱️ [WORKFLOW] Delaying for ${delaySeconds} seconds...`);
+    await new Promise((resolve) => setTimeout(resolve, delaySeconds * 1000));
     if (step.nextStepId && steps[step.nextStepId]) {
       await processWorkflowStep(
         step.nextStepId,
@@ -453,7 +484,6 @@ async function processWorkflowStep(
     return;
   }
 
-  // SKIP non-sending nodes
   if (
     step.stepType === "inactivity_node" ||
     step.stepType === "tag_node" ||
@@ -463,7 +493,6 @@ async function processWorkflowStep(
     return;
   }
 
-  // SEND THE MESSAGE
   await sendWorkflowWhatsAppMessage(
     accessToken,
     phoneNumberId,
@@ -489,15 +518,9 @@ async function sendWorkflowWhatsAppMessage(
       type: "interactive",
       interactive: {
         type: "cta_url",
-        header: {
-          type: "text",
-          text: step.urlLabel || "Visit Link",
-        },
+        header: { type: "text", text: step.urlLabel || "Visit Link" },
         body: { text: step.message || "Click the button below" },
-        cta: {
-          title: step.urlLabel || "Open Link",
-          url: step.url,
-        },
+        cta: { title: step.urlLabel || "Open Link", url: step.url },
       },
     };
   } else if (step.stepType === "call_action" && step.phoneNumber) {
@@ -507,22 +530,13 @@ async function sendWorkflowWhatsAppMessage(
       type: "interactive",
       interactive: {
         type: "cta_url",
-        header: {
-          type: "text",
-          text: step.urlLabel || "Call Us",
-        },
+        header: { type: "text", text: step.urlLabel || "Call Us" },
         body: { text: step.message || "Click to call" },
-        cta: {
-          title: step.urlLabel || "Call Now",
-          url: `tel:${step.phoneNumber}`,
-        },
+        cta: { title: step.urlLabel || "Call Now", url: `tel:${step.phoneNumber}` },
       },
     };
   } else if (step.buttons && step.buttons.length > 0) {
-    const validButtons = step.buttons.filter(
-      (b: any) => b.label?.trim()
-    );
-
+    const validButtons = step.buttons.filter((b: any) => b.label?.trim());
     if (validButtons.length > 3) {
       const rows = validButtons.slice(0, 10).map((btn: any) => ({
         id: btn.id,
@@ -535,22 +549,14 @@ async function sendWorkflowWhatsAppMessage(
         interactive: {
           type: "list",
           header: { type: "text", text: "Options" },
-          body: {
-            text: step.message || "Please select an option",
-          },
-          action: {
-            button: step.listButtonText || "Options",
-            sections: [{ title: "Choices", rows }],
-          },
+          body: { text: step.message || "Please select an option" },
+          action: { button: step.listButtonText || "Options", sections: [{ title: "Choices", rows }] },
         },
       };
     } else {
       const buttons = validButtons.slice(0, 3).map((btn: any) => ({
         type: "reply",
-        reply: {
-          id: btn.id,
-          title: btn.label.substring(0, 20),
-        },
+        reply: { id: btn.id, title: btn.label.substring(0, 20) },
       }));
       payload = {
         messaging_product: "whatsapp",
@@ -563,20 +569,11 @@ async function sendWorkflowWhatsAppMessage(
         },
       };
       if (step.mediaUrl && step.mediaType === "image") {
-        payload.interactive.header = {
-          type: "image",
-          image: { link: step.mediaUrl },
-        };
+        payload.interactive.header = { type: "image", image: { link: step.mediaUrl } };
       } else if (step.mediaUrl && step.mediaType === "video") {
-        payload.interactive.header = {
-          type: "video",
-          video: { link: step.mediaUrl },
-        };
+        payload.interactive.header = { type: "video", video: { link: step.mediaUrl } };
       } else if (step.mediaUrl && step.mediaType === "document") {
-        payload.interactive.header = {
-          type: "document",
-          document: { link: step.mediaUrl, filename: "Document" },
-        };
+        payload.interactive.header = { type: "document", document: { link: step.mediaUrl, filename: "Document" } };
       }
     }
   } else {
@@ -612,14 +609,9 @@ async function sendWorkflowWhatsAppMessage(
     });
     const result = await response.json();
     if (response.ok) {
-      console.log(
-        `✅ [WORKFLOW] Sent to ${to}: "${(step.message || "").substring(0, 50)}..."`
-      );
+      console.log(`✅ [WORKFLOW] Sent to ${to}: "${(step.message || "").substring(0, 50)}..."`);
     } else {
-      console.error(
-        `❌ [WORKFLOW] WhatsApp API error:`,
-        JSON.stringify(result, null, 2)
-      );
+      console.error(`❌ [WORKFLOW] WhatsApp API error:`, JSON.stringify(result, null, 2));
     }
   } catch (err: any) {
     console.error(`❌ [WORKFLOW] Failed to send:`, err.message);
@@ -627,19 +619,10 @@ async function sendWorkflowWhatsAppMessage(
 }
 
 // ─── HELPERS ────────────────────────────────────────────────────────────
-async function applyTagToContact(
-  phoneNumber: string,
-  tagId: string,
-  userId: string
-) {
+async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try {
     const { default: Contact } = await import("@/models/Contact");
-    await Contact.findOneAndUpdate(
-      { phoneNumber, userId },
-      { $addToSet: { tags: tagId } },
-      { upsert: true }
-    );
-    console.log(`🏷️ [WORKFLOW] Tag ${tagId} applied to ${phoneNumber}`);
+    await Contact.findOneAndUpdate({ phoneNumber, userId }, { $addToSet: { tags: tagId } }, { upsert: true });
   } catch (err) {
     console.error("Failed to apply tag:", err);
   }
@@ -648,12 +631,7 @@ async function applyTagToContact(
 async function addOptInNumber(phoneNumber: string, userId: string) {
   try {
     const { default: OptInNumber } = await import("@/models/OptNumber");
-    await OptInNumber.findOneAndUpdate(
-      { phoneNumber, userId },
-      { phoneNumber, userId, optedIn: true },
-      { upsert: true }
-    );
-    console.log(`📝 [WORKFLOW] Opt-in recorded for ${phoneNumber}`);
+    await OptInNumber.findOneAndUpdate({ phoneNumber, userId }, { phoneNumber, userId, optedIn: true }, { upsert: true });
   } catch (err) {
     console.error("Failed to add opt-in:", err);
   }
@@ -670,17 +648,12 @@ export async function POST(req: NextRequest) {
 
     // ─── CRON PULL MODE ────────────────────────────────
     if (!contentType.includes("application/json")) {
-      console.log(
-        "🔄 [CRON] Triggering forced pull for ALL WhatsApp numbers..."
-      );
+      console.log("🔄 [CRON] Triggering forced pull for ALL WhatsApp numbers...");
       const allNumbers = await getAllWhatsappNumbersFromDB();
-
       if (allNumbers.length === 0) {
         return NextResponse.json({ success: true, pulled: 0 });
       }
-
       await Promise.all(allNumbers.map((num) => forcePullMessages(num)));
-
       return NextResponse.json({
         success: true,
         pulled: allNumbers.length,
@@ -694,43 +667,51 @@ export async function POST(req: NextRequest) {
 
     console.log("📥 [WEBHOOK] Received payload from Meta");
 
-    const allNumbers = await getAllWhatsappNumbersFromDB();
-    const numberMap = new Map<string, any>();
-    allNumbers.forEach((n) => numberMap.set(n.phoneNumberId, n));
-
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
         if (change.field !== "messages") continue;
         const value = change.value;
         if (!value) continue;
 
+        // ════════════════════════════════════════════════════════════
+        // 🔴 CRITICAL FIX: GET phone_number_id FROM WEBHOOK PAYLOAD
+        // Then do a DIRECT DB QUERY to find the user who owns this number.
+        // This eliminates the Map collision bug where User B's ID
+        // was overwriting User A's ID for the same phone_number_id.
+        // ════════════════════════════════════════════════════════════
         const phoneNumberId = value.metadata?.phone_number_id;
-        const num = numberMap.get(phoneNumberId);
+
+        if (!phoneNumberId) {
+          console.error("❌ [WEBHOOK] No phone_number_id in payload");
+          continue;
+        }
+
+        console.log(`📱 [WEBHOOK] Message received on phone_number_id: ${phoneNumberId}`);
+
+        // 🔴 DIRECT DB QUERY — finds the CORRECT user every time
+        const num = await findUserByPhoneNumberId(phoneNumberId);
 
         if (!num) {
           console.error(
-            `❌ [WEBHOOK] Unregistered phone_number_id: ${phoneNumberId}`
+            `❌ [WEBHOOK] No user found for phone_number_id: ${phoneNumberId}. Message will be lost!`
           );
           continue;
         }
 
         console.log(
-          `🎯 [WEBHOOK] Matched: ${num.name} (${phoneNumberId})`
+          `🎯 [WEBHOOK] Matched: User ${num.userId} (${num.name}) for number ${phoneNumberId}`
         );
 
         for (const msg of value.messages || []) {
           if (msg.type === "reaction" || msg.type === "system") continue;
           if (msg.type === "button") {
-            console.log(
-              `🔘 [BUTTON] Raw payload:`,
-              JSON.stringify(msg, null, 2)
-            );
+            console.log(`🔘 [BUTTON] Raw payload:`, JSON.stringify(msg, null, 2));
           }
 
-          // SAVE MESSAGE
+          // SAVE MESSAGE — now uses the CORRECT userId from the DB query
           await processAndSaveMessage(msg, num);
 
-          // 🔴 EXECUTE WORKFLOW
+          // EXECUTE WORKFLOW
           await executeWorkflowsForMessage(msg, num);
         }
       }
