@@ -7,6 +7,13 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
 
+// Same junk filter used in the replies route
+function isValidReply(text: string): boolean {
+  if (!text || !text.trim()) return false;
+  if (/^\[.*\]$/.test(text.trim())) return false;
+  return true;
+}
+
 export async function POST(req: Request) {
   try {
     await connectDB();
@@ -20,63 +27,79 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, message: "Campaign ID required" }, { status: 400 });
     }
 
-    const campaign = await Campaign.findById(campaignId);
+    const campaign = await Campaign.findById(campaignId)
+      .select("userId name reportData createdAt")
+      .lean();
+
     if (!campaign || campaign.userId.toString() !== session.user.id) {
       return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // 1. DEEP CLONE reportData into a clean plain JS object
-    // (This prevents Mongoose document properties from breaking the sheet sync)
-    // ═══════════════════════════════════════════════════════════════
-    const reportDataForSheet: any[] = JSON.parse(JSON.stringify(campaign.reportData || []));
+    // ─── Build base report rows ─────────────────────────────────────────────
+    const reportDataForSheet: any[] = (campaign.reportData || []).map((item: any) => ({
+      name: String(item.name || "").trim() || "N/A",
+      phone: String(item.phone || "").trim() || "N/A",
+      status: String(item.status || "Unknown").trim(),
+      error: String(item.error || "").trim(),
+      tags: Array.isArray(item.tags) ? item.tags.filter(Boolean).join(", ") : "",
+      // ✅ These keys match exactly what syncCampaignToGoogleSheet now reads
+      "Reply 1": "",
+      "Reply 2": "",
+      "Reply 3": "",
+      "Reply 4": "",
+      "Reply 5": "",
+    }));
 
-    // ═══════════════════════════════════════════════════════════════
-    // 2. FETCH LIVE REPLIES FROM MESSAGES COLLECTION
-    // ═══════════════════════════════════════════════════════════════
+    if (reportDataForSheet.length === 0) {
+      return NextResponse.json({ success: false, message: "No report data to sync" }, { status: 400 });
+    }
+
+    // ─── Fetch replies and merge ────────────────────────────────────────────
     const campaignPhones = new Set(
-      reportDataForSheet.map((d: any) => d.phone).filter(Boolean)
+      reportDataForSheet.map((d) => d.phone).filter((p) => p && p !== "N/A")
     );
 
     if (campaignPhones.size > 0) {
-      const since = campaign.createdAt || new Date(Date.now() - 24 * 60 * 60 * 1000);
-      
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const campaignCreated = new Date(campaign.createdAt);
+      const since = campaignCreated > twentyFourHoursAgo ? campaignCreated : twentyFourHoursAgo;
+
       const messages = await Message.find({
         userId: session.user.id,
         direction: "in",
         createdAt: { $gte: since },
-      })
-        .sort({ createdAt: 1 })
-        .select("phone text")
-        .lean();
+      }).sort({ createdAt: 1 }).lean();
 
-      // Group replies by phone number (only for phones in this campaign)
+      // Build replies map: phone → up to 5 valid reply strings
       const repliesMap: Record<string, string[]> = {};
       for (const msg of messages) {
-        if (campaignPhones.has(msg.phone) && msg.text) {
-          if (!repliesMap[msg.phone]) repliesMap[msg.phone] = [];
-          repliesMap[msg.phone].push(msg.text);
+        if (!campaignPhones.has(msg.phone)) continue;
+        // ✅ Filter out old [button] / [interactive] junk saved before webhook fix
+        const cleanText = (msg.text || "").trim();
+        if (!isValidReply(cleanText)) continue;
+        if (!repliesMap[msg.phone]) repliesMap[msg.phone] = [];
+        if (repliesMap[msg.phone].length < 5) {
+          repliesMap[msg.phone].push(cleanText);
         }
       }
 
-      // ═══════════════════════════════════════════════════════════════
-      // 3. INJECT LIVE REPLIES INTO THE CLEAN REPORT DATA
-      // ═══════════════════════════════════════════════════════════════
+      // Merge into report rows
       for (const item of reportDataForSheet) {
-        if (item.phone && repliesMap[item.phone]) {
-          const liveReplies = repliesMap[item.phone];
-          item.replies = liveReplies;
-          item.reply = liveReplies[liveReplies.length - 1] || null;
+        const replies = repliesMap[item.phone];
+        if (replies && replies.length > 0) {
+          item["Reply 1"] = replies[0] || "";
+          item["Reply 2"] = replies[1] || "";
+          item["Reply 3"] = replies[2] || "";
+          item["Reply 4"] = replies[3] || "";
+          item["Reply 5"] = replies[4] || "";
         }
       }
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // 4. SYNC TO GOOGLE SHEET
-    // ═══════════════════════════════════════════════════════════════
-    await syncCampaignToGoogleSheet(session.user.id, { 
-      name: campaign.name, 
-      reportData: reportDataForSheet 
+    // ─── Sync to Google Sheet ───────────────────────────────────────────────
+    await syncCampaignToGoogleSheet(session.user.id, {
+      name: campaign.name || `Campaign ${campaign._id}`,
+      reportData: reportDataForSheet,
     });
 
     return NextResponse.json({ success: true, message: "Sheet synced successfully" });
