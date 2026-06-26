@@ -17,6 +17,7 @@ type ReportItem = {
   name: string; 
   phone: string; 
   status: string; 
+  error?: string; // ✅ Added error property
   replies?: string[];
   reply?: string | null; 
   repliedAt?: string | null;
@@ -45,9 +46,7 @@ export default function ReportsPage() {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
 
-  // Live replies from Messages collection
   const [repliesMap, setRepliesMap] = useState<Record<string, string[]>>({});
-  
   const [whatsappNumbers, setWhatsappNumbers] = useState<any[]>([]);
   const [showCampaignList, setShowCampaignList] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -73,19 +72,26 @@ export default function ReportsPage() {
     return { deliveredRead, sent, failedInvalid, pending };
   };
 
-  const getStatusConfig = (status: string, replies: string[]) => {
+  const getStatusConfig = (status: string, replies: string[], error?: string) => {
     if (replies.length > 0) {
-      return { color: "bg-indigo-50 text-indigo-700 border-indigo-200", icon: <MessageSquare size={10} className="inline mr-1" />, label: `Replied (${replies.length})`, isWaiting: false };
+      return { color: "bg-indigo-50 text-indigo-700 border-indigo-200", icon: <MessageSquare size={10} className="inline mr-1" />, label: `Replied (${replies.length})`, isWaiting: false, tooltip: "" };
     }
     switch (status) {
-      case "read": return { color: "bg-blue-50 text-blue-700 border-blue-200", icon: <Eye size={10} className="inline mr-1" />, label: "Read", isWaiting: false };
-      case "delivered": return { color: "bg-cyan-50 text-cyan-700 border-cyan-200", icon: <CheckCheck size={10} className="inline mr-1" />, label: "Delivered", isWaiting: false };
-      case "sent": return { color: "bg-emerald-50 text-emerald-700 border-emerald-200", icon: <CheckCircle size={10} className="inline mr-1" />, label: "Sent", isWaiting: true };
-      case "failed": return { color: "bg-red-50 text-red-700 border-red-200", icon: <XCircle size={10} className="inline mr-1" />, label: "Failed", isWaiting: false };
-      case "invalid": return { color: "bg-orange-50 text-orange-700 border-orange-200", icon: <AlertTriangle size={10} className="inline mr-1" />, label: "Invalid Number", isWaiting: false };
-      case "duplicate": return { color: "bg-slate-100 text-slate-500 border-slate-200", icon: <Copy size={10} className="inline mr-1" />, label: "Duplicate", isWaiting: false };
-      case "pending": return { color: "bg-amber-50 text-amber-700 border-amber-200", icon: <Clock size={10} className="inline mr-1" />, label: "Pending", isWaiting: true };
-      default: return { color: "bg-gray-50 text-gray-700 border-gray-200", icon: <Ban size={10} className="inline mr-1" />, label: status.charAt(0).toUpperCase() + status.slice(1), isWaiting: false };
+      case "read": return { color: "bg-blue-50 text-blue-700 border-blue-200", icon: <Eye size={10} className="inline mr-1" />, label: "Read", isWaiting: false, tooltip: "" };
+      case "delivered": return { color: "bg-cyan-50 text-cyan-700 border-cyan-200", icon: <CheckCheck size={10} className="inline mr-1" />, label: "Delivered", isWaiting: false, tooltip: "" };
+      case "sent": return { color: "bg-emerald-50 text-emerald-700 border-emerald-200", icon: <CheckCircle size={10} className="inline mr-1" />, label: "Sent", isWaiting: true, tooltip: "" };
+      case "failed": return { 
+        color: "bg-red-50 text-red-700 border-red-200", 
+        icon: <XCircle size={10} className="inline mr-1" />, 
+        label: "Failed", 
+        isWaiting: false, 
+        // ✅ CRITICAL FIX: Show exact error reason on hover
+        tooltip: error || "Unknown error" 
+      };
+      case "invalid": return { color: "bg-orange-50 text-orange-700 border-orange-200", icon: <AlertTriangle size={10} className="inline mr-1" />, label: "Invalid Number", isWaiting: false, tooltip: "This phone number is not registered on WhatsApp." };
+      case "duplicate": return { color: "bg-slate-100 text-slate-500 border-slate-200", icon: <Copy size={10} className="inline mr-1" />, label: "Duplicate", isWaiting: false, tooltip: "" };
+      case "pending": return { color: "bg-amber-50 text-amber-700 border-amber-200", icon: <Clock size={10} className="inline mr-1" />, label: "Pending", isWaiting: true, tooltip: "" };
+      default: return { color: "bg-gray-50 text-gray-700 border-gray-200", icon: <Ban size={10} className="inline mr-1" />, label: status.charAt(0).toUpperCase() + status.slice(1), isWaiting: false, tooltip: "" };
     }
   };
 
@@ -109,7 +115,6 @@ export default function ReportsPage() {
       fetchReportData(selectedId);
       fetchReplies(selectedId);
       
-      // Always sync sheet to ensure statuses (sent/delivered) update properly
       try {
         await fetch("/api/campaigns/sync-sheet", {
           method: "POST",
@@ -119,7 +124,7 @@ export default function ReportsPage() {
       } catch (err) {
         console.error("Sheet sync error:", err);
       }
-    }, 5000); // 5 seconds
+    }, 5000);
     
     return () => clearInterval(interval);
   }, [selectedId]);
@@ -232,12 +237,13 @@ export default function ReportsPage() {
   const downloadExcel = () => {
     if (filteredData.length === 0) { toast.error("No data to download"); return; }
     const wsData = filteredData.map(d => {
-      const replies = getRepliesList(d).slice(0, 5); // Max 5
-      const statusConfig = getStatusConfig(d.status, replies);
+      const replies = getRepliesList(d).slice(0, 5);
+      const statusConfig = getStatusConfig(d.status, replies, d.error);
       return { 
         "Name": d.name || "N/A", 
         "Phone Number": d.phone, 
-        "Status": statusConfig.label, 
+        "Status": statusConfig.label,
+        "Error Reason": d.error || "", 
         "Tags": d.tags?.join(", ") || "None",
         "Reply 1": replies[0] || "",
         "Reply 2": replies[1] || "",
@@ -411,14 +417,18 @@ export default function ReportsPage() {
                     <tbody className="divide-y divide-slate-100">
                       {filteredData.map((d, i) => {
                         const replies = getRepliesList(d);
-                        const statusConfig = getStatusConfig(d.status, replies);
+                        const statusConfig = getStatusConfig(d.status, replies, d.error); // ✅ Pass error here
                         return (
                           <tr key={i} className="hover:bg-slate-50 transition-colors">
                             <td className="px-4 py-3 text-xs text-slate-400">{i + 1}</td>
                             <td className="px-4 py-3 font-medium text-slate-900 text-xs sm:text-sm">{d.name || "—"}</td>
                             <td className="px-4 py-3 font-mono text-xs">{d.phone}</td>
                             <td className="px-4 py-3">
-                              <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold border inline-flex items-center gap-1 ${statusConfig.color}`}>
+                              {/* ✅ CRITICAL FIX: Add title={tooltip} so hovering shows the error reason */}
+                              <span 
+                                title={statusConfig.tooltip} 
+                                className={`px-2.5 py-1 rounded-full text-[10px] font-bold border inline-flex items-center gap-1 cursor-default ${statusConfig.color}`}
+                              >
                                 {statusConfig.icon}
                                 {statusConfig.label}
                                 {statusConfig.isWaiting && (
@@ -432,7 +442,6 @@ export default function ReportsPage() {
                             <td className="px-4 py-3 text-xs">
                               {replies.length > 0 ? (
                                 <div className="flex flex-col gap-1.5">
-                                  {/* ✅ Show exactly 5 replies max */}
                                   {replies.slice(0, 5).map((reply, idx) => (
                                     <span key={idx} className="bg-indigo-50 text-indigo-700 px-2 py-1 rounded-md font-medium border border-indigo-100 flex items-center gap-1.5 w-fit max-w-[220px]">
                                       <MessageSquare size={10} className="flex-shrink-0"/> 
