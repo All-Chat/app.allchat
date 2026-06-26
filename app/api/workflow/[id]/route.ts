@@ -14,10 +14,12 @@ export async function DELETE(req: Request) {
     const userId = session?.user?.id;
 
     if (!userId) {
-      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+      return NextResponse.json(
+        { success: false, error: "Unauthorized" },
+        { status: 401 }
+      );
     }
 
-    // MANUAL URL PARSING (this bypasses Next.js params bug completely)
     const url = new URL(req.url);
     const parts = url.pathname.split("/");
     const id = parts[parts.length - 1];
@@ -29,10 +31,9 @@ export async function DELETE(req: Request) {
       );
     }
 
-    // Delete workflow ONLY if it belongs to this user
-    const deleted = await Workflow.findOneAndDelete({ 
-      _id: id, 
-      userId: userId 
+    const deleted = await Workflow.findOneAndDelete({
+      _id: id,
+      userId: userId,
     });
 
     if (!deleted) {
@@ -42,7 +43,6 @@ export async function DELETE(req: Request) {
       );
     }
 
-    // ✅ DECREMENT USAGE AFTER SUCCESSFUL DELETION
     await decrementUsage(userId, "workflows");
 
     return NextResponse.json({
