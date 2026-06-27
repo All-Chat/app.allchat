@@ -27,28 +27,41 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, message: "Campaign ID required" }, { status: 400 });
     }
 
+    // ✅ FIX: Added additionalFields to .select()
     const campaign = await Campaign.findById(campaignId)
-      .select("userId name reportData createdAt")
+      .select("userId name reportData createdAt additionalFields")
       .lean();
 
     if (!campaign || campaign.userId.toString() !== session.user.id) {
       return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
     }
 
+    const additionalFields: string[] = campaign.additionalFields || [];
+
     // ─── Build base report rows ─────────────────────────────────────────────
-    const reportDataForSheet: any[] = (campaign.reportData || []).map((item: any) => ({
-      name: String(item.name || "").trim() || "N/A",
-      phone: String(item.phone || "").trim() || "N/A",
-      status: String(item.status || "Unknown").trim(),
-      error: String(item.error || "").trim(),
-      tags: Array.isArray(item.tags) ? item.tags.filter(Boolean).join(", ") : "",
+    const reportDataForSheet: any[] = (campaign.reportData || []).map((item: any) => {
+      const row: any = {
+        name: String(item.name || "").trim() || "N/A",
+        phone: String(item.phone || "").trim() || "N/A",
+        status: String(item.status || "Unknown").trim(),
+        error: String(item.error || "").trim(),
+        tags: Array.isArray(item.tags) ? item.tags.filter(Boolean).join(", ") : "",
+      };
+
+      // ✅ NEW: Dynamically add additional fields columns
+      additionalFields.forEach((field, idx) => {
+        row[field] = item.additionalData?.[idx] || "";
+      });
+
       // ✅ These keys match exactly what syncCampaignToGoogleSheet now reads
-      "Reply 1": "",
-      "Reply 2": "",
-      "Reply 3": "",
-      "Reply 4": "",
-      "Reply 5": "",
-    }));
+      row["Reply 1"] = "";
+      row["Reply 2"] = "";
+      row["Reply 3"] = "";
+      row["Reply 4"] = "";
+      row["Reply 5"] = "";
+
+      return row;
+    });
 
     if (reportDataForSheet.length === 0) {
       return NextResponse.json({ success: false, message: "No report data to sync" }, { status: 400 });
@@ -97,9 +110,11 @@ export async function POST(req: Request) {
     }
 
     // ─── Sync to Google Sheet ───────────────────────────────────────────────
+    // ✅ FIX: Pass additionalFields to the sync function
     await syncCampaignToGoogleSheet(session.user.id, {
       name: campaign.name || `Campaign ${campaign._id}`,
       reportData: reportDataForSheet,
+      additionalFields: additionalFields, // Pass the array of column names here
     });
 
     return NextResponse.json({ success: true, message: "Sheet synced successfully" });
