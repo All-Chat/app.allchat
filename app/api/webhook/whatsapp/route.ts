@@ -758,16 +758,75 @@ export async function POST(req: NextRequest) {
               { name: contactInfo.profile.name, phone: contactInfo.wa_id },
               { upsert: true }
             );
-            console.log(`👤 [CONTACT] Saved name: ${contactInfo.profile.name} for ${contactInfo.wa_id}`);
           } catch (e) {
             console.error("Failed to save contact name:", e);
           }
         }
 
+        // Process Incoming Messages
         for (const msg of value.messages || []) {
           if (msg.type === "reaction" || msg.type === "system") continue;
           await processAndSaveMessage(msg, num);
           await executeWorkflowsForMessage(msg, num);
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // ✅ NEW: PROCESS OUTBOUND MESSAGE STATUSES (Sent, Delivered, Read, Failed)
+        // ═══════════════════════════════════════════════════════════════
+        for (const statusObj of value.statuses || []) {
+          const { id, status, recipient_id, errors } = statusObj;
+          
+          // 1. Update the generic Message model
+          await Message.updateOne(
+            { whatsappMessageId: id }, 
+            { $set: { status, error: errors?.[0]?.message || null } }
+          );
+
+          // 2. Update Campaign Report Data dynamically
+          try {
+            const { default: Campaign } = await import("@/models/Campaign");
+            
+            // Meta status progression order
+            const statusOrder = ["pending", "queued", "sent", "delivered", "read"];
+            const newStatusIndex = statusOrder.indexOf(status);
+            
+            // Find campaigns for this user that contain this phone number
+            const campaigns = await Campaign.find({ 
+                userId: num.userId,
+                $or: [
+                  { "reportData.phone": recipient_id },
+                  { "reportData.phone": `+${recipient_id}` }
+                ]
+            });
+
+            for (const camp of campaigns) {
+                let isModified = false;
+                for (const item of camp.reportData) {
+                    if (item.phone === recipient_id || item.phone === `+${recipient_id}`) {
+                        if (status === "failed" || status === "invalid") {
+                            if (item.status !== "failed" && item.status !== "invalid") {
+                                item.status = status;
+                                if (errors?.[0]?.message) item.error = errors[0].message;
+                                isModified = true;
+                            }
+                        } else {
+                            // Only upgrade status (don't downgrade read back to delivered)
+                            const currentItemIndex = statusOrder.indexOf(item.status);
+                            if (newStatusIndex > currentItemIndex || item.status === "pending" || item.status === "queued" || !item.status) {
+                                item.status = status;
+                                isModified = true;
+                            }
+                        }
+                    }
+                }
+                if (isModified) {
+                    await camp.save();
+                    console.log(`📊 [CAMPAIGN] Updated status to ${status} for ${recipient_id} in ${camp.name}`);
+                }
+            }
+          } catch (campErr) {
+            console.error("Failed to update campaign report status:", campErr);
+          }
         }
       }
     }
