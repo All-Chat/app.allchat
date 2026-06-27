@@ -831,18 +831,23 @@ export async function POST(req: NextRequest) {
             for (const camp of campaigns) {
                 let isModified = false;
                 for (const item of camp.reportData) {
-                    if (item.phone === recipient_id || item.phone === `+${recipient_id}`) {
-                        // ✅ Use the robust status priority checker
+                                           // ✅ Use the robust status priority checker
                         if (shouldUpdateStatus(item.status, status)) {
                             item.status = status;
                             if (status === "failed" || status === "invalid") {
-                                item.error = errors?.[0]?.message || "Failed to send";
+                                const rawError = errors?.[0]?.message || "Failed to send";
+                                
+                                // ✅ Intercept "undeliverable" error and replace with custom message
+                                if (rawError.toLowerCase().includes("undeliverable") || rawError.toLowerCase().includes("unsupported message type")) {
+                                    item.error = "Message not delivered to maintain a healthy ecosystem.";
+                                } else {
+                                    item.error = rawError;
+                                }
                             } else {
                                 item.error = null; // Clear error if it somehow recovers
                             }
                             isModified = true;
                         }
-                    }
                 }
                 
                 if (isModified) {
