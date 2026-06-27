@@ -1,5 +1,5 @@
 /* =====================================================================
-   GET /api/chats - 100% STRICT ISOLATION + AUTO-BACKFILL
+   GET /api/chats - 100% STRICT ISOLATION + ONLY REPLIED CHATS
    ===================================================================== */
 
 import { NextResponse } from "next/server";
@@ -22,25 +22,23 @@ export async function GET(req: Request) {
     const userId = session.user.id;
 
     // ── AUTO-BACKFILL: Fix legacy null messages for the selected WABA ──
-    // This runs silently in the background so old chats instantly appear
     if (wabaId && wabaId !== "all") {
       Message.updateMany(
         {
           userId: new mongoose.Types.ObjectId(userId),
           whatsappPhoneNumberId: { $in: [null, undefined, ""] },
-          direction: "out", // Outgoing nulls are the main culprit
+          direction: "out",
         },
         { $set: { whatsappPhoneNumberId: wabaId } }
-      ).lean(); // .lean() makes it fire-and-forget (doesn't block the response)
+      ).lean(); 
     }
 
-    // ── STEP 1: Find phone numbers ──
+    // ── STEP 1: Find phone numbers THAT HAVE AT LEAST ONE INCOMING REPLY ──
     const phoneMatchStage: Record<string, unknown> = {
       userId: new mongoose.Types.ObjectId(userId),
+      direction: "in", // ✅ STRICT: Only get chats where the customer replied
     };
 
-    // ✅ STRICT ISOLATION: NO $or, NO null fallback. 
-    // If Tata is selected, ONLY look for Tata's exact ID.
     if (wabaId && wabaId !== "all") {
       phoneMatchStage.whatsappPhoneNumberId = wabaId;
     }
