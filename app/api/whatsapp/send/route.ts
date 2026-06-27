@@ -8,6 +8,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getPriceForCategory } from "@/lib/billing";
 import { checkLimit, incrementUsage } from "@/lib/limits";
+import fs from "fs";
+import path from "path";
 
 export const runtime = "nodejs";
 
@@ -269,6 +271,73 @@ async function uploadFileToMeta(
 }
 
 // ═══════════════════════════════════════════════════════════════
+// ✅ NEW: Resolve Local/Remote URL to Meta Media ID
+// ═══════════════════════════════════════════════════════════════
+async function uploadMediaToMetaFromUrl(
+  phoneNumberId: string,
+  accessToken: string,
+  mediaUrl: string
+): Promise<string | null> {
+  try {
+    if (/^\d+$/.test(mediaUrl)) return mediaUrl; // Already a Meta ID
+
+    let blob: Blob | null = null;
+    let filename = "media";
+
+    // Check if it's a local file path
+    if (mediaUrl.startsWith("/uploads/") || mediaUrl.startsWith("/public/")) {
+      const localPath = path.join(process.cwd(), "public", mediaUrl);
+      if (fs.existsSync(localPath)) {
+        const fileBuffer = fs.readFileSync(localPath);
+        blob = new Blob([fileBuffer]);
+        const ext = path.extname(localPath).toLowerCase();
+        filename = `media${ext}`;
+      } else {
+        console.error(`❌ [MEDIA] Local file not found: ${localPath}`);
+      }
+    } else if (mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://")) {
+      const downloadRes = await fetch(mediaUrl);
+      if (downloadRes.ok) {
+        blob = await downloadRes.blob();
+        const ext = path.extname(new URL(mediaUrl).pathname).toLowerCase();
+        filename = `media${ext || ".bin"}`;
+      }
+    } else {
+      const baseUrl = process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_APP_URL || "";
+      if (baseUrl) {
+        const fullUrl = `${baseUrl}${mediaUrl.startsWith("/") ? "" : "/"}${mediaUrl}`;
+        const downloadRes = await fetch(fullUrl);
+        if (downloadRes.ok) {
+          blob = await downloadRes.blob();
+          const ext = path.extname(new URL(fullUrl).pathname).toLowerCase();
+          filename = `media${ext || ".bin"}`;
+        }
+      }
+    }
+
+    if (!blob) return null;
+
+    const formData = new FormData();
+    formData.append("file", blob, filename);
+    formData.append("messaging_product", "whatsapp");
+
+    const uploadRes = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/media`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: formData,
+    });
+
+    const uploadData = await uploadRes.json();
+    if (uploadData.id) return uploadData.id;
+    
+    return null;
+  } catch (err) {
+    console.error(`❌ [MEDIA] Error uploading to Meta:`, err);
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // ✅ NEW: Build payload for direct (non-template) media messages
 // ═══════════════════════════════════════════════════════════════
 function buildDirectPayload(
@@ -289,7 +358,6 @@ function buildDirectPayload(
         type: "text",
         text: { body: caption || "", preview_url: true },
       };
-
     case "image":
       return {
         messaging_product: "whatsapp",
@@ -297,7 +365,6 @@ function buildDirectPayload(
         type: "image",
         image: { ...mediaObj, ...(caption ? { caption } : {}) },
       };
-
     case "video":
       return {
         messaging_product: "whatsapp",
@@ -305,7 +372,6 @@ function buildDirectPayload(
         type: "video",
         video: { ...mediaObj, ...(caption ? { caption } : {}) },
       };
-
     case "audio":
       return {
         messaging_product: "whatsapp",
@@ -313,7 +379,6 @@ function buildDirectPayload(
         type: "audio",
         audio: mediaObj,
       };
-
     case "document":
       return {
         messaging_product: "whatsapp",
@@ -325,7 +390,6 @@ function buildDirectPayload(
           ...(caption ? { caption } : {}),
         },
       };
-
     case "link":
       return {
         messaging_product: "whatsapp",
@@ -336,7 +400,6 @@ function buildDirectPayload(
           preview_url: true,
         },
       };
-
     default:
       return {
         messaging_product: "whatsapp",
@@ -361,8 +424,6 @@ async function sendDirectMessage(
 ): Promise<{ ok: boolean; data: any; wamid: string | null }> {
   const payload = buildDirectPayload(to, messageType, mediaRef, caption, filename);
 
-  console.log(`📤 [SEND] Sending ${messageType} message to ${to}...`);
-
   const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
@@ -371,12 +432,6 @@ async function sendDirectMessage(
 
   const data = await res.json();
   const wamid = extractWamid(data);
-
-  if (res.ok || wamid) {
-    console.log(`✅ [SEND] ${messageType} sent successfully. WAMID: ${wamid}`);
-  } else {
-    console.error(`❌ [SEND] Failed:`, JSON.stringify(data, null, 2));
-  }
 
   return { ok: res.ok || !!wamid, data, wamid };
 }
@@ -421,7 +476,6 @@ export async function POST(req: Request) {
     const explicitPhoneId = cleanStr(formData?.get("whatsappPhoneNumberId") || body.whatsappPhoneNumberId || "");
     const category = cleanStr(formData?.get("category") || body.category || "MARKETING");
 
-    // ✅ Validate phone for ALL message types
     if (!phone) {
       return NextResponse.json({ success: false, message: "Phone is required" }, { status: 400 });
     }
@@ -436,7 +490,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, message: "WhatsApp credentials not configured." }, { status: 400 });
     }
 
-    // ✅ Billing check
     let messagePrice = 0;
     if (payer.enabledCountries && payer.enabledCountries.length > 0) {
       const matchedCountry = payer.enabledCountries.find((c: any) => phone.startsWith(c.code));
@@ -465,7 +518,6 @@ export async function POST(req: Request) {
       const mediaUrl = cleanStr(formData?.get("mediaUrl") || body.mediaUrl || "");
       const file = (formData?.get("file") as File) || null;
 
-      // Validate based on message type
       if (messageType === "text" && !message) {
         return NextResponse.json({ success: false, message: "Message text is required for text messages" }, { status: 400 });
       }
@@ -474,22 +526,26 @@ export async function POST(req: Request) {
         return NextResponse.json({ success: false, message: "File or mediaUrl is required for media messages" }, { status: 400 });
       }
 
-      // Upload file to Meta if provided
       let mediaRef = mediaUrl;
       let filename: string | undefined = undefined;
 
       if (file) {
         filename = file.name || undefined;
-        console.log(`📤 [SEND] Uploading ${file.name} (${file.type}, ${file.size} bytes) to Meta...`);
         const uploadedId = await uploadFileToMeta(PHONE_NUMBER_ID, ACCESS_TOKEN, file);
         if (!uploadedId) {
           return NextResponse.json({ success: false, message: "Failed to upload media to Meta" }, { status: 500 });
         }
         mediaRef = uploadedId;
-        console.log(`✅ [SEND] Media uploaded, ID: ${uploadedId}`);
+      } else if (mediaUrl) {
+        // ✅ FIX: Resolve URL to Meta ID if it's not already one
+        if (!/^\d+$/.test(mediaUrl)) {
+          const uploadedId = await uploadMediaToMetaFromUrl(PHONE_NUMBER_ID, ACCESS_TOKEN, mediaUrl);
+          if (uploadedId) {
+            mediaRef = uploadedId;
+          }
+        }
       }
 
-      // Send the direct message
       const result = await sendDirectMessage(
         PHONE_NUMBER_ID,
         ACCESS_TOKEN,
@@ -508,7 +564,6 @@ export async function POST(req: Request) {
         );
       }
 
-      // ✅ Balance update
       try {
         if (messagePrice > 0) {
           payer.balance = Math.max(0, Math.round((currentBalance - messagePrice) * 100) / 100);
@@ -518,14 +573,12 @@ export async function POST(req: Request) {
         console.error("⚠️ Balance update failed (message still sent):", balErr);
       }
 
-      // ✅ Usage increment
       try {
         await incrementUsage(session.user.id, "testMessages");
       } catch (usageErr) {
         console.error("⚠️ Usage increment failed (message still sent):", usageErr);
       }
 
-      // ✅ Save to DB
       try {
         await Message.create({
           userId: session.user.id,
@@ -554,7 +607,7 @@ export async function POST(req: Request) {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // ✅ TEMPLATE MESSAGE (existing logic)
+    // ✅ TEMPLATE MESSAGE
     // ═══════════════════════════════════════════════════════════════
     const templateName = cleanStr(formData?.get("templateName") || body.templateName || "");
     const languageCode = cleanStr(formData?.get("languageCode") || body.languageCode || "en");
@@ -572,51 +625,41 @@ export async function POST(req: Request) {
       variables = [Math.floor(1000 + Math.random() * 9000).toString()];
     }
 
-    // ✅ Detect header format
     const metaTemplate = await fetchFullTemplate(PHONE_NUMBER_ID, ACCESS_TOKEN, templateName, languageCode);
     let detectedHeaderFormat = getTemplateHeaderFormat(metaTemplate);
     const userHeaderType = headerMediaType.toLowerCase().trim();
     const validMediaTypes = ["image", "video", "document"];
 
     if (detectedHeaderFormat === "none" && validMediaTypes.includes(userHeaderType)) {
-      console.log(`⚠️ API couldn't detect header, using user-provided: ${userHeaderType}`);
       detectedHeaderFormat = userHeaderType.toUpperCase();
     }
 
-    // ✅ Upload media if needed
     let uploadedMediaId: string | null = null;
     const needsMedia = validMediaTypes.includes(detectedHeaderFormat.toLowerCase());
 
     if (needsMedia && file) {
-      const mediaFormData = new FormData();
-      mediaFormData.append("file", file);
-      mediaFormData.append("messaging_product", "whatsapp");
-
-      const uploadRes = await fetch(`https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/media`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
-        body: mediaFormData,
-      });
-      const uploadData = await uploadRes.json();
-
-      if (!uploadRes.ok || uploadData.error || !uploadData.id) {
-        return NextResponse.json({ success: false, message: uploadData.error?.message || "Failed to upload media" }, { status: 500 });
+      const uploadedId = await uploadFileToMeta(PHONE_NUMBER_ID, ACCESS_TOKEN, file);
+      if (!uploadedId) {
+        return NextResponse.json({ success: false, message: "Failed to upload media" }, { status: 500 });
       }
-      uploadedMediaId = uploadData.id;
+      uploadedMediaId = uploadedId;
+    } else if (needsMedia && mediaUrl) {
+      // ✅ FIX: Convert URLs to Meta IDs before sending templates
+      if (!/^\d+$/.test(mediaUrl)) {
+        uploadedMediaId = await uploadMediaToMetaFromUrl(PHONE_NUMBER_ID, ACCESS_TOKEN, mediaUrl);
+      } else {
+        uploadedMediaId = mediaUrl;
+      }
     }
 
-    // ✅ Build initial components
     let components = buildComponents(detectedHeaderFormat, variables, uploadedMediaId, mediaUrl);
 
-    // ✅ ATTEMPT 1: Send with detected header format
     let result = await sendToWhatsApp(PHONE_NUMBER_ID, ACCESS_TOKEN, sanitizedPhone, templateName, languageCode, components);
     let sendSuccess = result.ok;
     let data = result.data;
     let wamid = result.wamid;
 
-    // ✅ ATTEMPT 2: Retry for AUTHENTICATION error 131008
     if (!sendSuccess && data.error?.code === 131008 && cat === "AUTHENTICATION" && variables.length > 0) {
-      console.log("🔄 Retrying with button parameter (error 131008)...");
       const retryComponents: any[] = [];
       if (components.length > 0 && components[0].type === "header") retryComponents.push(components[0]);
       retryComponents.push({ type: "body", parameters: variables.map((v: string) => ({ type: "text", text: String(v) })) });
@@ -628,14 +671,12 @@ export async function POST(req: Request) {
       wamid = result.wamid;
     }
 
-    // ✅ ATTEMPT 3: Retry for format mismatch 132012
     if (!sendSuccess && data.error?.code === 132012) {
       const details = data.error?.error_data?.details || "";
       const match = details.match(/expected\s+(\w+)/i);
       if (match && (uploadedMediaId || mediaUrl)) {
         const expectedFormat = match[1].toUpperCase();
         if (validMediaTypes.includes(expectedFormat.toLowerCase())) {
-          console.log(`🔄 Format mismatch detected. API expects: ${expectedFormat}. Rebuilding...`);
           components = buildComponents(expectedFormat, variables, uploadedMediaId, mediaUrl);
           result = await sendToWhatsApp(PHONE_NUMBER_ID, ACCESS_TOKEN, sanitizedPhone, templateName, languageCode, components);
           sendSuccess = result.ok;
@@ -645,9 +686,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // ✅ ATTEMPT 4: Try WITHOUT header
     if (!sendSuccess && data.error?.code === 132012 && components.length > 0 && components[0].type === "header") {
-      console.log("🔄 Trying without header...");
       const noHeaderComponents = components.filter((c: any) => c.type !== "header");
       result = await sendToWhatsApp(PHONE_NUMBER_ID, ACCESS_TOKEN, sanitizedPhone, templateName, languageCode, noHeaderComponents);
       sendSuccess = result.ok;
@@ -655,7 +694,6 @@ export async function POST(req: Request) {
       wamid = result.wamid;
     }
 
-    // ✅ If ALL attempts failed AND no WAMID, return error
     if (!sendSuccess && !wamid) {
       console.error("❌ WhatsApp Error (all attempts failed):", JSON.stringify(data, null, 2));
       return NextResponse.json(
@@ -663,9 +701,6 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
-
-    // ✅ MESSAGE SENT SUCCESSFULLY
-    console.log(`✅ Template message sent successfully. WAMID: ${wamid}`);
 
     try {
       if (messagePrice > 0) {
