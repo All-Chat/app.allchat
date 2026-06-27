@@ -42,6 +42,11 @@ export async function POST(req: Request) {
       body.otpLength = JSON.parse((formData.get("otpLength") as string) || "0");
       body.phoneNumbers = JSON.parse((formData.get("phoneNumbers") as string) || "[]");
       body.names = JSON.parse((formData.get("names") as string) || "[]");
+      
+      // ✅ NEW: Parse additional fields
+      body.additionalFields = JSON.parse((formData.get("additionalFields") as string) || "[]");
+      body.additionalFieldsData = JSON.parse((formData.get("additionalFieldsData") as string) || "[]");
+      
       body.mediaUrl = (formData.get("mediaUrl") as string) || "";
       body.mediaType = (formData.get("mediaType") as string) || "";
       body.languageCode = (formData.get("languageCode") as string) || "en";
@@ -51,7 +56,7 @@ export async function POST(req: Request) {
       body = await req.json();
     }
 
-    const { name, templateName, templateCategory, variables, mappedVariables, generateOtp, otpLength, phoneNumbers, names, mediaUrl, mediaType, languageCode, scheduledAt } = body;
+    const { name, templateName, templateCategory, variables, mappedVariables, generateOtp, otpLength, phoneNumbers, names, mediaUrl, mediaType, languageCode, scheduledAt, additionalFields, additionalFieldsData } = body;
 
     if (!name || !templateName || !phoneNumbers || phoneNumbers.length === 0) {
       return NextResponse.json({ success: false, message: "Name, template, and phone numbers are required." }, { status: 400 });
@@ -76,15 +81,21 @@ export async function POST(req: Request) {
       finalMediaUrl = uploadData.id;
     }
 
-    const existingCampaign = await Campaign.findOne({ name: name.trim(), userId });
-    if (existingCampaign) return NextResponse.json({ success: false, message: "A campaign with this name already exists." }, { status: 400 });
+    const existingCampaign = await Campaign.findOne({ name: { $regex: new RegExp(`^${name.trim()}$`, "i") }, userId });
+    if (existingCampaign) return NextResponse.json({ success: false, message: "A campaign with this name already exists. Please use another name." }, { status: 400 });
 
     const existingContacts = await Contact.find({ userId, phone: { $in: phoneNumbers } }).select('phone tags');
     const contactTagsMap = new Map();
     existingContacts.forEach(c => { contactTagsMap.set(c.phone, c.tags || []); });
 
+    // ✅ Updated reportData mapping to include additionalData
     const reportData = phoneNumbers.map((phone: string, index: number) => ({
-      name: names?.[index] || "", phone, status: "pending", replies: [], tags: contactTagsMap.get(phone) || [],
+      name: names?.[index] || "", 
+      phone, 
+      status: "pending", 
+      replies: [], 
+      tags: contactTagsMap.get(phone) || [],
+      additionalData: additionalFieldsData?.[index] || []
     }));
 
     const newCampaign = await Campaign.create({
@@ -92,6 +103,9 @@ export async function POST(req: Request) {
       phoneNumbers, names: names || [], mediaUrl: finalMediaUrl, mediaType, languageCode: languageCode || "en",
       scheduledAt: scheduledAt || null, totalMessages: phoneNumbers.length, status: scheduledAt ? "scheduled" : "saved",
       sentCount: 0, failedCount: 0, reportData,
+      // ✅ NEW: Save additional fields
+      additionalFields: additionalFields || [],
+      additionalFieldsData: additionalFieldsData || []
     });
 
     if (scheduledAt) {
