@@ -13,8 +13,9 @@ export async function GET() {
 
     await connectDB();
 
+    // ✅ FIX: Added additionalFields and additionalFieldsData to .select()
     const campaigns = await Campaign.find({ userId })
-      .select("name templateName templateCategory variables phoneNumbers names mediaUrl mediaType languageCode status totalMessages sentCount failedCount totalDeducted scheduledAt createdAt reportData")
+      .select("name templateName templateCategory variables phoneNumbers names mediaUrl mediaType languageCode status totalMessages sentCount failedCount totalDeducted scheduledAt createdAt reportData additionalFields additionalFieldsData")
       .sort({ createdAt: -1 })
       .lean();
 
