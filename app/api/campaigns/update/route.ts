@@ -27,6 +27,11 @@ export async function POST(req: Request) {
       body.variables = JSON.parse((formData.get("variables") as string) || "[]");
       body.phoneNumbers = JSON.parse((formData.get("phoneNumbers") as string) || "[]");
       body.names = JSON.parse((formData.get("names") as string) || "[]");
+      
+      // ✅ NEW: Parse additional fields
+      body.additionalFields = JSON.parse((formData.get("additionalFields") as string) || "[]");
+      body.additionalFieldsData = JSON.parse((formData.get("additionalFieldsData") as string) || "[]");
+      
       body.mediaUrl = (formData.get("mediaUrl") as string) || "";
       body.mediaType = (formData.get("mediaType") as string) || "";
       body.languageCode = (formData.get("languageCode") as string) || "en";
@@ -36,12 +41,20 @@ export async function POST(req: Request) {
       body = await req.json();
     }
 
-    const { id, name, templateName, templateCategory, variables, phoneNumbers, names, mediaUrl, mediaType, languageCode, scheduledAt } = body;
+    const { id, name, templateName, templateCategory, variables, phoneNumbers, names, mediaUrl, mediaType, languageCode, scheduledAt, additionalFields, additionalFieldsData } = body;
 
     if (!id) return NextResponse.json({ success: false, message: "Campaign ID required" }, { status: 400 });
     if (!name || !templateName || !phoneNumbers || phoneNumbers.length === 0) {
       return NextResponse.json({ success: false, message: "Name, template, and phone numbers are required." }, { status: 400 });
     }
+
+    // ✅ NEW: Name uniqueness check (excluding current campaign ID, case-insensitive)
+    const existingCampaign = await Campaign.findOne({ 
+      _id: { $ne: id }, 
+      name: { $regex: new RegExp(`^${name.trim()}$`, "i") }, 
+      userId 
+    });
+    if (existingCampaign) return NextResponse.json({ success: false, message: "A campaign with this name already exists. Please use another name." }, { status: 400 });
 
     let finalMediaUrl = mediaUrl;
     if (mediaFile) {
@@ -63,11 +76,37 @@ export async function POST(req: Request) {
       finalMediaUrl = uploadData.id;
     }
 
-    const reportData = phoneNumbers.map((phone: string, index: number) => ({ name: names?.[index] || "", phone, status: "pending", replies: [] }));
+    // ✅ Updated reportData mapping to include additionalData
+    const reportData = phoneNumbers.map((phone: string, index: number) => ({ 
+      name: names?.[index] || "", 
+      phone, 
+      status: "pending", 
+      replies: [],
+      additionalData: additionalFieldsData?.[index] || []
+    }));
 
     const updatedCampaign = await Campaign.findOneAndUpdate(
       { _id: id, userId },
-      { name: name.trim(), templateName, templateCategory, variables, phoneNumbers, names: names || [], mediaUrl: finalMediaUrl, mediaType, languageCode: languageCode || "en", scheduledAt: scheduledAt || null, status: scheduledAt ? "scheduled" : "saved", sentCount: 0, failedCount: 0, totalMessages: phoneNumbers.length, reportData },
+      { 
+        name: name.trim(), 
+        templateName, 
+        templateCategory, 
+        variables, 
+        phoneNumbers, 
+        names: names || [], 
+        mediaUrl: finalMediaUrl, 
+        mediaType, 
+        languageCode: languageCode || "en", 
+        scheduledAt: scheduledAt || null, 
+        status: scheduledAt ? "scheduled" : "saved", 
+        sentCount: 0, 
+        failedCount: 0, 
+        totalMessages: phoneNumbers.length, 
+        reportData,
+        // ✅ NEW: Save additional fields
+        additionalFields: additionalFields || [],
+        additionalFieldsData: additionalFieldsData || []
+      },
       { new: true }
     );
 
