@@ -72,6 +72,8 @@ async function boldHeaderRow(
 // ✅ FIX: Headers now include "Reply 1"–"Reply 5" columns.
 //    Rows read d["Reply 1"] … d["Reply 5"] instead of the old d.replies array
 //    (which never existed on the data coming from the campaign route).
+// ─── MAIN: Sync campaign report to Google Sheet ──────────────────────────────
+// ✅ FIX: Dynamically includes additional fields passed from the route
 export async function syncCampaignToGoogleSheet(userId: string, campaign: any) {
   await connectDB();
 
@@ -86,10 +88,14 @@ export async function syncCampaignToGoogleSheet(userId: string, campaign: any) {
   const sheetName = (campaign.name || "Campaign").substring(0, 100);
   const sheetId = await ensureSheetTab(sheets, spreadsheetId, sheetName);
 
-  // ✅ FIXED headers — 9 columns total, matching the row builder below
+  // ✅ Get additional fields array
+  const additionalFields: string[] = campaign.additionalFields || [];
+
+  // ✅ Build headers dynamically
   const HEADERS = [
     "Name",
     "Phone",
+    ...additionalFields, // Spread extra columns here
     "Status",
     "Error",
     "Tags",
@@ -100,19 +106,30 @@ export async function syncCampaignToGoogleSheet(userId: string, campaign: any) {
     "Reply 5",
   ];
 
-  // ✅ FIXED row builder — reads Reply 1–5 keys, falls back gracefully
-  const rows = (campaign.reportData || []).map((d: any) => [
-    String(d.name || "N/A").trim(),
-    String(d.phone || "N/A").trim(),
-    String(d.status || "Unknown").trim(),
-    String(d.error || "").trim(),
-    Array.isArray(d.tags) ? d.tags.filter(Boolean).join(", ") : String(d.tags || "").trim(),
-    String(d["Reply 1"] || "").trim(),
-    String(d["Reply 2"] || "").trim(),
-    String(d["Reply 3"] || "").trim(),
-    String(d["Reply 4"] || "").trim(),
-    String(d["Reply 5"] || "").trim(),
-  ]);
+  // ✅ Build rows dynamically
+  const rows = (campaign.reportData || []).map((d: any) => {
+    const row = [
+      String(d.name || "N/A").trim(),
+      String(d.phone || "N/A").trim(),
+    ];
+
+    // Push values for additional fields
+    additionalFields.forEach((field) => {
+      row.push(String(d[field] || "").trim());
+    });
+
+    // Push the remaining standard fields
+    row.push(String(d.status || "Unknown").trim());
+    row.push(String(d.error || "").trim());
+    row.push(Array.isArray(d.tags) ? d.tags.filter(Boolean).join(", ") : String(d.tags || "").trim());
+    row.push(String(d["Reply 1"] || "").trim());
+    row.push(String(d["Reply 2"] || "").trim());
+    row.push(String(d["Reply 3"] || "").trim());
+    row.push(String(d["Reply 4"] || "").trim());
+    row.push(String(d["Reply 5"] || "").trim());
+
+    return row;
+  });
 
   const values = [HEADERS, ...rows];
 
