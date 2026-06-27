@@ -827,7 +827,7 @@ function WorkflowCard({ wf, onEdit, onDelete, onToggleActive }: { wf: Workflow; 
               {!isActive && <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-semibold bg-gray-100 border-gray-200 text-gray-500"><Pause size={10} /> Inactive</span>}
               {wf.wabaPhoneNumberId && (
   <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-semibold bg-sky-50 border-sky-200 text-sky-700"><Phone size={10} /> {wf.wabaPhoneNumber || wf.wabaPhoneNumberId}</span>
-)}
+)} 
             </div>
             {rootStep && (
               <div className="space-y-2">
