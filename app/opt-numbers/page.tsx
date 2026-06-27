@@ -206,7 +206,7 @@ export default function OptNumbersPage() {
                 </div>
                 <div>
                   <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-cyan-900">
-                    Opt-in Numbers
+                    Opt-out Numbers
                   </h1>
                   <p className="text-cyan-700/80 text-xs sm:text-sm mt-1 font-medium">
                     Manage phone numbers collected via workflows or added manually
@@ -267,9 +267,9 @@ export default function OptNumbersPage() {
               <div className="flex-1">
                 <span className="font-bold">
                   {isAtLimit
-                    ? "Opt-in number limit reached!"
+                    ? "opt-out number limit reached!"
                     : usagePercent >= 80
-                    ? "Approaching opt-in number limit"
+                    ? "Approaching opt-out number limit"
                     : "Number usage"}
                 </span>
                 <span className="ml-2 opacity-80">
@@ -314,7 +314,7 @@ export default function OptNumbersPage() {
                 <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2 animate-slide-in">
                   <AlertTriangle size={16} className="text-red-500 shrink-0 mt-0.5" />
                   <div>
-                    <p className="text-xs font-bold text-red-700">Opt-in number limit reached</p>
+                    <p className="text-xs font-bold text-red-700">opt-out number limit reached</p>
                     <p className="text-[11px] text-red-600 mt-0.5">
                       You have used {optLimit?.usage.count} of {optLimit?.limit.max} numbers
                       {optLimit?.limit.period !== "total" && ` per ${optLimit?.limit.period}`}.
@@ -383,7 +383,7 @@ export default function OptNumbersPage() {
                 </div>
                 <p className="font-bold text-slate-700">No numbers yet</p>
                 <p className="text-xs text-slate-400 mt-1 max-w-xs mx-auto">
-                  Add numbers manually or connect an Opt-in Node in your workflows.
+                  Add numbers manually or connect an opt-out Node in your workflows.
                 </p>
               </div>
             ) : (
@@ -453,11 +453,11 @@ export default function OptNumbersPage() {
               <PhoneCall className="w-4 h-4 text-cyan-600" />
             </div>
             <div>
-              <p className="text-sm font-bold text-cyan-800">About Opt-in Numbers</p>
+              <p className="text-sm font-bold text-cyan-800">About opt-out Numbers</p>
               <p className="text-xs text-cyan-700 mt-1 leading-relaxed">
                 These phone numbers represent contacts who have opted in to receive messages from you.
-                Numbers can be added manually here or automatically through workflow Opt-in Nodes.
-                All numbers must comply with WhatsApp&apos;s opt-in policies.
+                Numbers can be added manually here or automatically through workflow opt-out Nodes.
+                All numbers must comply with WhatsApp&apos;s opt-out policies.
               </p>
             </div>
           </div>
