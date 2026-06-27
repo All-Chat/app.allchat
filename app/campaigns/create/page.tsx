@@ -10,7 +10,7 @@ import {
   Upload, FileSpreadsheet, Clock, Globe, CheckCircle2,
   Users, Sparkles, Send, RotateCcw, AlertCircle,
   FileText, Film, Image as ImageIcon, Loader2, X, Link, Tag as TagIcon,
-  Ban, ShieldCheck,
+  Ban, ShieldCheck, Plus,
   Gauge, Infinity as InfinityIcon, 
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
@@ -28,9 +28,8 @@ export default function CreateCampaign() {
   const [rawVariables, setRawVariables] = useState<string[][]>([]); 
   const [rawText, setRawText] = useState("");
   
-  // ✅ Country Code Dropdown State
   const [enabledCountries, setEnabledCountries] = useState<any[]>([]);
-  const [selectedCountryCode, setSelectedCountryCode] = useState("91"); // Default fallback
+  const [selectedCountryCode, setSelectedCountryCode] = useState("91");
   
   const [campaignName, setCampaignName] = useState("");
   const [variables, setVariables] = useState<string[]>([]);
@@ -57,6 +56,14 @@ export default function CreateCampaign() {
   const [uploadStep, setUploadStep] = useState(1);
   const [fileName, setFileName] = useState("");
 
+  // ✅ NEW: Additional Fields State
+  const [additionalFields, setAdditionalFields] = useState<string[]>([]); // selected column names
+  const [additionalFieldsData, setAdditionalFieldsData] = useState<string[][]>([]); // values per contact
+
+  // ✅ NEW: Campaign Name existence check
+  const [existingCampaignNames, setExistingCampaignNames] = useState<string[]>([]);
+  const [nameError, setNameError] = useState("");
+
   const [stats, setStats] = useState({ valid: 0, invalid: 0, duplicates: 0, optedOut: 0 });
   const [optedOutNumbers, setOptedOutNumbers] = useState<string[]>([]);
 
@@ -82,7 +89,8 @@ export default function CreateCampaign() {
       fetchTags();
       fetchOptNumbers();
       fetchLimits();
-      fetchSettings(); // ✅ Fetch settings for countries
+      fetchSettings();
+      fetchCampaignNames(); // ✅ NEW: fetch existing campaign names
     } else if (status === "unauthenticated") {
       window.location.href = "/signin";
     }
@@ -113,7 +121,19 @@ export default function CreateCampaign() {
     }
   };
 
-  // ✅ Fetch Settings for Enabled Countries
+  // ✅ NEW: Fetch existing campaign names for uniqueness check
+  const fetchCampaignNames = async () => {
+    try {
+      const res = await fetch("/api/campaigns/list");
+      const data = await res.json();
+      if (data.success) {
+        setExistingCampaignNames(data.campaigns.map((c: any) => (c.name || "").toLowerCase()));
+      }
+    } catch (err) {
+      console.error("Failed to fetch campaign names", err);
+    }
+  };
+
   const fetchSettings = async () => {
     try {
       const res = await fetch("/api/settings");
@@ -164,8 +184,22 @@ export default function CreateCampaign() {
     }
   };
 
+  // ✅ NEW: Handle campaign name change with existence check
+  const handleCampaignNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setCampaignName(value);
+    if (value && existingCampaignNames.includes(value.toLowerCase())) {
+      setNameError("⚠️ This campaign name already exists. Please use another name.");
+    } else {
+      setNameError("");
+    }
+  };
+
   const handleTagSelect = async (tagName: string) => {
     setSelectedTag(tagName);
+    // ✅ Reset additional fields when loading from tags
+    setAdditionalFields([]);
+    setAdditionalFieldsData([]);
     if (!tagName) return;
     try {
       const res = await fetch(`/api/contacts?tag=${encodeURIComponent(tagName)}`);
@@ -188,7 +222,7 @@ export default function CreateCampaign() {
     }
   };
 
-  const handleTemplateSelect = (name: string, langOrPreserved?: string | string[]) => {
+   const handleTemplateSelect = (name: string, langOrPreserved?: string | string[]) => {
     let language: string | undefined;
     let preservedVars: string[] | undefined;
 
@@ -232,8 +266,9 @@ export default function CreateCampaign() {
     const footerComp = tmpl.components?.find((c: any) => c.type === "FOOTER");
     setFooterText(footerComp?.text || "");
 
-    const buttonComps = tmpl.components?.filter((c: any) => c.type === "BUTTON") || [];
-    setButtons(buttonComps);
+    // ✅ FIX: Meta API uses type "BUTTONS" (plural) and stores them in a nested array
+    const buttonsComp = tmpl.components?.find((c: any) => c.type === "BUTTONS");
+    setButtons(buttonsComp?.buttons || []);
   };
 
   const replaceVars = (text: string) => {
@@ -255,53 +290,68 @@ export default function CreateCampaign() {
     return false;
   };
 
-  const cleanAndValidateNumbers = (nums: string[], names: string[], rows: string[][] = [], varIndices: number[] = []) => {
+  // ✅ MODIFIED: Added additionalIndices parameter and finalAdditionalData return
+   const cleanAndValidateNumbers = (
+    nums: string[], 
+    names: string[], 
+    rows: string[][] = [], 
+    varIndices: number[] = [],
+    additionalIndices: number[] = []
+  ) => {
     const MAX_LIMIT = 50000;
     const seen = new Set();
     let valid = 0, invalid = 0, duplicates = 0, optedOut = 0;
     const finalNumbers: string[] = [];
     const finalNames: string[] = [];
     const finalVariables: string[][] = [];
+    const finalAdditionalData: string[][] = [];
 
     for (let index = 0; index < nums.length; index++) {
       const num = nums[index];
-      if (!num) continue;
+      if (!num || String(num).trim() === "") continue; // Skip completely empty rows
+      
       let clean = String(num).replace(/[^\d+]/g, "");
       if (clean.startsWith("+")) clean = clean.substring(1);
       if (clean.startsWith("0")) clean = clean.substring(1);
       
-      // ✅ Use selectedCountryCode from dropdown
-      if (!clean.startsWith(selectedCountryCode)) clean = selectedCountryCode + clean;
+      if (!clean.startsWith(selectedCountryCode) && clean.length <= 10) {
+        clean = selectedCountryCode + clean;
+      }
 
       if (optedOutNumbers.includes(clean)) {
         optedOut++;
-        continue;
       }
 
-      if (clean.length >= 7 && !isObviouslyFakePhone(clean)) {
-        if (seen.has(clean)) {
-          duplicates++;
-        } else {
-          seen.add(clean);
-          finalNumbers.push(clean);
-          finalNames.push(names[index] || "");
-          
-          const contactVars = varIndices.map(vIdx => vIdx !== -1 ? (rows[index]?.[vIdx] || "") : "");
-          finalVariables.push(contactVars);
-          
-          valid++;
-
-          if (finalNumbers.length >= MAX_LIMIT) {
-            toast.error(`Limit of 50,000 numbers reached. Only the first 50,000 will be processed.`);
-            break;
-          }
-        }
+      // Basic validation: just check length
+      if (clean.length >= 7) {
+        valid++;
       } else {
         invalid++;
       }
+
+      // Check for duplicates
+      if (seen.has(clean)) {
+        duplicates++;
+        continue; // Skip adding duplicates to the final send list
+      } 
+      
+      seen.add(clean);
+      finalNumbers.push(clean);
+      finalNames.push(names[index] || "");
+      
+      const contactVars = varIndices.map(vIdx => vIdx !== -1 ? (rows[index]?.[vIdx] || "") : "");
+      finalVariables.push(contactVars);
+
+      const contactAdditional = additionalIndices.map(aIdx => aIdx !== -1 ? (rows[index]?.[aIdx] || "") : "");
+      finalAdditionalData.push(contactAdditional);
+
+      if (finalNumbers.length >= MAX_LIMIT) {
+        toast.error(`Limit of 50,000 numbers reached. Only the first 50,000 will be processed.`);
+        break;
+      }
     }
     setStats({ valid, invalid, duplicates, optedOut });
-    return { finalNumbers, finalNames, finalVariables };
+    return { finalNumbers, finalNames, finalVariables, finalAdditionalData };
   };
 
   const handleTextNumbers = () => {
@@ -313,11 +363,14 @@ export default function CreateCampaign() {
     setRawNumbers(finalNumbers);
     setRawNames(finalNames);
     setRawVariables(finalVariables);
+    // ✅ Reset additional fields for manual paste
+    setAdditionalFields([]);
+    setAdditionalFieldsData([]);
     if (finalNumbers.length > 0) toast.success(`Parsed ${finalNumbers.length} valid numbers`);
     else toast.error("No valid numbers found");
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setFileName(file.name);
@@ -326,9 +379,10 @@ export default function CreateCampaign() {
       if (file.name.endsWith(".xlsx") || file.name.endsWith(".xls")) {
         const XLSX = await import("xlsx");
         const data = await file.arrayBuffer();
-        const workbook = XLSX.read(data, { type: "array" });
+        const workbook = XLSX.read(data, { type: "array", cellDates: false });
         const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        // ✅ FIX: raw: false prevents scientific notation truncation of large phone numbers
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false, defval: "" });
         rows = jsonData
           .map((row: any) => row.map((cell: any) => String(cell || "").trim()))
           .filter((row: string[]) => row.length > 0 && row.some((cell) => cell !== ""));
@@ -345,9 +399,17 @@ export default function CreateCampaign() {
         return;
       }
 
-      const MAX_LIMIT = 50000;
-      const dataRows = rows.slice(1);
+      // ✅ FIX: Auto-detect if the first row is a header or actual phone numbers
+      const firstRow = rows[0] || [];
+      const hasHeader = !firstRow.some((cell: any) => {
+        const cleaned = String(cell).replace(/\D/g, "");
+        return cleaned.length >= 7; // If any cell has 7+ digits, it's probably a phone number, not a header
+      });
 
+      const headers = hasHeader ? rows[0] : rows[0].map((_, i) => `Column ${i + 1}`);
+      const dataRows = hasHeader ? rows.slice(1) : rows; // Don't slice if there's no header
+
+      const MAX_LIMIT = 50000;
       if (dataRows.length > MAX_LIMIT) {
         toast.error(
           `❌ The file contains ${dataRows.length.toLocaleString()} numbers. The maximum limit is 50,000. Please split your file and try again.`
@@ -359,13 +421,14 @@ export default function CreateCampaign() {
         return;
       }
 
-      setFileHeaders(rows[0]);
+      setFileHeaders(headers);
       setFileRows(dataRows);
-      const phoneCol =
-        rows[0].find((h) => /phone|mobile|number|cell|whatsapp/i.test(h)) || rows[0][0];
-      const nameCol = rows[0].find((h) => /name|nama|nombre|first/i.test(h)) || "";
+      const phoneCol = headers.find((h) => /phone|mobile|number|cell|whatsapp/i.test(h)) || headers[0];
+      const nameCol = headers.find((h) => /name|nama|nombre|first/i.test(h)) || "";
       setSelectedPhoneCol(phoneCol);
       setSelectedNameCol(nameCol || "skip");
+      setAdditionalFields([]);
+      setAdditionalFieldsData([]);
       setUploadStep(2);
     } catch (err) {
       toast.error("Failed to parse file.");
@@ -373,6 +436,7 @@ export default function CreateCampaign() {
     }
   };
 
+  // ✅ MODIFIED: Process additional fields data
   const processFileColumns = () => {
     if (!selectedPhoneCol || selectedPhoneCol === "skip") {
       toast.error("Select Phone column");
@@ -384,6 +448,10 @@ export default function CreateCampaign() {
       
     const varIndices = selectedVarCols.map(col => col && col !== "skip" ? fileHeaders.indexOf(col) : -1);
 
+    // ✅ NEW: Build additional field indices (excluding "skip")
+    const additionalIndices = additionalFields
+      .map(col => col && col !== "skip" ? fileHeaders.indexOf(col) : -1);
+
     const numbers: string[] = [];
     const names: string[] = [];
     fileRows.forEach(row => {
@@ -391,10 +459,15 @@ export default function CreateCampaign() {
       names.push(nameIdx !== -1 ? row[nameIdx] || "" : "");
     });
     
-    const { finalNumbers, finalNames, finalVariables } = cleanAndValidateNumbers(numbers, names, fileRows, varIndices);
+    const { finalNumbers, finalNames, finalVariables, finalAdditionalData } = cleanAndValidateNumbers(
+      numbers, names, fileRows, varIndices, additionalIndices
+    );
     setRawNumbers(finalNumbers);
     setRawNames(finalNames);
     setRawVariables(finalVariables);
+    // ✅ Save additional fields data (filter out "skip" entries from column names)
+    const validAdditionalFields = additionalFields.filter(f => f && f !== "skip");
+    setAdditionalFieldsData(finalAdditionalData);
     toast.success(`Extracted ${finalNumbers.length} valid numbers`);
   };
 
@@ -405,7 +478,27 @@ export default function CreateCampaign() {
     setSelectedPhoneCol("");
     setSelectedNameCol("");
     setFileName("");
-    setSelectedVarCols(variables.map(() => "skip")); 
+    setSelectedVarCols(variables.map(() => "skip"));
+    // ✅ Reset additional fields
+    setAdditionalFields([]);
+    setAdditionalFieldsData([]);
+  };
+
+  // ✅ NEW: Add an additional field dropdown
+  const addAdditionalField = () => {
+    setAdditionalFields([...additionalFields, "skip"]);
+  };
+
+  // ✅ NEW: Remove an additional field
+  const removeAdditionalField = (index: number) => {
+    setAdditionalFields(additionalFields.filter((_, i) => i !== index));
+  };
+
+  // ✅ NEW: Update an additional field selection
+  const updateAdditionalField = (index: number, value: string) => {
+    const newArr = [...additionalFields];
+    newArr[index] = value;
+    setAdditionalFields(newArr);
   };
 
   const handleMediaFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -564,6 +657,16 @@ export default function CreateCampaign() {
       toast.error("Fill all required fields");
       return;
     }
+    // ✅ NEW: Block save if name exists
+    if (existingCampaignNames.includes(campaignName.toLowerCase())) {
+      toast.error("Campaign name already exists. Please use another name.");
+      setNameError("⚠️ This campaign name already exists. Please use another name.");
+      return;
+    }
+    if (nameError) {
+      toast.error("Please fix the campaign name before saving.");
+      return;
+    }
     if (isAtLimit) {
       toast.error("Campaign limit reached. Contact admin to increase your limit.");
       return;
@@ -584,6 +687,8 @@ export default function CreateCampaign() {
     setSaving(true);
     try {
       let res;
+      // ✅ Filter out "skip" from additional fields
+      const validAdditionalFields = additionalFields.filter(f => f && f !== "skip");
       const commonData = {
         name: campaignName,
         templateName: selectedTemplate.name,
@@ -597,7 +702,9 @@ export default function CreateCampaign() {
         mediaType,
         languageCode,
         scheduledAt: isSchedule ? scheduleDate : null,
-        // senderPhoneId is omitted, it will use the active number automatically
+        // ✅ NEW: Additional fields and their data
+        additionalFields: validAdditionalFields,
+        additionalFieldsData: additionalFieldsData.length > 0 ? additionalFieldsData : [],
       };
 
       if (mediaInputType === "upload" && mediaFile) {
@@ -768,14 +875,24 @@ export default function CreateCampaign() {
                 <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest flex items-center gap-2">
                   <Sparkles size={14} className="text-emerald-500" /> Campaign Details
                 </label>
-                <input
-                  type="text"
-                  value={campaignName}
-                  onChange={(e) => setCampaignName(e.target.value)}
-                  placeholder="e.g. Diwali Dhamaka Offer"
-                  disabled={isAtLimit}
-                  className="w-full px-4 sm:px-5 py-3 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-emerald-100 focus:border-emerald-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)] disabled:opacity-50 disabled:cursor-not-allowed"
-                />
+                {/* ✅ MODIFIED: Campaign name with existence check */}
+                <div>
+                  <input
+                    type="text"
+                    value={campaignName}
+                    onChange={handleCampaignNameChange}
+                    placeholder="e.g. Diwali Dhamaka Offer"
+                    disabled={isAtLimit}
+                    className={`w-full px-4 sm:px-5 py-3 sm:py-3.5 bg-slate-50 border rounded-xl focus:ring-4 focus:ring-emerald-100 focus:border-emerald-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)] disabled:opacity-50 disabled:cursor-not-allowed ${
+                      nameError ? "border-red-400" : "border-slate-200"
+                    }`}
+                  />
+                  {nameError && (
+                    <p className="text-xs text-red-600 font-medium mt-1.5 flex items-center gap-1">
+                      <AlertCircle size={12} /> {nameError}
+                    </p>
+                  )}
+                </div>
 
                 <select
                   value={
@@ -975,7 +1092,6 @@ export default function CreateCampaign() {
                     Target Audience
                   </label>
                   
-                  {/* ✅ Country Code Dropdown */}
                   <div className="flex items-center gap-2 w-full sm:w-auto">
                     <Globe size={14} className="text-slate-400 hidden sm:block" />
                     {enabledCountries.length > 0 ? (
@@ -1075,6 +1191,49 @@ export default function CreateCampaign() {
                         </option>
                       ))}
                     </select>
+
+                    {/* ✅ NEW: Additional Fields Section */}
+                    <div className="space-y-2 mt-2 pt-2 border-t border-emerald-100">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[11px] font-extrabold text-emerald-800 uppercase tracking-widest flex items-center gap-2">
+                          <Plus size={12} /> Additional Fields (Optional)
+                        </p>
+                        <button
+                          type="button"
+                          onClick={addAdditionalField}
+                          className="text-xs text-emerald-600 hover:text-emerald-700 flex items-center gap-1.5 font-bold bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          <Plus size={12} /> Add Field
+                        </button>
+                      </div>
+                      {additionalFields.length === 0 && (
+                        <p className="text-[11px] text-slate-400 italic pl-1">
+                          Click &quot;Add Field&quot; to fetch more columns from your Excel file (e.g. Email, City, etc.). These will appear in your report.
+                        </p>
+                      )}
+                      {additionalFields.map((field, i) => (
+                        <div key={i} className="flex gap-2 items-center">
+                          <select
+                            value={field}
+                            onChange={(e) => updateAdditionalField(i, e.target.value)}
+                            className="flex-1 px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-emerald-100 focus:border-emerald-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"
+                          >
+                            <option value="skip">-- Select Additional Column {i + 1} --</option>
+                            {fileHeaders.map((h, idx) => (
+                              <option key={idx} value={h}>📋 {h}</option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => removeAdditionalField(i)}
+                            className="p-2.5 bg-red-50 text-red-500 hover:bg-red-100 rounded-xl transition-colors"
+                            title="Remove field"
+                          >
+                            <X size={16} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
 
                     {variables.length > 0 && !useRandomOtp && (
                       <div className="space-y-2 mt-2 pt-2 border-t border-emerald-100">
@@ -1180,14 +1339,14 @@ export default function CreateCampaign() {
                   <div className="flex flex-col sm:flex-row gap-3">
                     <button
                       onClick={() => handleSave(false)}
-                      disabled={saving || isAtLimit}
+                      disabled={saving || isAtLimit || !!nameError}
                       className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-slate-100 border border-slate-200 rounded-xl font-bold hover:bg-slate-200 flex items-center justify-center gap-2 text-sm transition-colors text-slate-700 shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       <FileSpreadsheet size={16} /> Save Draft
                     </button>
                     <button
                       onClick={() => handleSave(true)}
-                      disabled={saving || !scheduleDate || isAtLimit}
+                      disabled={saving || !scheduleDate || isAtLimit || !!nameError}
                       className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-xl font-bold hover:from-indigo-600 hover:to-purple-600 flex items-center justify-center gap-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-md"
                     >
                       <Clock size={16} /> Schedule
