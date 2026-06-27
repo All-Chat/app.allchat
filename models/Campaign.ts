@@ -2,18 +2,12 @@ import mongoose from "mongoose";
 
 const CampaignSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
-  
-  // ==========================================
-  // 🔴 MULTI-TENANT DATA ISOLATION
-  // ==========================================
   tenantId: { type: String, default: null, index: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null, index: true },
   
   name: { type: String, required: true },
   templateName: { type: String, required: true },
   templateCategory: { type: String, default: "MARKETING" },
-  
-  // ✅ NEW: Stores the _id of the selected WhatsApp number
   senderPhoneId: { type: String, default: null }, 
   
   variables: { type: [String], default: [] },
@@ -25,6 +19,10 @@ const CampaignSchema = new mongoose.Schema({
   names: { type: [String], default: [] },
   languageCode: { type: String, default: "en" },
   
+  // ✅ NEW: Additional Fields Storage
+  additionalFields: { type: [String], default: [] },
+  additionalFieldsData: { type: [[String]], default: [] },
+  
   reportData: {
     type: [
       {
@@ -32,8 +30,12 @@ const CampaignSchema = new mongoose.Schema({
         name: String,
         status: String,
         sentWamid: String,
+        error: String,
         replies: [String],
-        tags: [String], 
+        reply: String,
+        repliedAt: Date,
+        tags: [String],
+        additionalData: { type: [String], default: [] }, // ✅ NEW: Additional fields values per contact
       }
     ],
     default: []
@@ -52,7 +54,6 @@ const CampaignSchema = new mongoose.Schema({
   failedCount: { type: Number, default: 0 },
   
   totalDeducted: { type: Number, default: 0 },
-  
   createdAt: { type: Date, default: Date.now },
 });
 
