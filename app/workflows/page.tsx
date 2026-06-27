@@ -556,11 +556,9 @@ function FlowCanvas({
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
-  // ✅ FIX: Custom dropdown state
   const [numberDropdownOpen, setNumberDropdownOpen] = useState(false);
   const numberDropdownRef = useRef<HTMLDivElement>(null);
 
-  // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (
@@ -575,7 +573,6 @@ function FlowCanvas({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // ✅ FIX: Get the selected number's name
   const selectedNumberName = selectedWabaNumberId
     ? wabaNumbers.find((n) => n.phoneNumberId === selectedWabaNumberId)?.name || selectedWabaNumberId
     : null;
@@ -695,7 +692,6 @@ function FlowCanvas({
           <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${editId ? "bg-amber-100 text-amber-600" : "bg-emerald-100 text-emerald-600"}`}><WorkflowIcon size={16} /></div>
           <h2 className="text-sm font-bold text-gray-900">{editId ? "Edit Workflow" : "New Workflow"}</h2>
 
-          {/* ✅ FIXED: Custom WABA Number Dropdown */}
           <div className="flex items-center gap-2 ml-2" ref={numberDropdownRef}>
             {wabaNumbers.length > 0 ? (
               <div className="relative">
@@ -743,7 +739,10 @@ function FlowCanvas({
 
         <div className="flex items-center gap-2">
           <button onClick={formatLayout} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200"><Layout size={14} /> Format</button>
-          {editId && (<button onClick={onCancel} className="px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors hidden sm:block">Cancel</button>)}
+          
+          {/* ✅ FIX: Cancel button now shows in both Create and Edit modes */}
+          <button onClick={onCancel} className="px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors hidden sm:block">Cancel</button>
+          
           <button onClick={() => setIsFullScreen(!isFullScreen)} className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-gray-900 transition-colors border border-gray-200">{isFullScreen ? <Minimize size={16} /> : <Maximize size={16} />}</button>
         </div>
       </div>
@@ -780,8 +779,9 @@ function FlowCanvas({
       </div>
 
       <div className="absolute bottom-4 right-4 z-30">
+        {/* ✅ FIX: Changed "Create Workflow" to "Save Workflow" */}
         <button onClick={handleSave} className="inline-flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-bold text-white bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 hover:shadow-xl hover:scale-105">
-          {editId ? "Update Workflow" : "Create Workflow"}
+          {editId ? "Update Workflow" : "Save Workflow"}
         </button>
       </div>
     </div>
@@ -871,7 +871,6 @@ export default function Home() {
   const [wabaNumbers, setWabaNumbers] = useState<WabaNumber[]>([]);
   const [selectedWabaNumberId, setSelectedWabaNumberId] = useState<string | null>(null);
 
-  // ✅ PAGINATION STATE
   const [currentPage, setCurrentPage] = useState(1);
   const ITEMS_PER_PAGE = 6;
 
@@ -976,7 +975,6 @@ export default function Home() {
 
   const cancelEdit = () => { setEditId(null); setEditData(null); };
 
-  // ✅ PAGINATION LOGIC
   const filteredWorkflows = workflows.filter((wf) =>
     wf.triggers.some((t) => t.keyword?.toLowerCase().includes(searchQuery.toLowerCase())) ||
     Object.values(wf.steps).some((s) => s.message?.toLowerCase().includes(searchQuery.toLowerCase()))
@@ -989,7 +987,6 @@ export default function Home() {
     safeCurrentPage * ITEMS_PER_PAGE
   );
 
-  // Reset to page 1 when search query changes
   useEffect(() => { setCurrentPage(1); }, [searchQuery]);
 
   if (status === "loading") { return (<div className="flex min-h-screen bg-slate-50 items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-emerald-600" /></div>); }
@@ -1047,7 +1044,6 @@ export default function Home() {
             {paginatedWorkflows.map((wf) => (<WorkflowCard key={wf._id} wf={wf} onEdit={edit} onDelete={remove} onToggleActive={toggleActive} />))}
           </div>
 
-          {/* ✅ PAGINATION CONTROLS */}
           {totalPages > 1 && editId === null && (
             <div className="flex items-center justify-center gap-2 pt-2">
               <button
