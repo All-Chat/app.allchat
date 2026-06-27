@@ -17,6 +17,37 @@ const VERIFY_TOKEN =
 
 const workflowTimers = new Map<string, NodeJS.Timeout>();
 
+// ═══════════════════════════════════════════════════════════════
+// ✅ STATUS PRIORITY HELPER FUNCTION
+// Prevents statuses from jumping backwards or overwriting each other incorrectly.
+// ═══════════════════════════════════════════════════════════════
+const statusPriority: Record<string, number> = {
+  "pending": 1,
+  "queued": 2,
+  "sent": 3,
+  "delivered": 4,
+  "read": 5
+};
+
+function shouldUpdateStatus(currentStatus: string, newStatus: string): boolean {
+  const currentPriority = statusPriority[currentStatus] || 0;
+  const newPriority = statusPriority[newStatus] || 0;
+
+  // If the new status is failed or invalid (Terminal error states)
+  if (newStatus === "failed" || newStatus === "invalid") {
+    // Only update to failed if it hasn't been delivered or read yet, and isn't already failed
+    return currentPriority < 4 && currentStatus !== "failed" && currentStatus !== "invalid";
+  }
+
+  // If the current status is failed or invalid, do not overwrite with success statuses (sent/delivered)
+  if (currentStatus === "failed" || currentStatus === "invalid") {
+    return false;
+  }
+
+  // Otherwise, only update if the new status has a higher priority (e.g., delivered -> read)
+  return newPriority > currentPriority;
+}
+
 const clearWorkflowTimer = (phone: string) => {
   const timerId = workflowTimers.get(phone);
   if (timerId) {
@@ -771,24 +802,22 @@ export async function POST(req: NextRequest) {
         }
 
         // ═══════════════════════════════════════════════════════════════
-        // ✅ NEW: PROCESS OUTBOUND MESSAGE STATUSES (Sent, Delivered, Read, Failed)
+        // ✅ PROCESS OUTBOUND MESSAGE STATUSES (Sent, Delivered, Read, Failed)
         // ═══════════════════════════════════════════════════════════════
         for (const statusObj of value.statuses || []) {
           const { id, status, recipient_id, errors } = statusObj;
           
-          // 1. Update the generic Message model
-          await Message.updateOne(
-            { whatsappMessageId: id }, 
-            { $set: { status, error: errors?.[0]?.message || null } }
-          );
+          // 1. Update the generic Message model ONLY when delivered or read (as requested)
+          if (status === "delivered" || status === "read") {
+            await Message.updateOne(
+              { whatsappMessageId: id }, 
+              { $set: { status, error: null } }
+            );
+          }
 
           // 2. Update Campaign Report Data dynamically
           try {
             const { default: Campaign } = await import("@/models/Campaign");
-            
-            // Meta status progression order
-            const statusOrder = ["pending", "queued", "sent", "delivered", "read"];
-            const newStatusIndex = statusOrder.indexOf(status);
             
             // Find campaigns for this user that contain this phone number
             const campaigns = await Campaign.find({ 
@@ -803,23 +832,21 @@ export async function POST(req: NextRequest) {
                 let isModified = false;
                 for (const item of camp.reportData) {
                     if (item.phone === recipient_id || item.phone === `+${recipient_id}`) {
-                        if (status === "failed" || status === "invalid") {
-                            if (item.status !== "failed" && item.status !== "invalid") {
-                                item.status = status;
-                                if (errors?.[0]?.message) item.error = errors[0].message;
-                                isModified = true;
+                        // ✅ Use the robust status priority checker
+                        if (shouldUpdateStatus(item.status, status)) {
+                            item.status = status;
+                            if (status === "failed" || status === "invalid") {
+                                item.error = errors?.[0]?.message || "Failed to send";
+                            } else {
+                                item.error = null; // Clear error if it somehow recovers
                             }
-                        } else {
-                            // Only upgrade status (don't downgrade read back to delivered)
-                            const currentItemIndex = statusOrder.indexOf(item.status);
-                            if (newStatusIndex > currentItemIndex || item.status === "pending" || item.status === "queued" || !item.status) {
-                                item.status = status;
-                                isModified = true;
-                            }
+                            isModified = true;
                         }
                     }
                 }
+                
                 if (isModified) {
+                    camp.markModified("reportData"); // Force Mongoose to detect array changes
                     await camp.save();
                     console.log(`📊 [CAMPAIGN] Updated status to ${status} for ${recipient_id} in ${camp.name}`);
                 }
