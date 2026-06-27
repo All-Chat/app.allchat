@@ -17,11 +17,12 @@ type ReportItem = {
   name: string; 
   phone: string; 
   status: string; 
-  error?: string; // ✅ Added error property
+  error?: string;
   replies?: string[];
   reply?: string | null; 
   repliedAt?: string | null;
   tags?: string[];
+  additionalData?: string[]; // ✅ Stores extra field values
 };
 
 type Campaign = {
@@ -34,6 +35,7 @@ type Campaign = {
   failedCount: number;
   templateName?: string;
   createdAt?: string;
+  additionalFields?: string[]; // ✅ Stores extra column names
   [x: string]: any;
 };
 
@@ -85,7 +87,6 @@ export default function ReportsPage() {
         icon: <XCircle size={10} className="inline mr-1" />, 
         label: "Failed", 
         isWaiting: false, 
-        // ✅ CRITICAL FIX: Show exact error reason on hover
         tooltip: error || "Unknown error" 
       };
       case "invalid": return { color: "bg-orange-50 text-orange-700 border-orange-200", icon: <AlertTriangle size={10} className="inline mr-1" />, label: "Invalid Number", isWaiting: false, tooltip: "This phone number is not registered on WhatsApp." };
@@ -209,7 +210,11 @@ export default function ReportsPage() {
       const data = await res.json();
       if (data.success) {
         const camp = data.campaigns.find((c: Campaign) => c._id === id);
-        if (camp) setReportData(camp.reportData || []);
+        if (camp) {
+          setReportData(camp.reportData || []);
+          // ✅ CRITICAL: Update campaigns state so dynamic fields are available immediately
+          setCampaigns(prev => prev.map(c => c._id === id ? { ...c, ...camp } : c));
+        }
       }
     } catch (error) {
       console.error("Failed to fetch report data", error);
@@ -236,21 +241,27 @@ export default function ReportsPage() {
 
   const downloadExcel = () => {
     if (filteredData.length === 0) { toast.error("No data to download"); return; }
+    const additionalCols = selectedCamp?.additionalFields || [];
     const wsData = filteredData.map(d => {
       const replies = getRepliesList(d).slice(0, 5);
       const statusConfig = getStatusConfig(d.status, replies, d.error);
-      return { 
+      const row: any = { 
         "Name": d.name || "N/A", 
         "Phone Number": d.phone, 
-        "Status": statusConfig.label,
-        "Error Reason": d.error || "", 
-        "Tags": d.tags?.join(", ") || "None",
-        "Reply 1": replies[0] || "",
-        "Reply 2": replies[1] || "",
-        "Reply 3": replies[2] || "",
-        "Reply 4": replies[3] || "",
-        "Reply 5": replies[4] || ""
       };
+      // ✅ Add additional field columns to Excel
+      additionalCols.forEach((field, idx) => {
+        row[field] = d.additionalData?.[idx] || "";
+      });
+      row["Status"] = statusConfig.label;
+      row["Error Reason"] = d.error || "";
+      row["Tags"] = d.tags?.join(", ") || "None";
+      row["Reply 1"] = replies[0] || "";
+      row["Reply 2"] = replies[1] || "";
+      row["Reply 3"] = replies[2] || "";
+      row["Reply 4"] = replies[3] || "";
+      row["Reply 5"] = replies[4] || "";
+      return row;
     });
     const ws = XLSX.utils.json_to_sheet(wsData);
     const wb = XLSX.utils.book_new();
@@ -260,6 +271,7 @@ export default function ReportsPage() {
   };
 
   const selectedCamp = campaigns.find(c => c._id === selectedId);
+  const additionalFieldsCount = selectedCamp?.additionalFields?.length || 0;
 
   const handleSelectCampaign = (id: string) => {
     setSelectedId(id);
@@ -410,6 +422,10 @@ export default function ReportsPage() {
                         <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase w-10">#</th>
                         <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Name</th>
                         <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Phone</th>
+                        {/* ✅ DYNAMIC ADDITIONAL FIELD COLUMNS */}
+                        {selectedCamp?.additionalFields?.map((field, idx) => (
+                          <th key={idx} className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase whitespace-nowrap">{field}</th>
+                        ))}
                         <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase min-w-[140px]">Status</th>
                         <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Replies</th>
                       </tr>
@@ -417,14 +433,17 @@ export default function ReportsPage() {
                     <tbody className="divide-y divide-slate-100">
                       {filteredData.map((d, i) => {
                         const replies = getRepliesList(d);
-                        const statusConfig = getStatusConfig(d.status, replies, d.error); // ✅ Pass error here
+                        const statusConfig = getStatusConfig(d.status, replies, d.error);
                         return (
                           <tr key={i} className="hover:bg-slate-50 transition-colors">
                             <td className="px-4 py-3 text-xs text-slate-400">{i + 1}</td>
                             <td className="px-4 py-3 font-medium text-slate-900 text-xs sm:text-sm">{d.name || "—"}</td>
                             <td className="px-4 py-3 font-mono text-xs">{d.phone}</td>
+                            {/* ✅ DYNAMIC ADDITIONAL FIELD VALUES */}
+                            {selectedCamp?.additionalFields?.map((field, idx) => (
+                              <td key={idx} className="px-4 py-3 text-xs text-slate-700">{d.additionalData?.[idx] || "—"}</td>
+                            ))}
                             <td className="px-4 py-3">
-                              {/* ✅ CRITICAL FIX: Add title={tooltip} so hovering shows the error reason */}
                               <span 
                                 title={statusConfig.tooltip} 
                                 className={`px-2.5 py-1 rounded-full text-[10px] font-bold border inline-flex items-center gap-1 cursor-default ${statusConfig.color}`}
@@ -460,7 +479,7 @@ export default function ReportsPage() {
                         );
                       })}
                       {filteredData.length === 0 && (
-                        <tr><td colSpan={5} className="text-center py-8 text-slate-400 text-xs">No data found for this filter.</td></tr>
+                        <tr><td colSpan={5 + additionalFieldsCount} className="text-center py-8 text-slate-400 text-xs">No data found for this filter.</td></tr>
                       )}
                     </tbody>
                   </table>
@@ -511,6 +530,10 @@ export default function ReportsPage() {
                   <tr>
                     <th className="px-5 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Phone</th>
                     <th className="px-5 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Name</th>
+                    {/* ✅ DYNAMIC ADDITIONAL FIELD COLUMNS IN MODAL */}
+                    {selectedCamp?.additionalFields?.map((field, idx) => (
+                      <th key={idx} className="px-5 py-3 text-left text-[10px] font-bold text-slate-500 uppercase whitespace-nowrap">{field}</th>
+                    ))}
                     <th className="px-5 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Tags</th>
                   </tr>
                 </thead>
@@ -519,6 +542,10 @@ export default function ReportsPage() {
                     <tr key={i} className="hover:bg-slate-50">
                       <td className="px-5 py-3 font-mono text-xs">{d.phone}</td>
                       <td className="px-5 py-3 font-medium text-slate-900 text-xs">{d.name || "—"}</td>
+                      {/* ✅ DYNAMIC ADDITIONAL FIELD VALUES IN MODAL */}
+                      {selectedCamp?.additionalFields?.map((field, idx) => (
+                        <td key={idx} className="px-5 py-3 text-xs text-slate-700">{d.additionalData?.[idx] || "—"}</td>
+                      ))}
                       <td className="px-5 py-3">
                         <div className="flex flex-wrap gap-1">
                           {d.tags && d.tags.length > 0 ? (
@@ -535,7 +562,7 @@ export default function ReportsPage() {
                     </tr>
                   ))}
                   {modalFilteredData.length === 0 && (
-                    <tr><td colSpan={3} className="text-center py-8 text-slate-400 text-xs">No contacts found for this filter.</td></tr>
+                    <tr><td colSpan={3 + additionalFieldsCount} className="text-center py-8 text-slate-400 text-xs">No contacts found for this filter.</td></tr>
                   )}
                 </tbody>
               </table>
