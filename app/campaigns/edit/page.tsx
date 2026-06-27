@@ -10,7 +10,7 @@ import {
   Upload, FileSpreadsheet, Clock, Globe, CheckCircle2,
   Users, Sparkles, Send, RotateCcw, AlertCircle,
   FileText, Film, Image as ImageIcon, Loader2, X, Link, Tag as TagIcon,
-  Ban, ShieldCheck,
+  Ban, ShieldCheck, Plus,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -30,7 +30,6 @@ function EditCampaignContent() {
   const [rawVariables, setRawVariables] = useState<string[][]>([]); 
   const [rawText, setRawText] = useState("");
   
-  // ✅ Country Code Dropdown State
   const [enabledCountries, setEnabledCountries] = useState<any[]>([]);
   const [selectedCountryCode, setSelectedCountryCode] = useState("91"); 
   
@@ -59,6 +58,14 @@ function EditCampaignContent() {
   const [selectedNameCol, setSelectedNameCol] = useState<string>("");
   const [uploadStep, setUploadStep] = useState(1);
   const [fileName, setFileName] = useState("");
+
+  // ✅ NEW: Additional Fields State
+  const [additionalFields, setAdditionalFields] = useState<string[]>([]);
+  const [additionalFieldsData, setAdditionalFieldsData] = useState<string[][]>([]);
+
+  // ✅ NEW: Campaign Name existence check
+  const [existingCampaignNames, setExistingCampaignNames] = useState<string[]>([]);
+  const [nameError, setNameError] = useState("");
   
   const [stats, setStats] = useState({ valid: 0, invalid: 0, duplicates: 0, optedOut: 0 });
   const [optedOutNumbers, setOptedOutNumbers] = useState<string[]>([]);
@@ -75,7 +82,8 @@ function EditCampaignContent() {
     fetchTemplates();
     fetchTags();
     fetchOptNumbers();
-    fetchSettings(); // ✅ Fetch settings for countries
+    fetchSettings();
+    fetchCampaignNames(); // ✅ NEW: fetch campaign names
     if (campaignId) fetchCampaignData();
   }, [campaignId]);
 
@@ -128,7 +136,31 @@ function EditCampaignContent() {
     } catch (err) { console.error("Failed to fetch opt-out numbers", err); }
   };
 
-  // ✅ Fetch Settings for Enabled Countries
+  // ✅ NEW: Fetch existing campaign names, EXCLUDING the current campaign being edited
+  const fetchCampaignNames = async () => {
+    try {
+      const res = await fetch("/api/campaigns/list");
+      const data = await res.json();
+      if (data.success) {
+        const names = data.campaigns
+          .filter((c: any) => c._id !== campaignId)
+          .map((c: any) => (c.name || "").toLowerCase());
+        setExistingCampaignNames(names);
+      }
+    } catch (err) { console.error("Failed to fetch campaign names", err); }
+  };
+
+  // ✅ NEW: Handle campaign name change with existence check
+  const handleCampaignNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setCampaignName(value);
+    if (value && existingCampaignNames.includes(value.toLowerCase())) {
+      setNameError("⚠️ This campaign name already exists. Please use another name.");
+    } else {
+      setNameError("");
+    }
+  };
+
   const fetchSettings = async () => {
     try {
       const res = await fetch("/api/settings");
@@ -142,6 +174,8 @@ function EditCampaignContent() {
 
   const handleTagSelect = async (tagName: string) => {
     setSelectedTag(tagName);
+    setAdditionalFields([]);
+    setAdditionalFieldsData([]);
     if (!tagName) return;
     try {
       const res = await fetch(`/api/contacts?tag=${encodeURIComponent(tagName)}`);
@@ -183,6 +217,10 @@ function EditCampaignContent() {
           setOtpLength(campaign.otpLength || 4);
           setRawVariables(campaign.mappedVariables || []);
 
+          // ✅ NEW: Load existing additional fields and data
+          setAdditionalFields(campaign.additionalFields || []);
+          setAdditionalFieldsData(campaign.additionalFieldsData || []);
+
           if (campaign.mediaUrl) setMediaInputType("url");
           if (campaign.scheduledAt) setScheduleDate(new Date(campaign.scheduledAt).toISOString().slice(0, 16));
           setInitialCampaignData(campaign);
@@ -191,7 +229,7 @@ function EditCampaignContent() {
     } catch (err) { toast.error("Failed to load campaign data"); } finally { setLoadingData(false); }
   };
 
-  const handleTemplateSelect = (name: string, language?: string, preservedVars?: string[]) => {
+     const handleTemplateSelect = (name: string, language?: string, preservedVars?: string[]) => {
     let tmpl: any;
     if (language) tmpl = templates.find((t: any) => t.name === name && t.language === language);
     else tmpl = templates.find((t: any) => t.name === name && t.language === languageCode) || templates.find((t: any) => t.name === name);
@@ -228,7 +266,10 @@ function EditCampaignContent() {
 
     const footerComp = tmpl.components?.find((c: any) => c.type === "FOOTER");
     setFooterText(footerComp?.text || "");
-    setButtons(tmpl.components?.filter((c: any) => c.type === "BUTTON") || []);
+    
+    // ✅ FIX: Meta API uses type "BUTTONS" (plural) and stores them in a nested array
+    const buttonsComp = tmpl.components?.find((c: any) => c.type === "BUTTONS");
+    setButtons(buttonsComp?.buttons || []);
   };
 
   const replaceVars = (text: string) => {
@@ -250,47 +291,68 @@ function EditCampaignContent() {
     return false;
   };
 
-  const cleanAndValidateNumbers = (nums: string[], names: string[], rows: string[][] = [], varIndices: number[] = []) => {
+  // ✅ MODIFIED: Added additionalIndices parameter
+    const cleanAndValidateNumbers = (
+    nums: string[], 
+    names: string[], 
+    rows: string[][] = [], 
+    varIndices: number[] = [],
+    additionalIndices: number[] = []
+  ) => {
     const MAX_LIMIT = 50000; 
     const seen = new Set();
     let valid = 0, invalid = 0, duplicates = 0, optedOut = 0;
     const finalNumbers: string[] = [];
     const finalNames: string[] = [];
     const finalVariables: string[][] = [];
+    const finalAdditionalData: string[][] = [];
     
     for (let index = 0; index < nums.length; index++) {
       const num = nums[index];
-      if (!num) continue;
+      if (!num || String(num).trim() === "") continue; // Skip completely empty rows
+      
       let clean = String(num).replace(/[^\d+]/g, "");
       if (clean.startsWith("+")) clean = clean.substring(1);
       if (clean.startsWith("0")) clean = clean.substring(1);
       
-      // ✅ Use selectedCountryCode from dropdown
-      if (!clean.startsWith(selectedCountryCode)) clean = selectedCountryCode + clean;
+      if (!clean.startsWith(selectedCountryCode) && clean.length <= 10) {
+        clean = selectedCountryCode + clean;
+      }
 
-      if (optedOutNumbers.includes(clean)) { optedOut++; continue; }
+      if (optedOutNumbers.includes(clean)) { 
+        optedOut++; 
+      }
 
-      if (clean.length >= 7 && !isObviouslyFakePhone(clean)) {
-        if (seen.has(clean)) { duplicates++; }
-        else {
-          seen.add(clean);
-          finalNumbers.push(clean);
-          finalNames.push(names[index] || "");
-          
-          const contactVars = varIndices.map(vIdx => vIdx !== -1 ? (rows[index]?.[vIdx] || "") : "");
-          finalVariables.push(contactVars);
-          
-          valid++;
-          
-          if (finalNumbers.length >= MAX_LIMIT) {
-            toast.error(`Limit of 50,000 numbers reached. Only the first 50,000 will be processed.`);
-            break;
-          }
-        }
-      } else { invalid++; }
+      // Basic validation: just check length
+      if (clean.length >= 7) {
+        valid++;
+      } else {
+        invalid++;
+      }
+
+      // Check for duplicates
+      if (seen.has(clean)) { 
+        duplicates++; 
+        continue; // Skip adding duplicates to the final send list
+      } 
+      
+      seen.add(clean);
+      finalNumbers.push(clean);
+      finalNames.push(names[index] || "");
+      
+      const contactVars = varIndices.map(vIdx => vIdx !== -1 ? (rows[index]?.[vIdx] || "") : "");
+      finalVariables.push(contactVars);
+
+      const contactAdditional = additionalIndices.map(aIdx => aIdx !== -1 ? (rows[index]?.[aIdx] || "") : "");
+      finalAdditionalData.push(contactAdditional);
+      
+      if (finalNumbers.length >= MAX_LIMIT) {
+        toast.error(`Limit of 50,000 numbers reached. Only the first 50,000 will be processed.`);
+        break;
+      }
     }
     setStats({ valid, invalid, duplicates, optedOut });
-    return { finalNumbers, finalNames, finalVariables };
+    return { finalNumbers, finalNames, finalVariables, finalAdditionalData };
   };
 
   const handleTextNumbers = () => {
@@ -299,11 +361,13 @@ function EditCampaignContent() {
     setRawNumbers(finalNumbers);
     setRawNames(finalNames);
     setRawVariables(finalVariables);
+    setAdditionalFields([]);
+    setAdditionalFieldsData([]);
     if (finalNumbers.length > 0) toast.success(`Parsed ${finalNumbers.length} valid numbers`);
     else toast.error("No valid numbers found");
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setFileName(file.name);
@@ -312,9 +376,10 @@ function EditCampaignContent() {
       if (file.name.endsWith(".xlsx") || file.name.endsWith(".xls")) {
         const XLSX = await import("xlsx");
         const data = await file.arrayBuffer();
-        const workbook = XLSX.read(data, { type: "array" });
+        const workbook = XLSX.read(data, { type: "array", cellDates: false });
         const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        // ✅ FIX: raw: false prevents scientific notation truncation of large phone numbers
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false, defval: "" });
         rows = jsonData
           .map((row: any) => row.map((cell: any) => String(cell || "").trim()))
           .filter((row: string[]) => row.length > 0 && row.some((cell) => cell !== ""));
@@ -330,10 +395,18 @@ function EditCampaignContent() {
         toast.error("File is empty");
         return;
       }
+
+      // ✅ FIX: Auto-detect if the first row is a header or actual phone numbers
+      const firstRow = rows[0] || [];
+      const hasHeader = !firstRow.some((cell: any) => {
+        const cleaned = String(cell).replace(/\D/g, "");
+        return cleaned.length >= 7; // If any cell has 7+ digits, it's probably a phone number, not a header
+      });
+
+      const headers = hasHeader ? rows[0] : rows[0].map((_, i) => `Column ${i + 1}`);
+      const dataRows = hasHeader ? rows.slice(1) : rows; // Don't slice if there's no header
       
       const MAX_LIMIT = 50000;
-      const dataRows = rows.slice(1); 
-      
       if (dataRows.length > MAX_LIMIT) {
         toast.error(`❌ The file contains ${dataRows.length.toLocaleString()} numbers. The maximum limit is 50,000. Please split your file and try again.`);
         setFileName("");
@@ -343,10 +416,12 @@ function EditCampaignContent() {
         return;
       }
 
-      setFileHeaders(rows[0]);
+      setFileHeaders(headers);
       setFileRows(dataRows);
-      setSelectedPhoneCol(rows[0].find((h) => /phone|mobile|number|cell|whatsapp/i.test(h)) || rows[0][0]);
-      setSelectedNameCol(rows[0].find((h) => /name|nama|nombre|first/i.test(h)) || "skip");
+      setSelectedPhoneCol(headers.find((h) => /phone|mobile|number|cell|whatsapp/i.test(h)) || headers[0]);
+      setSelectedNameCol(headers.find((h) => /name|nama|nombre|first/i.test(h)) || "skip");
+      setAdditionalFields([]);
+      setAdditionalFieldsData([]);
       setUploadStep(2);
     } catch (err) {
       toast.error("Failed to parse file.");
@@ -354,21 +429,26 @@ function EditCampaignContent() {
     }
   };
 
+
+  // ✅ MODIFIED: Process additional fields
   const processFileColumns = () => {
     if (!selectedPhoneCol || selectedPhoneCol === "skip") { toast.error("Select Phone column"); return; }
     const phoneIdx = fileHeaders.indexOf(selectedPhoneCol);
     const nameIdx = selectedNameCol !== "skip" ? fileHeaders.indexOf(selectedNameCol) : -1;
     
     const varIndices = selectedVarCols.map(col => col && col !== "skip" ? fileHeaders.indexOf(col) : -1);
+    const additionalIndices = additionalFields
+      .map(col => col && col !== "skip" ? fileHeaders.indexOf(col) : -1);
 
     const numbers: string[] = [];
     const names: string[] = [];
     fileRows.forEach(row => { numbers.push(row[phoneIdx] || ""); names.push(nameIdx !== -1 ? (row[nameIdx] || "") : ""); });
     
-    const { finalNumbers, finalNames, finalVariables } = cleanAndValidateNumbers(numbers, names, fileRows, varIndices);
+    const { finalNumbers, finalNames, finalVariables, finalAdditionalData } = cleanAndValidateNumbers(numbers, names, fileRows, varIndices, additionalIndices);
     setRawNumbers(finalNumbers);
     setRawNames(finalNames);
     setRawVariables(finalVariables);
+    setAdditionalFieldsData(finalAdditionalData);
     toast.success(`Extracted ${finalNumbers.length} valid numbers`);
   };
 
@@ -379,7 +459,18 @@ function EditCampaignContent() {
     setSelectedPhoneCol(""); 
     setSelectedNameCol(""); 
     setFileName(""); 
-    setSelectedVarCols(variables.map(() => "skip")); 
+    setSelectedVarCols(variables.map(() => "skip"));
+    setAdditionalFields([]);
+    setAdditionalFieldsData([]);
+  };
+
+  // ✅ NEW: Additional field handlers
+  const addAdditionalField = () => setAdditionalFields([...additionalFields, "skip"]);
+  const removeAdditionalField = (index: number) => setAdditionalFields(additionalFields.filter((_, i) => i !== index));
+  const updateAdditionalField = (index: number, value: string) => {
+    const newArr = [...additionalFields];
+    newArr[index] = value;
+    setAdditionalFields(newArr);
   };
 
   const handleMediaFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -439,6 +530,16 @@ function EditCampaignContent() {
 
   const handleSave = async (isSchedule: boolean) => {
     if (!campaignName || !selectedTemplate || rawNumbers.length === 0) { toast.error("Name, Template, and valid Numbers are required"); return; }
+    // ✅ NEW: Block save if name exists
+    if (existingCampaignNames.includes(campaignName.toLowerCase())) {
+      toast.error("Campaign name already exists. Please use another name.");
+      setNameError("⚠️ This campaign name already exists. Please use another name.");
+      return;
+    }
+    if (nameError) {
+      toast.error("Please fix the campaign name before saving.");
+      return;
+    }
     if (isSchedule && scheduleDate && new Date(scheduleDate).getTime() < Date.now() + 15 * 60000) { toast.error("⏰ Scheduled time must be at least 15 minutes from now."); return; }
     if (mediaType && mediaInputType === "url" && !mediaUrl) { toast.error("Please enter the media URL"); return; }
     if (mediaType && mediaInputType === "upload" && !mediaFile && !mediaUrl) { toast.error("Please upload the media file"); return; }
@@ -446,6 +547,7 @@ function EditCampaignContent() {
     setSaving(true);
     try {
       let res;
+      const validAdditionalFields = additionalFields.filter(f => f && f !== "skip");
       const commonData = {
         id: campaignId,
         name: campaignName,
@@ -460,6 +562,9 @@ function EditCampaignContent() {
         mediaType,
         languageCode,
         scheduledAt: isSchedule ? scheduleDate : null,
+        // ✅ NEW: Additional fields
+        additionalFields: validAdditionalFields,
+        additionalFieldsData: additionalFieldsData.length > 0 ? additionalFieldsData : [],
       };
 
       if (mediaInputType === "upload" && mediaFile) {
@@ -518,7 +623,15 @@ function EditCampaignContent() {
             <div className="lg:col-span-2 space-y-6 sm:space-y-8">
               <div className="bg-white p-5 sm:p-8 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 space-y-5 sm:space-y-6 hover:shadow-md transition-shadow">
                 <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest flex items-center gap-2"><Sparkles size={14} className="text-indigo-500" /> Campaign Details</label>
-                <input type="text" value={campaignName} onChange={(e) => setCampaignName(e.target.value)} placeholder="Campaign Name" className="w-full px-4 sm:px-5 py-3 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]" />
+                {/* ✅ MODIFIED: Campaign name with existence check */}
+                <div>
+                  <input type="text" value={campaignName} onChange={handleCampaignNameChange} placeholder="Campaign Name" className={`w-full px-4 sm:px-5 py-3 sm:py-3.5 bg-slate-50 border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)] ${nameError ? "border-red-400" : "border-slate-200"}`} />
+                  {nameError && (
+                    <p className="text-xs text-red-600 font-medium mt-1.5 flex items-center gap-1">
+                      <AlertCircle size={12} /> {nameError}
+                    </p>
+                  )}
+                </div>
                 <select
                   value={selectedTemplate ? `${selectedTemplate.name}|${selectedTemplate.language}` : ""}
                   onChange={(e) => { const val = e.target.value; if (!val) return; const [name, lang] = val.split("|"); handleTemplateSelect(name, lang); }}
@@ -623,7 +736,6 @@ function EditCampaignContent() {
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                   <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest">Target Audience</label>
                   
-                  {/* ✅ Country Code Dropdown */}
                   <div className="flex items-center gap-2 w-full sm:w-auto">
                     <Globe size={14} className="text-slate-400 hidden sm:block" />
                     {enabledCountries.length > 0 ? (
@@ -655,6 +767,21 @@ function EditCampaignContent() {
                   </select>
                 </div>
 
+                {/* ✅ NEW: Show existing additional fields info when no file uploaded */}
+                {uploadStep === 1 && additionalFields.length > 0 && (
+                  <div className="bg-indigo-50/50 border border-indigo-100 rounded-xl p-3">
+                    <p className="text-[11px] font-bold text-indigo-700 mb-1.5">📋 Current Additional Fields:</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {additionalFields.map((f, i) => (
+                        <span key={i} className="px-2 py-1 bg-white text-indigo-700 border border-indigo-200 rounded-md text-[10px] font-semibold">
+                          {f}
+                        </span>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-slate-500 mt-1.5 italic">Upload a new file to modify these fields.</p>
+                  </div>
+                )}
+
                 {uploadStep === 1 ? (
                   <div className="relative border-2 border-dashed border-slate-200 rounded-2xl p-6 sm:p-10 text-center hover:bg-indigo-50/30 hover:border-indigo-300 transition-all h-48 sm:h-56 flex flex-col items-center justify-center group cursor-pointer">
                     <input type="file" accept=".csv,.txt,.xlsx,.xls" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
@@ -670,6 +797,49 @@ function EditCampaignContent() {
                     </div>
                     <select value={selectedPhoneCol} onChange={(e) => setSelectedPhoneCol(e.target.value)} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"><option value="skip">-- Select Phone Column --</option>{fileHeaders.map((h, i) => (<option key={i} value={h}>📱 {h}</option>))}</select>
                     <select value={selectedNameCol} onChange={(e) => setSelectedNameCol(e.target.value)} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"><option value="skip">-- Select Name Column (Optional) --</option>{fileHeaders.map((h, i) => (<option key={i} value={h}>👤 {h}</option>))}</select>
+
+                    {/* ✅ NEW: Additional Fields Section */}
+                    <div className="space-y-2 mt-2 pt-2 border-t border-indigo-100">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[11px] font-extrabold text-indigo-800 uppercase tracking-widest flex items-center gap-2">
+                          <Plus size={12} /> Additional Fields (Optional)
+                        </p>
+                        <button
+                          type="button"
+                          onClick={addAdditionalField}
+                          className="text-xs text-indigo-600 hover:text-indigo-700 flex items-center gap-1.5 font-bold bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          <Plus size={12} /> Add Field
+                        </button>
+                      </div>
+                      {additionalFields.length === 0 && (
+                        <p className="text-[11px] text-slate-400 italic pl-1">
+                          Click &quot;Add Field&quot; to fetch more columns from your Excel file. These will appear in your report.
+                        </p>
+                      )}
+                      {additionalFields.map((field, i) => (
+                        <div key={i} className="flex gap-2 items-center">
+                          <select
+                            value={field}
+                            onChange={(e) => updateAdditionalField(i, e.target.value)}
+                            className="flex-1 px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"
+                          >
+                            <option value="skip">-- Select Additional Column {i + 1} --</option>
+                            {fileHeaders.map((h, idx) => (
+                              <option key={idx} value={h}>📋 {h}</option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => removeAdditionalField(i)}
+                            className="p-2.5 bg-red-50 text-red-500 hover:bg-red-100 rounded-xl transition-colors"
+                            title="Remove field"
+                          >
+                            <X size={16} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
 
                     {variables.length > 0 && !useRandomOtp && (
                       <div className="space-y-2 mt-2 pt-2 border-t border-indigo-100">
@@ -721,8 +891,8 @@ function EditCampaignContent() {
                     <p className="text-[10px] text-amber-600 bg-amber-50 p-2 rounded-lg border border-amber-100 flex items-center gap-1.5 mt-2 font-bold"><AlertCircle size={10} /> Must be at least 15 mins in advance.</p>
                   </div>
                   <div className="flex flex-col sm:flex-row gap-3">
-                    <button onClick={() => handleSave(false)} disabled={saving} className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-bold hover:from-emerald-600 hover:to-teal-600 flex items-center justify-center gap-2 text-sm transition-all shadow-md disabled:opacity-40">{saving ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}{saving ? "Saving..." : "Save Changes"}</button>
-                    <button onClick={() => handleSave(true)} disabled={saving || !scheduleDate} className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-xl font-bold hover:from-indigo-600 hover:to-purple-600 flex items-center justify-center gap-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-md">{saving ? <Loader2 size={16} className="animate-spin" /> : <Clock size={16} />}{saving ? "Saving..." : "Update Schedule"}</button>
+                    <button onClick={() => handleSave(false)} disabled={saving || !!nameError} className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-bold hover:from-emerald-600 hover:to-teal-600 flex items-center justify-center gap-2 text-sm transition-all shadow-md disabled:opacity-40">{saving ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}{saving ? "Saving..." : "Save Changes"}</button>
+                    <button onClick={() => handleSave(true)} disabled={saving || !scheduleDate || !!nameError} className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-xl font-bold hover:from-indigo-600 hover:to-purple-600 flex items-center justify-center gap-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-md">{saving ? <Loader2 size={16} className="animate-spin" /> : <Clock size={16} />}{saving ? "Saving..." : "Update Schedule"}</button>
                   </div>
                 </div>
               </div>
