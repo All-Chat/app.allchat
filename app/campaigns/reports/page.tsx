@@ -62,13 +62,13 @@ export default function ReportsPage() {
     return [];
   };
 
-  // ✅ FIXED: Accurately separate all statuses instead of grouping them
+  // ✅ FIXED: Removed dependency on `repliesMap` so it accurately calculates stats for ALL campaigns in the sidebar
   const getCampaignStats = (reportData: ReportItem[] = []) => {
     let read = 0, delivered = 0, sent = 0, failed = 0, pending = 0, replied = 0, invalid = 0;
     
     reportData.forEach(d => {
-      const replies = getRepliesList(d);
-      if (replies.length > 0) replied++;
+      const hasReply = (d.replies && d.replies.length > 0) || d.reply;
+      if (hasReply) replied++;
       else if (d.status === 'read') read++;
       else if (d.status === 'delivered') delivered++;
       else if (d.status === 'sent') sent++;
@@ -222,15 +222,23 @@ export default function ReportsPage() {
     }
   };
 
+  // ✅ FIXED: Now refreshes ALL campaigns in the sidebar instead of just the selected one
   const fetchReportData = async (id: string) => {
     try {
       const res = await fetch(`/api/campaigns/list`);
       const data = await res.json();
       if (data.success) {
-        const camp = data.campaigns.find((c: Campaign) => c._id === id);
+        const validCampaigns = data.campaigns.filter((c: Campaign) => c.status !== "saved" && c.status !== "scheduled");
+        
+        // Update all campaigns so sidebar stats are real-time for all running campaigns
+        setCampaigns(prev => {
+          // Merge new data with existing to preserve UI smoothness
+          return validCampaigns;
+        });
+
+        const camp = validCampaigns.find((c: Campaign) => c._id === id);
         if (camp) {
           setReportData(camp.reportData || []);
-          setCampaigns(prev => prev.map(c => c._id === id ? { ...c, ...camp } : c));
         }
       }
     } catch (error) {
