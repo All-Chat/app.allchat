@@ -612,7 +612,8 @@ export default function CampaignList() {
                         )}
                       </div>
                       
-                      <div className="flex items-center gap-1.5 sm:ml-4 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity w-full sm:w-auto justify-end flex-wrap">
+                      {/* ✅ FIX: Removed sm:opacity-0 sm:group-hover:opacity-100 to make buttons always visible */}
+                      <div className="flex items-center gap-1.5 sm:ml-4 w-full sm:w-auto justify-end flex-wrap">
                         <button onClick={() => setViewCampaign(c)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Details"><Eye size={16} /></button>
                         <button onClick={() => router.push(`/campaigns/edit?id=${c._id}`)} className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors" title="Edit"><Pencil size={16} /></button>
 
