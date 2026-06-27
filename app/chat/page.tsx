@@ -1,15 +1,6 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /* =====================================================================
    LIVE CHAT PAGE - MULTI-WABA SUPPORT
-   =====================================================================
-   Flow:
-   1. User logs in → session.user.id = MongoDB _id
-   2. Fetch user document → get name
-   3. Fetch whatsappNumbers[] from /api/user/whatsapp-numbers
-   4. Dropdown shows: "All Numbers" + each number's `name` field
-   5. User selects a number → we use its `whatsappPhoneNumberId` to:
-      - Filter /api/chats and /api/chat
-      - Pass to /api/whatsapp when sending free-text messages
-   6. Outgoing messages show sender name based on `whatsappPhoneNumberId`
    ===================================================================== */
 
 /* eslint-disable react-hooks/set-state-in-effect */
@@ -73,7 +64,6 @@ type Chat = {
   whatsappPhoneNumberId?: string;
 };
 
-// ─── WhatsApp Number type (matches your DB schema exactly) ─────────────
 type WhatsappNumber = {
   _id: string;
   name: string;
@@ -123,7 +113,6 @@ const handleUnauthorized = (res: Response) => {
 export default function ChatPage() {
   const { data: session, status } = useSession();
 
-  // ─── State ────────────────────────────────────────────────────────────────
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChat, setActiveChat] = useState<string | null>(null);
   const [activeChatData, setActiveChatData] = useState<Chat | null>(null);
@@ -138,11 +127,16 @@ export default function ChatPage() {
   const [contactNames, setContactNames] = useState<Record<string, string>>({});
   const [searchQuery, setSearchQuery] = useState("");
 
-  // ✅ WABA Number state
   const [whatsappNumbers, setWhatsappNumbers] = useState<WhatsappNumber[]>([]);
   const [selectedWabaId, setSelectedWabaId] = useState<string>("all");
   const [loadingNumbers, setLoadingNumbers] = useState(true);
 
+  const [mediaErrors, setMediaErrors] = useState<Record<string, boolean>>({});
+  
+  // ✅ FIX: Store fetched templates in a separate state so they survive message polling
+  const [fetchedTemplateData, setFetchedTemplateData] = useState<Record<string, any>>({});
+  const fetchedTemplates = useRef<Set<string>>(new Set()); 
+  
   const [showChatList, setShowChatList] = useState(true);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -152,9 +146,6 @@ export default function ChatPage() {
   const isFetchingChats = useRef(false);
   const isFetchingMessages = useRef(false);
 
-  // ─── ✅ Fetch WhatsApp Numbers from DB ─────────────────────────────────
-  // Calls /api/user/whatsapp-numbers which returns user.whatsappNumbers[]
-  // Each item has: _id, name, wabaId, whatsappPhoneNumberId, whatsappAccessToken, isActive
   const fetchWhatsappNumbers = useCallback(async () => {
     setLoadingNumbers(true);
     try {
@@ -170,7 +161,6 @@ export default function ChatPage() {
 
       setWhatsappNumbers(numbers);
 
-      // Auto-select first number if only one exists
       if (numbers.length === 1 && numbers[0].whatsappPhoneNumberId) {
         setSelectedWabaId(numbers[0].whatsappPhoneNumberId);
       }
@@ -181,35 +171,22 @@ export default function ChatPage() {
     }
   }, []);
 
-  // ─── ✅ Get Sender Name for Outgoing Messages ────────────────────────────
-  // Matches message.whatsappPhoneNumberId to a number in whatsappNumbers[]
-  // Returns the number's `name` field (e.g. "The Real Leads" or "TataMotors")
   const getSenderName = useCallback((msg: Message): string | null => {
     if (msg.direction !== "out") return null;
-
-    // Exact match by whatsappPhoneNumberId
     if (msg.whatsappPhoneNumberId) {
-      const match = whatsappNumbers.find(
-        (n) => n.whatsappPhoneNumberId === msg.whatsappPhoneNumberId
-      );
+      const match = whatsappNumbers.find((n) => n.whatsappPhoneNumberId === msg.whatsappPhoneNumberId);
       if (match?.name) return match.name;
     }
-
-    // If a specific number is selected in dropdown, use its name
     if (selectedWabaId !== "all") {
       const sel = whatsappNumbers.find((n) => n.whatsappPhoneNumberId === selectedWabaId);
       if (sel?.name) return sel.name;
     }
-
-    // Fallback: first number if only one
     if (whatsappNumbers.length === 1 && whatsappNumbers[0]?.name) {
       return whatsappNumbers[0].name;
     }
-
     return null;
   }, [whatsappNumbers, selectedWabaId]);
 
-  // ─── Fetch Contact Name ─────────────────────────────────────────────────────
   const fetchContactName = useCallback(async (phoneId: string) => {
     if (fetchedContacts.current.has(phoneId)) return;
     fetchedContacts.current.add(phoneId);
@@ -227,7 +204,6 @@ export default function ChatPage() {
     } catch { /* silent */ }
   }, []);
 
-  // ─── Resolve Display Name ────────────────────────────────────────────────────
   const getResolvedName = useCallback((chat: Chat): string => {
     if (contactNames[chat._id]?.trim()) return contactNames[chat._id];
     if (chat.name?.trim() && chat.name !== "Unknown") return chat.name;
@@ -243,7 +219,6 @@ export default function ChatPage() {
 
   const getAvatarLabel = (chat: Chat) => getAvatarText(getResolvedName(chat), chat.phone || chat._id);
 
-  // ─── Scroll Helpers ──────────────────────────────────────────────────────────
   const checkScrollPosition = () => {
     const c = chatContainerRef.current;
     if (!c) return;
@@ -264,7 +239,6 @@ export default function ChatPage() {
     if (activeChat) setTimeout(() => scrollToBottom("instant"), 50);
   }, [activeChat]);
 
-  // ─── ✅ Load Chats (passes whatsappPhoneNumberId to filter) ─────────────────
   const loadChats = useCallback(async () => {
     if (isFetchingChats.current) return;
     isFetchingChats.current = true;
@@ -316,7 +290,6 @@ export default function ChatPage() {
     }
   }, [activeChat, fetchContactName, selectedWabaId]);
 
-  // ─── ✅ Load Messages (passes whatsappPhoneNumberId to filter) ───────────────
   const loadMessages = useCallback(async () => {
     if (!activeChat || isFetchingMessages.current) return;
     isFetchingMessages.current = true;
@@ -333,6 +306,7 @@ export default function ChatPage() {
 
       if (data.success) {
         const newMessages: Message[] = data.messages || [];
+        
         if (newMessages.length > prevMessageCount.current) {
           const latest = newMessages[newMessages.length - 1];
           if (latest.direction === "in") {
@@ -342,6 +316,25 @@ export default function ChatPage() {
         }
         prevMessageCount.current = newMessages.length;
         setMessages(newMessages);
+
+        // ✅ FIX: Fetch template data ONCE and store in separate state
+        for (const msg of newMessages) {
+          const templateName = msg.templateName;
+          if (templateName && !msg.templateBodyText && !fetchedTemplates.current.has(templateName)) {
+            fetchedTemplates.current.add(templateName);
+            fetch(`/api/chat/template-data?name=${encodeURIComponent(templateName)}&language=${msg.templateLanguage || "en"}`)
+              .then(res => res.ok ? res.json() : null)
+              .then(tplData => {
+                if (tplData?.success && tplData.template) {
+                  setFetchedTemplateData(prev => ({
+                    ...prev,
+                    [templateName]: tplData.template
+                  }));
+                }
+              })
+              .catch(() => {});
+          }
+        }
 
         for (const msg of newMessages) {
           if (msg.contactName?.trim() && msg.contactName !== "Unknown") {
@@ -362,17 +355,18 @@ export default function ChatPage() {
     }
   }, [activeChat, selectedWabaId]);
 
-  // ─── ✅ Handle WABA Number Change ─────────────────────────────────────────
   const handleWabaChange = (newId: string) => {
     setSelectedWabaId(newId);
     setActiveChat(null);
     setActiveChatData(null);
     setMessages([]);
+    setMediaErrors({});
+    fetchedTemplates.current.clear();
+    setFetchedTemplateData({}); // Clear template cache on number change
     prevMessageCount.current = 0;
     setShowChatList(true);
   };
 
-  // ─── Effects ────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (status === "authenticated") {
       fetchWhatsappNumbers();
@@ -381,7 +375,6 @@ export default function ChatPage() {
     }
   }, [status, fetchWhatsappNumbers]);
 
-  // Load chats AFTER numbers are fetched
   useEffect(() => {
     if (status === "authenticated" && !loadingNumbers) {
       loadChats();
@@ -398,7 +391,6 @@ export default function ChatPage() {
     }
   }, [activeChat, loadMessages, fetchContactName]);
 
-  // Poll for new messages every 3 seconds
   useEffect(() => {
     if (status !== "authenticated" || loadingNumbers) return;
     const interval = setInterval(() => {
@@ -408,20 +400,16 @@ export default function ChatPage() {
     return () => clearInterval(interval);
   }, [activeChat, loadChats, loadMessages, status, loadingNumbers]);
 
-  // ─── File Handling ────────────────────────────────────────────────────────────
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) setSelectedFile(file);
   };
 
-  // ─── ✅ Send Free-Text Message (passes whatsappPhoneNumberId) ─────────────────
   const sendMessage = async () => {
     if ((!text && !selectedFile) || !activeChat) return;
     setSending(true);
     try {
       const cleanPhone = activeChat.replace(/\+/g, "");
-
-      // Build body with whatsappPhoneNumberId
       const baseBody: Record<string, string> = { phone: cleanPhone, text: text || "" };
       if (selectedWabaId && selectedWabaId !== "all") {
         baseBody.whatsappPhoneNumberId = selectedWabaId;
@@ -469,7 +457,6 @@ export default function ChatPage() {
 
   const handleBackToChats = () => setShowChatList(true);
 
-  // ─── Formatting ───────────────────────────────────────────────────────────────
   const formatTime = (d: string | undefined) => {
     if (!d) return "";
     const date = new Date(d);
@@ -502,7 +489,7 @@ export default function ChatPage() {
   const getMediaSrc = (url: string | null | undefined) => {
     if (!url) return null;
     if (url.startsWith("http://") || url.startsWith("https://")) return url;
-    return `/api/media/download?mediaId=${url}`;
+    return `/api/chat-media?id=${url}`;
   };
 
   const renderStatusIcon = (msg: Message) => {
@@ -512,28 +499,52 @@ export default function ChatPage() {
     return <Check className="w-[18px] h-[18px] text-gray-400 shrink-0" />;
   };
 
+  const renderPlaceholder = (type: string | undefined) => {
+    const t = (type || "image").toLowerCase();
+    return (
+      <div className="w-40 h-40 bg-gray-200 rounded-xl flex flex-col items-center justify-center text-gray-500 uppercase font-bold tracking-wide">
+        {t === "image" && <ImageIcon size={32} className="mb-2" />}
+        {t === "video" && <Video size={32} className="mb-2" />}
+        {(t === "document" || t === "pdf") && <FileText size={32} className="mb-2" />}
+        <span>{t === "document" ? "PDF" : t}</span>
+      </div>
+    );
+  };
+
   const renderMediaContent = (msg: Message) => {
     const type = msg.messageType || "text";
     const src = getMediaSrc(msg.mediaUrl);
+    const hasError = mediaErrors[msg._id];
+
+    if (hasError) {
+      return (
+        <div className="mb-1">
+          {renderPlaceholder(type)}
+          {msg.text && <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words mt-1.5">{msg.text}</p>}
+        </div>
+      );
+    }
 
     if (type === "image" && src)
       return (
         <div className="mb-1 max-w-[220px] sm:max-w-[300px]">
-          <img src={src} alt="Image" className="rounded-xl max-w-full object-cover shadow-sm" />
+          <img src={src} alt="Image" className="rounded-xl max-w-full object-cover shadow-sm" onError={() => setMediaErrors((prev) => ({ ...prev, [msg._id]: true }))} />
           {msg.text && <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words mt-1.5">{msg.text}</p>}
         </div>
       );
     if (type === "video" && src)
       return (
         <div className="mb-1 max-w-[220px] sm:max-w-[300px]">
-          <video src={src} controls className="rounded-xl max-w-full object-cover shadow-sm" />
+          <video src={src} controls className="rounded-xl max-w-full object-cover shadow-sm" onError={() => setMediaErrors((prev) => ({ ...prev, [msg._id]: true }))} />
           {msg.text && <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words mt-1.5">{msg.text}</p>}
         </div>
       );
     if (type === "audio" && src)
       return (
         <div className="mb-1 w-56 sm:w-72">
-          <audio controls className="w-full outline-none"><source src={src} type="audio/ogg" /></audio>
+          <audio controls className="w-full outline-none" onError={() => setMediaErrors((prev) => ({ ...prev, [msg._id]: true }))}>
+            <source src={src} type="audio/ogg" />
+          </audio>
         </div>
       );
     if (type === "document" && src)
@@ -549,15 +560,22 @@ export default function ChatPage() {
     return <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words">{msg.text}</p>;
   };
 
-  // ─── ✅ Render Template Bubble (exactly like WhatsApp) ────────────────────
   const renderTemplateContent = (msg: Message) => {
     const src = getMediaSrc(msg.mediaUrl);
-    const buttons = parseTemplateButtons(msg.templateButtons);
-    const headerType = msg.templateHeaderType ||
+    
+    // ✅ FIX: Merge DB template data with dynamically fetched data
+    const tplData = msg.templateName ? fetchedTemplateData[msg.templateName] || {} : {};
+    const headerType = msg.templateHeaderType || tplData.templateHeaderType || 
       (msg.messageType === "image" || msg.messageType === "video" || msg.messageType === "document" ? msg.messageType : undefined);
-    const hasImg = (headerType === "image" || msg.messageType === "image") && src;
-    const hasVid = (headerType === "video" || msg.messageType === "video") && src;
-    const hasDoc = (headerType === "document" || msg.messageType === "document") && src;
+    const hasError = mediaErrors[msg._id];
+
+    const bodyText = msg.templateBodyText || tplData.templateBodyText || "Loading template...";
+    const headerText = msg.templateHeaderText || tplData.templateHeaderText;
+    const footer = msg.templateFooter || tplData.templateFooter;
+    
+    // Prefer message buttons, fallback to fetched buttons
+    const msgButtons = parseTemplateButtons(msg.templateButtons);
+    const buttons = msgButtons.length > 0 ? msgButtons : parseTemplateButtons(tplData.templateButtons);
 
     return (
       <>
@@ -568,47 +586,42 @@ export default function ChatPage() {
           </span>
         </div>
 
-        {hasImg && (
+        {!hasError && (headerType === "image" || msg.messageType === "image") && src && (
           <div className="mb-2 -mx-2.5 -mt-0.5 overflow-hidden rounded-t-xl">
-            <img src={src!} alt="" className="w-full max-h-56 sm:max-h-72 object-cover" />
+            <img src={src!} alt="" className="w-full max-h-56 sm:max-h-72 object-cover" onError={() => setMediaErrors((prev) => ({ ...prev, [msg._id]: true }))} />
           </div>
         )}
-
-        {hasVid && (
+        {!hasError && (headerType === "video" || msg.messageType === "video") && src && (
           <div className="mb-2">
-            <video src={src!} controls className="rounded-xl max-w-full max-h-56 sm:max-h-72 object-cover" />
+            <video src={src!} controls className="rounded-xl max-w-full max-h-56 sm:max-h-72 object-cover" onError={() => setMediaErrors((prev) => ({ ...prev, [msg._id]: true }))} />
           </div>
         )}
-
-        {hasDoc && (
-          <a
-            href={src!}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mb-2 flex items-center gap-3 bg-white/80 rounded-xl p-3 hover:bg-white transition-colors shadow-sm"
-          >
+        {!hasError && (headerType === "document" || msg.messageType === "document") && src && (
+          <a href={src!} target="_blank" rel="noopener noreferrer" className="mb-2 flex items-center gap-3 bg-white/80 rounded-xl p-3 hover:bg-white transition-colors shadow-sm">
             <FileText className="w-8 h-8 text-red-500 shrink-0" />
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-gray-900 truncate">{msg.templateHeaderText || "Document"}</p>
+              <p className="text-sm font-semibold text-gray-900 truncate">{headerText || "Document"}</p>
               <p className="text-[11px] text-indigo-600 font-medium">Tap to download</p>
             </div>
           </a>
         )}
 
-        {headerType === "text" && msg.templateHeaderText && (
+        {hasError && (headerType === "image" || headerType === "video" || headerType === "document") && (
+          <div className="mb-2">{renderPlaceholder(headerType || msg.messageType)}</div>
+        )}
+
+        {headerType === "text" && headerText && (
           <p className="text-[14px] font-bold text-gray-900 whitespace-pre-wrap break-words mb-1">
-            {msg.templateHeaderText}
+            {headerText}
           </p>
         )}
 
-        {(msg.templateBodyText || msg.text) && (
-          <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words">
-            {msg.templateBodyText || msg.text}
-          </p>
-        )}
+        <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words">
+          {bodyText}
+        </p>
 
-        {msg.templateFooter && (
-          <p className="text-[11px] text-gray-500 mt-1.5 leading-snug">{msg.templateFooter}</p>
+        {footer && (
+          <p className="text-[11px] text-gray-500 mt-1.5 leading-snug">{footer}</p>
         )}
 
         {buttons.length > 0 && (
@@ -639,7 +652,6 @@ export default function ChatPage() {
     return renderMediaContent(msg);
   };
 
-  // ─── Loading / Unauthenticated ─────────────────────────────────────────────────
   if (status === "loading") {
     return (
       <div className="flex min-h-screen bg-slate-50 items-center justify-center">
@@ -656,9 +668,6 @@ export default function ChatPage() {
     );
   }
 
-  // ═══════════════════════════════════════════════════════════════════════
-  // RENDER
-  // ═══════════════════════════════════════════════════════════════════════
   return (
     <>
       <Sidebar />
@@ -670,7 +679,6 @@ export default function ChatPage() {
           <div className={`w-full md:w-[380px] bg-white md:border-r border-gray-200 flex flex-col flex-shrink-0 ${
             showChatList ? "flex" : "hidden md:flex"
           }`}>
-            {/* Desktop Header */}
             <div className="hidden md:flex h-[60px] bg-[#f0f2f5] items-center justify-between px-4 text-gray-600 z-10 flex-shrink-0 border-b border-gray-200">
               <span className="font-bold text-gray-800 text-lg tracking-tight">Chats</span>
               <div className="flex gap-1">
@@ -679,7 +687,6 @@ export default function ChatPage() {
               </div>
             </div>
 
-            {/* ✅ WABA NUMBER SELECTOR DROPDOWN */}
             <div className="px-3 py-2 bg-white border-b border-gray-100 flex-shrink-0">
               {loadingNumbers ? (
                 <div className="flex items-center gap-2 text-xs text-gray-400 py-1">
@@ -694,9 +701,7 @@ export default function ChatPage() {
                 <div className="relative">
                   <div className="flex items-center gap-2 mb-1">
                     <Radio size={11} className="text-emerald-600 shrink-0" />
-                    <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">
-                      WhatsApp Number
-                    </span>
+                    <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">WhatsApp Number</span>
                   </div>
                   <div className="relative">
                     <select
@@ -704,24 +709,20 @@ export default function ChatPage() {
                       onChange={(e) => handleWabaChange(e.target.value)}
                       className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 transition appearance-none cursor-pointer pr-8 text-gray-800"
                     >
-{/* ✅ FIX: Only show numbers that actually have a whatsappPhoneNumberId.
-    Without this, numbers without a phone ID would send their MongoDB _id
-    as the value, which would never match any message in the DB. */}
-{whatsappNumbers.length > 1 && (
-  <option value="all">📋 All Numbers ({whatsappNumbers.length})</option>
-)}
-{whatsappNumbers
-  .filter((n) => n.whatsappPhoneNumberId && n.whatsappPhoneNumberId.trim() !== "")
-  .map((n) => (
-    <option key={n._id} value={n.whatsappPhoneNumberId}>
-      {n.name}
-    </option>
-  ))}
+                      {whatsappNumbers.length > 1 && (
+                        <option value="all">📋 All Numbers ({whatsappNumbers.length})</option>
+                      )}
+                      {whatsappNumbers
+                        .filter((n) => n.whatsappPhoneNumberId && n.whatsappPhoneNumberId.trim() !== "")
+                        .map((n) => (
+                          <option key={n._id} value={n.whatsappPhoneNumberId}>
+                            {n.name}
+                          </option>
+                        ))}
                     </select>
                     <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                   </div>
 
-                  {/* Show which number is selected */}
                   {selectedWabaId !== "all" && (
                     <p className="text-[10px] text-gray-400 mt-1 flex items-center gap-1">
                       <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full inline-block" />
@@ -734,7 +735,6 @@ export default function ChatPage() {
               )}
             </div>
 
-            {/* Search Bar */}
             <div className="px-3 py-2 bg-[#f0f2f5] flex-shrink-0">
               <div className="relative">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -748,7 +748,6 @@ export default function ChatPage() {
               </div>
             </div>
 
-            {/* Chat List */}
             <div className="flex-1 overflow-y-auto scrollbar-hide bg-white">
               {loading || loadingNumbers ? (
                 <div className="p-6 text-center">
@@ -822,7 +821,6 @@ export default function ChatPage() {
               }}
             />
 
-            {/* Chat Header */}
             <div className="h-14 md:h-[60px] bg-[#f0f2f5] border-b border-gray-200 flex items-center px-2 md:px-4 z-20 shadow-sm flex-shrink-0">
               {activeChatData ? (
                 <>
@@ -884,7 +882,6 @@ export default function ChatPage() {
               )}
             </div>
 
-            {/* Messages Area */}
             <div className="flex-1 relative z-10 overflow-hidden">
               <div
                 ref={chatContainerRef}
@@ -957,7 +954,6 @@ export default function ChatPage() {
                                   />
                                 )}
                                 <div className="min-w-0 overflow-hidden">
-                                  {/* ✅ SENDER NAME BADGE (e.g. "The Real Leads") */}
                                   {showSenderName && (
                                     <div className="flex items-center gap-1.5 mb-1 pb-1 border-b border-emerald-200/60">
                                       <div
@@ -973,7 +969,6 @@ export default function ChatPage() {
 
                                   {renderMessageContent(msg)}
 
-                                  {/* Timestamp + Status */}
                                   <div className="flex items-center justify-end gap-1 ml-3 float-right mt-1 translate-y-1">
                                     <span className="text-[10px] text-gray-500 font-light whitespace-nowrap">
                                       {formatTime(getMessageDate(msg))}
@@ -992,7 +987,6 @@ export default function ChatPage() {
                 )}
               </div>
 
-              {/* Scroll-to-bottom button */}
               {showScrollBtn && activeChat && (
                 <button
                   onClick={() => scrollToBottom("smooth")}
@@ -1003,7 +997,6 @@ export default function ChatPage() {
               )}
             </div>
 
-            {/* Input Area */}
             {activeChat && (
               <div className="bg-[#f0f2f5] px-2 sm:px-4 pt-2 pb-2.5 z-20 border-t border-gray-200 flex-shrink-0">
                 {selectedFile && (
@@ -1067,7 +1060,6 @@ export default function ChatPage() {
               </div>
             )}
 
-            {/* Contact Info Drawer */}
             <div
               className={`absolute right-0 top-0 h-full w-full sm:w-[380px] bg-[#f0f2f5] shadow-2xl z-30 transition-transform duration-300 ease-in-out flex flex-col ${
                 showProfile ? "translate-x-0" : "translate-x-full"
