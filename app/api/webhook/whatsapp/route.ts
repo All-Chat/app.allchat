@@ -151,16 +151,11 @@ async function findUserByPhoneNumberId(phoneNumberId: string) {
 
   if (user.whatsappNumbers && user.whatsappNumbers.length > 0) {
     matchedNumber = user.whatsappNumbers.find(
-      (n: any) =>
-        n.whatsappPhoneNumberId === phoneNumberId && n.whatsappAccessToken
+      (n: any) => n.whatsappPhoneNumberId === phoneNumberId && n.whatsappAccessToken
     );
   }
 
-  if (
-    !matchedNumber &&
-    user.whatsappPhoneNumberId === phoneNumberId &&
-    user.whatsappAccessToken
-  ) {
+  if (!matchedNumber && user.whatsappPhoneNumberId === phoneNumberId && user.whatsappAccessToken) {
     matchedNumber = {
       whatsappPhoneNumberId: user.whatsappPhoneNumberId,
       whatsappAccessToken: user.whatsappAccessToken,
@@ -198,11 +193,8 @@ async function getAllWhatsappNumbersFromDB() {
         }
       }
     }
-
     if (user.whatsappPhoneNumberId && user.whatsappAccessToken) {
-      const alreadyExists = numbers.some(
-        (n) => n.phoneNumberId === user.whatsappPhoneNumberId
-      );
+      const alreadyExists = numbers.some((n) => n.phoneNumberId === user.whatsappPhoneNumberId);
       if (!alreadyExists) {
         numbers.push({
           userId: user._id,
@@ -214,7 +206,6 @@ async function getAllWhatsappNumbersFromDB() {
       }
     }
   }
-
   return numbers;
 }
 
@@ -223,10 +214,7 @@ async function forcePullMessages(num: any) {
     const since = Math.floor((Date.now() - 5000) / 1000);
     const url = `https://graph.facebook.com/v21.0/${num.phoneNumberId}/messages?fields=id,from,type,text,image,video,audio,document,location,contacts,interactive,button,timestamp&limit=50&since=${since}`;
 
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${num.accessToken}` },
-    });
-
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${num.accessToken}` } });
     if (!res.ok) return;
 
     const data = await res.json();
@@ -243,99 +231,46 @@ async function forcePullMessages(num: any) {
   }
 }
 
-function parseMessage(msg: any): {
-  text: string;
-  messageType: string;
-  mediaId: string | null;
-} {
+function parseMessage(msg: any) {
   let text = "";
   let messageType = "text";
   let mediaId: string | null = null;
 
   switch (msg.type) {
-    case "text":
-      text = msg.text?.body || "";
-      break;
-    case "button":
-      text = msg.button?.text || msg.button?.payload || "";
-      messageType = "text";
-      break;
+    case "text": text = msg.text?.body || ""; break;
+    case "button": text = msg.button?.text || msg.button?.payload || ""; messageType = "text"; break;
     case "interactive":
-      text =
-        msg.interactive?.button_reply?.title ||
-        msg.interactive?.list_reply?.title ||
-        msg.interactive?.nfm_reply?.response_json ||
-        "";
+      text = msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || msg.interactive?.nfm_reply?.response_json || "";
       break;
-    case "image":
-      text = msg.image?.caption || "";
-      messageType = "image";
-      mediaId = msg.image?.id || null;
-      break;
-    case "video":
-      text = msg.video?.caption || "";
-      messageType = "video";
-      mediaId = msg.video?.id || null;
-      break;
-    case "document":
-      text = msg.document?.filename || "Document";
-      messageType = "document";
-      mediaId = msg.document?.id || null;
-      break;
-    case "audio":
-      messageType = "audio";
-      mediaId = msg.audio?.id || null;
-      break;
-    case "sticker":
-      messageType = "sticker";
-      mediaId = msg.sticker?.id || null;
-      break;
-    case "location":
-      text = `Location: ${msg.location?.latitude ?? ""},${msg.location?.longitude ?? ""}`;
-      break;
-    case "contacts":
-      text = msg.contacts?.[0]?.name?.formatted_name || "Contact";
-      break;
-    default:
-      text = `[${msg.type}]`;
-      break;
+    case "image": text = msg.image?.caption || ""; messageType = "image"; mediaId = msg.image?.id || null; break;
+    case "video": text = msg.video?.caption || ""; messageType = "video"; mediaId = msg.video?.id || null; break;
+    case "document": text = msg.document?.filename || "Document"; messageType = "document"; mediaId = msg.document?.id || null; break;
+    case "audio": messageType = "audio"; mediaId = msg.audio?.id || null; break;
+    case "sticker": messageType = "sticker"; mediaId = msg.sticker?.id || null; break;
+    case "location": text = `Location: ${msg.location?.latitude ?? ""},${msg.location?.longitude ?? ""}`; break;
+    case "contacts": text = msg.contacts?.[0]?.name?.formatted_name || "Contact"; break;
+    default: text = `[${msg.type}]`; break;
   }
-
   return { text, messageType, mediaId };
 }
 
 function extractButtonPayload(msg: any): string | null {
-  if (msg.type === "interactive") {
-    return (
-      msg.interactive?.button_reply?.id ||
-      msg.interactive?.list_reply?.id ||
-      null
-    );
-  }
-  if (msg.type === "button") {
-    return msg.button?.payload || msg.button?.text || null;
-  }
+  if (msg.type === "interactive") return msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id || null;
+  if (msg.type === "button") return msg.button?.payload || msg.button?.text || null;
   return null;
 }
 
 async function processAndSaveMessage(msg: any, num: any) {
-  const exists = await Message.findOne({
-    whatsappMessageId: msg.id,
-  }).lean();
+  const exists = await Message.findOne({ whatsappMessageId: msg.id }).lean();
   if (exists) {
     if (!(exists as any).whatsappPhoneNumberId && num.phoneNumberId) {
-      await Message.updateOne(
-        { _id: (exists as any)._id },
-        { $set: { whatsappPhoneNumberId: num.phoneNumberId } }
-      );
+      await Message.updateOne({ _id: (exists as any)._id }, { $set: { whatsappPhoneNumberId: num.phoneNumberId } });
     }
     return;
   }
 
   const { text, messageType, mediaId } = parseMessage(msg);
-  const timestamp = msg.timestamp
-    ? new Date(parseInt(msg.timestamp) * 1000)
-    : new Date();
+  const timestamp = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
 
   await Message.create({
     userId: num.userId,
@@ -352,14 +287,7 @@ async function processAndSaveMessage(msg: any, num: any) {
   });
 }
 
-// ═══════════════════════════════════════════════════════════════
-// ✅ NEW: Robustly Upload Media to Meta by Reading Local/Remote File
-// ═══════════════════════════════════════════════════════════════
-async function uploadMediaToMetaFromUrl(
-  phoneNumberId: string,
-  accessToken: string,
-  mediaUrl: string
-): Promise<string | null> {
+async function uploadMediaToMetaFromUrl(phoneNumberId: string, accessToken: string, mediaUrl: string): Promise<string | null> {
   try {
     if (/^\d+$/.test(mediaUrl)) return mediaUrl;
 
@@ -373,8 +301,6 @@ async function uploadMediaToMetaFromUrl(
         blob = new Blob([fileBuffer]);
         const ext = path.extname(localPath).toLowerCase();
         filename = `media${ext}`;
-      } else {
-        console.error(`❌ [MEDIA] Local file not found: ${localPath}`);
       }
     } else if (mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://")) {
       const downloadRes = await fetch(mediaUrl);
@@ -402,18 +328,14 @@ async function uploadMediaToMetaFromUrl(
     formData.append("file", blob, filename);
     formData.append("messaging_product", "whatsapp");
 
-    const uploadRes = await fetch(
-      `https://graph.facebook.com/v21.0/${phoneNumberId}/media`,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}` },
-        body: formData,
-      }
-    );
+    const uploadRes = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/media`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: formData,
+    });
 
     const uploadData = await uploadRes.json();
     if (uploadData.id) return uploadData.id;
-    
     return null;
   } catch (err) {
     console.error(`❌ [MEDIA] Error uploading to Meta:`, err);
@@ -440,10 +362,7 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
     if (workflows.length === 0) {
       const legacyWorkflows = await Workflow.find({
         userId: num.userId,
-        $or: [
-          { wabaPhoneNumberId: null },
-          { wabaPhoneNumberId: { $exists: false } },
-        ],
+        $or: [{ wabaPhoneNumberId: null }, { wabaPhoneNumberId: { $exists: false } }],
         active: true,
       });
 
@@ -451,20 +370,8 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
         workflows = legacyWorkflows;
         try {
           await Workflow.updateMany(
-            {
-              userId: num.userId,
-              $or: [
-                { wabaPhoneNumberId: null },
-                { wabaPhoneNumberId: { $exists: false } },
-              ],
-              active: true,
-            },
-            {
-              $set: {
-                wabaPhoneNumberId: num.phoneNumberId,
-                wabaPhoneNumber: num.name || null,
-              },
-            }
+            { userId: num.userId, $or: [{ wabaPhoneNumberId: null }, { wabaPhoneNumberId: { $exists: false } }], active: true },
+            { $set: { wabaPhoneNumberId: num.phoneNumberId, wabaPhoneNumber: num.name || null } }
           );
         } catch (fixErr) {}
       }
@@ -496,7 +403,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       const activeSession = await Session.findOne({ phone: msg.from, userId: num.userId });
       if (activeSession && activeSession.workflowId) {
         const wf = await Workflow.findById(activeSession.workflowId);
-        
         if (wf && wf.active && wf.steps) {
           let clickedBtn = null;
           for (const stepId of Object.keys(wf.steps)) {
@@ -557,9 +463,7 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       for (const wf of workflows) {
         for (const stepId of Object.keys(wf.steps)) {
           const step = wf.steps[stepId];
-          const clickedBtn = step.buttons?.find(
-            (b: any) => b.id === buttonPayload || b.label?.toLowerCase() === incomingText.toLowerCase()
-          );
+          const clickedBtn = step.buttons?.find((b: any) => b.id === buttonPayload || b.label?.toLowerCase() === incomingText.toLowerCase());
           if (clickedBtn?.nextStepId) {
             matchedWorkflow = wf;
             matchedByButton = true;
@@ -596,9 +500,7 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
     if (matchedByButton && buttonPayload) {
       for (const stepId of Object.keys(steps)) {
         const step = steps[stepId];
-        const clickedBtn = step.buttons?.find(
-          (b: any) => b.id === buttonPayload || b.label?.toLowerCase() === incomingText.toLowerCase()
-        );
+        const clickedBtn = step.buttons?.find((b: any) => b.id === buttonPayload || b.label?.toLowerCase() === incomingText.toLowerCase());
         if (clickedBtn?.nextStepId) {
           currentStepId = clickedBtn.nextStepId;
           if (clickedBtn.applyTagId) await applyTagToContact(msg.from, clickedBtn.applyTagId, num.userId.toString());
@@ -663,13 +565,7 @@ async function processWorkflowStep(
     return;
   }
 
-  if (
-    step.stepType === "inactivity_node" ||
-    step.stepType === "tag_node" ||
-    step.stepType === "opt_in_node"
-  ) {
-    return;
-  }
+  if (step.stepType === "inactivity_node" || step.stepType === "tag_node" || step.stepType === "opt_in_node") return;
 
   await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step);
   
@@ -693,21 +589,11 @@ async function processWorkflowStep(
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// 🔴 SEND WHATSAPP MESSAGE — WITH FULL MEDIA SUPPORT
-// ═══════════════════════════════════════════════════════════════
-async function sendWorkflowWhatsAppMessage(
-  accessToken: string,
-  phoneNumberId: string,
-  to: string,
-  step: any
-) {
+async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: string, to: string, step: any) {
   const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
   let payload: any;
-
   let resolvedMediaId: string | null = null;
 
-  // ✅ FIX: Always attempt to convert local/remote media to Meta IDs before sending
   if (step.mediaUrl && step.mediaType && step.mediaType !== "link") {
     const mediaUrl = String(step.mediaUrl);
     if (/^\d+$/.test(mediaUrl)) {
@@ -718,10 +604,7 @@ async function sendWorkflowWhatsAppMessage(
   }
 
   const buildMediaObj = () => {
-    if (resolvedMediaId) {
-      return { id: resolvedMediaId };
-    }
-    // Fallback for absolute URLs only
+    if (resolvedMediaId) return { id: resolvedMediaId };
     if (step.mediaUrl && (String(step.mediaUrl).startsWith("http://") || String(step.mediaUrl).startsWith("https://"))) {
       return { link: step.mediaUrl };
     }
@@ -730,9 +613,7 @@ async function sendWorkflowWhatsAppMessage(
 
   if (step.stepType === "url_action" && step.url) {
     payload = {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
+      messaging_product: "whatsapp", to, type: "interactive",
       interactive: {
         type: "cta_url",
         header: { type: "text", text: step.urlLabel || "Visit Link" },
@@ -742,61 +623,39 @@ async function sendWorkflowWhatsAppMessage(
     };
   } else if (step.stepType === "call_action" && step.phoneNumber) {
     payload = {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
+      messaging_product: "whatsapp", to, type: "interactive",
       interactive: {
         type: "cta_url",
         header: { type: "text", text: step.urlLabel || "Call Us" },
         body: { text: step.message || "Click to call" },
-        cta: {
-          title: step.urlLabel || "Call Now",
-          url: `tel:${step.phoneNumber}`,
-        },
+        cta: { title: step.urlLabel || "Call Now", url: `tel:${step.phoneNumber}` },
       },
     };
   } else if (step.buttons && step.buttons.length > 0) {
     const validButtons = step.buttons.filter((b: any) => b.label?.trim());
 
     if (validButtons.length > 3) {
-      const rows = validButtons.slice(0, 10).map((btn: any) => ({
-        id: btn.id,
-        title: btn.label.substring(0, 24),
-      }));
+      const rows = validButtons.slice(0, 10).map((btn: any) => ({ id: btn.id, title: btn.label.substring(0, 24) }));
       payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "interactive",
+        messaging_product: "whatsapp", to, type: "interactive",
         interactive: {
           type: "list",
           header: { type: "text", text: "Options" },
           body: { text: step.message || "Please select an option" },
-          action: {
-            button: step.listButtonText || "Options",
-            sections: [{ title: "Choices", rows }],
-          },
+          action: { button: step.listButtonText || "Options", sections: [{ title: "Choices", rows }] },
         },
       };
 
       const mediaObj = buildMediaObj();
       if (mediaObj && step.mediaType) {
-        if (step.mediaType === "image") {
-          payload.interactive.header = { type: "image", image: mediaObj };
-        } else if (step.mediaType === "video") {
-          payload.interactive.header = { type: "video", video: mediaObj };
-        } else if (step.mediaType === "document") {
-          payload.interactive.header = { type: "document", document: { ...mediaObj, filename: "Document" } };
-        }
+        if (step.mediaType === "image") payload.interactive.header = { type: "image", image: mediaObj };
+        else if (step.mediaType === "video") payload.interactive.header = { type: "video", video: mediaObj };
+        else if (step.mediaType === "document") payload.interactive.header = { type: "document", document: { ...mediaObj, filename: "Document" } };
       }
     } else {
-      const buttons = validButtons.slice(0, 3).map((btn: any) => ({
-        type: "reply",
-        reply: { id: btn.id, title: btn.label.substring(0, 20) },
-      }));
+      const buttons = validButtons.slice(0, 3).map((btn: any) => ({ type: "reply", reply: { id: btn.id, title: btn.label.substring(0, 20) } }));
       payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "interactive",
+        messaging_product: "whatsapp", to, type: "interactive",
         interactive: {
           type: "button",
           body: { text: step.message || "" },
@@ -806,13 +665,9 @@ async function sendWorkflowWhatsAppMessage(
 
       const mediaObj = buildMediaObj();
       if (mediaObj && step.mediaType) {
-        if (step.mediaType === "image") {
-          payload.interactive.header = { type: "image", image: mediaObj };
-        } else if (step.mediaType === "video") {
-          payload.interactive.header = { type: "video", video: mediaObj };
-        } else if (step.mediaType === "document") {
-          payload.interactive.header = { type: "document", document: { ...mediaObj, filename: "Document" } };
-        }
+        if (step.mediaType === "image") payload.interactive.header = { type: "image", image: mediaObj };
+        else if (step.mediaType === "video") payload.interactive.header = { type: "video", video: mediaObj };
+        else if (step.mediaType === "document") payload.interactive.header = { type: "document", document: { ...mediaObj, filename: "Document" } };
       }
     }
   } else {
@@ -820,73 +675,31 @@ async function sendWorkflowWhatsAppMessage(
 
     if (step.mediaUrl && step.mediaType === "link") {
       payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: {
-          body: step.message ? `${step.message}\n\n${step.mediaUrl}` : step.mediaUrl,
-          preview_url: true,
-        },
+        messaging_product: "whatsapp", to, type: "text",
+        text: { body: step.message ? `${step.message}\n\n${step.mediaUrl}` : step.mediaUrl, preview_url: true },
       };
     } else if (step.mediaUrl && step.mediaType === "image" && mediaObj) {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "image",
-        image: { ...mediaObj, ...(step.message ? { caption: step.message } : {}) },
-      };
+      payload = { messaging_product: "whatsapp", to, type: "image", image: { ...mediaObj, ...(step.message ? { caption: step.message } : {}) } };
     } else if (step.mediaUrl && step.mediaType === "video" && mediaObj) {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "video",
-        video: { ...mediaObj, ...(step.message ? { caption: step.message } : {}) },
-      };
+      payload = { messaging_product: "whatsapp", to, type: "video", video: { ...mediaObj, ...(step.message ? { caption: step.message } : {}) } };
     } else if (step.mediaUrl && step.mediaType === "audio" && mediaObj) {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "audio",
-        audio: mediaObj,
-      };
+      payload = { messaging_product: "whatsapp", to, type: "audio", audio: mediaObj };
     } else if (step.mediaUrl && step.mediaType === "document" && mediaObj) {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "document",
-        document: {
-          ...mediaObj,
-          filename: "Document",
-          ...(step.message ? { caption: step.message } : {}),
-        },
-      };
+      payload = { messaging_product: "whatsapp", to, type: "document", document: { ...mediaObj, filename: "Document", ...(step.message ? { caption: step.message } : {}) } };
     } else {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: { body: step.message || "", preview_url: true },
-      };
+      payload = { messaging_product: "whatsapp", to, type: "text", text: { body: step.message || "", preview_url: true } };
     }
   }
 
   try {
     const response = await fetch(url, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
     const result = await response.json();
-
-    if (response.ok) {
-      console.log(`✅ [WORKFLOW] Sent to ${to} | Type: ${payload.type}`);
-    } else {
-      console.error(`❌ [WORKFLOW] API error:`, JSON.stringify(result, null, 2));
-    }
+    if (!response.ok) console.error(`❌ [WORKFLOW] API error:`, JSON.stringify(result, null, 2));
   } catch (err: any) {
     console.error(`❌ [WORKFLOW] Failed to send:`, err.message);
   }
@@ -895,42 +708,27 @@ async function sendWorkflowWhatsAppMessage(
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try {
     const { default: Contact } = await import("@/models/Contact");
-    await Contact.findOneAndUpdate(
-      { phone: phoneNumber, userId },
-      { $addToSet: { tags: tagId } },
-      { upsert: true }
-    );
+    await Contact.findOneAndUpdate({ phone: phoneNumber, userId }, { $addToSet: { tags: tagId } }, { upsert: true });
   } catch (err) {}
 }
 
 async function addOptInNumber(phoneNumber: string, userId: string) {
   try {
     const { default: OptNumber } = await import("@/models/OptNumber");
-    await OptNumber.findOneAndUpdate(
-      { phone: phoneNumber, userId },
-      { phone: phoneNumber, userId, optedIn: true },
-      { upsert: true }
-    );
+    await OptNumber.findOneAndUpdate({ phone: phoneNumber, userId }, { phone: phoneNumber, userId, optedIn: true }, { upsert: true });
   } catch (err) {}
 }
 
 export async function POST(req: NextRequest) {
   try {
     await connectDB();
-
     const contentType = req.headers.get("content-type") || "";
 
     if (!contentType.includes("application/json")) {
       const allNumbers = await getAllWhatsappNumbersFromDB();
-      if (allNumbers.length === 0) {
-        return NextResponse.json({ success: true, pulled: 0 });
-      }
+      if (allNumbers.length === 0) return NextResponse.json({ success: true, pulled: 0 });
       await Promise.all(allNumbers.map((num) => forcePullMessages(num)));
-      return NextResponse.json({
-        success: true,
-        pulled: allNumbers.length,
-        numbers: allNumbers.map((n) => n.name),
-      });
+      return NextResponse.json({ success: true, pulled: allNumbers.length, numbers: allNumbers.map((n) => n.name) });
     }
 
     const body = await req.json();
@@ -947,6 +745,24 @@ export async function POST(req: NextRequest) {
 
         const num = await findUserByPhoneNumberId(phoneNumberId);
         if (!num) continue;
+
+        // ═══════════════════════════════════════════════════════════════
+        // ✅ SAVE CONTACT NAME AUTOMATICALLY FROM META PAYLOAD
+        // ═══════════════════════════════════════════════════════════════
+        const contactInfo = value.contacts?.[0];
+        if (contactInfo?.profile?.name && contactInfo?.wa_id) {
+          try {
+            const { default: Contact } = await import("@/models/Contact");
+            await Contact.findOneAndUpdate(
+              { phone: contactInfo.wa_id, userId: num.userId },
+              { name: contactInfo.profile.name, phone: contactInfo.wa_id },
+              { upsert: true }
+            );
+            console.log(`👤 [CONTACT] Saved name: ${contactInfo.profile.name} for ${contactInfo.wa_id}`);
+          } catch (e) {
+            console.error("Failed to save contact name:", e);
+          }
+        }
 
         for (const msg of value.messages || []) {
           if (msg.type === "reaction" || msg.type === "system") continue;
