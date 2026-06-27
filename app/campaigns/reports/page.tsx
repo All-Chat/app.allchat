@@ -22,7 +22,7 @@ type ReportItem = {
   reply?: string | null; 
   repliedAt?: string | null;
   tags?: string[];
-  additionalData?: string[]; // ✅ Stores extra field values
+  additionalData?: string[];
 };
 
 type Campaign = {
@@ -35,7 +35,7 @@ type Campaign = {
   failedCount: number;
   templateName?: string;
   createdAt?: string;
-  additionalFields?: string[]; // ✅ Stores extra column names
+  additionalFields?: string[];
   [x: string]: any;
 };
 
@@ -62,37 +62,55 @@ export default function ReportsPage() {
     return [];
   };
 
+  // ✅ FIXED: Accurately separate all statuses instead of grouping them
   const getCampaignStats = (reportData: ReportItem[] = []) => {
-    let deliveredRead = 0, sent = 0, failedInvalid = 0, pending = 0;
+    let read = 0, delivered = 0, sent = 0, failed = 0, pending = 0, replied = 0, invalid = 0;
+    
     reportData.forEach(d => {
       const replies = getRepliesList(d);
-      if (replies.length > 0 || d.status === 'read' || d.status === 'delivered') deliveredRead++;
+      if (replies.length > 0) replied++;
+      else if (d.status === 'read') read++;
+      else if (d.status === 'delivered') delivered++;
       else if (d.status === 'sent') sent++;
-      else if (d.status === 'failed' || d.status === 'invalid') failedInvalid++;
+      else if (d.status === 'failed') failed++;
+      else if (d.status === 'invalid') invalid++;
       else pending++;
     });
-    return { deliveredRead, sent, failedInvalid, pending };
+    
+    return { read, delivered, sent, failed, pending, replied, invalid };
   };
 
+  // ✅ FIXED: Prevents unknown/missing statuses from defaulting to "Sent"
   const getStatusConfig = (status: string, replies: string[], error?: string) => {
     if (replies.length > 0) {
       return { color: "bg-indigo-50 text-indigo-700 border-indigo-200", icon: <MessageSquare size={10} className="inline mr-1" />, label: `Replied (${replies.length})`, isWaiting: false, tooltip: "" };
     }
+    
     switch (status) {
-      case "read": return { color: "bg-blue-50 text-blue-700 border-blue-200", icon: <Eye size={10} className="inline mr-1" />, label: "Read", isWaiting: false, tooltip: "" };
-      case "delivered": return { color: "bg-cyan-50 text-cyan-700 border-cyan-200", icon: <CheckCheck size={10} className="inline mr-1" />, label: "Delivered", isWaiting: false, tooltip: "" };
-      case "sent": return { color: "bg-emerald-50 text-emerald-700 border-emerald-200", icon: <CheckCircle size={10} className="inline mr-1" />, label: "Sent", isWaiting: true, tooltip: "" };
-      case "failed": return { 
-        color: "bg-red-50 text-red-700 border-red-200", 
-        icon: <XCircle size={10} className="inline mr-1" />, 
-        label: "Failed", 
-        isWaiting: false, 
-        tooltip: error || "Unknown error" 
-      };
-      case "invalid": return { color: "bg-orange-50 text-orange-700 border-orange-200", icon: <AlertTriangle size={10} className="inline mr-1" />, label: "Invalid Number", isWaiting: false, tooltip: "This phone number is not registered on WhatsApp." };
-      case "duplicate": return { color: "bg-slate-100 text-slate-500 border-slate-200", icon: <Copy size={10} className="inline mr-1" />, label: "Duplicate", isWaiting: false, tooltip: "" };
-      case "pending": return { color: "bg-amber-50 text-amber-700 border-amber-200", icon: <Clock size={10} className="inline mr-1" />, label: "Pending", isWaiting: true, tooltip: "" };
-      default: return { color: "bg-gray-50 text-gray-700 border-gray-200", icon: <Ban size={10} className="inline mr-1" />, label: status.charAt(0).toUpperCase() + status.slice(1), isWaiting: false, tooltip: "" };
+      case "read": 
+        return { color: "bg-blue-50 text-blue-700 border-blue-200", icon: <Eye size={10} className="inline mr-1" />, label: "Read", isWaiting: false, tooltip: "" };
+      case "delivered": 
+        return { color: "bg-cyan-50 text-cyan-700 border-cyan-200", icon: <CheckCheck size={10} className="inline mr-1" />, label: "Delivered", isWaiting: false, tooltip: "" };
+      case "sent": 
+        return { color: "bg-emerald-50 text-emerald-700 border-emerald-200", icon: <CheckCircle size={10} className="inline mr-1" />, label: "Sent", isWaiting: true, tooltip: "Message sent to Meta servers, waiting for delivery confirmation." };
+      case "failed": 
+        return { 
+          color: "bg-red-50 text-red-700 border-red-200", 
+          icon: <XCircle size={10} className="inline mr-1" />, 
+          label: "Failed", 
+          isWaiting: false, 
+          tooltip: error || "Unknown error" 
+        };
+      case "invalid": 
+        return { color: "bg-orange-50 text-orange-700 border-orange-200", icon: <AlertTriangle size={10} className="inline mr-1" />, label: "Invalid Number", isWaiting: false, tooltip: "This phone number is not registered on WhatsApp." };
+      case "duplicate": 
+        return { color: "bg-slate-100 text-slate-500 border-slate-200", icon: <Copy size={10} className="inline mr-1" />, label: "Duplicate", isWaiting: false, tooltip: "" };
+      case "pending": 
+      case "queued":
+      case "": 
+        return { color: "bg-amber-50 text-amber-700 border-amber-200", icon: <Clock size={10} className="inline mr-1" />, label: "Pending", isWaiting: true, tooltip: "Message is in queue to be sent." };
+      default: 
+        return { color: "bg-gray-50 text-gray-700 border-gray-200", icon: <Ban size={10} className="inline mr-1" />, label: status ? (status.charAt(0).toUpperCase() + status.slice(1)) : "Unknown", isWaiting: false, tooltip: "" };
     }
   };
 
@@ -212,7 +230,6 @@ export default function ReportsPage() {
         const camp = data.campaigns.find((c: Campaign) => c._id === id);
         if (camp) {
           setReportData(camp.reportData || []);
-          // ✅ CRITICAL: Update campaigns state so dynamic fields are available immediately
           setCampaigns(prev => prev.map(c => c._id === id ? { ...c, ...camp } : c));
         }
       }
@@ -249,7 +266,6 @@ export default function ReportsPage() {
         "Name": d.name || "N/A", 
         "Phone Number": d.phone, 
       };
-      // ✅ Add additional field columns to Excel
       additionalCols.forEach((field, idx) => {
         row[field] = d.additionalData?.[idx] || "";
       });
@@ -318,10 +334,13 @@ export default function ReportsPage() {
                   >
                     <p className="font-semibold text-sm truncate">{c.name}</p>
                     <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5 text-[10px]">
-                      {stats.deliveredRead > 0 && <span className="flex items-center gap-1 text-cyan-600 font-medium"><CheckCheck size={10}/> {stats.deliveredRead} Delivered</span>}
+                      {stats.replied > 0 && <span className="flex items-center gap-1 text-indigo-600 font-medium"><MessageSquare size={10}/> {stats.replied} Replied</span>}
+                      {stats.read > 0 && <span className="flex items-center gap-1 text-blue-600 font-medium"><Eye size={10}/> {stats.read} Read</span>}
+                      {stats.delivered > 0 && <span className="flex items-center gap-1 text-cyan-600 font-medium"><CheckCheck size={10}/> {stats.delivered} Delivered</span>}
                       {stats.sent > 0 && <span className="flex items-center gap-1 text-emerald-600 font-medium"><CheckCircle size={10}/> {stats.sent} Sent</span>}
-                      {stats.failedInvalid > 0 && <span className="flex items-center gap-1 text-red-600 font-medium"><XCircle size={10}/> {stats.failedInvalid} Failed</span>}
                       {stats.pending > 0 && <span className="flex items-center gap-1 text-amber-600 font-medium"><Clock size={10}/> {stats.pending} Pending</span>}
+                      {stats.failed > 0 && <span className="flex items-center gap-1 text-red-600 font-medium"><XCircle size={10}/> {stats.failed} Failed</span>}
+                      {stats.invalid > 0 && <span className="flex items-center gap-1 text-orange-600 font-medium"><AlertTriangle size={10}/> {stats.invalid} Invalid</span>}
                     </div>
                   </button>
                 );
@@ -422,7 +441,6 @@ export default function ReportsPage() {
                         <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase w-10">#</th>
                         <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Name</th>
                         <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Phone</th>
-                        {/* ✅ DYNAMIC ADDITIONAL FIELD COLUMNS */}
                         {selectedCamp?.additionalFields?.map((field, idx) => (
                           <th key={idx} className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase whitespace-nowrap">{field}</th>
                         ))}
@@ -439,7 +457,6 @@ export default function ReportsPage() {
                             <td className="px-4 py-3 text-xs text-slate-400">{i + 1}</td>
                             <td className="px-4 py-3 font-medium text-slate-900 text-xs sm:text-sm">{d.name || "—"}</td>
                             <td className="px-4 py-3 font-mono text-xs">{d.phone}</td>
-                            {/* ✅ DYNAMIC ADDITIONAL FIELD VALUES */}
                             {selectedCamp?.additionalFields?.map((field, idx) => (
                               <td key={idx} className="px-4 py-3 text-xs text-slate-700">{d.additionalData?.[idx] || "—"}</td>
                             ))}
@@ -530,7 +547,6 @@ export default function ReportsPage() {
                   <tr>
                     <th className="px-5 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Phone</th>
                     <th className="px-5 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Name</th>
-                    {/* ✅ DYNAMIC ADDITIONAL FIELD COLUMNS IN MODAL */}
                     {selectedCamp?.additionalFields?.map((field, idx) => (
                       <th key={idx} className="px-5 py-3 text-left text-[10px] font-bold text-slate-500 uppercase whitespace-nowrap">{field}</th>
                     ))}
@@ -542,7 +558,6 @@ export default function ReportsPage() {
                     <tr key={i} className="hover:bg-slate-50">
                       <td className="px-5 py-3 font-mono text-xs">{d.phone}</td>
                       <td className="px-5 py-3 font-medium text-slate-900 text-xs">{d.name || "—"}</td>
-                      {/* ✅ DYNAMIC ADDITIONAL FIELD VALUES IN MODAL */}
                       {selectedCamp?.additionalFields?.map((field, idx) => (
                         <td key={idx} className="px-5 py-3 text-xs text-slate-700">{d.additionalData?.[idx] || "—"}</td>
                       ))}
