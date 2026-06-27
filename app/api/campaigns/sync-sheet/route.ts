@@ -7,11 +7,29 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
 
-// Same junk filter used in the replies route
 function isValidReply(text: string): boolean {
   if (!text || !text.trim()) return false;
   if (/^\[.*\]$/.test(text.trim())) return false;
   return true;
+}
+
+function getDisplayStatus(rawStatus: string, repliesCount: number): string {
+  if (repliesCount > 0) return `Replied (${repliesCount})`;
+  
+  const status = (rawStatus || "").trim().toLowerCase();
+  switch (status) {
+    case "read": return "Read";
+    case "delivered": return "Delivered";
+    case "sent": return "Sent";
+    case "failed": return "Failed";
+    case "invalid": return "Invalid Number";
+    case "duplicate": return "Duplicate";
+    case "pending":
+    case "queued":
+    case "": return "Pending";
+    default: 
+      return rawStatus ? (rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1)) : "Unknown";
+  }
 }
 
 export async function POST(req: Request) {
@@ -27,10 +45,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, message: "Campaign ID required" }, { status: 400 });
     }
 
-    // ✅ FIX: Added additionalFields to .select()
-    const campaign = await Campaign.findById(campaignId)
-      .select("userId name reportData createdAt additionalFields")
-      .lean();
+    // ✅ Do NOT use .lean() here so we can save the replies permanently to the DB
+    const campaign: any = await Campaign.findById(campaignId)
+      .select("userId name reportData createdAt additionalFields");
 
     if (!campaign || campaign.userId.toString() !== session.user.id) {
       return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
@@ -38,39 +55,12 @@ export async function POST(req: Request) {
 
     const additionalFields: string[] = campaign.additionalFields || [];
 
-    // ─── Build base report rows ─────────────────────────────────────────────
-    const reportDataForSheet: any[] = (campaign.reportData || []).map((item: any) => {
-      const row: any = {
-        name: String(item.name || "").trim() || "N/A",
-        phone: String(item.phone || "").trim() || "N/A",
-        status: String(item.status || "Unknown").trim(),
-        error: String(item.error || "").trim(),
-        tags: Array.isArray(item.tags) ? item.tags.filter(Boolean).join(", ") : "",
-      };
-
-      // ✅ NEW: Dynamically add additional fields columns
-      additionalFields.forEach((field, idx) => {
-        row[field] = item.additionalData?.[idx] || "";
-      });
-
-      // ✅ These keys match exactly what syncCampaignToGoogleSheet now reads
-      row["Reply 1"] = "";
-      row["Reply 2"] = "";
-      row["Reply 3"] = "";
-      row["Reply 4"] = "";
-      row["Reply 5"] = "";
-
-      return row;
-    });
-
-    if (reportDataForSheet.length === 0) {
-      return NextResponse.json({ success: false, message: "No report data to sync" }, { status: 400 });
-    }
-
-    // ─── Fetch replies and merge ────────────────────────────────────────────
+    // ─── FETCH REPLIES (Exact same logic as your UI report-replies route) ───
     const campaignPhones = new Set(
-      reportDataForSheet.map((d) => d.phone).filter((p) => p && p !== "N/A")
+      (campaign.reportData || []).map((d: any) => d.phone).filter(Boolean)
     );
+
+    const repliesMap: Record<string, string[]> = {};
 
     if (campaignPhones.size > 0) {
       const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -83,38 +73,73 @@ export async function POST(req: Request) {
         createdAt: { $gte: since },
       }).sort({ createdAt: 1 }).lean();
 
-      // Build replies map: phone → up to 5 valid reply strings
-      const repliesMap: Record<string, string[]> = {};
       for (const msg of messages) {
         if (!campaignPhones.has(msg.phone)) continue;
-        // ✅ Filter out old [button] / [interactive] junk saved before webhook fix
+
         const cleanText = (msg.text || "").trim();
         if (!isValidReply(cleanText)) continue;
+
         if (!repliesMap[msg.phone]) repliesMap[msg.phone] = [];
         if (repliesMap[msg.phone].length < 5) {
           repliesMap[msg.phone].push(cleanText);
         }
       }
-
-      // Merge into report rows
-      for (const item of reportDataForSheet) {
-        const replies = repliesMap[item.phone];
-        if (replies && replies.length > 0) {
-          item["Reply 1"] = replies[0] || "";
-          item["Reply 2"] = replies[1] || "";
-          item["Reply 3"] = replies[2] || "";
-          item["Reply 4"] = replies[3] || "";
-          item["Reply 5"] = replies[4] || "";
-        }
-      }
     }
 
-    // ─── Sync to Google Sheet ───────────────────────────────────────────────
-    // ✅ FIX: Pass additionalFields to the sync function
+    let isDbModified = false;
+
+    // ─── Build report rows ─────────────────────────────────────────────
+    const reportDataForSheet: any[] = (campaign.reportData || []).map((item: any) => {
+      // 1. Check if DB already has native replies
+      let replies: string[] = [];
+      if (Array.isArray(item.replies) && item.replies.length > 0) {
+        replies = item.replies;
+      } else if (item.reply) {
+        replies = [item.reply];
+      } else if (item.phone && repliesMap[item.phone]?.length > 0) {
+        replies = repliesMap[item.phone];
+        
+        // ✅ PERMANENT FIX: Save the fetched replies to the DB so it stops oscillating!
+        item.replies = replies;
+        isDbModified = true;
+      }
+      
+      const row: any = {
+        name: String(item.name || "").trim() || "N/A",
+        phone: String(item.phone || "").trim() || "N/A",
+        status: getDisplayStatus(String(item.status || ""), replies.length),
+        error: String(item.error || "").trim(),
+        tags: Array.isArray(item.tags) ? item.tags.filter(Boolean).join(", ") : "",
+      };
+
+      additionalFields.forEach((field, idx) => {
+        row[field] = item.additionalData?.[idx] || "";
+      });
+
+      row["Reply 1"] = replies[0] || "";
+      row["Reply 2"] = replies[1] || "";
+      row["Reply 3"] = replies[2] || "";
+      row["Reply 4"] = replies[3] || "";
+      row["Reply 5"] = replies[4] || "";
+
+      return row;
+    });
+
+    // ✅ Save to DB if we added replies, so the webhook's "read" status can't override it anymore
+    if (isDbModified) {
+      campaign.markModified("reportData");
+      await campaign.save();
+      console.log("[SHEET SYNC] Permanently saved replies to DB to prevent oscillation.");
+    }
+
+    if (reportDataForSheet.length === 0) {
+      return NextResponse.json({ success: false, message: "No report data to sync" }, { status: 400 });
+    }
+
     await syncCampaignToGoogleSheet(session.user.id, {
       name: campaign.name || `Campaign ${campaign._id}`,
       reportData: reportDataForSheet,
-      additionalFields: additionalFields, // Pass the array of column names here
+      additionalFields: additionalFields,
     });
 
     return NextResponse.json({ success: true, message: "Sheet synced successfully" });
