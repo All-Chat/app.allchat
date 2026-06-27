@@ -375,6 +375,77 @@ async function processAndSaveMessage(msg: any, num: any) {
 }
 
 // ════════════════════════════════════════════════════════════════════════
+// 🔴 UPLOAD MEDIA TO META FROM URL (for reliable media delivery)
+// ════════════════════════════════════════════════════════════════════════
+async function uploadMediaToMetaFromUrl(
+  phoneNumberId: string,
+  accessToken: string,
+  mediaUrl: string
+): Promise<string | null> {
+  try {
+    // If it's already a Meta media ID (numeric), return it directly
+    if (/^\d+$/.test(mediaUrl)) {
+      return mediaUrl;
+    }
+
+    // Resolve relative URLs to full URLs
+    let fullUrl = mediaUrl;
+    if (!mediaUrl.startsWith("http://") && !mediaUrl.startsWith("https://")) {
+      const baseUrl = process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_APP_URL || "";
+      if (baseUrl) {
+        fullUrl = `${baseUrl}${mediaUrl.startsWith("/") ? "" : "/"}${mediaUrl}`;
+      } else {
+        console.error("❌ [MEDIA] Cannot resolve relative URL without NEXTAUTH_URL");
+        return null;
+      }
+    }
+
+    console.log(`📤 [MEDIA] Downloading from: ${fullUrl}`);
+
+    // Download the file
+    const downloadRes = await fetch(fullUrl);
+    if (!downloadRes.ok) {
+      console.error(`❌ [MEDIA] Failed to download: ${downloadRes.status}`);
+      return null;
+    }
+
+    const blob = await downloadRes.blob();
+
+    // Determine content type
+    const contentType = downloadRes.headers.get("content-type") || "application/octet-stream";
+
+    console.log(`📤 [MEDIA] Uploading to Meta (${contentType}, ${blob.size} bytes)...`);
+
+    // Upload to Meta
+    const formData = new FormData();
+    formData.append("file", blob, `media.${contentType.split("/")[1] || "bin"}`);
+    formData.append("messaging_product", "whatsapp");
+
+    const uploadRes = await fetch(
+      `https://graph.facebook.com/v21.0/${phoneNumberId}/media`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}` },
+        body: formData,
+      }
+    );
+
+    const uploadData = await uploadRes.json();
+
+    if (uploadData.id) {
+      console.log(`✅ [MEDIA] Uploaded to Meta, ID: ${uploadData.id}`);
+      return uploadData.id;
+    }
+
+    console.error(`❌ [MEDIA] Upload failed:`, uploadData);
+    return null;
+  } catch (err) {
+    console.error(`❌ [MEDIA] Error uploading to Meta:`, err);
+    return null;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════
 // 🔴 WORKFLOW EXECUTION ENGINE
 // ════════════════════════════════════════════════════════════════════════
 async function executeWorkflowsForMessage(msg: any, num: any) {
@@ -391,18 +462,12 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       `🔄 [WORKFLOW] Checking for user ${num.userId} on number ${num.phoneNumberId} | Text: "${incomingText?.substring(0, 40)}" | BtnPayload: ${buttonPayload}`
     );
 
-    // ──────────────────────────────────────────────────
-    // 🔴 FIND WORKFLOWS FOR THIS EXACT USER + THIS EXACT NUMBER
-    // ──────────────────────────────────────────────────
     let workflows = await Workflow.find({
       userId: num.userId,
       wabaPhoneNumberId: num.phoneNumberId,
       active: true,
     });
 
-    // ──────────────────────────────────────────────────
-    // 🔴 FALLBACK: Check workflows with NO wabaPhoneNumberId
-    // ──────────────────────────────────────────────────
     if (workflows.length === 0) {
       const legacyWorkflows = await Workflow.find({
         userId: num.userId,
@@ -564,17 +629,14 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
           const mode = (trigger.matchMode || "contains").toLowerCase();
 
           if (mode === "exists") {
-            // 🔥 NEW: "Exists" trigger. Fires if ANY message comes in
             return true;
           }
           
           if (triggerKeyword === "*" || triggerKeyword === "") return true;
           
           if (mode === "exact") {
-            // 🔥 FIX: Strictly compare EXACT string (CASE-SENSITIVE)
             return incomingText.trim() === triggerKeyword;
           } else {
-            // "contains"
             return incomingText.toLowerCase().trim().includes(triggerKeyword.toLowerCase());
           }
         });
@@ -592,9 +654,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       return;
     }
 
-    // ──────────────────────────────────────────────────
-    // EXECUTE THE MATCHED WORKFLOW
-    // ──────────────────────────────────────────────────
     const steps = matchedWorkflow.steps;
     let currentStepId: string | null = null;
 
@@ -708,7 +767,8 @@ async function processWorkflowStep(
     phone: customerNumber, 
     text: step.message || `[${step.stepType?.toUpperCase()}]`, 
     direction: "out", 
-    messageType: "text" 
+    messageType: step.mediaType || "text",
+    mediaUrl: step.mediaUrl || null,
   });
   
   await Session.findOneAndUpdate(
@@ -723,7 +783,7 @@ async function processWorkflowStep(
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// 🔴 SEND WHATSAPP MESSAGE — WITH FULL MEDIA SUPPORT
+// 🔴 SEND WHATSAPP MESSAGE — WITH FULL MEDIA SUPPORT (IMPROVED)
 // ════════════════════════════════════════════════════════════════════════
 async function sendWorkflowWhatsAppMessage(
   accessToken: string,
@@ -734,20 +794,62 @@ async function sendWorkflowWhatsAppMessage(
   const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
   let payload: any;
 
-  const isMediaId = (val: string | null | undefined): boolean => {
-    if (!val) return false;
-    return !val.startsWith("http://") && !val.startsWith("https://");
-  };
+  // ═══════════════════════════════════════════════════════════════
+  // ✅ MEDIA RESOLUTION: Upload to Meta first for reliability
+  // ═══════════════════════════════════════════════════════════════
+  let resolvedMediaId: string | null = null;
+  let useLinkFallback = false;
 
-  const buildMediaObj = (mediaType: string, mediaUrl: string | null) => {
-    if (!mediaUrl) return null;
-    if (isMediaId(mediaUrl)) {
-      return { id: mediaUrl };
+  if (step.mediaUrl && step.mediaType && step.mediaType !== "link") {
+    const mediaUrl = String(step.mediaUrl);
+
+    // Check if it's already a Meta media ID (numeric)
+    if (/^\d+$/.test(mediaUrl)) {
+      resolvedMediaId = mediaUrl;
+      console.log(`📎 [MEDIA] Using existing Meta media ID: ${resolvedMediaId}`);
+    } else if (mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://")) {
+      // It's a URL — upload to Meta for reliable delivery
+      console.log(`📎 [MEDIA] URL detected, uploading to Meta: ${mediaUrl.substring(0, 80)}...`);
+      resolvedMediaId = await uploadMediaToMetaFromUrl(phoneNumberId, accessToken, mediaUrl);
+      
+      if (!resolvedMediaId) {
+        // Fallback: try using link directly
+        console.warn(`⚠️ [MEDIA] Upload failed, falling back to link mode`);
+        useLinkFallback = true;
+      }
     } else {
-      return { link: mediaUrl };
+      // Relative URL — try to resolve and upload
+      console.log(`📎 [MEDIA] Relative URL detected, resolving and uploading...`);
+      resolvedMediaId = await uploadMediaToMetaFromUrl(phoneNumberId, accessToken, mediaUrl);
+      
+      if (!resolvedMediaId) {
+        useLinkFallback = true;
+      }
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ✅ BUILD MEDIA OBJECT
+  // ═══════════════════════════════════════════════════════════════
+  const buildMediaObj = () => {
+    if (resolvedMediaId) {
+      return { id: resolvedMediaId };
+    }
+    if (useLinkFallback && step.mediaUrl) {
+      // Resolve relative URLs for link fallback
+      let linkUrl = step.mediaUrl;
+      if (!linkUrl.startsWith("http")) {
+        const baseUrl = process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_APP_URL || "";
+        linkUrl = `${baseUrl}${linkUrl.startsWith("/") ? "" : "/"}${linkUrl}`;
+      }
+      return { link: linkUrl };
+    }
+    return null;
   };
 
+  // ═══════════════════════════════════════════════════════════════
+  // ✅ BUILD PAYLOAD based on step type
+  // ═══════════════════════════════════════════════════════════════
   if (step.stepType === "url_action" && step.url) {
     payload = {
       messaging_product: "whatsapp",
@@ -779,6 +881,7 @@ async function sendWorkflowWhatsAppMessage(
     const validButtons = step.buttons.filter((b: any) => b.label?.trim());
 
     if (validButtons.length > 3) {
+      // LIST MODE
       const rows = validButtons.slice(0, 10).map((btn: any) => ({
         id: btn.id,
         title: btn.label.substring(0, 24),
@@ -798,19 +901,19 @@ async function sendWorkflowWhatsAppMessage(
         },
       };
 
-      if (step.mediaUrl && step.mediaType) {
-        const mediaObj = buildMediaObj(step.mediaType, step.mediaUrl);
-        if (mediaObj) {
-          if (step.mediaType === "image") {
-            payload.interactive.header = { type: "image", image: mediaObj };
-          } else if (step.mediaType === "video") {
-            payload.interactive.header = { type: "video", video: mediaObj };
-          } else if (step.mediaType === "document") {
-            payload.interactive.header = { type: "document", document: { ...mediaObj, filename: "Document" } };
-          }
+      // Add media header if available
+      const mediaObj = buildMediaObj();
+      if (mediaObj && step.mediaType) {
+        if (step.mediaType === "image") {
+          payload.interactive.header = { type: "image", image: mediaObj };
+        } else if (step.mediaType === "video") {
+          payload.interactive.header = { type: "video", video: mediaObj };
+        } else if (step.mediaType === "document") {
+          payload.interactive.header = { type: "document", document: { ...mediaObj, filename: "Document" } };
         }
       }
     } else {
+      // BUTTON MODE
       const buttons = validButtons.slice(0, 3).map((btn: any) => ({
         type: "reply",
         reply: { id: btn.id, title: btn.label.substring(0, 20) },
@@ -826,77 +929,84 @@ async function sendWorkflowWhatsAppMessage(
         },
       };
 
-      if (step.mediaUrl && step.mediaType) {
-        const mediaObj = buildMediaObj(step.mediaType, step.mediaUrl);
-        if (mediaObj) {
-          if (step.mediaType === "image") {
-            payload.interactive.header = { type: "image", image: mediaObj };
-          } else if (step.mediaType === "video") {
-            payload.interactive.header = { type: "video", video: mediaObj };
-          } else if (step.mediaType === "document") {
-            payload.interactive.header = { type: "document", document: { ...mediaObj, filename: "Document" } };
-          }
+      // Add media header if available
+      const mediaObj = buildMediaObj();
+      if (mediaObj && step.mediaType) {
+        if (step.mediaType === "image") {
+          payload.interactive.header = { type: "image", image: mediaObj };
+        } else if (step.mediaType === "video") {
+          payload.interactive.header = { type: "video", video: mediaObj };
+        } else if (step.mediaType === "document") {
+          payload.interactive.header = { type: "document", document: { ...mediaObj, filename: "Document" } };
         }
       }
     }
   } else {
-    if (step.mediaUrl && step.mediaType) {
-      const mediaObj = buildMediaObj(step.mediaType, step.mediaUrl);
+    // ═══════════════════════════════════════════════════════════════
+    // ✅ SIMPLE MESSAGE (with or without media)
+    // ═══════════════════════════════════════════════════════════════
+    const mediaObj = buildMediaObj();
 
-      if (step.mediaType === "image") {
-        payload = {
-          messaging_product: "whatsapp",
-          to,
-          type: "image",
-          image: { ...mediaObj, ...(step.message ? { caption: step.message } : {}) },
-        };
-      } else if (step.mediaType === "video") {
-        payload = {
-          messaging_product: "whatsapp",
-          to,
-          type: "video",
-          video: { ...mediaObj, ...(step.message ? { caption: step.message } : {}) },
-        };
-      } else if (step.mediaType === "audio") {
-        payload = {
-          messaging_product: "whatsapp",
-          to,
-          type: "audio",
-          audio: mediaObj,
-        };
-      } else if (step.mediaType === "document") {
-        payload = {
-          messaging_product: "whatsapp",
-          to,
-          type: "document",
-          document: { ...mediaObj, filename: "Document", ...(step.message ? { caption: step.message } : {}) },
-        };
-      } else if (step.mediaType === "link") {
-        payload = {
-          messaging_product: "whatsapp",
-          to,
-          type: "text",
-          text: { body: step.message ? `${step.message}\n\n${step.mediaUrl}` : step.mediaUrl, preview_url: true },
-        };
-      } else {
-        payload = {
-          messaging_product: "whatsapp",
-          to,
-          type: "text",
-          text: { body: step.message || "" },
-        };
-      }
-    } else {
+    if (step.mediaUrl && step.mediaType === "link") {
+      // LINK type: send as text with URL preview
       payload = {
         messaging_product: "whatsapp",
         to,
         type: "text",
-        text: { body: step.message || "" },
+        text: {
+          body: step.message ? `${step.message}\n\n${step.mediaUrl}` : step.mediaUrl,
+          preview_url: true,
+        },
+      };
+    } else if (step.mediaUrl && step.mediaType === "image" && mediaObj) {
+      payload = {
+        messaging_product: "whatsapp",
+        to,
+        type: "image",
+        image: { ...mediaObj, ...(step.message ? { caption: step.message } : {}) },
+      };
+    } else if (step.mediaUrl && step.mediaType === "video" && mediaObj) {
+      payload = {
+        messaging_product: "whatsapp",
+        to,
+        type: "video",
+        video: { ...mediaObj, ...(step.message ? { caption: step.message } : {}) },
+      };
+    } else if (step.mediaUrl && step.mediaType === "audio" && mediaObj) {
+      payload = {
+        messaging_product: "whatsapp",
+        to,
+        type: "audio",
+        audio: mediaObj,
+      };
+    } else if (step.mediaUrl && step.mediaType === "document" && mediaObj) {
+      payload = {
+        messaging_product: "whatsapp",
+        to,
+        type: "document",
+        document: {
+          ...mediaObj,
+          filename: "Document",
+          ...(step.message ? { caption: step.message } : {}),
+        },
+      };
+    } else {
+      // TEXT ONLY
+      payload = {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: { body: step.message || "", preview_url: true },
       };
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // ✅ SEND THE MESSAGE
+  // ═══════════════════════════════════════════════════════════════
   try {
+    console.log(`📤 [WORKFLOW] Sending to ${to} | Type: ${payload.type}${step.mediaType ? ` | Media: ${step.mediaType}` : ""}...`);
+
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -905,11 +1015,93 @@ async function sendWorkflowWhatsAppMessage(
       },
       body: JSON.stringify(payload),
     });
+
     const result = await response.json();
+
     if (response.ok) {
       console.log(`✅ [WORKFLOW] Sent to ${to}: "${(step.message || "").substring(0, 50)}..."${step.mediaUrl ? ` (media: ${step.mediaType})` : ""}`);
     } else {
       console.error(`❌ [WORKFLOW] WhatsApp API error:`, JSON.stringify(result, null, 2));
+
+      // ═══════════════════════════════════════════════════════════════
+      // ✅ RETRY: If media failed with link, try uploading to Meta
+      // ═══════════════════════════════════════════════════════════════
+      if (
+        !response.ok &&
+        step.mediaUrl &&
+        step.mediaType &&
+        step.mediaType !== "link" &&
+        !resolvedMediaId &&
+        useLinkFallback
+      ) {
+        console.log(`🔄 [WORKFLOW] Retrying: uploading media to Meta...`);
+        const metaMediaId = await uploadMediaToMetaFromUrl(
+          phoneNumberId,
+          accessToken,
+          step.mediaUrl
+        );
+
+        if (metaMediaId) {
+          // Rebuild payload with media ID
+          const retryMediaObj = { id: metaMediaId };
+
+          // Replace link with id in the payload
+          const payloadStr = JSON.stringify(payload);
+          const retryPayloadStr = payloadStr.replace(
+            /"link"\s*:\s*"[^"]*"/g,
+            `"id":"${metaMediaId}"`
+          );
+          const retryPayload = JSON.parse(retryPayloadStr);
+
+          const retryResponse = await fetch(url, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(retryPayload),
+          });
+
+          const retryResult = await retryResponse.json();
+
+          if (retryResponse.ok) {
+            console.log(`✅ [WORKFLOW] Retry succeeded with Meta media ID: ${metaMediaId}`);
+            return;
+          } else {
+            console.error(`❌ [WORKFLOW] Retry also failed:`, JSON.stringify(retryResult, null, 2));
+          }
+        }
+      }
+
+      // ═══════════════════════════════════════════════════════════════
+      // ✅ FALLBACK: If media message failed, try sending text only
+      // ═══════════════════════════════════════════════════════════════
+      if (!response.ok && step.message && payload.type !== "text") {
+        console.log(`🔄 [WORKFLOW] Falling back to text-only message...`);
+        const textPayload = {
+          messaging_product: "whatsapp",
+          to,
+          type: "text",
+          text: { body: step.message, preview_url: true },
+        };
+
+        const textResponse = await fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(textPayload),
+        });
+
+        const textResult = await textResponse.json();
+
+        if (textResponse.ok) {
+          console.log(`✅ [WORKFLOW] Text fallback sent successfully`);
+        } else {
+          console.error(`❌ [WORKFLOW] Text fallback also failed:`, JSON.stringify(textResult, null, 2));
+        }
+      }
     }
   } catch (err: any) {
     console.error(`❌ [WORKFLOW] Failed to send:`, err.message);
@@ -986,7 +1178,6 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        // 🔴 DIRECT DB QUERY — finds the CORRECT user every time
         const num = await findUserByPhoneNumberId(phoneNumberId);
 
         if (!num) {
@@ -997,10 +1188,7 @@ export async function POST(req: NextRequest) {
         for (const msg of value.messages || []) {
           if (msg.type === "reaction" || msg.type === "system") continue;
 
-          // SAVE MESSAGE
           await processAndSaveMessage(msg, num);
-
-          // EXECUTE WORKFLOW
           await executeWorkflowsForMessage(msg, num);
         }
       }
