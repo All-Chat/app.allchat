@@ -171,7 +171,7 @@ function extractTemplateDisplayData(
   return result;
 }
 
-// ✅ Build components array
+// ✅ Build components array for templates
 function buildComponents(
   headerFormat: string,
   variables: string[],
@@ -204,13 +204,13 @@ function buildComponents(
   return components;
 }
 
-// ✅ KEY FIX: Extract WAMID regardless of HTTP status code
+// ✅ Extract WAMID regardless of HTTP status code
 function extractWamid(data: any): string | null {
   if (data?.messages?.[0]?.id) return data.messages[0].id;
   return null;
 }
 
-// ✅ Send to WhatsApp API
+// ✅ Send template to WhatsApp API
 async function sendToWhatsApp(
   phoneNumberId: string,
   accessToken: string,
@@ -233,7 +233,151 @@ async function sendToWhatsApp(
   });
   const data = await res.json();
   const wamid = extractWamid(data);
-  // ✅ If we got a message ID, treat as success regardless of HTTP status
+  return { ok: res.ok || !!wamid, data, wamid };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: Upload file to Meta's media API
+// ═══════════════════════════════════════════════════════════════
+async function uploadFileToMeta(
+  phoneNumberId: string,
+  accessToken: string,
+  file: File
+): Promise<string | null> {
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("messaging_product", "whatsapp");
+
+    const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/media`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: formData,
+    });
+
+    const data = await res.json();
+    if (data.id) {
+      console.log(`✅ Media uploaded to Meta: ${data.id}`);
+      return data.id;
+    }
+    console.error("❌ Media upload failed:", data);
+    return null;
+  } catch (err) {
+    console.error("❌ Media upload error:", err);
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: Build payload for direct (non-template) media messages
+// ═══════════════════════════════════════════════════════════════
+function buildDirectPayload(
+  to: string,
+  messageType: string,
+  mediaRef: string,
+  caption: string,
+  filename?: string
+): any {
+  const isUrl = mediaRef.startsWith("http://") || mediaRef.startsWith("https://");
+  const mediaObj = isUrl ? { link: mediaRef } : { id: mediaRef };
+
+  switch (messageType) {
+    case "text":
+      return {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: { body: caption || "", preview_url: true },
+      };
+
+    case "image":
+      return {
+        messaging_product: "whatsapp",
+        to,
+        type: "image",
+        image: { ...mediaObj, ...(caption ? { caption } : {}) },
+      };
+
+    case "video":
+      return {
+        messaging_product: "whatsapp",
+        to,
+        type: "video",
+        video: { ...mediaObj, ...(caption ? { caption } : {}) },
+      };
+
+    case "audio":
+      return {
+        messaging_product: "whatsapp",
+        to,
+        type: "audio",
+        audio: mediaObj,
+      };
+
+    case "document":
+      return {
+        messaging_product: "whatsapp",
+        to,
+        type: "document",
+        document: {
+          ...mediaObj,
+          filename: filename || "document.pdf",
+          ...(caption ? { caption } : {}),
+        },
+      };
+
+    case "link":
+      return {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: {
+          body: caption ? `${caption}\n\n${mediaRef}` : mediaRef,
+          preview_url: true,
+        },
+      };
+
+    default:
+      return {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: { body: caption || "", preview_url: true },
+      };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: Send direct (non-template) media message
+// ═══════════════════════════════════════════════════════════════
+async function sendDirectMessage(
+  phoneNumberId: string,
+  accessToken: string,
+  to: string,
+  messageType: string,
+  mediaRef: string,
+  caption: string,
+  filename?: string
+): Promise<{ ok: boolean; data: any; wamid: string | null }> {
+  const payload = buildDirectPayload(to, messageType, mediaRef, caption, filename);
+
+  console.log(`📤 [SEND] Sending ${messageType} message to ${to}...`);
+
+  const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json();
+  const wamid = extractWamid(data);
+
+  if (res.ok || wamid) {
+    console.log(`✅ [SEND] ${messageType} sent successfully. WAMID: ${wamid}`);
+  } else {
+    console.error(`❌ [SEND] Failed:`, JSON.stringify(data, null, 2));
+  }
+
   return { ok: res.ok || !!wamid, data, wamid };
 }
 
@@ -273,17 +417,13 @@ export async function POST(req: Request) {
     }
 
     const phone = cleanStr(formData?.get("phone") || body.phone || "");
-    const templateName = cleanStr(formData?.get("templateName") || body.templateName || "");
-    const languageCode = cleanStr(formData?.get("languageCode") || body.languageCode || "en");
-    let variables = JSON.parse(cleanStr(formData?.get("variables") || "[]")) || body.variables || [];
-    const headerMediaType = cleanStr(formData?.get("headerMediaType") || body.headerMediaType || body.mediaType || "none");
-    const file = (formData?.get("file") as File) || null;
-    const mediaUrl = cleanStr(formData?.get("mediaUrl") || body.mediaUrl || "");
-    const category = cleanStr(formData?.get("category") || body.category || "MARKETING");
+    const messageType = cleanStr(formData?.get("messageType") || body.messageType || "template");
     const explicitPhoneId = cleanStr(formData?.get("whatsappPhoneNumberId") || body.whatsappPhoneNumberId || "");
+    const category = cleanStr(formData?.get("category") || body.category || "MARKETING");
 
-    if (!phone || !templateName) {
-      return NextResponse.json({ success: false, message: "Phone and templateName are required" }, { status: 400 });
+    // ✅ Validate phone for ALL message types
+    if (!phone) {
+      return NextResponse.json({ success: false, message: "Phone is required" }, { status: 400 });
     }
 
     const finalCategory = (category || "MARKETING").toUpperCase().trim();
@@ -296,6 +436,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, message: "WhatsApp credentials not configured." }, { status: 400 });
     }
 
+    // ✅ Billing check
     let messagePrice = 0;
     if (payer.enabledCountries && payer.enabledCountries.length > 0) {
       const matchedCountry = payer.enabledCountries.find((c: any) => phone.startsWith(c.code));
@@ -315,6 +456,117 @@ export async function POST(req: Request) {
     }
 
     const sanitizedPhone = phone.replace(/\+/g, "");
+
+    // ═══════════════════════════════════════════════════════════════
+    // ✅ DIRECT MEDIA/TEXT MESSAGE (non-template)
+    // ═══════════════════════════════════════════════════════════════
+    if (messageType !== "template") {
+      const message = cleanStr(formData?.get("message") || body.message || "");
+      const mediaUrl = cleanStr(formData?.get("mediaUrl") || body.mediaUrl || "");
+      const file = (formData?.get("file") as File) || null;
+
+      // Validate based on message type
+      if (messageType === "text" && !message) {
+        return NextResponse.json({ success: false, message: "Message text is required for text messages" }, { status: 400 });
+      }
+
+      if (["image", "video", "audio", "document"].includes(messageType) && !file && !mediaUrl) {
+        return NextResponse.json({ success: false, message: "File or mediaUrl is required for media messages" }, { status: 400 });
+      }
+
+      // Upload file to Meta if provided
+      let mediaRef = mediaUrl;
+      let filename: string | undefined = undefined;
+
+      if (file) {
+        filename = file.name || undefined;
+        console.log(`📤 [SEND] Uploading ${file.name} (${file.type}, ${file.size} bytes) to Meta...`);
+        const uploadedId = await uploadFileToMeta(PHONE_NUMBER_ID, ACCESS_TOKEN, file);
+        if (!uploadedId) {
+          return NextResponse.json({ success: false, message: "Failed to upload media to Meta" }, { status: 500 });
+        }
+        mediaRef = uploadedId;
+        console.log(`✅ [SEND] Media uploaded, ID: ${uploadedId}`);
+      }
+
+      // Send the direct message
+      const result = await sendDirectMessage(
+        PHONE_NUMBER_ID,
+        ACCESS_TOKEN,
+        sanitizedPhone,
+        messageType,
+        mediaRef,
+        message,
+        filename
+      );
+
+      if (!result.ok && !result.wamid) {
+        console.error("❌ [SEND] Direct message failed:", JSON.stringify(result.data, null, 2));
+        return NextResponse.json(
+          { success: false, error: result.data.error, message: result.data.error?.message || "Failed to send" },
+          { status: 400 }
+        );
+      }
+
+      // ✅ Balance update
+      try {
+        if (messagePrice > 0) {
+          payer.balance = Math.max(0, Math.round((currentBalance - messagePrice) * 100) / 100);
+          await payer.save();
+        }
+      } catch (balErr) {
+        console.error("⚠️ Balance update failed (message still sent):", balErr);
+      }
+
+      // ✅ Usage increment
+      try {
+        await incrementUsage(session.user.id, "testMessages");
+      } catch (usageErr) {
+        console.error("⚠️ Usage increment failed (message still sent):", usageErr);
+      }
+
+      // ✅ Save to DB
+      try {
+        await Message.create({
+          userId: session.user.id,
+          phone: sanitizedPhone,
+          text: message || `[${messageType.toUpperCase()}]`,
+          direction: "out",
+          messageType,
+          mediaUrl: mediaRef || mediaUrl || null,
+          whatsappMessageId: result.wamid,
+          status: "sent",
+          whatsappPhoneNumberId: PHONE_NUMBER_ID,
+        });
+      } catch (dbErr) {
+        console.error("⚠️ DB save failed (message still sent):", dbErr);
+      }
+
+      return NextResponse.json({
+        success: true,
+        data: result.data,
+        wamid: result.wamid,
+        balance: payer.balance,
+        chargedAmount: messagePrice,
+        category: cat,
+        messageType,
+      });
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ✅ TEMPLATE MESSAGE (existing logic)
+    // ═══════════════════════════════════════════════════════════════
+    const templateName = cleanStr(formData?.get("templateName") || body.templateName || "");
+    const languageCode = cleanStr(formData?.get("languageCode") || body.languageCode || "en");
+    let variables = JSON.parse(cleanStr(formData?.get("variables") || "[]")) || body.variables || [];
+    const headerMediaType = cleanStr(formData?.get("headerMediaType") || body.headerMediaType || body.mediaType || "none");
+    const file = (formData?.get("file") as File) || null;
+    const mediaUrl = cleanStr(formData?.get("mediaUrl") || body.mediaUrl || "");
+
+    if (!templateName) {
+      return NextResponse.json({ success: false, message: "templateName is required for template messages" }, { status: 400 });
+    }
+
     variables = (Array.isArray(variables) ? variables : []).filter((v: any) => v && String(v).trim() !== "");
     if (cat === "AUTHENTICATION" && variables.length === 0) {
       variables = [Math.floor(1000 + Math.random() * 9000).toString()];
@@ -356,17 +608,13 @@ export async function POST(req: Request) {
     // ✅ Build initial components
     let components = buildComponents(detectedHeaderFormat, variables, uploadedMediaId, mediaUrl);
 
-    // ═══════════════════════════════════════════════════════════════
     // ✅ ATTEMPT 1: Send with detected header format
-    // ═══════════════════════════════════════════════════════════════
     let result = await sendToWhatsApp(PHONE_NUMBER_ID, ACCESS_TOKEN, sanitizedPhone, templateName, languageCode, components);
     let sendSuccess = result.ok;
     let data = result.data;
     let wamid = result.wamid;
 
-    // ═══════════════════════════════════════════════════════════════
     // ✅ ATTEMPT 2: Retry for AUTHENTICATION error 131008
-    // ═══════════════════════════════════════════════════════════════
     if (!sendSuccess && data.error?.code === 131008 && cat === "AUTHENTICATION" && variables.length > 0) {
       console.log("🔄 Retrying with button parameter (error 131008)...");
       const retryComponents: any[] = [];
@@ -380,9 +628,7 @@ export async function POST(req: Request) {
       wamid = result.wamid;
     }
 
-    // ═══════════════════════════════════════════════════════════════
     // ✅ ATTEMPT 3: Retry for format mismatch 132012
-    // ═══════════════════════════════════════════════════════════════
     if (!sendSuccess && data.error?.code === 132012) {
       const details = data.error?.error_data?.details || "";
       const match = details.match(/expected\s+(\w+)/i);
@@ -399,9 +645,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // ═══════════════════════════════════════════════════════════════
     // ✅ ATTEMPT 4: Try WITHOUT header
-    // ═══════════════════════════════════════════════════════════════
     if (!sendSuccess && data.error?.code === 132012 && components.length > 0 && components[0].type === "header") {
       console.log("🔄 Trying without header...");
       const noHeaderComponents = components.filter((c: any) => c.type !== "header");
@@ -411,9 +655,7 @@ export async function POST(req: Request) {
       wamid = result.wamid;
     }
 
-    // ═══════════════════════════════════════════════════════════════
     // ✅ If ALL attempts failed AND no WAMID, return error
-    // ═══════════════════════════════════════════════════════════════
     if (!sendSuccess && !wamid) {
       console.error("❌ WhatsApp Error (all attempts failed):", JSON.stringify(data, null, 2));
       return NextResponse.json(
@@ -422,10 +664,8 @@ export async function POST(req: Request) {
       );
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // ✅ MESSAGE SENT SUCCESSFULLY - Post-send ops in try/catch
-    // ═══════════════════════════════════════════════════════════════
-    console.log(`✅ Message sent successfully. WAMID: ${wamid}`);
+    // ✅ MESSAGE SENT SUCCESSFULLY
+    console.log(`✅ Template message sent successfully. WAMID: ${wamid}`);
 
     try {
       if (messagePrice > 0) {
