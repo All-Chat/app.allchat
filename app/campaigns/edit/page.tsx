@@ -59,11 +59,9 @@ function EditCampaignContent() {
   const [uploadStep, setUploadStep] = useState(1);
   const [fileName, setFileName] = useState("");
 
-  // ✅ NEW: Additional Fields State
   const [additionalFields, setAdditionalFields] = useState<string[]>([]);
   const [additionalFieldsData, setAdditionalFieldsData] = useState<string[][]>([]);
 
-  // ✅ NEW: Campaign Name existence check
   const [existingCampaignNames, setExistingCampaignNames] = useState<string[]>([]);
   const [nameError, setNameError] = useState("");
   
@@ -83,7 +81,7 @@ function EditCampaignContent() {
     fetchTags();
     fetchOptNumbers();
     fetchSettings();
-    fetchCampaignNames(); // ✅ NEW: fetch campaign names
+    fetchCampaignNames();
     if (campaignId) fetchCampaignData();
   }, [campaignId]);
 
@@ -136,7 +134,6 @@ function EditCampaignContent() {
     } catch (err) { console.error("Failed to fetch opt-out numbers", err); }
   };
 
-  // ✅ NEW: Fetch existing campaign names, EXCLUDING the current campaign being edited
   const fetchCampaignNames = async () => {
     try {
       const res = await fetch("/api/campaigns/list");
@@ -150,7 +147,6 @@ function EditCampaignContent() {
     } catch (err) { console.error("Failed to fetch campaign names", err); }
   };
 
-  // ✅ NEW: Handle campaign name change with existence check
   const handleCampaignNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setCampaignName(value);
@@ -217,7 +213,6 @@ function EditCampaignContent() {
           setOtpLength(campaign.otpLength || 4);
           setRawVariables(campaign.mappedVariables || []);
 
-          // ✅ NEW: Load existing additional fields and data
           setAdditionalFields(campaign.additionalFields || []);
           setAdditionalFieldsData(campaign.additionalFieldsData || []);
 
@@ -267,7 +262,6 @@ function EditCampaignContent() {
     const footerComp = tmpl.components?.find((c: any) => c.type === "FOOTER");
     setFooterText(footerComp?.text || "");
     
-    // ✅ FIX: Meta API uses type "BUTTONS" (plural) and stores them in a nested array
     const buttonsComp = tmpl.components?.find((c: any) => c.type === "BUTTONS");
     setButtons(buttonsComp?.buttons || []);
   };
@@ -283,15 +277,7 @@ function EditCampaignContent() {
     return preview;
   };
 
-  const isObviouslyFakePhone = (phone: string): boolean => {
-    const clean = phone.replace(/\+/g, "");
-    if (clean.length < 7) return true;
-    if (/^(\d)\1+$/.test(clean)) return true;
-    if (/^123456/.test(clean)) return true;
-    return false;
-  };
-
-  // ✅ MODIFIED: Added additionalIndices parameter
+  // ✅ FIXED: Valid numbers now strictly exclude duplicates and opted-out numbers
     const cleanAndValidateNumbers = (
     nums: string[], 
     names: string[], 
@@ -309,7 +295,7 @@ function EditCampaignContent() {
     
     for (let index = 0; index < nums.length; index++) {
       const num = nums[index];
-      if (!num || String(num).trim() === "") continue; // Skip completely empty rows
+      if (!num || String(num).trim() === "") continue;
       
       let clean = String(num).replace(/[^\d+]/g, "");
       if (clean.startsWith("+")) clean = clean.substring(1);
@@ -319,24 +305,29 @@ function EditCampaignContent() {
         clean = selectedCountryCode + clean;
       }
 
-      if (optedOutNumbers.includes(clean)) { 
-        optedOut++; 
-      }
-
-      // Basic validation: just check length
-      if (clean.length >= 7) {
-        valid++;
-      } else {
-        invalid++;
-      }
+      if (!clean) continue;
 
       // Check for duplicates
       if (seen.has(clean)) { 
         duplicates++; 
-        continue; // Skip adding duplicates to the final send list
+        continue; 
       } 
-      
       seen.add(clean);
+
+      // Check for opted out
+      if (optedOutNumbers.includes(clean)) { 
+        optedOut++; 
+        continue; 
+      }
+
+      // Basic validation: just check length
+      if (clean.length < 7) {
+        invalid++;
+        continue;
+      }
+
+      // Valid and sendable
+      valid++;
       finalNumbers.push(clean);
       finalNames.push(names[index] || "");
       
@@ -378,7 +369,6 @@ function EditCampaignContent() {
         const data = await file.arrayBuffer();
         const workbook = XLSX.read(data, { type: "array", cellDates: false });
         const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-        // ✅ FIX: raw: false prevents scientific notation truncation of large phone numbers
         const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false, defval: "" });
         rows = jsonData
           .map((row: any) => row.map((cell: any) => String(cell || "").trim()))
@@ -396,15 +386,14 @@ function EditCampaignContent() {
         return;
       }
 
-      // ✅ FIX: Auto-detect if the first row is a header or actual phone numbers
       const firstRow = rows[0] || [];
       const hasHeader = !firstRow.some((cell: any) => {
         const cleaned = String(cell).replace(/\D/g, "");
-        return cleaned.length >= 7; // If any cell has 7+ digits, it's probably a phone number, not a header
+        return cleaned.length >= 7;
       });
 
       const headers = hasHeader ? rows[0] : rows[0].map((_, i) => `Column ${i + 1}`);
-      const dataRows = hasHeader ? rows.slice(1) : rows; // Don't slice if there's no header
+      const dataRows = hasHeader ? rows.slice(1) : rows;
       
       const MAX_LIMIT = 50000;
       if (dataRows.length > MAX_LIMIT) {
@@ -429,8 +418,6 @@ function EditCampaignContent() {
     }
   };
 
-
-  // ✅ MODIFIED: Process additional fields
   const processFileColumns = () => {
     if (!selectedPhoneCol || selectedPhoneCol === "skip") { toast.error("Select Phone column"); return; }
     const phoneIdx = fileHeaders.indexOf(selectedPhoneCol);
@@ -464,7 +451,6 @@ function EditCampaignContent() {
     setAdditionalFieldsData([]);
   };
 
-  // ✅ NEW: Additional field handlers
   const addAdditionalField = () => setAdditionalFields([...additionalFields, "skip"]);
   const removeAdditionalField = (index: number) => setAdditionalFields(additionalFields.filter((_, i) => i !== index));
   const updateAdditionalField = (index: number, value: string) => {
@@ -527,10 +513,8 @@ function EditCampaignContent() {
       </div>
     );
   };
-
-  const handleSave = async (isSchedule: boolean) => {
+const handleSave = async (isSchedule: boolean) => {
     if (!campaignName || !selectedTemplate || rawNumbers.length === 0) { toast.error("Name, Template, and valid Numbers are required"); return; }
-    // ✅ NEW: Block save if name exists
     if (existingCampaignNames.includes(campaignName.toLowerCase())) {
       toast.error("Campaign name already exists. Please use another name.");
       setNameError("⚠️ This campaign name already exists. Please use another name.");
@@ -562,7 +546,6 @@ function EditCampaignContent() {
         mediaType,
         languageCode,
         scheduledAt: isSchedule ? scheduleDate : null,
-        // ✅ NEW: Additional fields
         additionalFields: validAdditionalFields,
         additionalFieldsData: additionalFieldsData.length > 0 ? additionalFieldsData : [],
       };
@@ -623,7 +606,6 @@ function EditCampaignContent() {
             <div className="lg:col-span-2 space-y-6 sm:space-y-8">
               <div className="bg-white p-5 sm:p-8 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 space-y-5 sm:space-y-6 hover:shadow-md transition-shadow">
                 <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest flex items-center gap-2"><Sparkles size={14} className="text-indigo-500" /> Campaign Details</label>
-                {/* ✅ MODIFIED: Campaign name with existence check */}
                 <div>
                   <input type="text" value={campaignName} onChange={handleCampaignNameChange} placeholder="Campaign Name" className={`w-full px-4 sm:px-5 py-3 sm:py-3.5 bg-slate-50 border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)] ${nameError ? "border-red-400" : "border-slate-200"}`} />
                   {nameError && (
@@ -706,8 +688,7 @@ function EditCampaignContent() {
                   </div>
                 )}
               </div>
-
-              {selectedTemplate && (
+ {selectedTemplate && (
                 <div className="bg-white p-5 sm:p-6 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow">
                   <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest mb-5 block">Live Preview</label>
                   <div className="bg-[#efeae2] p-4 rounded-2xl w-full max-w-xs sm:max-w-sm mx-auto shadow-inner border border-slate-200 relative overflow-hidden">
@@ -767,7 +748,6 @@ function EditCampaignContent() {
                   </select>
                 </div>
 
-                {/* ✅ NEW: Show existing additional fields info when no file uploaded */}
                 {uploadStep === 1 && additionalFields.length > 0 && (
                   <div className="bg-indigo-50/50 border border-indigo-100 rounded-xl p-3">
                     <p className="text-[11px] font-bold text-indigo-700 mb-1.5">📋 Current Additional Fields:</p>
@@ -798,7 +778,6 @@ function EditCampaignContent() {
                     <select value={selectedPhoneCol} onChange={(e) => setSelectedPhoneCol(e.target.value)} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"><option value="skip">-- Select Phone Column --</option>{fileHeaders.map((h, i) => (<option key={i} value={h}>📱 {h}</option>))}</select>
                     <select value={selectedNameCol} onChange={(e) => setSelectedNameCol(e.target.value)} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"><option value="skip">-- Select Name Column (Optional) --</option>{fileHeaders.map((h, i) => (<option key={i} value={h}>👤 {h}</option>))}</select>
 
-                    {/* ✅ NEW: Additional Fields Section */}
                     <div className="space-y-2 mt-2 pt-2 border-t border-indigo-100">
                       <div className="flex items-center justify-between">
                         <p className="text-[11px] font-extrabold text-indigo-800 uppercase tracking-widest flex items-center gap-2">
