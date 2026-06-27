@@ -56,11 +56,9 @@ export default function CreateCampaign() {
   const [uploadStep, setUploadStep] = useState(1);
   const [fileName, setFileName] = useState("");
 
-  // ✅ NEW: Additional Fields State
-  const [additionalFields, setAdditionalFields] = useState<string[]>([]); // selected column names
-  const [additionalFieldsData, setAdditionalFieldsData] = useState<string[][]>([]); // values per contact
+  const [additionalFields, setAdditionalFields] = useState<string[]>([]);
+  const [additionalFieldsData, setAdditionalFieldsData] = useState<string[][]>([]);
 
-  // ✅ NEW: Campaign Name existence check
   const [existingCampaignNames, setExistingCampaignNames] = useState<string[]>([]);
   const [nameError, setNameError] = useState("");
 
@@ -90,7 +88,7 @@ export default function CreateCampaign() {
       fetchOptNumbers();
       fetchLimits();
       fetchSettings();
-      fetchCampaignNames(); // ✅ NEW: fetch existing campaign names
+      fetchCampaignNames();
     } else if (status === "unauthenticated") {
       window.location.href = "/signin";
     }
@@ -121,7 +119,6 @@ export default function CreateCampaign() {
     }
   };
 
-  // ✅ NEW: Fetch existing campaign names for uniqueness check
   const fetchCampaignNames = async () => {
     try {
       const res = await fetch("/api/campaigns/list");
@@ -184,7 +181,6 @@ export default function CreateCampaign() {
     }
   };
 
-  // ✅ NEW: Handle campaign name change with existence check
   const handleCampaignNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setCampaignName(value);
@@ -197,7 +193,6 @@ export default function CreateCampaign() {
 
   const handleTagSelect = async (tagName: string) => {
     setSelectedTag(tagName);
-    // ✅ Reset additional fields when loading from tags
     setAdditionalFields([]);
     setAdditionalFieldsData([]);
     if (!tagName) return;
@@ -266,7 +261,6 @@ export default function CreateCampaign() {
     const footerComp = tmpl.components?.find((c: any) => c.type === "FOOTER");
     setFooterText(footerComp?.text || "");
 
-    // ✅ FIX: Meta API uses type "BUTTONS" (plural) and stores them in a nested array
     const buttonsComp = tmpl.components?.find((c: any) => c.type === "BUTTONS");
     setButtons(buttonsComp?.buttons || []);
   };
@@ -282,15 +276,7 @@ export default function CreateCampaign() {
     return preview;
   };
 
-  const isObviouslyFakePhone = (phone: string): boolean => {
-    const clean = phone.replace(/\+/g, "");
-    if (clean.length < 7) return true;
-    if (/^(\d)\1+$/.test(clean)) return true;
-    if (/^123456/.test(clean)) return true;
-    return false;
-  };
-
-  // ✅ MODIFIED: Added additionalIndices parameter and finalAdditionalData return
+  // ✅ FIXED: Valid numbers now strictly exclude duplicates and opted-out numbers
    const cleanAndValidateNumbers = (
     nums: string[], 
     names: string[], 
@@ -308,7 +294,7 @@ export default function CreateCampaign() {
 
     for (let index = 0; index < nums.length; index++) {
       const num = nums[index];
-      if (!num || String(num).trim() === "") continue; // Skip completely empty rows
+      if (!num || String(num).trim() === "") continue;
       
       let clean = String(num).replace(/[^\d+]/g, "");
       if (clean.startsWith("+")) clean = clean.substring(1);
@@ -318,24 +304,29 @@ export default function CreateCampaign() {
         clean = selectedCountryCode + clean;
       }
 
-      if (optedOutNumbers.includes(clean)) {
-        optedOut++;
-      }
-
-      // Basic validation: just check length
-      if (clean.length >= 7) {
-        valid++;
-      } else {
-        invalid++;
-      }
+      if (!clean) continue;
 
       // Check for duplicates
       if (seen.has(clean)) {
         duplicates++;
-        continue; // Skip adding duplicates to the final send list
+        continue;
       } 
-      
       seen.add(clean);
+
+      // Check for opted out
+      if (optedOutNumbers.includes(clean)) {
+        optedOut++;
+        continue;
+      }
+
+      // Basic validation: just check length
+      if (clean.length < 7) {
+        invalid++;
+        continue;
+      }
+
+      // Valid and sendable
+      valid++;
       finalNumbers.push(clean);
       finalNames.push(names[index] || "");
       
@@ -363,7 +354,6 @@ export default function CreateCampaign() {
     setRawNumbers(finalNumbers);
     setRawNames(finalNames);
     setRawVariables(finalVariables);
-    // ✅ Reset additional fields for manual paste
     setAdditionalFields([]);
     setAdditionalFieldsData([]);
     if (finalNumbers.length > 0) toast.success(`Parsed ${finalNumbers.length} valid numbers`);
@@ -381,7 +371,6 @@ export default function CreateCampaign() {
         const data = await file.arrayBuffer();
         const workbook = XLSX.read(data, { type: "array", cellDates: false });
         const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-        // ✅ FIX: raw: false prevents scientific notation truncation of large phone numbers
         const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false, defval: "" });
         rows = jsonData
           .map((row: any) => row.map((cell: any) => String(cell || "").trim()))
@@ -399,15 +388,14 @@ export default function CreateCampaign() {
         return;
       }
 
-      // ✅ FIX: Auto-detect if the first row is a header or actual phone numbers
       const firstRow = rows[0] || [];
       const hasHeader = !firstRow.some((cell: any) => {
         const cleaned = String(cell).replace(/\D/g, "");
-        return cleaned.length >= 7; // If any cell has 7+ digits, it's probably a phone number, not a header
+        return cleaned.length >= 7;
       });
 
       const headers = hasHeader ? rows[0] : rows[0].map((_, i) => `Column ${i + 1}`);
-      const dataRows = hasHeader ? rows.slice(1) : rows; // Don't slice if there's no header
+      const dataRows = hasHeader ? rows.slice(1) : rows;
 
       const MAX_LIMIT = 50000;
       if (dataRows.length > MAX_LIMIT) {
@@ -436,7 +424,6 @@ export default function CreateCampaign() {
     }
   };
 
-  // ✅ MODIFIED: Process additional fields data
   const processFileColumns = () => {
     if (!selectedPhoneCol || selectedPhoneCol === "skip") {
       toast.error("Select Phone column");
@@ -448,7 +435,6 @@ export default function CreateCampaign() {
       
     const varIndices = selectedVarCols.map(col => col && col !== "skip" ? fileHeaders.indexOf(col) : -1);
 
-    // ✅ NEW: Build additional field indices (excluding "skip")
     const additionalIndices = additionalFields
       .map(col => col && col !== "skip" ? fileHeaders.indexOf(col) : -1);
 
@@ -465,7 +451,6 @@ export default function CreateCampaign() {
     setRawNumbers(finalNumbers);
     setRawNames(finalNames);
     setRawVariables(finalVariables);
-    // ✅ Save additional fields data (filter out "skip" entries from column names)
     const validAdditionalFields = additionalFields.filter(f => f && f !== "skip");
     setAdditionalFieldsData(finalAdditionalData);
     toast.success(`Extracted ${finalNumbers.length} valid numbers`);
@@ -479,22 +464,18 @@ export default function CreateCampaign() {
     setSelectedNameCol("");
     setFileName("");
     setSelectedVarCols(variables.map(() => "skip"));
-    // ✅ Reset additional fields
     setAdditionalFields([]);
     setAdditionalFieldsData([]);
   };
 
-  // ✅ NEW: Add an additional field dropdown
   const addAdditionalField = () => {
     setAdditionalFields([...additionalFields, "skip"]);
   };
 
-  // ✅ NEW: Remove an additional field
   const removeAdditionalField = (index: number) => {
     setAdditionalFields(additionalFields.filter((_, i) => i !== index));
   };
 
-  // ✅ NEW: Update an additional field selection
   const updateAdditionalField = (index: number, value: string) => {
     const newArr = [...additionalFields];
     newArr[index] = value;
@@ -650,14 +631,12 @@ export default function CreateCampaign() {
         )}
       </div>
     );
-  };
-
-  const handleSave = async (isSchedule: boolean) => {
+  }; 
+const handleSave = async (isSchedule: boolean) => {
     if (!campaignName || !selectedTemplate || rawNumbers.length === 0) {
       toast.error("Fill all required fields");
       return;
     }
-    // ✅ NEW: Block save if name exists
     if (existingCampaignNames.includes(campaignName.toLowerCase())) {
       toast.error("Campaign name already exists. Please use another name.");
       setNameError("⚠️ This campaign name already exists. Please use another name.");
@@ -687,7 +666,6 @@ export default function CreateCampaign() {
     setSaving(true);
     try {
       let res;
-      // ✅ Filter out "skip" from additional fields
       const validAdditionalFields = additionalFields.filter(f => f && f !== "skip");
       const commonData = {
         name: campaignName,
@@ -702,7 +680,6 @@ export default function CreateCampaign() {
         mediaType,
         languageCode,
         scheduledAt: isSchedule ? scheduleDate : null,
-        // ✅ NEW: Additional fields and their data
         additionalFields: validAdditionalFields,
         additionalFieldsData: additionalFieldsData.length > 0 ? additionalFieldsData : [],
       };
@@ -875,7 +852,6 @@ export default function CreateCampaign() {
                 <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest flex items-center gap-2">
                   <Sparkles size={14} className="text-emerald-500" /> Campaign Details
                 </label>
-                {/* ✅ MODIFIED: Campaign name with existence check */}
                 <div>
                   <input
                     type="text"
@@ -1134,8 +1110,7 @@ export default function CreateCampaign() {
                     ))}
                   </select>
                 </div>
-
-                {uploadStep === 1 ? (
+{uploadStep === 1 ? (
                   <div className="relative border-2 border-dashed border-slate-200 rounded-2xl p-6 sm:p-10 text-center hover:bg-emerald-50/30 hover:border-emerald-300 transition-all h-48 sm:h-56 flex flex-col items-center justify-center group cursor-pointer">
                     <input
                       type="file"
@@ -1192,7 +1167,6 @@ export default function CreateCampaign() {
                       ))}
                     </select>
 
-                    {/* ✅ NEW: Additional Fields Section */}
                     <div className="space-y-2 mt-2 pt-2 border-t border-emerald-100">
                       <div className="flex items-center justify-between">
                         <p className="text-[11px] font-extrabold text-emerald-800 uppercase tracking-widest flex items-center gap-2">
