@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Campaign from "@/models/Campaign";
 import User from "@/models/User";
+import Message from "@/models/Message"; // ✅ FIX: Import Message model
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getPriceForCategory } from "@/lib/billing";
@@ -77,9 +78,6 @@ function resolveCredentials(user: any, payer: any, explicitPhoneId?: string): { 
   return { PHONE_NUMBER_ID, ACCESS_TOKEN };
 }
 
-// ✅ FIX: When enabledCountries is set but the phone prefix doesn't match any entry,
-// fall back to the base category price instead of returning -1 (which caused "failed" status).
-// Return -1 ONLY when you explicitly want to BLOCK a country (remove this behavior if unneeded).
 function getPriceForPhone(payer: any, phone: string, category: string): number {
   if (payer.enabledCountries && payer.enabledCountries.length > 0) {
     const matchedCountry = payer.enabledCountries.find((c: any) => phone.startsWith(c.code));
@@ -88,9 +86,6 @@ function getPriceForPhone(payer: any, phone: string, category: string): number {
       if (category === "UTILITY") return matchedCountry.priceUtility ?? getPriceForCategory(payer, category);
       if (category === "AUTHENTICATION") return matchedCountry.priceAuthentication ?? getPriceForCategory(payer, category);
     }
-    // ✅ Country not in the enabled list — fall back to base price instead of blocking.
-    // If you want to BLOCK unmatched countries, change this back to: return -1;
-    console.warn(`⚠️ [BILLING] Phone ${phone} did not match any enabledCountry prefix. Falling back to base price.`);
     return getPriceForCategory(payer, category);
   }
   return getPriceForCategory(payer, category);
@@ -158,7 +153,6 @@ async function workerProcess(
     let wamid = extractWamid(sendData);
     if (wamid) return { status: "sent", wamid };
 
-    // Retry 131008
     if (sendData.error?.code === 131008 && templateConfig.templateCategory === "AUTHENTICATION" && currentVariables.length > 0) {
       const retryComponents: any[] = [];
       if (components.length > 0 && components[0].type === "header") retryComponents.push(components[0]);
@@ -173,7 +167,6 @@ async function workerProcess(
       try { sendData = await sendRes.json(); if (extractWamid(sendData)) return { status: "sent", wamid: extractWamid(sendData) }; } catch (e) {}
     }
 
-    // Retry 132012 format mismatch
     if (sendData.error?.code === 132012 && templateConfig.mediaUrl) {
       const details = sendData.error?.error_data?.details || ""; const match = details.match(/expected\s+(\w+)/i);
       if (match) {
@@ -190,7 +183,6 @@ async function workerProcess(
       }
     }
 
-    // Final fallback without header
     if (sendData.error?.code === 132012 && components.length > 0 && components[0].type === "header") {
       const noHeaderComponents = components.filter((c: any) => c.type !== "header");
       sendRes = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: templateConfig.templateName, language: { code: templateConfig.languageCode || "en" }, components: noHeaderComponents } }) });
@@ -315,15 +307,14 @@ export async function POST(req: Request) {
       const results = await Promise.all(workerPromises);
       let batchDeducted = 0;
 
-      results.forEach((res, i) => {
-        const currentI = batchIndices[i]; const phone = batchPhones[i];
+      for (let i = 0; i < results.length; i++) {
+        const res = results[i];
+        const currentI = batchIndices[i];
+        const phone = batchPhones[i].replace(/\+/g, "");
 
         if (res.status === "sent") {
           sentCount++;
           const phonePrice = getPriceForPhone(payer, phone, category);
-          // ✅ FIX: phonePrice is now always >= 0 (falls back to base price).
-          // The -1 / "country not enabled" block that was incorrectly marking sent messages
-          // as failed has been removed. If you need country blocking, add it back explicitly.
           batchDeducted += phonePrice;
           if (campaign.reportData[currentI]) {
             campaign.reportData[currentI].status = "sent";
@@ -331,6 +322,28 @@ export async function POST(req: Request) {
             campaign.reportData[currentI].charged = true;
             campaign.reportData[currentI].chargedAmount = phonePrice;
           }
+
+          // ═══════════════════════════════════════════════════════════════
+          // ✅ NEW: Save message to DB so it appears in Live Chat immediately
+          // ═══════════════════════════════════════════════════════════════
+          try {
+            await Message.create({
+              userId: userId,
+              phone: phone,
+              text: "", // Frontend will fetch the template body text using the templateName
+              direction: "out",
+              messageType: "template",
+              mediaUrl: templateConfig.mediaUrl || null,
+              whatsappMessageId: res.wamid,
+              status: "sent",
+              templateName: templateConfig.templateName,
+              templateLanguage: templateConfig.languageCode,
+              whatsappPhoneNumberId: PHONE_NUMBER_ID,
+            });
+          } catch (dbErr) {
+            console.error("⚠️ Failed to save campaign message to DB:", dbErr);
+          }
+
         } else if (res.status === "failed") {
           failedCount++;
           if (campaign.reportData[currentI]) {
@@ -340,7 +353,7 @@ export async function POST(req: Request) {
         } else if (res.status === "skipped") {
           skippedCount++;
         }
-      });
+      }
 
       campaign.markModified("reportData");
 
