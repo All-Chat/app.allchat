@@ -7,13 +7,14 @@ import Workflow from "@/models/Workflow";
 import Session from "@/models/Session";
 import Form from "@/models/Form";
 import FormResponse from "@/models/FormResponse";
+import fs from "fs";
+import path from "path";
+
+export const runtime = "nodejs";
 
 const VERIFY_TOKEN =
   process.env.WHATSAPP_VERIFY_TOKEN || "watiX_webhook_verify_2024";
 
-/* ============================================================================
-   GLOBAL INACTIVITY TIMERS MAP
-   ---------------------------------------------------------------------------- */
 const workflowTimers = new Map<string, NodeJS.Timeout>();
 
 const clearWorkflowTimer = (phone: string) => {
@@ -120,7 +121,6 @@ const startFormInactivityTimer = (
   }
 };
 
-// ─── GET: Webhook Verification ─────────────────────────────────────────
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const mode = searchParams.get("hub.mode");
@@ -137,9 +137,6 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// 🔴 FIND USER BY PHONE_NUMBER_ID VIA DB QUERY
-// ════════════════════════════════════════════════════════════════════════
 async function findUserByPhoneNumberId(phoneNumberId: string) {
   const user = await User.findOne({
     $or: [
@@ -183,7 +180,6 @@ async function findUserByPhoneNumberId(phoneNumberId: string) {
   };
 }
 
-// ─── GET ALL WHATSAPP NUMBERS FROM DB (FOR CRON ONLY) ──────────────────
 async function getAllWhatsappNumbersFromDB() {
   const users = await User.find({}).lean();
   const numbers: any[] = [];
@@ -222,7 +218,6 @@ async function getAllWhatsappNumbersFromDB() {
   return numbers;
 }
 
-// ─── FORCE PULL MESSAGES (CRON) ────────────────────────────────────────
 async function forcePullMessages(num: any) {
   try {
     const since = Math.floor((Date.now() - 5000) / 1000);
@@ -232,20 +227,11 @@ async function forcePullMessages(num: any) {
       headers: { Authorization: `Bearer ${num.accessToken}` },
     });
 
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      console.error(
-        `❌ [PULL] API Error for ${num.name}:`,
-        errData.error?.message || res.statusText
-      );
-      return;
-    }
+    if (!res.ok) return;
 
     const data = await res.json();
     const msgs = data.data || [];
     if (msgs.length === 0) return;
-
-    console.log(`📨 [PULL] Found ${msgs.length} message(s) for ${num.name}`);
 
     for (const msg of msgs) {
       if (!msg.from) continue;
@@ -257,7 +243,6 @@ async function forcePullMessages(num: any) {
   }
 }
 
-// ─── PARSE MESSAGE ─────────────────────────────────────────────────────
 function parseMessage(msg: any): {
   text: string;
   messageType: string;
@@ -319,7 +304,6 @@ function parseMessage(msg: any): {
   return { text, messageType, mediaId };
 }
 
-// ─── EXTRACT BUTTON PAYLOAD ────────────────────────────────────────────
 function extractButtonPayload(msg: any): string | null {
   if (msg.type === "interactive") {
     return (
@@ -334,7 +318,6 @@ function extractButtonPayload(msg: any): string | null {
   return null;
 }
 
-// ─── PROCESS AND SAVE MESSAGE ──────────────────────────────────────────
 async function processAndSaveMessage(msg: any, num: any) {
   const exists = await Message.findOne({
     whatsappMessageId: msg.id,
@@ -350,7 +333,6 @@ async function processAndSaveMessage(msg: any, num: any) {
   }
 
   const { text, messageType, mediaId } = parseMessage(msg);
-
   const timestamp = msg.timestamp
     ? new Date(parseInt(msg.timestamp) * 1000)
     : new Date();
@@ -368,57 +350,56 @@ async function processAndSaveMessage(msg: any, num: any) {
     senderNumber: msg.from,
     createdAt: timestamp,
   });
-
-  console.log(
-    `   ✅ [SAVED] From: ${msg.from} → User: ${num.userId} | Number: ${num.name} (${num.phoneNumberId}) | Text: "${text.substring(0, 60)}"`
-  );
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// 🔴 UPLOAD MEDIA TO META FROM URL (for reliable media delivery)
-// ════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: Robustly Upload Media to Meta by Reading Local/Remote File
+// ═══════════════════════════════════════════════════════════════
 async function uploadMediaToMetaFromUrl(
   phoneNumberId: string,
   accessToken: string,
   mediaUrl: string
 ): Promise<string | null> {
   try {
-    // If it's already a Meta media ID (numeric), return it directly
-    if (/^\d+$/.test(mediaUrl)) {
-      return mediaUrl;
-    }
+    if (/^\d+$/.test(mediaUrl)) return mediaUrl;
 
-    // Resolve relative URLs to full URLs
-    let fullUrl = mediaUrl;
-    if (!mediaUrl.startsWith("http://") && !mediaUrl.startsWith("https://")) {
+    let blob: Blob | null = null;
+    let filename = "media";
+
+    if (mediaUrl.startsWith("/uploads/") || mediaUrl.startsWith("/public/")) {
+      const localPath = path.join(process.cwd(), "public", mediaUrl);
+      if (fs.existsSync(localPath)) {
+        const fileBuffer = fs.readFileSync(localPath);
+        blob = new Blob([fileBuffer]);
+        const ext = path.extname(localPath).toLowerCase();
+        filename = `media${ext}`;
+      } else {
+        console.error(`❌ [MEDIA] Local file not found: ${localPath}`);
+      }
+    } else if (mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://")) {
+      const downloadRes = await fetch(mediaUrl);
+      if (downloadRes.ok) {
+        blob = await downloadRes.blob();
+        const ext = path.extname(new URL(mediaUrl).pathname).toLowerCase();
+        filename = `media${ext || ".bin"}`;
+      }
+    } else {
       const baseUrl = process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_APP_URL || "";
       if (baseUrl) {
-        fullUrl = `${baseUrl}${mediaUrl.startsWith("/") ? "" : "/"}${mediaUrl}`;
-      } else {
-        console.error("❌ [MEDIA] Cannot resolve relative URL without NEXTAUTH_URL");
-        return null;
+        const fullUrl = `${baseUrl}${mediaUrl.startsWith("/") ? "" : "/"}${mediaUrl}`;
+        const downloadRes = await fetch(fullUrl);
+        if (downloadRes.ok) {
+          blob = await downloadRes.blob();
+          const ext = path.extname(new URL(fullUrl).pathname).toLowerCase();
+          filename = `media${ext || ".bin"}`;
+        }
       }
     }
 
-    console.log(`📤 [MEDIA] Downloading from: ${fullUrl}`);
+    if (!blob) return null;
 
-    // Download the file
-    const downloadRes = await fetch(fullUrl);
-    if (!downloadRes.ok) {
-      console.error(`❌ [MEDIA] Failed to download: ${downloadRes.status}`);
-      return null;
-    }
-
-    const blob = await downloadRes.blob();
-
-    // Determine content type
-    const contentType = downloadRes.headers.get("content-type") || "application/octet-stream";
-
-    console.log(`📤 [MEDIA] Uploading to Meta (${contentType}, ${blob.size} bytes)...`);
-
-    // Upload to Meta
     const formData = new FormData();
-    formData.append("file", blob, `media.${contentType.split("/")[1] || "bin"}`);
+    formData.append("file", blob, filename);
     formData.append("messaging_product", "whatsapp");
 
     const uploadRes = await fetch(
@@ -431,13 +412,8 @@ async function uploadMediaToMetaFromUrl(
     );
 
     const uploadData = await uploadRes.json();
-
-    if (uploadData.id) {
-      console.log(`✅ [MEDIA] Uploaded to Meta, ID: ${uploadData.id}`);
-      return uploadData.id;
-    }
-
-    console.error(`❌ [MEDIA] Upload failed:`, uploadData);
+    if (uploadData.id) return uploadData.id;
+    
     return null;
   } catch (err) {
     console.error(`❌ [MEDIA] Error uploading to Meta:`, err);
@@ -445,9 +421,6 @@ async function uploadMediaToMetaFromUrl(
   }
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// 🔴 WORKFLOW EXECUTION ENGINE
-// ════════════════════════════════════════════════════════════════════════
 async function executeWorkflowsForMessage(msg: any, num: any) {
   try {
     const supportedTypes = ["text", "button", "interactive"];
@@ -457,10 +430,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
     const buttonPayload = extractButtonPayload(msg);
 
     if (!incomingText && !buttonPayload) return;
-
-    console.log(
-      `🔄 [WORKFLOW] Checking for user ${num.userId} on number ${num.phoneNumberId} | Text: "${incomingText?.substring(0, 40)}" | BtnPayload: ${buttonPayload}`
-    );
 
     let workflows = await Workflow.find({
       userId: num.userId,
@@ -480,10 +449,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
 
       if (legacyWorkflows.length > 0) {
         workflows = legacyWorkflows;
-        console.log(
-          `⚠️ [WORKFLOW] Using ${legacyWorkflows.length} legacy workflow(s) for user ${num.userId}`
-        );
-
         try {
           await Workflow.updateMany(
             {
@@ -501,25 +466,16 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
               },
             }
           );
-        } catch (fixErr) {
-          console.error("Failed to auto-fix legacy workflows:", fixErr);
-        }
+        } catch (fixErr) {}
       }
     }
 
-    if (workflows.length === 0) {
-      console.log(
-        `⚠️ [WORKFLOW] No active workflows for user ${num.userId} on number ${num.phoneNumberId}`
-      );
-      return;
-    }
+    if (workflows.length === 0) return;
 
     let matchedWorkflow: any = null;
     let matchedByButton = false;
 
-    // Priority 1: Button click (forms and session continuations)
     if (buttonPayload) {
-      // 1A: Handle Restart Form Button
       if (buttonPayload.startsWith("restart_form_")) {
         const formId = buttonPayload.replace("restart_form_", "");
         const formData = await Form.findById(formId);
@@ -537,7 +493,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
         }
       }
 
-      // 1B: Handle Active Session Button Replies
       const activeSession = await Session.findOne({ phone: msg.from, userId: num.userId });
       if (activeSession && activeSession.workflowId) {
         const wf = await Workflow.findById(activeSession.workflowId);
@@ -552,12 +507,8 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
           }
           
           if (clickedBtn) {
-            if (clickedBtn.applyTagId) {
-              await applyTagToContact(msg.from, clickedBtn.applyTagId, num.userId.toString());
-            }
-            if (clickedBtn.optInNodeId) {
-              await addOptInNumber(msg.from, num.userId.toString());
-            }
+            if (clickedBtn.applyTagId) await applyTagToContact(msg.from, clickedBtn.applyTagId, num.userId.toString());
+            if (clickedBtn.optInNodeId) await addOptInNumber(msg.from, num.userId.toString());
             
             if (clickedBtn.nextStepId) {
               let nextStep = wf.steps[clickedBtn.nextStepId];
@@ -603,7 +554,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
         }
       }
 
-      // 1C: Match button inside any workflow triggers directly
       for (const wf of workflows) {
         for (const stepId of Object.keys(wf.steps)) {
           const step = wf.steps[stepId];
@@ -613,7 +563,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
           if (clickedBtn?.nextStepId) {
             matchedWorkflow = wf;
             matchedByButton = true;
-            console.log(`🎯 [WORKFLOW] Button "${incomingText}" matched in workflow ${wf._id}`);
             break;
           }
         }
@@ -621,38 +570,25 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       }
     }
 
-    // Priority 2: Keyword trigger
     if (!matchedWorkflow) {
       for (const wf of workflows) {
         const isMatch = wf.triggers.some((trigger: any) => {
           const triggerKeyword = (trigger.keyword || "").trim();
           const mode = (trigger.matchMode || "contains").toLowerCase();
-
-          if (mode === "exists") {
-            return true;
-          }
-          
+          if (mode === "exists") return true;
           if (triggerKeyword === "*" || triggerKeyword === "") return true;
-          
-          if (mode === "exact") {
-            return incomingText.trim() === triggerKeyword;
-          } else {
-            return incomingText.toLowerCase().trim().includes(triggerKeyword.toLowerCase());
-          }
+          if (mode === "exact") return incomingText.trim() === triggerKeyword;
+          return incomingText.toLowerCase().trim().includes(triggerKeyword.toLowerCase());
         });
 
         if (isMatch) {
           matchedWorkflow = wf;
-          console.log(`🎯 [WORKFLOW] Keyword trigger matched workflow ${wf._id}`);
           break;
         }
       }
     }
 
-    if (!matchedWorkflow) {
-      console.log(`⚠️ [WORKFLOW] No trigger matched for: "${incomingText?.substring(0, 30)}"`);
-      return;
-    }
+    if (!matchedWorkflow) return;
 
     const steps = matchedWorkflow.steps;
     let currentStepId: string | null = null;
@@ -665,13 +601,8 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
         );
         if (clickedBtn?.nextStepId) {
           currentStepId = clickedBtn.nextStepId;
-
-          if (clickedBtn.applyTagId) {
-            await applyTagToContact(msg.from, clickedBtn.applyTagId, num.userId.toString());
-          }
-          if (clickedBtn.optInNodeId) {
-            await addOptInNumber(msg.from, num.userId.toString());
-          }
+          if (clickedBtn.applyTagId) await applyTagToContact(msg.from, clickedBtn.applyTagId, num.userId.toString());
+          if (clickedBtn.optInNodeId) await addOptInNumber(msg.from, num.userId.toString());
           break;
         }
       }
@@ -679,12 +610,7 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       currentStepId = matchedWorkflow.rootStepId;
     }
 
-    if (!currentStepId || !steps[currentStepId]) {
-      console.error("❌ [WORKFLOW] No valid starting step found");
-      return;
-    }
-
-    console.log(`🚀 [WORKFLOW] Executing workflow ${matchedWorkflow._id} for user ${num.userId}, step ${currentStepId}`);
+    if (!currentStepId || !steps[currentStepId]) return;
 
     await processWorkflowStep(
       currentStepId,
@@ -700,7 +626,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
   }
 }
 
-// ─── PROCESS A WORKFLOW STEP ───────────────────────────────────────────
 async function processWorkflowStep(
   stepId: string,
   steps: Record<string, any>,
@@ -713,26 +638,15 @@ async function processWorkflowStep(
   const step = steps[stepId];
   if (!step) return;
 
-  // 🔴 HANDLE DELAY NODE
   if (step.stepType === "delay_node") {
     const delaySeconds = step.delaySeconds || 10;
-    console.log(`⏱️ [WORKFLOW] Delaying for ${delaySeconds} seconds...`);
     await new Promise((resolve) => setTimeout(resolve, delaySeconds * 1000));
     if (step.nextStepId && steps[step.nextStepId]) {
-      await processWorkflowStep(
-        step.nextStepId,
-        steps,
-        matchedWorkflow,
-        accessToken,
-        phoneNumberId,
-        customerNumber,
-        userId
-      );
+      await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId);
     }
     return;
   }
 
-  // 🔴 HANDLE FORM NODE
   if (step.stepType === "form_node" && step.selectedForm) {
     const formData = await Form.findById(step.selectedForm);
     if (formData && formData.fields.length > 0) {
@@ -749,7 +663,6 @@ async function processWorkflowStep(
     return;
   }
 
-  // 🔴 SKIP non-sending nodes
   if (
     step.stepType === "inactivity_node" ||
     step.stepType === "tag_node" ||
@@ -758,10 +671,8 @@ async function processWorkflowStep(
     return;
   }
 
-  // 🔴 SEND THE MESSAGE
   await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step);
   
-  // Save to DB & update session
   await Message.create({ 
     userId, 
     phone: customerNumber, 
@@ -782,9 +693,9 @@ async function processWorkflowStep(
   }
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// 🔴 SEND WHATSAPP MESSAGE — WITH FULL MEDIA SUPPORT (IMPROVED)
-// ════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// 🔴 SEND WHATSAPP MESSAGE — WITH FULL MEDIA SUPPORT
+// ═══════════════════════════════════════════════════════════════
 async function sendWorkflowWhatsAppMessage(
   accessToken: string,
   phoneNumberId: string,
@@ -794,62 +705,29 @@ async function sendWorkflowWhatsAppMessage(
   const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
   let payload: any;
 
-  // ═══════════════════════════════════════════════════════════════
-  // ✅ MEDIA RESOLUTION: Upload to Meta first for reliability
-  // ═══════════════════════════════════════════════════════════════
   let resolvedMediaId: string | null = null;
-  let useLinkFallback = false;
 
+  // ✅ FIX: Always attempt to convert local/remote media to Meta IDs before sending
   if (step.mediaUrl && step.mediaType && step.mediaType !== "link") {
     const mediaUrl = String(step.mediaUrl);
-
-    // Check if it's already a Meta media ID (numeric)
     if (/^\d+$/.test(mediaUrl)) {
       resolvedMediaId = mediaUrl;
-      console.log(`📎 [MEDIA] Using existing Meta media ID: ${resolvedMediaId}`);
-    } else if (mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://")) {
-      // It's a URL — upload to Meta for reliable delivery
-      console.log(`📎 [MEDIA] URL detected, uploading to Meta: ${mediaUrl.substring(0, 80)}...`);
-      resolvedMediaId = await uploadMediaToMetaFromUrl(phoneNumberId, accessToken, mediaUrl);
-      
-      if (!resolvedMediaId) {
-        // Fallback: try using link directly
-        console.warn(`⚠️ [MEDIA] Upload failed, falling back to link mode`);
-        useLinkFallback = true;
-      }
     } else {
-      // Relative URL — try to resolve and upload
-      console.log(`📎 [MEDIA] Relative URL detected, resolving and uploading...`);
       resolvedMediaId = await uploadMediaToMetaFromUrl(phoneNumberId, accessToken, mediaUrl);
-      
-      if (!resolvedMediaId) {
-        useLinkFallback = true;
-      }
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // ✅ BUILD MEDIA OBJECT
-  // ═══════════════════════════════════════════════════════════════
   const buildMediaObj = () => {
     if (resolvedMediaId) {
       return { id: resolvedMediaId };
     }
-    if (useLinkFallback && step.mediaUrl) {
-      // Resolve relative URLs for link fallback
-      let linkUrl = step.mediaUrl;
-      if (!linkUrl.startsWith("http")) {
-        const baseUrl = process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_APP_URL || "";
-        linkUrl = `${baseUrl}${linkUrl.startsWith("/") ? "" : "/"}${linkUrl}`;
-      }
-      return { link: linkUrl };
+    // Fallback for absolute URLs only
+    if (step.mediaUrl && (String(step.mediaUrl).startsWith("http://") || String(step.mediaUrl).startsWith("https://"))) {
+      return { link: step.mediaUrl };
     }
     return null;
   };
 
-  // ═══════════════════════════════════════════════════════════════
-  // ✅ BUILD PAYLOAD based on step type
-  // ═══════════════════════════════════════════════════════════════
   if (step.stepType === "url_action" && step.url) {
     payload = {
       messaging_product: "whatsapp",
@@ -881,7 +759,6 @@ async function sendWorkflowWhatsAppMessage(
     const validButtons = step.buttons.filter((b: any) => b.label?.trim());
 
     if (validButtons.length > 3) {
-      // LIST MODE
       const rows = validButtons.slice(0, 10).map((btn: any) => ({
         id: btn.id,
         title: btn.label.substring(0, 24),
@@ -901,7 +778,6 @@ async function sendWorkflowWhatsAppMessage(
         },
       };
 
-      // Add media header if available
       const mediaObj = buildMediaObj();
       if (mediaObj && step.mediaType) {
         if (step.mediaType === "image") {
@@ -913,7 +789,6 @@ async function sendWorkflowWhatsAppMessage(
         }
       }
     } else {
-      // BUTTON MODE
       const buttons = validButtons.slice(0, 3).map((btn: any) => ({
         type: "reply",
         reply: { id: btn.id, title: btn.label.substring(0, 20) },
@@ -929,7 +804,6 @@ async function sendWorkflowWhatsAppMessage(
         },
       };
 
-      // Add media header if available
       const mediaObj = buildMediaObj();
       if (mediaObj && step.mediaType) {
         if (step.mediaType === "image") {
@@ -942,13 +816,9 @@ async function sendWorkflowWhatsAppMessage(
       }
     }
   } else {
-    // ═══════════════════════════════════════════════════════════════
-    // ✅ SIMPLE MESSAGE (with or without media)
-    // ═══════════════════════════════════════════════════════════════
     const mediaObj = buildMediaObj();
 
     if (step.mediaUrl && step.mediaType === "link") {
-      // LINK type: send as text with URL preview
       payload = {
         messaging_product: "whatsapp",
         to,
@@ -991,7 +861,6 @@ async function sendWorkflowWhatsAppMessage(
         },
       };
     } else {
-      // TEXT ONLY
       payload = {
         messaging_product: "whatsapp",
         to,
@@ -1001,12 +870,7 @@ async function sendWorkflowWhatsAppMessage(
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // ✅ SEND THE MESSAGE
-  // ═══════════════════════════════════════════════════════════════
   try {
-    console.log(`📤 [WORKFLOW] Sending to ${to} | Type: ${payload.type}${step.mediaType ? ` | Media: ${step.mediaType}` : ""}...`);
-
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -1019,96 +883,15 @@ async function sendWorkflowWhatsAppMessage(
     const result = await response.json();
 
     if (response.ok) {
-      console.log(`✅ [WORKFLOW] Sent to ${to}: "${(step.message || "").substring(0, 50)}..."${step.mediaUrl ? ` (media: ${step.mediaType})` : ""}`);
+      console.log(`✅ [WORKFLOW] Sent to ${to} | Type: ${payload.type}`);
     } else {
-      console.error(`❌ [WORKFLOW] WhatsApp API error:`, JSON.stringify(result, null, 2));
-
-      // ═══════════════════════════════════════════════════════════════
-      // ✅ RETRY: If media failed with link, try uploading to Meta
-      // ═══════════════════════════════════════════════════════════════
-      if (
-        !response.ok &&
-        step.mediaUrl &&
-        step.mediaType &&
-        step.mediaType !== "link" &&
-        !resolvedMediaId &&
-        useLinkFallback
-      ) {
-        console.log(`🔄 [WORKFLOW] Retrying: uploading media to Meta...`);
-        const metaMediaId = await uploadMediaToMetaFromUrl(
-          phoneNumberId,
-          accessToken,
-          step.mediaUrl
-        );
-
-        if (metaMediaId) {
-          // Rebuild payload with media ID
-          const retryMediaObj = { id: metaMediaId };
-
-          // Replace link with id in the payload
-          const payloadStr = JSON.stringify(payload);
-          const retryPayloadStr = payloadStr.replace(
-            /"link"\s*:\s*"[^"]*"/g,
-            `"id":"${metaMediaId}"`
-          );
-          const retryPayload = JSON.parse(retryPayloadStr);
-
-          const retryResponse = await fetch(url, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(retryPayload),
-          });
-
-          const retryResult = await retryResponse.json();
-
-          if (retryResponse.ok) {
-            console.log(`✅ [WORKFLOW] Retry succeeded with Meta media ID: ${metaMediaId}`);
-            return;
-          } else {
-            console.error(`❌ [WORKFLOW] Retry also failed:`, JSON.stringify(retryResult, null, 2));
-          }
-        }
-      }
-
-      // ═══════════════════════════════════════════════════════════════
-      // ✅ FALLBACK: If media message failed, try sending text only
-      // ═══════════════════════════════════════════════════════════════
-      if (!response.ok && step.message && payload.type !== "text") {
-        console.log(`🔄 [WORKFLOW] Falling back to text-only message...`);
-        const textPayload = {
-          messaging_product: "whatsapp",
-          to,
-          type: "text",
-          text: { body: step.message, preview_url: true },
-        };
-
-        const textResponse = await fetch(url, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(textPayload),
-        });
-
-        const textResult = await textResponse.json();
-
-        if (textResponse.ok) {
-          console.log(`✅ [WORKFLOW] Text fallback sent successfully`);
-        } else {
-          console.error(`❌ [WORKFLOW] Text fallback also failed:`, JSON.stringify(textResult, null, 2));
-        }
-      }
+      console.error(`❌ [WORKFLOW] API error:`, JSON.stringify(result, null, 2));
     }
   } catch (err: any) {
     console.error(`❌ [WORKFLOW] Failed to send:`, err.message);
   }
 }
 
-// ─── HELPERS ────────────────────────────────────────────────────────────
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try {
     const { default: Contact } = await import("@/models/Contact");
@@ -1117,9 +900,7 @@ async function applyTagToContact(phoneNumber: string, tagId: string, userId: str
       { $addToSet: { tags: tagId } },
       { upsert: true }
     );
-  } catch (err) {
-    console.error("Failed to apply tag:", err);
-  }
+  } catch (err) {}
 }
 
 async function addOptInNumber(phoneNumber: string, userId: string) {
@@ -1130,23 +911,16 @@ async function addOptInNumber(phoneNumber: string, userId: string) {
       { phone: phoneNumber, userId, optedIn: true },
       { upsert: true }
     );
-  } catch (err) {
-    console.error("Failed to add opt-in:", err);
-  }
+  } catch (err) {}
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// POST: Main webhook handler
-// ════════════════════════════════════════════════════════════════════════
 export async function POST(req: NextRequest) {
   try {
     await connectDB();
 
     const contentType = req.headers.get("content-type") || "";
 
-    // ─── CRON PULL MODE ────────────────────────────────
     if (!contentType.includes("application/json")) {
-      console.log("🔄 [CRON] Triggering forced pull for ALL WhatsApp numbers...");
       const allNumbers = await getAllWhatsappNumbersFromDB();
       if (allNumbers.length === 0) {
         return NextResponse.json({ success: true, pulled: 0 });
@@ -1159,11 +933,8 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // ─── META WEBHOOK PUSH ─────────────────────────────
     const body = await req.json();
     if (!body?.entry) return NextResponse.json({ success: true });
-
-    console.log("📥 [WEBHOOK] Received payload from Meta");
 
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
@@ -1172,22 +943,13 @@ export async function POST(req: NextRequest) {
         if (!value) continue;
 
         const phoneNumberId = value.metadata?.phone_number_id;
-
-        if (!phoneNumberId) {
-          console.error("❌ [WEBHOOK] No phone_number_id in payload");
-          continue;
-        }
+        if (!phoneNumberId) continue;
 
         const num = await findUserByPhoneNumberId(phoneNumberId);
-
-        if (!num) {
-          console.error(`❌ [WEBHOOK] No user found for phone_number_id: ${phoneNumberId}. Message will be lost!`);
-          continue;
-        }
+        if (!num) continue;
 
         for (const msg of value.messages || []) {
           if (msg.type === "reaction" || msg.type === "system") continue;
-
           await processAndSaveMessage(msg, num);
           await executeWorkflowsForMessage(msg, num);
         }
