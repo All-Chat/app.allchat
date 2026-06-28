@@ -455,9 +455,9 @@ export default function OptNumbersPage() {
             <div>
               <p className="text-sm font-bold text-cyan-800">About opt-out Numbers</p>
               <p className="text-xs text-cyan-700 mt-1 leading-relaxed">
-                These phone numbers represent contacts who have opted in to receive messages from you.
-                Numbers can be added manually here or automatically through workflow opt-out Nodes.
-                All numbers must comply with WhatsApp&apos;s opt-out policies.
+                These phone numbers represent contacts who have opted out of receiving messages from you.
+                Numbers can be added manually here or automatically through workflow opt-out nodes.
+                All opt-out requests must be honored in accordance with WhatsApp&lsquo;s messaging policies.
               </p>
             </div>
           </div>
