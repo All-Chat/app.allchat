@@ -403,19 +403,8 @@ async function processWorkflowStep(
     if (step.delaySeconds > 0) {
       await new Promise((r) => setTimeout(r, step.delaySeconds * 1000));
     }
-
     if (step.nextStepId) {
-      return await processWorkflowStep(
-        step.nextStepId,
-        steps,
-        matchedWorkflow,
-        accessToken,
-        phoneNumberId,
-        customerNumber,
-        userId,
-        tenantId,
-        baseUrl
-      );
+      return await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
     }
     return;
   }
@@ -446,18 +435,11 @@ async function processWorkflowStep(
   // =========================
   if (step.stepType === "form_node" && step.selectedForm) {
     const formData = await Form.findById(step.selectedForm);
-
     if (!formData || !formData.fields.length) return;
 
     await Session.findOneAndUpdate(
       { phone: customerNumber, userId },
-      {
-        formId: formData._id,
-        formFieldIndex: 0,
-        workflowId: matchedWorkflow._id,
-        currentStepId: step.id,
-        updatedAt: new Date(),
-      },
+      { formId: formData._id, formFieldIndex: 0, workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() },
       { upsert: true, new: true }
     );
 
@@ -467,22 +449,12 @@ async function processWorkflowStep(
       { upsert: true, new: true }
     );
 
-    await sendWorkflowWhatsAppMessage(
-      accessToken,
-      phoneNumberId,
-      customerNumber,
-      {
-        message: `*${formData.name}*\n\n${formData.fields[0].label}`,
-        stepType: "text",
-      },
-      baseUrl
-    );
-
+    await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" }, baseUrl);
     return;
   }
 
   // =========================
-  // CTA / CALL / URL NODE (FIXED)
+  // CTA / CALL / URL NODE
   // =========================
   if (step.stepType === "call_action" || step.stepType === "url_action") {
     let historyText = step.message || "";
@@ -491,14 +463,7 @@ async function processWorkflowStep(
 
     await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
     
-    await Message.create({
-      userId,
-      phone: customerNumber,
-      text: historyText.trim(),
-      direction: "out",
-      messageType: "text",
-      mediaUrl: step.mediaUrl || null,
-    });
+    await Message.create({ userId, phone: customerNumber, text: historyText.trim(), direction: "out", messageType: "text", mediaUrl: step.mediaUrl || null });
 
     // Continue to next step if connected
     if (step.nextStepId && steps[step.nextStepId]) {
@@ -517,54 +482,26 @@ async function processWorkflowStep(
   // =========================
   // DEFAULT STEP (MESSAGE)
   // =========================
-  await sendWorkflowWhatsAppMessage(
-    accessToken,
-    phoneNumberId,
-    customerNumber,
-    step,
-    baseUrl
-  );
+  await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
 
-  await Message.create({
-    userId,
-    phone: customerNumber,
-    text: step.message || "",
-    direction: "out",
-    messageType: "text",
-  });
+  await Message.create({ userId, phone: customerNumber, text: step.message || "", direction: "out", messageType: "text" });
 
   await Session.findOneAndUpdate(
     { phone: customerNumber, userId },
-    {
-      workflowId: matchedWorkflow._id,
-      currentStepId: step.id,
-      updatedAt: new Date(),
-    },
+    { workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() },
     { upsert: true, new: true }
   );
 }
 
-// ✅ WHATSAPP API SENDER (Fixed parameters array)
-async function sendWorkflowWhatsAppMessage(
-  accessToken: string,
-  phoneNumberId: string,
-  to: string,
-  step: any,
-  baseUrl: string
-) {
+// ✅ WHATSAPP API SENDER 
+async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: string, to: string, step: any, baseUrl: string) {
   const sendMessage = async (payload: any) => {
     try {
-      const res = await fetch(
-        `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-        }
-      );
+      const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
 
       const data = await res.json();
       if (!res.ok) {
@@ -575,59 +512,48 @@ async function sendWorkflowWhatsAppMessage(
     }
   };
 
-  const isSocialLink = (url?: string) =>
-    url &&
-    [
-      "instagram.com",
-      "facebook.com",
-      "youtube.com",
-      "tiktok.com",
-      "linkedin.com",
-      "twitter.com",
-      "wa.me",
-    ].some((d) => url.includes(d));
+  // Force HTTPS and remove spaces to prevent Meta API rejections
+  let publicBaseUrl = process.env.NEXTAUTH_URL || baseUrl;
+  publicBaseUrl = publicBaseUrl.replace(/\s+/g, "");
+  if (publicBaseUrl.startsWith("http://")) publicBaseUrl = publicBaseUrl.replace("http://", "https://");
+  publicBaseUrl = publicBaseUrl.replace(/\/$/, "");
 
   // ===============================
-  // 1. CALL ACTION (FIXED)
+  // 1. CALL ACTION (Strict Meta Schema)
   // ===============================
   if (step.stepType === "call_action" && step.phoneNumber) {
     let number = step.phoneNumber.replace(/[^\d+]/g, "");
     if (!number.startsWith("+")) number = "+" + number;
 
+    const redirectUrl = `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(number)}`;
+
     const payload = {
       messaging_product: "whatsapp",
       to,
       type: "interactive",
       interactive: {
         type: "cta_url",
-        header: {
-          type: "text",
-          text: step.urlLabel || "Call Now", // ✅ FIXED: Use urlLabel
-        },
-        body: {
-          text: step.message || "Tap below to call",
-        },
+        header: { type: "text", text: (step.urlLabel || "Call Us").substring(0, 60) },
+        body: { text: step.message || "Tap below to call" },
         action: {
           name: "cta_url",
-          // ✅ FIX: MUST BE AN ARRAY
           parameters: [{ 
-            type: "cta_url", 
-            display_text: step.urlLabel || "Call", // ✅ FIXED: Use urlLabel
-            url: `https://wa.me/${number.replace("+", "")}`,
-          }],
-        },
-      },
+            display_text: (step.urlLabel || "Call Now").substring(0, 20), 
+            url: redirectUrl 
+          }]
+        }
+      }
     };
 
     return sendMessage(payload);
   }
 
   // ===============================
-  // 2. URL ACTION (FIXED)
+  // 2. URL ACTION (Strict Meta Schema)
   // ===============================
   if (step.stepType === "url_action" && step.url) {
-    let url = step.url.trim();
-    if (!url.startsWith("http")) url = "https://" + url;
+    let url = step.url.trim().replace(/\s+/g, "");
+    if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://" + url;
 
     const payload = {
       messaging_product: "whatsapp",
@@ -635,108 +561,64 @@ async function sendWorkflowWhatsAppMessage(
       type: "interactive",
       interactive: {
         type: "cta_url",
-        header: {
-          type: "text",
-          text: step.urlLabel || "Open Link",
-        },
-        body: {
-          text: step.message || "Tap below to continue",
-        },
+        header: { type: "text", text: (step.urlLabel || "Open Link").substring(0, 60) },
+        body: { text: step.message || "Tap below to continue" },
         action: {
           name: "cta_url",
-          // ✅ FIX: MUST BE AN ARRAY
           parameters: [{ 
-            type: "cta_url", 
-            display_text: step.urlLabel || "Open",
-            url,
-          }],
-        },
-      },
+            display_text: (step.urlLabel || "Open").substring(0, 20), 
+            url: url 
+          }]
+        }
+      }
     };
 
     return sendMessage(payload);
   }
 
   // ===============================
-  // 3. SOCIAL LINKS (TEXT ONLY FIX)
+  // 3. MEDIA / TEXT
   // ===============================
-  if (step.mediaType === "link" || isSocialLink(step.mediaUrl)) {
-    const url = step.mediaUrl?.startsWith("http")
-      ? step.mediaUrl
-      : `https://${step.mediaUrl}`;
-
+  if (step.mediaUrl && step.mediaType === "link") {
+    let linkUrl = step.mediaUrl.trim().replace(/\s+/g, "");
+    if (!linkUrl.startsWith("http://") && !linkUrl.startsWith("https://")) linkUrl = "https://" + linkUrl;
     return sendMessage({
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: {
-        body: `${step.message || ""}\n\n${url}`,
-        preview_url: true,
-      },
+      messaging_product: "whatsapp", to, type: "text",
+      text: { body: `${step.message || ""}\n\n${linkUrl}`.trim(), preview_url: true }
     });
   }
 
-  // ===============================
-  // 4. BUTTON / LIST (UNCHANGED BUT SAFE)
-  // ===============================
   if (step.buttons?.length > 0) {
     const valid = step.buttons.filter((b: any) => b.label?.trim());
-
     if (valid.length > 3) {
       return sendMessage({
-        messaging_product: "whatsapp",
-        to,
-        type: "interactive",
+        messaging_product: "whatsapp", to, type: "interactive",
         interactive: {
           type: "list",
           body: { text: step.message || "Select option" },
           action: {
             button: step.listButtonText || "Options",
-            sections: [
-              {
-                title: "Menu",
-                rows: valid.slice(0, 10).map((b: any) => ({
-                  id: b.id,
-                  title: b.label.substring(0, 24),
-                })),
-              },
-            ],
-          },
-        },
+            sections: [{ title: "Menu", rows: valid.slice(0, 10).map((b: any) => ({ id: b.id, title: b.label.substring(0, 24) })) }]
+          }
+        }
       });
     }
-
     return sendMessage({
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
+      messaging_product: "whatsapp", to, type: "interactive",
       interactive: {
         type: "button",
         body: { text: step.message || "" },
-        action: {
-          buttons: valid.slice(0, 3).map((b: any) => ({
-            type: "reply",
-            reply: {
-              id: b.id,
-              title: b.label.substring(0, 20),
-            },
-          })),
-        },
-      },
+        action: { buttons: valid.slice(0, 3).map((b: any) => ({ type: "reply", reply: { id: b.id, title: b.label.substring(0, 20) } })) }
+      }
     });
   }
 
   // ===============================
-  // 5. DEFAULT TEXT
+  // 4. DEFAULT TEXT
   // ===============================
   return sendMessage({
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: {
-      body: step.message || "",
-      preview_url: true,
-    },
+    messaging_product: "whatsapp", to, type: "text",
+    text: { body: step.message || "", preview_url: true }
   });
 }
 
