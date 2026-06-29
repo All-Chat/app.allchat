@@ -382,6 +382,8 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
   } catch (err) { console.error("❌ [WORKFLOW] Error:", err); }
 }
 
+const executedNodes = new Set<string>();
+
 async function processWorkflowStep(
   stepId: string,
   steps: Record<string, any>,
@@ -396,15 +398,21 @@ async function processWorkflowStep(
   const step = steps[stepId];
   if (!step) return;
 
-  // -------------------------
-  // Delay node
-  // -------------------------
-  if (step.stepType === "delay_node") {
-    if (step.delaySeconds > 0)
-      await new Promise((r) => setTimeout(r, step.delaySeconds * 1000));
+  // 🔥 BLOCK DUPLICATE EXECUTION
+  const uniqueKey = `${customerNumber}_${stepId}`;
+  if (executedNodes.has(uniqueKey)) return;
+  executedNodes.add(uniqueKey);
 
-    if (step.nextStepId && steps[step.nextStepId]) {
-      await processWorkflowStep(
+  // =========================
+  // DELAY NODE
+  // =========================
+  if (step.stepType === "delay_node") {
+    if (step.delaySeconds > 0) {
+      await new Promise((r) => setTimeout(r, step.delaySeconds * 1000));
+    }
+
+    if (step.nextStepId) {
+      return await processWorkflowStep(
         step.nextStepId,
         steps,
         matchedWorkflow,
@@ -419,73 +427,88 @@ async function processWorkflowStep(
     return;
   }
 
-  // -------------------------
-  // Opt / Tag nodes
-  // -------------------------
+  // =========================
+  // OPT / TAG NODE
+  // =========================
   if (step.stepType === "opt_in_node") {
     await addOptOutNumber(customerNumber, userId, tenantId);
+    return;
   }
 
   if (step.stepType === "tag_node") {
-    if (step.selectedTag)
+    if (step.selectedTag) {
       await applyTagToContact(customerNumber, step.selectedTag, userId);
-  }
-
-  // -------------------------
-  // FORM NODE
-  // -------------------------
-  if (step.stepType === "form_node" && step.selectedForm) {
-    const formData = await Form.findById(step.selectedForm);
-
-    if (formData && formData.fields.length > 0) {
-      await Session.findOneAndUpdate(
-        { phone: customerNumber, userId },
-        {
-          formId: formData._id,
-          formFieldIndex: 0,
-          workflowId: matchedWorkflow._id,
-          currentStepId: step.id,
-          updatedAt: new Date(),
-        },
-        { upsert: true, new: true }
-      );
-
-      await FormResponse.findOneAndUpdate(
-        { formId: formData._id, phone: customerNumber, status: "incomplete" },
-        { $set: { userId, data: {}, status: "incomplete" } },
-        { upsert: true, new: true }
-      );
-
-      await sendWorkflowWhatsAppMessage(
-        accessToken,
-        phoneNumberId,
-        customerNumber,
-        {
-          message: `*${formData.name}*\n\n${formData.fields[0].label}`,
-          stepType: "text",
-        },
-        baseUrl
-      );
-
-      startFormInactivityTimer(
-        customerNumber,
-        userId,
-        formData._id.toString(),
-        0,
-        formData.fields[0],
-        formData,
-        accessToken,
-        phoneNumberId,
-        baseUrl
-      );
     }
     return;
   }
 
-  // -------------------------
-  // CTA / URL / CALL ACTIONS
-  // 🔥 IMPORTANT FIX: NO DB MESSAGE, NO DUPLICATION
-  // -------------------------
+  // =========================
+  // FORM NODE
+  // =========================
+  if (step.stepType === "form_node" && step.selectedForm) {
+    const formData = await Form.findById(step.selectedForm);
+
+    if (!formData || !formData.fields.length) return;
+
+    await Session.findOneAndUpdate(
+      { phone: customerNumber, userId },
+      {
+        formId: formData._id,
+        formFieldIndex: 0,
+        workflowId: matchedWorkflow._id,
+        currentStepId: step.id,
+        updatedAt: new Date(),
+      },
+      { upsert: true, new: true }
+    );
+
+    await FormResponse.findOneAndUpdate(
+      { formId: formData._id, phone: customerNumber, status: "incomplete" },
+      { $set: { userId, data: {}, status: "incomplete" } },
+      { upsert: true, new: true }
+    );
+
+    await sendWorkflowWhatsAppMessage(
+      accessToken,
+      phoneNumberId,
+      customerNumber,
+      {
+        message: `*${formData.name}*\n\n${formData.fields[0].label}`,
+        stepType: "text",
+      },
+      baseUrl
+    );
+
+    return;
+  }
+
+  // =========================
+  // 🔥 MESSAGE NODE (IMPORTANT FIX)
+  // =========================
+  if (step.stepType === "message") {
+    await sendWorkflowWhatsAppMessage(
+      accessToken,
+      phoneNumberId,
+      customerNumber,
+      step,
+      baseUrl
+    );
+
+    await Message.create({
+      userId,
+      phone: customerNumber,
+      text: step.message || "",
+      direction: "out",
+      messageType: "text",
+    });
+
+    // 🚨 IMPORTANT: STOP HERE (DO NOT AUTO MOVE)
+    return;
+  }
+
+  // =========================
+  // CTA / CALL / URL NODE
+  // =========================
   if (step.stepType === "call_action" || step.stepType === "url_action") {
     await sendWorkflowWhatsAppMessage(
       accessToken,
@@ -495,22 +518,20 @@ async function processWorkflowStep(
       baseUrl
     );
 
-    // ONLY ONE CLEAN DB LOG
     await Message.create({
       userId,
       phone: customerNumber,
       text: step.message || step.urlLabel || step.phoneNumber || "",
       direction: "out",
       messageType: "text",
-      mediaUrl: step.mediaUrl || null,
     });
 
-    return; // 🔥 STOP HERE (prevents duplication)
+    return;
   }
 
-  // -------------------------
-  // NORMAL STEPS
-  // -------------------------
+  // =========================
+  // DEFAULT STEP
+  // =========================
   await sendWorkflowWhatsAppMessage(
     accessToken,
     phoneNumberId,
@@ -522,10 +543,9 @@ async function processWorkflowStep(
   await Message.create({
     userId,
     phone: customerNumber,
-    text: step.message || `[${step.stepType}]`,
+    text: step.message || "",
     direction: "out",
     messageType: "text",
-    mediaUrl: step.mediaUrl || null,
   });
 
   await Session.findOneAndUpdate(
@@ -537,17 +557,6 @@ async function processWorkflowStep(
     },
     { upsert: true, new: true }
   );
-
-  if (step.buttons?.length > 0) {
-    startWorkflowInactivityTimer(
-      customerNumber,
-      userId,
-      matchedWorkflow._id.toString(),
-      accessToken,
-      phoneNumberId,
-      baseUrl
-    );
-  }
 }
 
 // ✅ WHATSAPP API SENDER (Fixed parameters array)
