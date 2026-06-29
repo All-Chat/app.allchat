@@ -219,6 +219,9 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
     const buttonPayload = extractButtonPayload(msg);
     if (!incomingText && !buttonPayload) return;
 
+    // ✅ Clear inactivity timer on ANY new message from user
+    clearWorkflowTimer(msg.from);
+
     const activeSession = await Session.findOne({ phone: msg.from, userId: num.userId });
     
     if (activeSession && activeSession.formId) {
@@ -382,8 +385,6 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
   } catch (err) { console.error("❌ [WORKFLOW] Error:", err); }
 }
 
-const executedNodes = new Set<string>();
-
 async function processWorkflowStep(
   stepId: string,
   steps: Record<string, any>,
@@ -397,11 +398,6 @@ async function processWorkflowStep(
 ) {
   const step = steps[stepId];
   if (!step) return;
-
-  // 🔥 BLOCK DUPLICATE EXECUTION
-  const uniqueKey = `${customerNumber}_${stepId}`;
-  if (executedNodes.has(uniqueKey)) return;
-  executedNodes.add(uniqueKey);
 
   // =========================
   // DELAY NODE
@@ -502,6 +498,9 @@ async function processWorkflowStep(
       messageType: "text",
     });
 
+    // ✅ Start inactivity timer if this workflow has an inactivity node
+    startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
+
     // 🚨 IMPORTANT: STOP HERE (DO NOT AUTO MOVE)
     return;
   }
@@ -517,6 +516,10 @@ async function processWorkflowStep(
       step,
       baseUrl
     );
+
+    // ✅ Start inactivity timer if this workflow has an inactivity node
+    startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
+
 return; //
     await Message.create({
       userId,
@@ -557,6 +560,9 @@ return; //
     },
     { upsert: true, new: true }
   );
+
+  // ✅ Start inactivity timer if this workflow has an inactivity node
+  startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
 }
 
 // ✅ WHATSAPP API SENDER (Fixed parameters array)
