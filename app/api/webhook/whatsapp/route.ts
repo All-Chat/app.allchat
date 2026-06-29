@@ -477,7 +477,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         action: { 
           name: "cta_url", 
           parameters: [{ 
-            type: "cta_url",
+            // ✅ FIX: Removed "type: cta_url" to fix the "Unexpected key 0" API error
             display_text: (step.urlLabel || "Call Now").substring(0, 20), 
             url: redirectUrl 
           }] 
@@ -485,7 +485,6 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       }
     };
     
-    // Log the exact URL being sent so you can verify it's HTTPS and correct
     console.log(`📞 [CALL_ACTION] Sending Button with URL: ${redirectUrl}`);
   } 
   // ✅ URL ACTION NODE
@@ -506,7 +505,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         action: { 
           name: "cta_url", 
           parameters: [{ 
-            type: "cta_url",
+            // ✅ FIX: Removed "type: cta_url" to fix the "Unexpected key 0" API error
             display_text: (step.urlLabel || "Open").substring(0, 20), 
             url: url 
           }] 
