@@ -426,7 +426,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     return null; 
   };
 
-  // ✅ CALL ACTION NODE - STRICT BUTTON ONLY (NO TEXT FALLBACK)
+  // ✅ CALL ACTION NODE
   if (step.stepType === "call_action" && step.phoneNumber) {
     let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
     if (callNumber.startsWith("+")) {
@@ -435,7 +435,6 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       callNumber = "+" + callNumber;
     }
     
-    // Must use your exact verified domain from .env
     const publicBaseUrl = (process.env.NEXTAUTH_URL || baseUrl).replace(/\/$/, "");
     const redirectUrl = `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
 
@@ -450,6 +449,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         action: { 
           name: "cta_url", 
           parameters: [{ 
+            type: "cta_url", // ✅ FIX: WhatsApp strictly requires this field inside parameters!
             display_text: (step.urlLabel || "Call Now").substring(0, 20), 
             url: redirectUrl 
           }] 
@@ -473,6 +473,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         action: { 
           name: "cta_url", 
           parameters: [{ 
+            type: "cta_url", // ✅ FIX: WhatsApp strictly requires this field inside parameters!
             display_text: (step.urlLabel || "Open").substring(0, 20), 
             url: url 
           }] 
@@ -512,9 +513,8 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     
     const data = await res.json();
     if (!res.ok) {
-      // ✅ NO FALLBACK. This will print the EXACT reason why WhatsApp rejected the button.
+      // If it still fails, this will print the EXACT reason to your terminal
       console.error(`❌ [WORKFLOW] API Error for ${step.stepType}:`, JSON.stringify(data, null, 2));
-      console.error(`❌ [WORKFLOW] Payload Sent:`, JSON.stringify(payload, null, 2));
     } else {
       console.log(`✅ [WORKFLOW] Message sent successfully for ${step.stepType}. WhatsApp ID: ${data.messages?.[0]?.id}`);
     }
