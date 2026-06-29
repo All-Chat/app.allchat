@@ -593,6 +593,10 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
   const redirectUrl =
     `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
 
+  // ✅ ONLY USE CALL NODE DATA (NOT previous step)
+  const callTitle = step.callLabel || "Call Now";
+  const callBody = step.callMessage || "Tap the button below to call.";
+
   payload = {
     messaging_product: "whatsapp",
     to,
@@ -601,15 +605,15 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       type: "cta_url",
       header: {
         type: "text",
-        text: (step.urlLabel || "Call Us").substring(0, 60),
+        text: callTitle.substring(0, 60),
       },
       body: {
-        text: step.message || "Tap the button below to call.",
+        text: callBody,
       },
       action: {
         name: "cta_url",
         parameters: {
-          display_text: (step.urlLabel || "Call Now").substring(0, 20),
+          display_text: callTitle.substring(0, 20),
           url: redirectUrl,
         },
       },
