@@ -479,7 +479,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     return null; 
   };
 
-  // ✅ FIX: Strict WhatsApp CTA URL structure + Force HTTPS to prevent API rejections
+  // ✅ FIX: URL Action Node. Ensure URL has https:// to prevent WhatsApp API rejection
   if (step.stepType === "url_action" && step.url) {
     let url = step.url;
     if (!url.startsWith("http://") && !url.startsWith("https://")) {
@@ -506,7 +506,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       }
     };
   } 
-  // ✅ FIX: WhatsApp API doesn't support `tel:` in CTA URL. We use a Reply Button with the workflow text instead.
+  // ✅ FIX: Call Action Node. Use cta_url with tel: protocol so clicking the button opens the dialer automatically
   else if (step.stepType === "call_action" && step.phoneNumber) {
     let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
     if (!callNumber.startsWith("+")) {
@@ -518,16 +518,16 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       to,
       type: "interactive",
       interactive: {
-        type: "button",
-        body: { text: step.message || "Please click the button below to call us." },
+        type: "cta_url",
+        header: { type: "text", text: step.urlLabel || "Call Us" },
+        body: { text: step.message || "Click the button below to call us." },
         action: {
-          buttons: [
+          name: "cta_url",
+          parameters: [
             {
-              type: "reply",
-              reply: {
-                id: `call_action_${callNumber}`,
-                title: step.urlLabel || "Call Now"
-              }
+              type: "cta_url",
+              display_text: step.urlLabel || "Call Now",
+              url: `tel:${callNumber}`
             }
           ]
         }
@@ -545,7 +545,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     }
   } else {
     const m = buildMediaObj();
-    // ✅ FIX: Ensure standard links have HTTPS to properly render the thumbnail preview
+    // ✅ FIX: Link/Social Media in Message Node. Force https:// to make sure the thumbnail generates
     if (step.mediaUrl && step.mediaType === "link") {
       let linkUrl = step.mediaUrl;
       if (!linkUrl.startsWith("http://") && !linkUrl.startsWith("https://")) {
@@ -574,7 +574,10 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, 
       body: JSON.stringify(payload) 
     }); 
-    if (!res.ok) console.error(`❌ [WORKFLOW] API error:`, await res.json()); 
+    if (!res.ok) {
+      const errData = await res.json();
+      console.error(`❌ [WORKFLOW] API error for ${step.stepType}:`, JSON.stringify(errData));
+    } 
   } catch (err: any) { 
     console.error(`❌ [WORKFLOW] Send failed:`, err.message); 
   }
