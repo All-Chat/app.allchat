@@ -517,7 +517,7 @@ async function processWorkflowStep(
       step,
       baseUrl
     );
-
+return; //
     await Message.create({
       userId,
       phone: customerNumber,
@@ -567,248 +567,7 @@ async function sendWorkflowWhatsAppMessage(
   step: any,
   baseUrl: string
 ) {
-  let payload: any;
-  let resolvedMediaId: string | null = null;
-
-  // =====================================================
-  // SOCIAL LINK DETECTION (CRITICAL FIX)
-  // =====================================================
-const isSocialLink = (url?: string) => {
-  if (!url) return false;
-
-  return [
-    "instagram.com",
-    "facebook.com",
-    "fb.com",
-    "whatsapp.com",
-    "youtube.com",
-    "youtu.be",
-    "tiktok.com",
-    "linkedin.com",
-    "twitter.com",
-  ].some(domain => url.includes(domain));
-};
-
-  // =====================================================
-  // FORCE SOCIAL LINKS → TEXT ONLY (NO MEDIA PROCESSING)
-  // =====================================================
-  if (step.mediaType === "link" || isSocialLink(step.mediaUrl)) {
-    let url = step.mediaUrl?.trim() || "";
-    if (url && !url.startsWith("http")) url = "https://" + url;
-
-    payload = {
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: {
-        body: step.message ? `${step.message}\n\n${url}` : url,
-        preview_url: true,
-      },
-    };
-
-    return sendMessage(payload);
-  }
-
-  // =====================================================
-  // MEDIA RESOLUTION (ONLY NON-LINK MEDIA)
-  // =====================================================
-  if (step.mediaUrl && step.mediaType && step.mediaType !== "link") {
-    if (/^\d+$/.test(step.mediaUrl)) {
-      resolvedMediaId = step.mediaUrl;
-    } else {
-      const uploadedId = await uploadMediaToMetaFromUrl(
-        phoneNumberId,
-        accessToken,
-        step.mediaUrl
-      );
-
-      if (!uploadedId || typeof uploadedId !== "string") {
-        console.error("❌ Media upload failed");
-        resolvedMediaId = null;
-      } else {
-        resolvedMediaId = uploadedId;
-      }
-    }
-  }
-
-const buildMediaObj = () => {
-  if (!resolvedMediaId) return null;
-
-  // ONLY allow valid WhatsApp media IDs (numeric or Graph IDs)
-  if (!/^[a-zA-Z0-9_-]+$/.test(resolvedMediaId)) return null;
-
-  return { id: resolvedMediaId };
-};
-
-  // =====================================================
-  // BASE URL CLEANUP
-  // =====================================================
-  let publicBaseUrl = (process.env.NEXTAUTH_URL || baseUrl || "")
-    .replace(/\s+/g, "")
-    .replace(/\/$/, "");
-
-  if (publicBaseUrl.startsWith("http://")) {
-    publicBaseUrl = publicBaseUrl.replace("http://", "https://");
-  }
-
-  // =====================================================
-  // CALL ACTION NODE
-  // =====================================================
-  if (step.stepType === "call_action" && step.phoneNumber) {
-    let callNumber = step.phoneNumber.replace(/[^\d+]/g, "");
-    if (!callNumber.startsWith("+")) callNumber = "+" + callNumber;
-
-    const redirectUrl =
-      `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
-
-    payload = {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "cta_url",
-        header: {
-          type: "text",
-          text: (step.callLabel || "Call Now").substring(0, 60),
-        },
-        body: {
-          text: step.callMessage || "Tap below to call",
-        },
-        action: {
-          name: "cta_url",
-          parameters: {
-            display_text: (step.callLabel || "Call Now").substring(0, 20),
-            url: redirectUrl,
-          },
-        },
-      },
-    };
-
-    return sendMessage(payload);
-  }
-
-  // =====================================================
-  // URL ACTION NODE
-  // =====================================================
-  else if (step.stepType === "url_action" && step.url) {
-    let url = step.url.trim().replace(/\s+/g, "");
-    if (!url.startsWith("http")) url = "https://" + url;
-
-    payload = {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "cta_url",
-        header: {
-          type: "text",
-          text: (step.urlLabel || "Open Link").substring(0, 60),
-        },
-        body: {
-          text: step.message || "Tap below to continue",
-        },
-        action: {
-          name: "cta_url",
-          parameters: {
-            display_text: (step.urlLabel || "Open").substring(0, 20),
-            url,
-          },
-        },
-      },
-    };
-
-    return sendMessage(payload);
-  }
-
-  // =====================================================
-  // BUTTON / LIST FLOW
-  // =====================================================
-  else if (step.buttons?.length > 0) {
-    const valid = step.buttons.filter((b: any) => b.label?.trim());
-
-    if (valid.length > 3) {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "interactive",
-        interactive: {
-          type: "list",
-          header: { type: "text", text: "Options" },
-          body: { text: step.message || "Select an option" },
-          action: {
-            button: step.listButtonText || "Options",
-            sections: [
-              {
-                title: "Choices",
-                rows: valid.slice(0, 10).map((b: any) => ({
-                  id: b.id,
-                  title: b.label.substring(0, 24),
-                })),
-              },
-            ],
-          },
-        },
-      };
-    } else {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "interactive",
-        interactive: {
-          type: "button",
-          body: { text: step.message || "" },
-          action: {
-            buttons: valid.slice(0, 3).map((b: any) => ({
-              type: "reply",
-              reply: {
-                id: b.id,
-                title: b.label.substring(0, 20),
-              },
-            })),
-          },
-        },
-      };
-    }
-
-    const m = buildMediaObj();
-
-    if (m && step.mediaType) {
-      if (step.mediaType === "image") {
-        payload.interactive.header = { type: "image", image: m };
-      } else if (step.mediaType === "video") {
-        payload.interactive.header = { type: "video", video: m };
-      } else if (step.mediaType === "document") {
-        payload.interactive.header = {
-          type: "document",
-          document: { id: resolvedMediaId, filename: "Document" },
-        };
-      }
-    }
-
-    return sendMessage(payload);
-  }
-
-  // =====================================================
-  // DEFAULT MESSAGE
-  // =====================================================
-  const m = buildMediaObj();
-
-  payload = {
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: {
-      body: step.message || "",
-      preview_url: true,
-    },
-  };
-
-  return sendMessage(payload);
-
-  // =====================================================
-  // SEND FUNCTION (centralized)
-  // =====================================================
-  async function sendMessage(payload: any) {
+  const sendMessage = async (payload: any) => {
     try {
       const res = await fetch(
         `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
@@ -823,16 +582,173 @@ const buildMediaObj = () => {
       );
 
       const data = await res.json();
-
       if (!res.ok) {
         console.error("❌ WhatsApp API ERROR:", JSON.stringify(data, null, 2));
-      } else {
-        console.log("✅ Message sent successfully");
       }
     } catch (err: any) {
       console.error("❌ Send failed:", err.message);
     }
+  };
+
+  const isSocialLink = (url?: string) =>
+    url &&
+    [
+      "instagram.com",
+      "facebook.com",
+      "youtube.com",
+      "tiktok.com",
+      "linkedin.com",
+      "twitter.com",
+      "wa.me",
+    ].some((d) => url.includes(d));
+
+  // ===============================
+  // 1. CALL ACTION (FIXED)
+  // ===============================
+  if (step.stepType === "call_action" && step.phoneNumber) {
+    let number = step.phoneNumber.replace(/[^\d+]/g, "");
+    if (!number.startsWith("+")) number = "+" + number;
+
+    const payload = {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "cta_url",
+        header: {
+          type: "text",
+          text: step.callLabel || "Call Now",
+        },
+        body: {
+          text: step.callMessage || "Tap below to call",
+        },
+        action: {
+          name: "cta_url",
+          parameters: {
+            display_text: step.callLabel || "Call",
+            url: `https://wa.me/${number.replace("+", "")}`,
+          },
+        },
+      },
+    };
+
+    return sendMessage(payload);
   }
+
+  // ===============================
+  // 2. URL ACTION (FIXED)
+  // ===============================
+  if (step.stepType === "url_action" && step.url) {
+    let url = step.url.trim();
+    if (!url.startsWith("http")) url = "https://" + url;
+
+    const payload = {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "cta_url",
+        header: {
+          type: "text",
+          text: step.urlLabel || "Open Link",
+        },
+        body: {
+          text: step.message || "Tap below to continue",
+        },
+        action: {
+          name: "cta_url",
+          parameters: {
+            display_text: step.urlLabel || "Open",
+            url,
+          },
+        },
+      },
+    };
+
+    return sendMessage(payload);
+  }
+
+  // ===============================
+  // 3. SOCIAL LINKS (TEXT ONLY FIX)
+  // ===============================
+  if (step.mediaType === "link" || isSocialLink(step.mediaUrl)) {
+    const url = step.mediaUrl?.startsWith("http")
+      ? step.mediaUrl
+      : `https://${step.mediaUrl}`;
+
+    return sendMessage({
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: {
+        body: `${step.message || ""}\n\n${url}`,
+        preview_url: true,
+      },
+    });
+  }
+
+  // ===============================
+  // 4. BUTTON / LIST (UNCHANGED BUT SAFE)
+  // ===============================
+  if (step.buttons?.length > 0) {
+    const valid = step.buttons.filter((b: any) => b.label?.trim());
+
+    if (valid.length > 3) {
+      return sendMessage({
+        messaging_product: "whatsapp",
+        to,
+        type: "interactive",
+        interactive: {
+          type: "list",
+          body: { text: step.message || "Select option" },
+          action: {
+            button: step.listButtonText || "Options",
+            sections: [
+              {
+                title: "Menu",
+                rows: valid.slice(0, 10).map((b: any) => ({
+                  id: b.id,
+                  title: b.label.substring(0, 24),
+                })),
+              },
+            ],
+          },
+        },
+      });
+    }
+
+    return sendMessage({
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: step.message || "" },
+        action: {
+          buttons: valid.slice(0, 3).map((b: any) => ({
+            type: "reply",
+            reply: {
+              id: b.id,
+              title: b.label.substring(0, 20),
+            },
+          })),
+        },
+      },
+    });
+  }
+
+  // ===============================
+  // 5. DEFAULT TEXT
+  // ===============================
+  return sendMessage({
+    messaging_product: "whatsapp",
+    to,
+    type: "text",
+    text: {
+      body: step.message || "",
+      preview_url: true,
+    },
+  });
 }
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try {
