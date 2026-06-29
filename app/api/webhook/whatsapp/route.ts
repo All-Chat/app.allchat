@@ -110,7 +110,14 @@ async function findUserByPhoneNumberId(phoneNumberId: string) {
     matchedNumber = { whatsappPhoneNumberId: user.whatsappPhoneNumberId, whatsappAccessToken: user.whatsappAccessToken, wabaId: user.wabaId, name: "Default Number" };
   }
   if (!matchedNumber) return null;
-  return { userId: user._id, name: (matchedNumber as any).name || user.name || "Unknown", phoneNumberId: (matchedNumber as any).whatsappPhoneNumberId, accessToken: (matchedNumber as any).whatsappAccessToken, wabaId: (matchedNumber as any).wabaId || user.wabaId };
+  return { 
+    userId: user._id, 
+    tenantId: (user as any).tenantId || (user as any).parentTenantId || null, 
+    name: (matchedNumber as any).name || user.name || "Unknown", 
+    phoneNumberId: (matchedNumber as any).whatsappPhoneNumberId, 
+    accessToken: (matchedNumber as any).whatsappAccessToken, 
+    wabaId: (matchedNumber as any).wabaId || user.wabaId 
+  };
 }
 
 async function getAllWhatsappNumbersFromDB() {
@@ -227,12 +234,22 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
           let clickedBtn = null;
           for (const id of Object.keys(wf.steps)) { const step = wf.steps[id]; const btn = step.buttons?.find((b: any) => b.id === buttonPayload) || step.buttons?.find((b: any) => b.label?.toLowerCase() === incomingText.toLowerCase()); if (btn) { clickedBtn = btn; break; } }
           if (clickedBtn) {
+            // ✅ FIX: Apply Tag if button has applyTagId
             if (clickedBtn.applyTagId) await applyTagToContact(msg.from, clickedBtn.applyTagId, num.userId.toString());
-            if (clickedBtn.optInNodeId) await addOptInNumber(msg.from, num.userId.toString());
+            if (clickedBtn.optInNodeId) await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
             if (clickedBtn.nextStepId) {
               let nextStep = wf.steps[clickedBtn.nextStepId];
               while (nextStep && nextStep.stepType === "delay_node") { if (nextStep.delaySeconds > 0) await new Promise(r => setTimeout(r, nextStep.delaySeconds * 1000)); nextStep = nextStep.nextStepId ? wf.steps[nextStep.nextStepId] : null; }
               if (nextStep) {
+                // ✅ FIX: Handle if next step is an opt-out or tag node
+                if (nextStep.stepType === "opt_in_node") {
+                  await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
+                  return;
+                } else if (nextStep.stepType === "tag_node") {
+                  if (nextStep.selectedTag) await applyTagToContact(msg.from, nextStep.selectedTag, num.userId.toString());
+                  return;
+                }
+                
                 if (nextStep.stepType === "form_node" && nextStep.selectedForm) {
                   const formData = await Form.findById(nextStep.selectedForm);
                   if (formData && formData.fields.length > 0) {
@@ -263,18 +280,83 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
       }
     }
     if (!matchedWorkflow) return;
-    const steps = matchedWorkflow.steps; let currentStepId: string | null = null;
+
+    const steps = matchedWorkflow.steps; 
+    let currentStepId: string | null = null;
+    
     if (matchedByButton && buttonPayload) {
-      for (const id of Object.keys(steps)) { const step = steps[id]; const btn = step.buttons?.find((b: any) => b.id === buttonPayload || b.label?.toLowerCase() === incomingText.toLowerCase()); if (btn?.nextStepId) { currentStepId = btn.nextStepId; if (btn.applyTagId) await applyTagToContact(msg.from, btn.applyTagId, num.userId.toString()); if (btn.optInNodeId) await addOptInNumber(msg.from, num.userId.toString()); break; } }
-    } else { currentStepId = matchedWorkflow.rootStepId; }
+      for (const id of Object.keys(steps)) { 
+        const step = steps[id]; 
+        const btn = step.buttons?.find((b: any) => b.id === buttonPayload || b.label?.toLowerCase() === incomingText.toLowerCase()); 
+        if (btn?.nextStepId) { 
+          currentStepId = btn.nextStepId; 
+          // ✅ FIX: Apply tag if button has applyTagId
+          if (btn.applyTagId) await applyTagToContact(msg.from, btn.applyTagId, num.userId.toString());
+          if (btn.optInNodeId) await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId); 
+          break; 
+        } 
+      }
+    } else { 
+      currentStepId = matchedWorkflow.rootStepId; 
+    }
+
     if (!currentStepId || !steps[currentStepId]) return;
-    await processWorkflowStep(currentStepId, steps, matchedWorkflow, num.accessToken, num.phoneNumberId, msg.from, num.userId.toString());
+    
+    const rootStep = steps[currentStepId];
+
+    // ✅ FIX: Process Trigger Actions (Opt-out AND Tag) attached to the root step
+    if (rootStep?.triggerActions && rootStep.triggerActions.length > 0) {
+      for (const action of rootStep.triggerActions) {
+        if (action.type === "opt_in_node") {
+          await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
+        } else if (action.type === "tag_node") {
+          // Find the tag node step to get the selectedTag ID
+          const tagStep = steps[action.stepId];
+          if (tagStep?.selectedTag) {
+            await applyTagToContact(msg.from, tagStep.selectedTag, num.userId.toString());
+          }
+        }
+      }
+    }
+
+    // ✅ FIX: If the main root step itself is an opt-out or tag node, execute it
+    if (rootStep.stepType === "opt_in_node") {
+      await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
+      return; 
+    } else if (rootStep.stepType === "tag_node") {
+      if (rootStep.selectedTag) await applyTagToContact(msg.from, rootStep.selectedTag, num.userId.toString());
+      return;
+    }
+
+    await processWorkflowStep(currentStepId, steps, matchedWorkflow, num.accessToken, num.phoneNumberId, msg.from, num.userId.toString(), num.tenantId);
   } catch (err) { console.error("❌ [WORKFLOW] Error:", err); }
 }
 
-async function processWorkflowStep(stepId: string, steps: Record<string, any>, matchedWorkflow: any, accessToken: string, phoneNumberId: string, customerNumber: string, userId: string) {
-  const step = steps[stepId]; if (!step) return;
-  if (step.stepType === "delay_node") { if (step.delaySeconds > 0) await new Promise(r => setTimeout(r, step.delaySeconds * 1000)); if (step.nextStepId && steps[step.nextStepId]) await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId); return; }
+async function processWorkflowStep(stepId: string, steps: Record<string, any>, matchedWorkflow: any, accessToken: string, phoneNumberId: string, customerNumber: string, userId: string, tenantId: string | null = null) {
+  const step = steps[stepId]; 
+  if (!step) return;
+
+  if (step.stepType === "delay_node") { 
+    if (step.delaySeconds > 0) await new Promise(r => setTimeout(r, step.delaySeconds * 1000)); 
+    if (step.nextStepId && steps[step.nextStepId]) await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId); 
+    return; 
+  }
+
+  // ✅ FIX: Handle opt_in_node (Opt-out) and tag_node inside the workflow chain
+  if (step.stepType === "opt_in_node") {
+    await addOptOutNumber(customerNumber, userId, tenantId);
+    if (step.nextStepId && steps[step.nextStepId]) {
+      await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId);
+    }
+    return;
+  } else if (step.stepType === "tag_node") {
+    if (step.selectedTag) await applyTagToContact(customerNumber, step.selectedTag, userId);
+    if (step.nextStepId && steps[step.nextStepId]) {
+      await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId);
+    }
+    return;
+  }
+
   if (step.stepType === "form_node" && step.selectedForm) {
     const formData = await Form.findById(step.selectedForm);
     if (formData && formData.fields.length > 0) {
@@ -284,7 +366,8 @@ async function processWorkflowStep(stepId: string, steps: Record<string, any>, m
       startFormInactivityTimer(customerNumber, userId, formData._id.toString(), 0, formData.fields[0], formData, accessToken, phoneNumberId);
     } return;
   }
-  if (["inactivity_node", "tag_node", "opt_in_node"].includes(step.stepType)) return;
+
+  if (["inactivity_node"].includes(step.stepType)) return;
   await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step);
   await Message.create({ userId, phone: customerNumber, text: step.message || `[${step.stepType?.toUpperCase()}]`, direction: "out", messageType: step.mediaType || "text", mediaUrl: step.mediaUrl || null });
   await Session.findOneAndUpdate({ phone: customerNumber, userId }, { workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() }, { upsert: true, new: true });
@@ -320,8 +403,32 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
   try { const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify(payload) }); if (!res.ok) console.error(`❌ [WORKFLOW] API error:`, await res.json()); } catch (err: any) { console.error(`❌ [WORKFLOW] Send failed:`, err.message); }
 }
 
-async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) { try { const { default: Contact } = await import("@/models/Contact"); await Contact.findOneAndUpdate({ phone: phoneNumber, userId }, { $addToSet: { tags: tagId } }, { upsert: true }); } catch {} }
-async function addOptInNumber(phoneNumber: string, userId: string) { try { const { default: OptNumber } = await import("@/models/OptNumber"); await OptNumber.findOneAndUpdate({ phone: phoneNumber, userId }, { phone: phoneNumber, userId, optedIn: true }, { upsert: true }); } catch {} }
+// ✅ FIX: Restored function to apply tag to Contact document
+async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
+  try {
+    const { default: Contact } = await import("@/models/Contact");
+    await Contact.findOneAndUpdate(
+      { phone: phoneNumber, userId },
+      { $addToSet: { tags: tagId } },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.error("Failed to apply tag to contact:", err);
+  }
+}
+
+// ✅ FIX: Updated function to correctly save to the OptNumber model schema
+async function addOptOutNumber(phoneNumber: string, userId: string, tenantId: string | null = null) {
+  try {
+    const { default: OptNumber } = await import("@/models/OptNumber");
+    const existing = await OptNumber.findOne({ phoneNumber, userId });
+    if (!existing) {
+      await OptNumber.create({ phoneNumber, userId, tenantId, createdBy: userId });
+    }
+  } catch (err) {
+    console.error("Failed to add opt-out number:", err);
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -374,7 +481,6 @@ export async function POST(req: NextRequest) {
               for (const item of camp.reportData) {
                 if (item.phone === recipient_id || item.phone === `+${recipient_id}`) {
                   if (shouldUpdateStatus(item.status, status)) {
-                    // ✅ FIX: Use atomic updateOne to prevent VersionError crashes
                     await Campaign.updateOne(
                       { _id: camp._id, "reportData.phone": item.phone },
                       { $set: { "reportData.$.status": status, "reportData.$.error": errorText } }
