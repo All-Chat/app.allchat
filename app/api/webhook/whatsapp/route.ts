@@ -583,7 +583,10 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
   publicBaseUrl = publicBaseUrl.replace(/\/$/, "");
 
   // ✅ CALL ACTION NODE
-  if (step.stepType === "call_action" && step.phoneNumber) {
+  // =========================
+// CALL ACTION NODE (FIXED)
+// =========================
+if (step.stepType === "call_action" && step.phoneNumber) {
   let callNumber = step.phoneNumber.replace(/[^\d+]/g, "");
 
   if (!callNumber.startsWith("+")) {
@@ -593,9 +596,9 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
   const redirectUrl =
     `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
 
-  // ✅ ONLY USE CALL NODE DATA (NOT previous step)
+  // ❌ DO NOT reuse message/urlLabel from other nodes
   const callTitle = step.callLabel || "Call Now";
-  const callBody = step.callMessage || "Tap the button below to call.";
+  const callBody = step.callMessage || "";
 
   payload = {
     messaging_product: "whatsapp",
@@ -607,9 +610,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         type: "text",
         text: callTitle.substring(0, 60),
       },
-      body: {
-        text: callBody,
-      },
+      body: callBody ? { text: callBody } : { text: " " },
       action: {
         name: "cta_url",
         parameters: {
@@ -621,6 +622,44 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
   };
 
   console.log(`📞 CALL BUTTON: ${redirectUrl}`);
+}
+
+// =========================
+// URL ACTION NODE (FIXED)
+// =========================
+else if (step.stepType === "url_action" && step.url) {
+  let url = step.url.trim().replace(/\s+/g, "");
+
+  if (!url.startsWith("http://") && !url.startsWith("https://")) {
+    url = "https://" + url;
+  }
+
+  // ❌ STRICT FIELD ISOLATION (NO LEAKING FROM OTHER NODES)
+  const urlTitle = step.urlLabel || "Open Link";
+  const urlBody = step.message || "";
+
+  payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "cta_url",
+      header: {
+        type: "text",
+        text: urlTitle.substring(0, 60),
+      },
+      body: urlBody ? { text: urlBody } : { text: " " },
+      action: {
+        name: "cta_url",
+        parameters: {
+          display_text: urlTitle.substring(0, 20),
+          url: url,
+        },
+      },
+    },
+  };
+
+  console.log(`🔗 URL BUTTON: ${url}`);
 }
   // ✅ URL ACTION NODE
   else if (step.stepType === "url_action" && step.url) {
