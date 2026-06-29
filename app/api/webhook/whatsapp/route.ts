@@ -571,10 +571,48 @@ async function sendWorkflowWhatsAppMessage(
   let resolvedMediaId: string | null = null;
 
   // =====================================================
-  // MEDIA RESOLUTION (FIXED - ONLY META MEDIA ID ALLOWED)
+  // SOCIAL LINK DETECTION (CRITICAL FIX)
+  // =====================================================
+const isSocialLink = (url?: string) => {
+  if (!url) return false;
+
+  return [
+    "instagram.com",
+    "facebook.com",
+    "fb.com",
+    "whatsapp.com",
+    "youtube.com",
+    "youtu.be",
+    "tiktok.com",
+    "linkedin.com",
+    "twitter.com",
+  ].some(domain => url.includes(domain));
+};
+
+  // =====================================================
+  // FORCE SOCIAL LINKS → TEXT ONLY (NO MEDIA PROCESSING)
+  // =====================================================
+  if (step.mediaType === "link" || isSocialLink(step.mediaUrl)) {
+    let url = step.mediaUrl?.trim() || "";
+    if (url && !url.startsWith("http")) url = "https://" + url;
+
+    payload = {
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: {
+        body: step.message ? `${step.message}\n\n${url}` : url,
+        preview_url: true,
+      },
+    };
+
+    return sendMessage(payload);
+  }
+
+  // =====================================================
+  // MEDIA RESOLUTION (ONLY NON-LINK MEDIA)
   // =====================================================
   if (step.mediaUrl && step.mediaType && step.mediaType !== "link") {
-    // already Meta ID
     if (/^\d+$/.test(step.mediaUrl)) {
       resolvedMediaId = step.mediaUrl;
     } else {
@@ -593,10 +631,14 @@ async function sendWorkflowWhatsAppMessage(
     }
   }
 
-  const buildMediaObj = () => {
-    if (!resolvedMediaId) return null;
-    return { id: resolvedMediaId };
-  };
+const buildMediaObj = () => {
+  if (!resolvedMediaId) return null;
+
+  // ONLY allow valid WhatsApp media IDs (numeric or Graph IDs)
+  if (!/^[a-zA-Z0-9_-]+$/.test(resolvedMediaId)) return null;
+
+  return { id: resolvedMediaId };
+};
 
   // =====================================================
   // BASE URL CLEANUP
@@ -641,10 +683,12 @@ async function sendWorkflowWhatsAppMessage(
         },
       },
     };
+
+    return sendMessage(payload);
   }
 
   // =====================================================
-  // URL ACTION NODE (ONLY ONE VERSION)
+  // URL ACTION NODE
   // =====================================================
   else if (step.stepType === "url_action" && step.url) {
     let url = step.url.trim().replace(/\s+/g, "");
@@ -672,6 +716,8 @@ async function sendWorkflowWhatsAppMessage(
         },
       },
     };
+
+    return sendMessage(payload);
   }
 
   // =====================================================
@@ -724,138 +770,70 @@ async function sendWorkflowWhatsAppMessage(
       };
     }
 
-    // =====================================================
-    // MEDIA HEADER (FIXED - NO URL EVER ALLOWED)
-    // =====================================================
     const m = buildMediaObj();
 
     if (m && step.mediaType) {
       if (step.mediaType === "image") {
-        payload.interactive.header = {
-          type: "image",
-          image: m, // ✅ MUST be {id}
-        };
-      }
-
-      if (step.mediaType === "video") {
-        payload.interactive.header = {
-          type: "video",
-          video: m,
-        };
-      }
-
-      if (step.mediaType === "document") {
+        payload.interactive.header = { type: "image", image: m };
+      } else if (step.mediaType === "video") {
+        payload.interactive.header = { type: "video", video: m };
+      } else if (step.mediaType === "document") {
         payload.interactive.header = {
           type: "document",
-          document: {
-            id: resolvedMediaId,
-            filename: "Document",
-          },
+          document: { id: resolvedMediaId, filename: "Document" },
         };
       }
     }
+
+    return sendMessage(payload);
   }
 
   // =====================================================
-  // SIMPLE MESSAGE / MEDIA
+  // DEFAULT MESSAGE
   // =====================================================
-  else {
-    const m = buildMediaObj();
+  const m = buildMediaObj();
 
-    if (step.mediaType === "link") {
-      let linkUrl = step.mediaUrl?.trim() || "";
-      if (!linkUrl.startsWith("http")) linkUrl = "https://" + linkUrl;
+  payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "text",
+    text: {
+      body: step.message || "",
+      preview_url: true,
+    },
+  };
 
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: {
-          body: step.message
-            ? `${step.message}\n\n${linkUrl}`
-            : linkUrl,
-          preview_url: true,
-        },
-      };
-    } else if (step.mediaType === "image" && m) {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "image",
-        image: {
-          ...m,
-          caption: step.message || undefined,
-        },
-      };
-    } else if (step.mediaType === "video" && m) {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "video",
-        video: {
-          ...m,
-          caption: step.message || undefined,
-        },
-      };
-    } else if (step.mediaType === "audio" && m) {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "audio",
-        audio: m,
-      };
-    } else if (step.mediaType === "document" && m) {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "document",
-        document: {
-          ...m,
-          filename: "Document",
-          caption: step.message || undefined,
-        },
-      };
-    } else {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: {
-          body: step.message || "",
-          preview_url: true,
-        },
-      };
-    }
-  }
+  return sendMessage(payload);
 
   // =====================================================
-  // SEND REQUEST
+  // SEND FUNCTION (centralized)
   // =====================================================
-  try {
-    const res = await fetch(
-      `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
+  async function sendMessage(payload: any) {
+    try {
+      const res = await fetch(
+        `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        }
+      );
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        console.error("❌ WhatsApp API ERROR:", JSON.stringify(data, null, 2));
+      } else {
+        console.log("✅ Message sent successfully");
       }
-    );
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      console.error("❌ WhatsApp API ERROR:", JSON.stringify(data, null, 2));
-    } else {
-      console.log("✅ WhatsApp message sent successfully");
+    } catch (err: any) {
+      console.error("❌ Send failed:", err.message);
     }
-  } catch (err: any) {
-    console.error("❌ Send failed:", err.message);
   }
 }
-
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try {
     const { default: Contact } = await import("@/models/Contact");
