@@ -426,7 +426,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     return null; 
   };
 
-  // ✅ CALL ACTION NODE
+  // ✅ CALL ACTION NODE - STRICT BUTTON ONLY (NO TEXT FALLBACK)
   if (step.stepType === "call_action" && step.phoneNumber) {
     let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
     if (callNumber.startsWith("+")) {
@@ -435,10 +435,11 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       callNumber = "+" + callNumber;
     }
     
+    // Must use your exact verified domain from .env
     const publicBaseUrl = (process.env.NEXTAUTH_URL || baseUrl).replace(/\/$/, "");
     const redirectUrl = `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
 
-    const buttonPayload = {
+    payload = {
       messaging_product: "whatsapp", 
       to, 
       type: "interactive",
@@ -449,43 +450,12 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         action: { 
           name: "cta_url", 
           parameters: [{ 
-            type: "cta_url", // ✅ RESTORED: WhatsApp requires this field
             display_text: (step.urlLabel || "Call Now").substring(0, 20), 
             url: redirectUrl 
           }] 
         }
       }
     };
-
-    try {
-      const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(buttonPayload)
-      });
-
-      const data = await res.json();
-      
-      // ✅ If button fails, immediately fallback to text message so the user gets a reply
-      if (!res.ok) {
-        console.error(`❌ [CALL_ACTION] Button failed (${data.error?.code}). Falling back to text link...`);
-        const fallbackText = `${step.message || ""}\n\n📞 Click here to call: ${redirectUrl}`.trim();
-        const textPayload = {
-          messaging_product: "whatsapp",
-          to,
-          type: "text",
-          text: { body: fallbackText, preview_url: true }
-        };
-        await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify(textPayload)
-        });
-      }
-    } catch (e) {
-      console.error("Call action network error:", e);
-    }
-    return; 
   } 
   // ✅ URL ACTION NODE
   else if (step.stepType === "url_action" && step.url) {
@@ -494,10 +464,8 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       url = "https://" + url;
     }
     
-    const buttonPayload = {
-      messaging_product: "whatsapp", 
-      to, 
-      type: "interactive",
+    payload = {
+      messaging_product: "whatsapp", to, type: "interactive",
       interactive: {
         type: "cta_url",
         header: { type: "text", text: (step.urlLabel || "Visit Link").substring(0, 60) },
@@ -505,43 +473,12 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         action: { 
           name: "cta_url", 
           parameters: [{ 
-            type: "cta_url", // ✅ RESTORED
             display_text: (step.urlLabel || "Open").substring(0, 20), 
             url: url 
           }] 
         }
       }
     };
-
-    try {
-      const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(buttonPayload)
-      });
-
-      const data = await res.json();
-      
-      // ✅ If button fails, immediately fallback to text message
-      if (!res.ok) {
-        console.error(`❌ [URL_ACTION] Button failed (${data.error?.code}). Falling back to text link...`);
-        const fallbackText = `${step.message || ""}\n\n🔗 ${url}`.trim();
-        const textPayload = {
-          messaging_product: "whatsapp",
-          to,
-          type: "text",
-          text: { body: fallbackText, preview_url: true }
-        };
-        await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify(textPayload)
-        });
-      }
-    } catch (e) {
-      console.error("URL action network error:", e);
-    }
-    return;
   } 
   else if (step.buttons?.length > 0) {
     const valid = step.buttons.filter((b: any) => b.label?.trim());
@@ -566,7 +503,6 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     else payload = { messaging_product: "whatsapp", to, type: "text", text: { body: step.message || "", preview_url: true } };
   }
 
-  // ✅ Standard execution for all other nodes (Message, Media, etc.)
   try { 
     const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { 
       method: "POST", 
@@ -576,7 +512,11 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     
     const data = await res.json();
     if (!res.ok) {
+      // ✅ NO FALLBACK. This will print the EXACT reason why WhatsApp rejected the button.
       console.error(`❌ [WORKFLOW] API Error for ${step.stepType}:`, JSON.stringify(data, null, 2));
+      console.error(`❌ [WORKFLOW] Payload Sent:`, JSON.stringify(payload, null, 2));
+    } else {
+      console.log(`✅ [WORKFLOW] Message sent successfully for ${step.stepType}. WhatsApp ID: ${data.messages?.[0]?.id}`);
     }
   } catch (err: any) { 
     console.error(`❌ [WORKFLOW] Send failed:`, err.message); 
