@@ -448,6 +448,13 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     return null; 
   };
 
+  // ✅ FORCE HTTPS to prevent WhatsApp API rejections
+  let publicBaseUrl = process.env.NEXTAUTH_URL || baseUrl;
+  if (publicBaseUrl.startsWith("http://")) {
+    publicBaseUrl = publicBaseUrl.replace("http://", "https://");
+  }
+  publicBaseUrl = publicBaseUrl.replace(/\/$/, "");
+
   // ✅ CALL ACTION NODE
   if (step.stepType === "call_action" && step.phoneNumber) {
     let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
@@ -457,7 +464,6 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       callNumber = "+" + callNumber;
     }
     
-    const publicBaseUrl = (process.env.NEXTAUTH_URL || baseUrl).replace(/\/$/, "");
     const redirectUrl = `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
 
     payload = {
@@ -467,17 +473,20 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       interactive: {
         type: "cta_url",
         header: { type: "text", text: (step.urlLabel || "Call Us").substring(0, 60) },
-        body: { text: step.message || `Tap the button below to call us at ${callNumber}.` },
+        body: { text: step.message || `Tap the button below to call.` },
         action: { 
           name: "cta_url", 
           parameters: [{ 
-            type: "cta_url", // ✅ FIX: WhatsApp strictly requires this field
+            type: "cta_url",
             display_text: (step.urlLabel || "Call Now").substring(0, 20), 
             url: redirectUrl 
           }] 
         }
       }
     };
+    
+    // Log the exact URL being sent so you can verify it's HTTPS and correct
+    console.log(`📞 [CALL_ACTION] Sending Button with URL: ${redirectUrl}`);
   } 
   // ✅ URL ACTION NODE
   else if (step.stepType === "url_action" && step.url) {
@@ -497,7 +506,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         action: { 
           name: "cta_url", 
           parameters: [{ 
-            type: "cta_url", // ✅ FIX: WhatsApp strictly requires this field
+            type: "cta_url",
             display_text: (step.urlLabel || "Open").substring(0, 20), 
             url: url 
           }] 
@@ -539,7 +548,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     if (!res.ok) {
       console.error(`❌ [WORKFLOW] API Error for ${step.stepType}:`, JSON.stringify(data, null, 2));
       
-      // Fallback to text if URL Action fails
+      // Fallback to text if button fails
       if (step.stepType === "url_action" || step.stepType === "call_action") {
         let fallbackBody = step.message || "";
         if (step.stepType === "url_action" && step.url) {
@@ -550,7 +559,6 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         if (step.stepType === "call_action" && step.phoneNumber) {
           let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
           if (!callNumber.startsWith("+")) callNumber = "+" + callNumber;
-          const publicBaseUrl = (process.env.NEXTAUTH_URL || baseUrl).replace(/\/$/, "");
           fallbackBody += `\n\n📞 Click here to call: ${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
         }
         
@@ -567,7 +575,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         });
       }
     } else {
-      console.log(`✅ [WORKFLOW] Message sent successfully for ${step.stepType}. WhatsApp ID: ${data.messages?.[0]?.id}`);
+      console.log(`✅ [WORKFLOW] Button sent successfully!`);
     }
   } catch (err: any) { 
     console.error(`❌ [WORKFLOW] Send failed:`, err.message); 
