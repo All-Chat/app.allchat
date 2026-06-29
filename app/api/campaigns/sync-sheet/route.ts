@@ -7,12 +7,18 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
 
-function isValidReply(text: string): boolean {
-  if (!text || !text.trim()) return false;
-  if (/^\[.*\]$/.test(text.trim())) return false;
+// ✅ Same exact media-supported junk filter used in the UI
+function isValidReply(msg: any): boolean {
+  const text = (msg.text || "").trim();
+  if (msg.messageType && ["image", "video", "audio", "document", "sticker", "location", "contacts", "interactive", "button"].includes(msg.messageType)) {
+    return true;
+  }
+  if (!text) return false;
+  if (/^\[.*\]$/.test(text)) return false;
   return true;
 }
 
+// ✅ Helper to format status EXACTLY like the frontend UI
 function getDisplayStatus(rawStatus: string, repliesCount: number): string {
   if (repliesCount > 0) return `Replied (${repliesCount})`;
   
@@ -32,6 +38,8 @@ function getDisplayStatus(rawStatus: string, repliesCount: number): string {
   }
 }
 
+const normalizePhone = (p: string) => String(p || "").replace(/\D/g, "");
+
 export async function POST(req: Request) {
   try {
     await connectDB();
@@ -45,9 +53,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, message: "Campaign ID required" }, { status: 400 });
     }
 
-    // ✅ Do NOT use .lean() here so we can save the replies permanently to the DB
-    const campaign: any = await Campaign.findById(campaignId)
-      .select("userId name reportData createdAt additionalFields");
+    const campaign = await Campaign.findById(campaignId)
+      .select("userId name reportData createdAt additionalFields")
+      .lean();
 
     if (!campaign || campaign.userId.toString() !== session.user.id) {
       return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
@@ -55,14 +63,14 @@ export async function POST(req: Request) {
 
     const additionalFields: string[] = campaign.additionalFields || [];
 
-    // ─── FETCH REPLIES (Exact same logic as your UI report-replies route) ───
-    const campaignPhones = new Set(
-      (campaign.reportData || []).map((d: any) => d.phone).filter(Boolean)
-    );
+    // ─── 1. FETCH REPLIES (Exact same logic as UI report-replies route) ───
+    const campaignPhonesList = (campaign.reportData || [])
+      .map((item: any) => normalizePhone(item.phone).slice(-10))
+      .filter((p: string) => p.length >= 7);
 
-    const repliesMap: Record<string, string[]> = {};
+    const tempRepliesMap: Record<string, string[]> = {};
 
-    if (campaignPhones.size > 0) {
+    if (campaignPhonesList.length > 0) {
       const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const campaignCreated = new Date(campaign.createdAt);
       const since = campaignCreated > twentyFourHoursAgo ? campaignCreated : twentyFourHoursAgo;
@@ -74,40 +82,52 @@ export async function POST(req: Request) {
       }).sort({ createdAt: 1 }).lean();
 
       for (const msg of messages) {
-        if (!campaignPhones.has(msg.phone)) continue;
-
-        const cleanText = (msg.text || "").trim();
-        if (!isValidReply(cleanText)) continue;
-
-        if (!repliesMap[msg.phone]) repliesMap[msg.phone] = [];
-        if (repliesMap[msg.phone].length < 5) {
-          repliesMap[msg.phone].push(cleanText);
+        const msgPhoneLast10 = normalizePhone(msg.phone).slice(-10);
+        if (msgPhoneLast10 && campaignPhonesList.includes(msgPhoneLast10)) {
+          if (!isValidReply(msg)) continue;
+          
+          if (!tempRepliesMap[msgPhoneLast10]) tempRepliesMap[msgPhoneLast10] = [];
+          
+          // ✅ Allow up to 5 replies max
+          if (tempRepliesMap[msgPhoneLast10].length < 5) {
+            let displayText = (msg.text || "").trim();
+            if (!displayText && msg.messageType && msg.messageType !== "text") {
+              displayText = `[${msg.messageType}]`;
+            }
+            tempRepliesMap[msgPhoneLast10].push(displayText);
+          }
         }
       }
     }
 
-    let isDbModified = false;
+    // Re-map back to the exact phone formats stored in the campaign (just like the UI API does)
+    const repliesMap: Record<string, string[]> = {};
+    for (const item of campaign.reportData || []) {
+      const p10 = normalizePhone(item.phone).slice(-10);
+      if (tempRepliesMap[p10] && tempRepliesMap[p10].length > 0) {
+        repliesMap[item.phone] = tempRepliesMap[p10];
+      }
+    }
 
-    // ─── Build report rows ─────────────────────────────────────────────
+    // ─── 2. BUILD REPORT ROWS (Exact same logic as UI getRepliesList) ───
     const reportDataForSheet: any[] = (campaign.reportData || []).map((item: any) => {
-      // 1. Check if DB already has native replies
       let replies: string[] = [];
-      if (Array.isArray(item.replies) && item.replies.length > 0) {
+      
+      // 1. Always check the live fetched replies map FIRST
+      if (item.phone && repliesMap[item.phone]?.length > 0) {
+        replies = repliesMap[item.phone];
+      } 
+      // 2. Fallback to DB cached replies ONLY if the map didn't find anything
+      else if (Array.isArray(item.replies) && item.replies.length > 0) {
         replies = item.replies;
       } else if (item.reply) {
         replies = [item.reply];
-      } else if (item.phone && repliesMap[item.phone]?.length > 0) {
-        replies = repliesMap[item.phone];
-        
-        // ✅ PERMANENT FIX: Save the fetched replies to the DB so it stops oscillating!
-        item.replies = replies;
-        isDbModified = true;
       }
       
       const row: any = {
         name: String(item.name || "").trim() || "N/A",
         phone: String(item.phone || "").trim() || "N/A",
-        status: getDisplayStatus(String(item.status || ""), replies.length),
+        status: getDisplayStatus(String(item.status || ""), replies.length), // ✅ Will say "Replied (5)" if 5 replies exist
         error: String(item.error || "").trim(),
         tags: Array.isArray(item.tags) ? item.tags.filter(Boolean).join(", ") : "",
       };
@@ -116,6 +136,7 @@ export async function POST(req: Request) {
         row[field] = item.additionalData?.[idx] || "";
       });
 
+      // ✅ Populate up to 5 Replies
       row["Reply 1"] = replies[0] || "";
       row["Reply 2"] = replies[1] || "";
       row["Reply 3"] = replies[2] || "";
@@ -125,17 +146,11 @@ export async function POST(req: Request) {
       return row;
     });
 
-    // ✅ Save to DB if we added replies, so the webhook's "read" status can't override it anymore
-    if (isDbModified) {
-      campaign.markModified("reportData");
-      await campaign.save();
-      console.log("[SHEET SYNC] Permanently saved replies to DB to prevent oscillation.");
-    }
-
     if (reportDataForSheet.length === 0) {
       return NextResponse.json({ success: false, message: "No report data to sync" }, { status: 400 });
     }
 
+    // ─── 3. Sync to Google Sheet ───────────────────────────────────────────────
     await syncCampaignToGoogleSheet(session.user.id, {
       name: campaign.name || `Campaign ${campaign._id}`,
       reportData: reportDataForSheet,
