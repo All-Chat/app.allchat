@@ -7,6 +7,7 @@ import Workflow from "@/models/Workflow";
 import Session from "@/models/Session";
 import Form from "@/models/Form";
 import FormResponse from "@/models/FormResponse";
+import Campaign from "@/models/Campaign";
 import fs from "fs";
 import path from "path";
 
@@ -16,6 +17,7 @@ const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "watiX_webhook_verify_
 const workflowTimers = new Map<string, NodeJS.Timeout>();
 const formTimers = new Map<string, NodeJS.Timeout>();
 
+// ✅ STATUS PRIORITY HELPER FUNCTION
 const statusPriority: Record<string, number> = {
   "pending": 1, "queued": 2, "sent": 3, "delivered": 4, "read": 5
 };
@@ -110,6 +112,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 }
 
+// ✅ MULTI-TENANT: Find user by Phone Number ID
 async function findUserByPhoneNumberId(phoneNumberId: string) {
   const user = await User.findOne({ $or: [{ whatsappPhoneNumberId: phoneNumberId }, { "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId }] }).lean();
   if (!user) return null;
@@ -210,6 +213,7 @@ async function uploadMediaToMetaFromUrl(phoneNumberId: string, accessToken: stri
   } catch (err) { console.error(`❌ [MEDIA] Upload failed:`, err); return null; }
 }
 
+// ✅ CORE WORKFLOW EXECUTION LOGIC
 async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
   try {
     if (!["text", "button", "interactive"].includes(msg.type)) return;
@@ -219,9 +223,10 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
 
     const activeSession = await Session.findOne({ phone: msg.from, userId: num.userId });
     
+    // 1. Handle Active Form Sessions
     if (activeSession && activeSession.formId) {
       if (buttonPayload && buttonPayload.startsWith("restart_form_")) {
-        // Fall through
+        // Fall through to button handler
       } else {
         const form = await Form.findById(activeSession.formId);
         if (!form) { await Session.deleteOne({ _id: activeSession._id }); return; }
@@ -266,6 +271,7 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
       }
     }
 
+    // 2. Find matching workflows
     let workflows = await Workflow.find({ userId: num.userId, wabaPhoneNumberId: num.phoneNumberId, active: true });
     if (workflows.length === 0) {
       const legacy = await Workflow.find({ userId: num.userId, $or: [{ wabaPhoneNumberId: null }, { wabaPhoneNumberId: { $exists: false } }], active: true });
@@ -275,6 +281,7 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
 
     let matchedWorkflow: any = null; let matchedByButton = false;
 
+    // 3. Handle Button Replies
     if (buttonPayload) {
       if (buttonPayload.startsWith("restart_form_")) {
         const formId = buttonPayload.replace("restart_form_", "");
@@ -292,7 +299,11 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
         const wf = await Workflow.findById(activeSession.workflowId);
         if (wf && wf.active && wf.steps) {
           let clickedBtn = null;
-          for (const id of Object.keys(wf.steps)) { const step = wf.steps[id]; const btn = step.buttons?.find((b: any) => b.id === buttonPayload) || step.buttons?.find((b: any) => b.label?.toLowerCase() === incomingText.toLowerCase()); if (btn) { clickedBtn = btn; break; } }
+          for (const id of Object.keys(wf.steps)) { 
+            const step = wf.steps[id]; 
+            const btn = step.buttons?.find((b: any) => b.id === buttonPayload) || step.buttons?.find((b: any) => b.label?.toLowerCase() === incomingText.toLowerCase()); 
+            if (btn) { clickedBtn = btn; break; } 
+          }
           if (clickedBtn) {
             if (clickedBtn.applyTagId) await applyTagToContact(msg.from, clickedBtn.applyTagId, num.userId.toString());
             if (clickedBtn.optInNodeId) await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
@@ -324,9 +335,17 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
       for (const wf of workflows) { for (const id of Object.keys(wf.steps)) { const step = wf.steps[id]; const btn = step.buttons?.find((b: any) => b.id === buttonPayload || b.label?.toLowerCase() === incomingText.toLowerCase()); if (btn?.nextStepId) { matchedWorkflow = wf; matchedByButton = true; break; } } if (matchedByButton) break; }
     }
 
+    // 4. Handle Keyword Triggers
     if (!matchedWorkflow) {
       for (const wf of workflows) {
-        const isMatch = wf.triggers.some((t: any) => { const k = (t.keyword || "").trim(); const m = (t.matchMode || "contains").toLowerCase(); if (m === "exists") return true; if (k === "*" || k === "") return true; if (m === "exact") return incomingText.trim() === k; return incomingText.toLowerCase().trim().includes(k.toLowerCase()); });
+        const isMatch = wf.triggers.some((t: any) => { 
+          const k = (t.keyword || "").trim(); 
+          const m = (t.matchMode || "contains").toLowerCase(); 
+          if (m === "exists") return true; 
+          if (k === "*" || k === "") return true; 
+          if (m === "exact") return incomingText.trim() === k; 
+          return incomingText.toLowerCase().trim().includes(k.toLowerCase()); 
+        });
         if (isMatch) { matchedWorkflow = wf; break; }
       }
     }
@@ -352,6 +371,7 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
     
     const rootStep = steps[currentStepId];
 
+    // 5. Process Extra Trigger Actions (Opt-out / Tag attached directly to trigger)
     if (rootStep?.triggerActions && rootStep.triggerActions.length > 0) {
       for (const action of rootStep.triggerActions) {
         if (action.type === "opt_in_node") await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
@@ -365,6 +385,7 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
     if (rootStep.stepType === "opt_in_node") { await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId); return; } 
     else if (rootStep.stepType === "tag_node") { if (rootStep.selectedTag) await applyTagToContact(msg.from, rootStep.selectedTag, num.userId.toString()); return; }
 
+    // 6. Process the main step
     await processWorkflowStep(currentStepId, steps, matchedWorkflow, num.accessToken, num.phoneNumberId, msg.from, num.userId.toString(), num.tenantId, baseUrl);
   } catch (err) { console.error("❌ [WORKFLOW] Error:", err); }
 }
@@ -412,6 +433,7 @@ async function processWorkflowStep(stepId: string, steps: Record<string, any>, m
   if (step.buttons?.length > 0) startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
 }
 
+// ✅ WHATSAPP API SENDER (with Call/URL Button Fix)
 async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: string, to: string, step: any, baseUrl: string) {
   let payload: any; 
   let resolvedMediaId: string | null = null;
@@ -438,7 +460,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     const publicBaseUrl = (process.env.NEXTAUTH_URL || baseUrl).replace(/\/$/, "");
     const redirectUrl = `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
 
-    const buttonPayload = {
+    payload = {
       messaging_product: "whatsapp", 
       to, 
       type: "interactive",
@@ -455,36 +477,6 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         }
       }
     };
-
-    try {
-      const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(buttonPayload)
-      });
-
-      const data = await res.json();
-      
-      // ✅ If button fails, fallback to text so the user gets a reply
-      if (!res.ok) {
-        console.error(`❌ [CALL_ACTION] Button failed. Error:`, JSON.stringify(data, null, 2));
-        const fallbackText = `${step.message || ""}\n\n📞 Click here to call: ${redirectUrl}`.trim();
-        const textPayload = {
-          messaging_product: "whatsapp",
-          to,
-          type: "text",
-          text: { body: fallbackText, preview_url: true }
-        };
-        await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify(textPayload)
-        });
-      }
-    } catch (e) {
-      console.error("Call action network error:", e);
-    }
-    return; 
   } 
   // ✅ URL ACTION NODE
   else if (step.stepType === "url_action" && step.url) {
@@ -493,7 +485,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       url = "https://" + url;
     }
     
-    const buttonPayload = {
+    payload = {
       messaging_product: "whatsapp", 
       to, 
       type: "interactive",
@@ -510,35 +502,6 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         }
       }
     };
-
-    try {
-      const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(buttonPayload)
-      });
-
-      const data = await res.json();
-      
-      if (!res.ok) {
-        console.error(`❌ [URL_ACTION] Button failed. Error:`, JSON.stringify(data, null, 2));
-        const fallbackText = `${step.message || ""}\n\n🔗 ${url}`.trim();
-        const textPayload = {
-          messaging_product: "whatsapp",
-          to,
-          type: "text",
-          text: { body: fallbackText, preview_url: true }
-        };
-        await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify(textPayload)
-        });
-      }
-    } catch (e) {
-      console.error("URL action network error:", e);
-    }
-    return;
   } 
   else if (step.buttons?.length > 0) {
     const valid = step.buttons.filter((b: any) => b.label?.trim());
@@ -563,7 +526,6 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     else payload = { messaging_product: "whatsapp", to, type: "text", text: { body: step.message || "", preview_url: true } };
   }
 
-  // ✅ Standard execution for all other nodes
   try { 
     const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { 
       method: "POST", 
@@ -574,12 +536,41 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     const data = await res.json();
     if (!res.ok) {
       console.error(`❌ [WORKFLOW] API Error for ${step.stepType}:`, JSON.stringify(data, null, 2));
+      
+      // Fallback for URL/Call actions if button fails (e.g. domain not verified)
+      if (step.stepType === "url_action" || step.stepType === "call_action") {
+        let fallbackBody = step.message || "";
+        if (step.stepType === "url_action" && step.url) {
+          let u = step.url;
+          if (!u.startsWith("http")) u = "https://" + u;
+          fallbackBody += `\n\n${u}`;
+        }
+        if (step.stepType === "call_action" && step.phoneNumber) {
+          let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
+          if (!callNumber.startsWith("+")) callNumber = "+" + callNumber;
+          const publicBaseUrl = (process.env.NEXTAUTH_URL || baseUrl).replace(/\/$/, "");
+          fallbackBody += `\n\n📞 Click here to call: ${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
+        }
+        
+        const fallbackPayload = {
+          messaging_product: "whatsapp",
+          to,
+          type: "text",
+          text: { body: fallbackBody.trim(), preview_url: true }
+        };
+        await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { 
+          method: "POST", 
+          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, 
+          body: JSON.stringify(fallbackPayload) 
+        });
+      }
     }
   } catch (err: any) { 
     console.error(`❌ [WORKFLOW] Send failed:`, err.message); 
   }
 }
 
+// ✅ HELPER: Apply Tag
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try {
     const { default: Contact } = await import("@/models/Contact");
@@ -590,6 +581,7 @@ async function applyTagToContact(phoneNumber: string, tagId: string, userId: str
   } catch (err) { console.error("Failed to apply tag to contact:", err); }
 }
 
+// ✅ HELPER: Add Opt-Out Number
 async function addOptOutNumber(phoneNumber: string, userId: string, tenantId: string | null = null) {
   try {
     const { default: OptNumber } = await import("@/models/OptNumber");
@@ -598,6 +590,7 @@ async function addOptOutNumber(phoneNumber: string, userId: string, tenantId: st
   } catch (err) { console.error("Failed to add opt-out number:", err); }
 }
 
+// ✅ MAIN POST ROUTE
 export async function POST(req: NextRequest) {
   try {
     await connectDB();
@@ -622,11 +615,16 @@ export async function POST(req: NextRequest) {
         if (change.field !== "messages") continue;
         const value = change.value; if (!value) continue;
         const phoneNumberId = value.metadata?.phone_number_id; if (!phoneNumberId) continue;
+        
+        // ✅ MULTI-TENANT: Find the correct user/credentials for this webhook
         const num = await findUserByPhoneNumberId(phoneNumberId); if (!num) continue;
 
         const contactInfo = value.contacts?.[0];
         if (contactInfo?.profile?.name && contactInfo?.wa_id) {
-          try { const { default: Contact } = await import("@/models/Contact"); await Contact.findOneAndUpdate({ phone: contactInfo.wa_id, userId: num.userId }, { name: contactInfo.profile.name, phone: contactInfo.wa_id }, { upsert: true }); } catch {}
+          try { 
+            const { default: Contact } = await import("@/models/Contact"); 
+            await Contact.findOneAndUpdate({ phone: contactInfo.wa_id, userId: num.userId }, { name: contactInfo.profile.name, phone: contactInfo.wa_id }, { upsert: true }); 
+          } catch {}
         }
 
         for (const msg of value.messages || []) {
@@ -635,6 +633,7 @@ export async function POST(req: NextRequest) {
           await executeWorkflowsForMessage(msg, num, baseUrl);
         }
 
+        // ✅ HANDLE MESSAGE STATUSES (CAMPAIGNS)
         for (const statusObj of value.statuses || []) {
           const { id, status, recipient_id, errors } = statusObj;
           if (status === "delivered" || status === "read") await Message.updateOne({ whatsappMessageId: id }, { $set: { status, error: null } });
@@ -652,7 +651,10 @@ export async function POST(req: NextRequest) {
               for (const item of camp.reportData) {
                 if (item.phone === recipient_id || item.phone === `+${recipient_id}`) {
                   if (shouldUpdateStatus(item.status, status)) {
-                    await Campaign.updateOne({ _id: camp._id, "reportData.phone": item.phone }, { $set: { "reportData.$.status": status, "reportData.$.error": errorText } });
+                    await Campaign.updateOne(
+                      { _id: camp._id, "reportData.phone": item.phone },
+                      { $set: { "reportData.$.status": status, "reportData.$.error": errorText } }
+                    );
                   }
                 }
               }
