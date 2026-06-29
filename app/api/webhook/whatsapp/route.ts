@@ -426,48 +426,50 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     return null; 
   };
 
-  // ✅ CALL ACTION NODE: Sends a native Contact Card so the user can click "Call"
+  // ✅ CALL ACTION NODE
   if (step.stepType === "call_action" && step.phoneNumber) {
     let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
     if (!callNumber.startsWith("+")) callNumber = "+" + callNumber;
     
-    // 1. Send the text message first if it exists
-    if (step.message && step.message.trim()) {
-      const textPayload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: { body: step.message, preview_url: true }
-      };
-      try {
+    const redirectUrl = `${baseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
+
+    // 1. Try sending the CTA URL Button (Requires verified domain in Meta Business Manager)
+    const buttonPayload = {
+      messaging_product: "whatsapp", to, type: "interactive",
+      interactive: {
+        type: "cta_url",
+        header: { type: "text", text: step.urlLabel || "Call Us" },
+        body: { text: step.message || `Tap the button below to call us at ${callNumber}.` },
+        action: { name: "cta_url", parameters: [{ type: "cta_url", display_text: step.urlLabel || "Call Now", url: redirectUrl }] }
+      }
+    };
+
+    try {
+      const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(buttonPayload)
+      });
+
+      if (!res.ok) {
+        // 2. Fallback: If button fails (domain not verified), send a clickable link in a text message
+        const fallbackText = `${step.message || ""}\n\n📞 Click here to call: ${redirectUrl}`.trim();
+        const textPayload = {
+          messaging_product: "whatsapp",
+          to,
+          type: "text",
+          text: { body: fallbackText, preview_url: true }
+        };
         await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
           method: "POST",
           headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
           body: JSON.stringify(textPayload)
         });
-      } catch (e) {}
+      }
+    } catch (e) {
+      console.error("Call action error:", e);
     }
-
-    // 2. Send the Contact Card with the button text as the contact's name
-    payload = {
-      messaging_product: "whatsapp",
-      to,
-      type: "contacts",
-      contacts: [
-        {
-          name: {
-            formatted_name: step.urlLabel || "Call Now",
-            first_name: step.urlLabel || "Call Now"
-          },
-          phones: [
-            {
-              phone: callNumber,
-              type: "Mobile"
-            }
-          ]
-        }
-      ]
-    };
+    return; // Return early so it doesn't hit the bottom payload sender
   } 
   // ✅ URL ACTION NODE
   else if (step.stepType === "url_action" && step.url) {
@@ -517,7 +519,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       const errData = await res.json();
       console.error(`❌ [WORKFLOW] API error for ${step.stepType}:`, JSON.stringify(errData));
       
-      // Fallback to text if URL Action fails (e.g. due to unverified domain)
+      // Fallback for URL Action
       if (step.stepType === "url_action" && step.url) {
         let fallbackBody = step.message || "";
         let u = step.url;
@@ -541,7 +543,6 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     console.error(`❌ [WORKFLOW] Send failed:`, err.message); 
   }
 }
-
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try {
     const { default: Contact } = await import("@/models/Contact");
