@@ -560,205 +560,287 @@ async function processWorkflowStep(
 }
 
 // ✅ WHATSAPP API SENDER (Fixed parameters array)
-async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: string, to: string, step: any, baseUrl: string) {
-  let payload: any; 
+async function sendWorkflowWhatsAppMessage(
+  accessToken: string,
+  phoneNumberId: string,
+  to: string,
+  step: any,
+  baseUrl: string
+) {
+  let payload: any;
   let resolvedMediaId: string | null = null;
-  
-  if (step.mediaUrl && step.mediaType && step.mediaType !== "link") { 
-    if (/^\d+$/.test(step.mediaUrl)) resolvedMediaId = step.mediaUrl; 
-    else resolvedMediaId = await uploadMediaToMetaFromUrl(phoneNumberId, accessToken, step.mediaUrl); 
+
+  // -------------------------
+  // MEDIA RESOLUTION (FIXED)
+  // -------------------------
+  if (step.mediaUrl && step.mediaType && step.mediaType !== "link") {
+    if (/^\d+$/.test(step.mediaUrl)) {
+      resolvedMediaId = step.mediaUrl; // already Meta ID
+    } else {
+      resolvedMediaId = await uploadMediaToMetaFromUrl(
+        phoneNumberId,
+        accessToken,
+        step.mediaUrl
+      );
+    }
   }
-  const buildMediaObj = () => { 
-    if (resolvedMediaId) return { id: resolvedMediaId }; 
-    if (step.mediaUrl?.startsWith("http")) return { link: step.mediaUrl }; 
-    return null; 
+
+  const buildMediaObj = () => {
+    if (!resolvedMediaId) return null;
+    return { id: resolvedMediaId }; // 🔥 ONLY VALID FORMAT FOR META
   };
 
-  // ✅ FORCE HTTPS and REMOVE ALL SPACES to prevent WhatsApp API rejections
-  let publicBaseUrl = process.env.NEXTAUTH_URL || baseUrl;
-  publicBaseUrl = publicBaseUrl.replace(/\s+/g, ""); // Remove any accidental spaces
+  // -------------------------
+  // BASE URL CLEANUP
+  // -------------------------
+  let publicBaseUrl = (process.env.NEXTAUTH_URL || baseUrl || "")
+    .replace(/\s+/g, "")
+    .replace(/\/$/, "");
+
   if (publicBaseUrl.startsWith("http://")) {
     publicBaseUrl = publicBaseUrl.replace("http://", "https://");
   }
-  publicBaseUrl = publicBaseUrl.replace(/\/$/, "");
 
- // =========================
-// CALL ACTION NODE (FIXED)
-// =========================
-if (step.stepType === "call_action" && step.phoneNumber) {
-  let callNumber = step.phoneNumber.replace(/[^\d+]/g, "");
+  // =====================================================
+  // CALL ACTION NODE
+  // =====================================================
+  if (step.stepType === "call_action" && step.phoneNumber) {
+    let callNumber = step.phoneNumber.replace(/[^\d+]/g, "");
+    if (!callNumber.startsWith("+")) callNumber = "+" + callNumber;
 
-  if (!callNumber.startsWith("+")) {
-    callNumber = "+" + callNumber;
-  }
+    const redirectUrl =
+      `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
 
-  const redirectUrl =
-    `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
-
-  const callTitle = step.callLabel || "Call Now";
-  const callBody = step.callMessage || "Tap below to call";
-
-  payload = {
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "cta_url",
-      header: {
-        type: "text",
-        text: callTitle.substring(0, 60),
-      },
-      body: {
-        text: callBody.trim() || "Tap below to continue"
-      },
-      action: {
-        name: "cta_url",
-        parameters: {
-          display_text: callTitle.substring(0, 20),
-          url: redirectUrl,
-        },
-      },
-    },
-  };
-
-  console.log(`📞 CALL BUTTON: ${redirectUrl}`);
-}
-
-// =========================
-// URL ACTION NODE (FIXED)
-// =========================
-else if (step.stepType === "url_action" && step.url) {
-  let url = step.url.trim().replace(/\s+/g, "");
-
-  if (!url.startsWith("http://") && !url.startsWith("https://")) {
-    url = "https://" + url;
-  }
-
-  const urlTitle = step.urlLabel || "Open Link";
-
-  // 🔥 IMPORTANT: NEVER send empty or single-space body
-  const urlBody =
-    step.message && step.message.trim().length > 0
-      ? step.message.trim()
-      : "Tap the button below to continue";
-
-  payload = {
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "cta_url",
-      header: {
-        type: "text",
-        text: urlTitle.substring(0, 60),
-      },
-      body: {
-        text: urlBody
-      },
-      action: {
-        name: "cta_url",
-        parameters: {
-          display_text: urlTitle.substring(0, 20),
-          url: url,
-        },
-      },
-    },
-  };
-
-  console.log(`🔗 URL BUTTON: ${url}`);
-}
-  // ✅ URL ACTION NODE
-  else if (step.stepType === "url_action" && step.url) {
-    let url = step.url.trim().replace(/\s+/g, "");
-    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-      url = "https://" + url;
-    }
-    
     payload = {
-      messaging_product: "whatsapp", 
-      to, 
+      messaging_product: "whatsapp",
+      to,
       type: "interactive",
       interactive: {
         type: "cta_url",
-        header: { type: "text", text: (step.urlLabel || "Visit Link").substring(0, 60) },
-        body: { text: step.message || "Click the button below to visit the link." },
-        action: { 
-          name: "cta_url", 
-          // ✅ FIX: MUST BE AN ARRAY
-          parameters: [{ 
-            type: "cta_url", 
-            display_text: (step.urlLabel || "Open").substring(0, 20), 
-            url: url 
-          }] 
-        }
-      }
+        header: {
+          type: "text",
+          text: (step.callLabel || "Call Now").substring(0, 60),
+        },
+        body: {
+          text: (step.callMessage || "Tap below to call").trim(),
+        },
+        action: {
+          name: "cta_url",
+          parameters: {
+            display_text: (step.callLabel || "Call Now").substring(0, 20),
+            url: redirectUrl,
+          },
+        },
+      },
     };
-  } 
-  else if (step.buttons?.length > 0) {
-    const valid = step.buttons.filter((b: any) => b.label?.trim());
-    if (valid.length > 3) {
-      payload = { messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "list", header: { type: "text", text: "Options" }, body: { text: step.message || "Select" }, action: { button: step.listButtonText || "Options", sections: [{ title: "Choices", rows: valid.slice(0, 10).map((b: any) => ({ id: b.id, title: b.label.substring(0, 24) })) }] } } };
-      const m = buildMediaObj(); if (m && step.mediaType) { if (step.mediaType === "image") payload.interactive.header = { type: "image", image: m }; else if (step.mediaType === "video") payload.interactive.header = { type: "video", video: m }; else if (step.mediaType === "document") payload.interactive.header = { type: "document", document: { ...m, filename: "Doc" } }; }
-    } else {
-      payload = { messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "button", body: { text: step.message || "" }, action: { buttons: valid.slice(0, 3).map((b: any) => ({ type: "reply", reply: { id: b.id, title: b.label.substring(0, 20) } })) } } };
-      const m = buildMediaObj(); if (m && step.mediaType) { if (step.mediaType === "image") payload.interactive.header = { type: "image", image: m }; else if (step.mediaType === "video") payload.interactive.header = { type: "video", video: m }; else if (step.mediaType === "document") payload.interactive.header = { type: "document", document: { ...m, filename: "Doc" } }; }
-    }
-  } else {
-    const m = buildMediaObj();
-    if (step.mediaUrl && step.mediaType === "link") {
-      let linkUrl = step.mediaUrl.trim().replace(/\s+/g, "");
-      if (!linkUrl.startsWith("http://") && !linkUrl.startsWith("https://")) linkUrl = "https://" + linkUrl;
-      payload = { messaging_product: "whatsapp", to, type: "text", text: { body: step.message ? `${step.message}\n\n${linkUrl}` : linkUrl, preview_url: true } };
-    }
-    else if (step.mediaUrl && step.mediaType === "image" && m) payload = { messaging_product: "whatsapp", to, type: "image", image: { ...m, ...(step.message ? { caption: step.message } : {}) } };
-    else if (step.mediaUrl && step.mediaType === "video" && m) payload = { messaging_product: "whatsapp", to, type: "video", video: { ...m, ...(step.message ? { caption: step.message } : {}) } };
-    else if (step.mediaUrl && step.mediaType === "audio" && m) payload = { messaging_product: "whatsapp", to, type: "audio", audio: m };
-    else if (step.mediaUrl && step.mediaType === "document" && m) payload = { messaging_product: "whatsapp", to, type: "document", document: { ...m, filename: "Doc", ...(step.message ? { caption: step.message } : {}) } };
-    else payload = { messaging_product: "whatsapp", to, type: "text", text: { body: step.message || "", preview_url: true } };
+
+    console.log("📞 CALL:", redirectUrl);
   }
 
-  try { 
-    const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { 
-      method: "POST", 
-      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, 
-      body: JSON.stringify(payload) 
-    }); 
-    
-    const data = await res.json();
-    if (!res.ok) {
-      console.error(`❌ [WORKFLOW] API Error for ${step.stepType}:`, JSON.stringify(data, null, 2));
-      
-      // Fallback to text if button fails
-      if (step.stepType === "url_action" || step.stepType === "call_action") {
-        let fallbackBody = step.message || "";
-        if (step.stepType === "url_action" && step.url) {
-          let u = step.url;
-          if (!u.startsWith("http")) u = "https://" + u;
-          fallbackBody += `\n\n${u}`;
-        }
-        if (step.stepType === "call_action" && step.phoneNumber) {
-          let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
-          if (!callNumber.startsWith("+")) callNumber = "+" + callNumber;
-          fallbackBody += `\n\n📞 Click here to call: ${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
-        }
-        
-        const fallbackPayload = {
-          messaging_product: "whatsapp",
-          to,
+  // =====================================================
+  // URL ACTION NODE (ONLY ONE VERSION - FIXED)
+  // =====================================================
+  else if (step.stepType === "url_action" && step.url) {
+    let url = step.url.trim().replace(/\s+/g, "");
+    if (!url.startsWith("http")) url = "https://" + url;
+
+    payload = {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "cta_url",
+        header: {
           type: "text",
-          text: { body: fallbackBody.trim(), preview_url: true }
-        };
-        await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { 
-          method: "POST", 
-          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, 
-          body: JSON.stringify(fallbackPayload) 
-        });
-      }
+          text: (step.urlLabel || "Open Link").substring(0, 60),
+        },
+        body: {
+          text:
+            step.message?.trim() ||
+            "Tap the button below to continue",
+        },
+        action: {
+          name: "cta_url",
+          parameters: {
+            display_text: (step.urlLabel || "Open").substring(0, 20),
+            url,
+          },
+        },
+      },
+    };
+
+    console.log("🔗 URL:", url);
+  }
+
+  // =====================================================
+  // BUTTON / LIST FLOW
+  // =====================================================
+  else if (step.buttons?.length > 0) {
+    const valid = step.buttons.filter((b: any) => b.label?.trim());
+
+    if (valid.length > 3) {
+      payload = {
+        messaging_product: "whatsapp",
+        to,
+        type: "interactive",
+        interactive: {
+          type: "list",
+          header: { type: "text", text: "Options" },
+          body: { text: step.message || "Select" },
+          action: {
+            button: step.listButtonText || "Options",
+            sections: [
+              {
+                title: "Choices",
+                rows: valid.slice(0, 10).map((b: any) => ({
+                  id: b.id,
+                  title: b.label.substring(0, 24),
+                })),
+              },
+            ],
+          },
+        },
+      };
     } else {
-      console.log(`✅ [WORKFLOW] Button sent successfully!`);
+      payload = {
+        messaging_product: "whatsapp",
+        to,
+        type: "interactive",
+        interactive: {
+          type: "button",
+          body: { text: step.message || "" },
+          action: {
+            buttons: valid.slice(0, 3).map((b: any) => ({
+              type: "reply",
+              reply: {
+                id: b.id,
+                title: b.label.substring(0, 20),
+              },
+            })),
+          },
+        },
+      };
     }
-  } catch (err: any) { 
-    console.error(`❌ [WORKFLOW] Send failed:`, err.message); 
+
+    // ✅ MEDIA HEADER FIX
+    const m = buildMediaObj();
+    if (m && step.mediaType) {
+      if (step.mediaType === "image") {
+        payload.interactive.header = {
+          type: "image",
+          image: m,
+        };
+      } else if (step.mediaType === "video") {
+        payload.interactive.header = {
+          type: "video",
+          video: m,
+        };
+      } else if (step.mediaType === "document") {
+        payload.interactive.header = {
+          type: "document",
+          document: { ...m, filename: "Doc" },
+        };
+      }
+    }
+  }
+
+  // =====================================================
+  // SIMPLE MESSAGE / MEDIA
+  // =====================================================
+  else {
+    const m = buildMediaObj();
+
+    if (step.mediaType === "link") {
+      let linkUrl = step.mediaUrl.trim();
+      if (!linkUrl.startsWith("http")) linkUrl = "https://" + linkUrl;
+
+      payload = {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: {
+          body: step.message
+            ? `${step.message}\n\n${linkUrl}`
+            : linkUrl,
+          preview_url: true,
+        },
+      };
+    } else if (step.mediaType === "image" && m) {
+      payload = {
+        messaging_product: "whatsapp",
+        to,
+        type: "image",
+        image: {
+          ...m,
+          ...(step.message ? { caption: step.message } : {}),
+        },
+      };
+    } else if (step.mediaType === "video" && m) {
+      payload = {
+        messaging_product: "whatsapp",
+        to,
+        type: "video",
+        video: {
+          ...m,
+          ...(step.message ? { caption: step.message } : {}),
+        },
+      };
+    } else if (step.mediaType === "audio" && m) {
+      payload = {
+        messaging_product: "whatsapp",
+        to,
+        type: "audio",
+        audio: m,
+      };
+    } else if (step.mediaType === "document" && m) {
+      payload = {
+        messaging_product: "whatsapp",
+        to,
+        type: "document",
+        document: {
+          ...m,
+          filename: "Doc",
+          ...(step.message ? { caption: step.message } : {}),
+        },
+      };
+    } else {
+      payload = {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: {
+          body: step.message || "",
+          preview_url: true,
+        },
+      };
+    }
+  }
+
+  // =====================================================
+  // SEND REQUEST
+  // =====================================================
+  try {
+    const res = await fetch(
+      `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      }
+    );
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      console.error("❌ WhatsApp API ERROR:", JSON.stringify(data, null, 2));
+    } else {
+      console.log("✅ Message sent successfully");
+    }
+  } catch (err: any) {
+    console.error("❌ Send failed:", err.message);
   }
 }
 
