@@ -14,6 +14,7 @@ export const runtime = "nodejs";
 
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "watiX_webhook_verify_2024";
 const workflowTimers = new Map<string, NodeJS.Timeout>();
+const formTimers = new Map<string, NodeJS.Timeout>(); // ✅ Added to track form inactivity timers properly
 
 // ✅ STATUS PRIORITY HELPER FUNCTION
 const statusPriority: Record<string, number> = {
@@ -67,26 +68,40 @@ const startWorkflowInactivityTimer = (phone: string, userId: string, workflowId:
   })();
 };
 
+// ✅ FIX: Updated Form Timer to properly track and clear intervals
 const startFormInactivityTimer = (phone: string, userId: string, formId: string, fieldIndex: number, field: any, form: any, accessToken: string, phoneNumberId: string) => {
+  // Clear any existing form timer for this phone
+  if (formTimers.has(phone)) {
+    clearInterval(formTimers.get(phone) as NodeJS.Timeout);
+    formTimers.delete(phone);
+  }
+
   if (field.delaySeconds > 0 && field.repeatCount > 0 && field.delayMessage) {
     let remindersSent = 0;
     const intervalId = setInterval(async () => {
       try {
         await connectDB();
         const checkSession = await Session.findOne({ phone, userId });
-        if (!checkSession || !checkSession.formId || checkSession.formFieldIndex !== fieldIndex) { clearInterval(intervalId); return; }
+        if (!checkSession || !checkSession.formId || checkSession.formFieldIndex !== fieldIndex) { 
+          clearInterval(intervalId); 
+          formTimers.delete(phone);
+          return; 
+        }
         if (remindersSent < field.repeatCount) {
           await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, { message: field.delayMessage, stepType: "text" });
           remindersSent++;
         } else {
           clearInterval(intervalId);
+          formTimers.delete(phone);
           const abandonmentStep = { message: form.abandonmentMessage || "It seems you are busy. Click below to restart.", stepType: "message", buttons: [{ id: `restart_form_${formId}`, label: "🔄 Restart Form", nextStepId: null }] };
           await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, abandonmentStep);
           checkSession.formId = null; checkSession.formFieldIndex = 0; await checkSession.save();
           await FormResponse.updateOne({ formId, phone, status: "incomplete" }, { $set: { status: "abandoned" } });
         }
-      } catch (err) { console.error("Form timer error:", err); clearInterval(intervalId); }
+      } catch (err) { console.error("Form timer error:", err); clearInterval(intervalId); formTimers.delete(phone); }
     }, field.delaySeconds * 1000);
+    
+    formTimers.set(phone, intervalId);
   }
 };
 
@@ -206,6 +221,86 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
     const buttonPayload = extractButtonPayload(msg);
     if (!incomingText && !buttonPayload) return;
 
+    // ✅ Check if user is currently filling out a Form
+    const activeSession = await Session.findOne({ phone: msg.from, userId: num.userId });
+    
+    if (activeSession && activeSession.formId) {
+      // Allow the restart button to break out of the form
+      if (buttonPayload && buttonPayload.startsWith("restart_form_")) {
+        // Fall through to the button handler below
+      } else {
+        // ✅ CONVERSATIONAL FORM LOGIC
+        const form = await Form.findById(activeSession.formId);
+        if (!form) {
+          await Session.deleteOne({ _id: activeSession._id });
+          return;
+        }
+
+        const fieldIndex = activeSession.formFieldIndex;
+        const currentField = form.fields[fieldIndex];
+
+        if (!currentField) {
+          await Session.deleteOne({ _id: activeSession._id });
+          return;
+        }
+
+        // Validate required field
+        if (currentField.required && !incomingText.trim()) {
+          await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: "⚠️ This field is required. Please enter a valid response.", stepType: "text" });
+          return;
+        }
+
+        // Save answer to FormResponse
+        await FormResponse.updateOne(
+          { formId: form._id, phone: msg.from, status: "incomplete" },
+          { $set: { [`data.${currentField.label}`]: incomingText } }
+        );
+
+        // Clear the inactivity timer since we got a reply
+        if (formTimers.has(msg.from)) {
+          clearInterval(formTimers.get(msg.from) as NodeJS.Timeout);
+          formTimers.delete(msg.from);
+        }
+
+        const nextFieldIndex = fieldIndex + 1;
+
+        if (nextFieldIndex < form.fields.length) {
+          // Ask Next Question
+          const nextField = form.fields[nextFieldIndex];
+          activeSession.formFieldIndex = nextFieldIndex;
+          await activeSession.save();
+          
+          await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: nextField.label, stepType: "text" });
+          startFormInactivityTimer(msg.from, num.userId.toString(), form._id.toString(), nextFieldIndex, nextField, form, num.accessToken, num.phoneNumberId);
+          return;
+        } else {
+          // Form is Complete
+          await FormResponse.updateOne(
+            { formId: form._id, phone: msg.from, status: "incomplete" },
+            { $set: { status: "complete" } }
+          );
+          await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: form.completionMessage || "✅ Thank you! Your form has been submitted.", stepType: "text" });
+
+          // Check if workflow has a next step after the form
+          const workflow = await Workflow.findById(activeSession.workflowId);
+          if (workflow && activeSession.currentStepId) {
+            const step = workflow.steps[activeSession.currentStepId];
+            if (step && step.nextStepId) {
+              activeSession.formId = null;
+              activeSession.formFieldIndex = 0;
+              await activeSession.save();
+              // Resume the workflow
+              await processWorkflowStep(step.nextStepId, workflow.steps, workflow, num.accessToken, num.phoneNumberId, msg.from, num.userId.toString(), num.tenantId);
+              return;
+            }
+          }
+          // No next step, clear session
+          await Session.deleteOne({ _id: activeSession._id });
+          return;
+        }
+      }
+    }
+
     let workflows = await Workflow.find({ userId: num.userId, wabaPhoneNumberId: num.phoneNumberId, active: true });
     if (workflows.length === 0) {
       const legacy = await Workflow.find({ userId: num.userId, $or: [{ wabaPhoneNumberId: null }, { wabaPhoneNumberId: { $exists: false } }], active: true });
@@ -221,14 +316,19 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
         const formData = await Form.findById(formId);
         if (formData && formData.fields.length > 0) {
           await Session.findOneAndUpdate({ phone: msg.from, userId: num.userId }, { formId: formData._id, formFieldIndex: 0, updatedAt: new Date() }, { upsert: true, new: true });
-          await FormResponse.create({ formId: formData._id, userId: num.userId, phone: msg.from, data: {}, status: "incomplete" });
+          await FormResponse.findOneAndUpdate(
+            { formId: formData._id, phone: msg.from, status: "incomplete" },
+            { $set: { userId: num.userId, data: {}, status: "incomplete" } },
+            { upsert: true, new: true }
+          );
           await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" });
           startFormInactivityTimer(msg.from, num.userId.toString(), formData._id.toString(), 0, formData.fields[0], formData, num.accessToken, num.phoneNumberId);
           return;
         }
       }
-      const activeSession = await Session.findOne({ phone: msg.from, userId: num.userId });
-      if (activeSession && activeSession.workflowId) {
+      
+      // Check for active workflow session (non-form)
+      if (activeSession && activeSession.workflowId && !activeSession.formId) {
         const wf = await Workflow.findById(activeSession.workflowId);
         if (wf && wf.active && wf.steps) {
           let clickedBtn = null;
@@ -251,8 +351,12 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
                 if (nextStep.stepType === "form_node" && nextStep.selectedForm) {
                   const formData = await Form.findById(nextStep.selectedForm);
                   if (formData && formData.fields.length > 0) {
-                    activeSession.formId = formData._id; activeSession.formFieldIndex = 0; await activeSession.save();
-                    await FormResponse.create({ formId: formData._id, userId: num.userId, phone: msg.from, data: {}, status: "incomplete" });
+                    activeSession.formId = formData._id; activeSession.formFieldIndex = 0; activeSession.currentStepId = nextStep.id; await activeSession.save();
+                    await FormResponse.findOneAndUpdate(
+                      { formId: formData._id, phone: msg.from, status: "incomplete" },
+                      { $set: { userId: num.userId, data: {}, status: "incomplete" } },
+                      { upsert: true, new: true }
+                    );
                     await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" });
                     startFormInactivityTimer(msg.from, num.userId.toString(), formData._id.toString(), 0, formData.fields[0], formData, num.accessToken, num.phoneNumberId);
                     return;
@@ -354,10 +458,18 @@ async function processWorkflowStep(stepId: string, steps: Record<string, any>, m
     const formData = await Form.findById(step.selectedForm);
     if (formData && formData.fields.length > 0) {
       await Session.findOneAndUpdate({ phone: customerNumber, userId }, { formId: formData._id, formFieldIndex: 0, workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() }, { upsert: true, new: true });
-      await FormResponse.create({ formId: formData._id, userId, phone: customerNumber, data: {}, status: "incomplete" });
+      
+      // ✅ Use findOneAndUpdate to prevent duplicate key errors on restart
+      await FormResponse.findOneAndUpdate(
+        { formId: formData._id, phone: customerNumber, status: "incomplete" },
+        { $set: { userId, data: {}, status: "incomplete" } },
+        { upsert: true, new: true }
+      );
+      
       await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" });
       startFormInactivityTimer(customerNumber, userId, formData._id.toString(), 0, formData.fields[0], formData, accessToken, phoneNumberId);
-    } return;
+    } 
+    return;
   }
 
   if (["inactivity_node"].includes(step.stepType)) return;
@@ -396,17 +508,14 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
   try { const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify(payload) }); if (!res.ok) console.error(`❌ [WORKFLOW] API error:`, await res.json()); } catch (err: any) { console.error(`❌ [WORKFLOW] Send failed:`, err.message); }
 }
 
-// ✅ FIX: Updated to fetch the Tag Name and push the NAME to the Contact document
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try {
     const { default: Contact } = await import("@/models/Contact");
     const { default: Tag } = await import("@/models/Tag");
     
-    // Find the tag to get its name
     const tag = await Tag.findById(tagId).lean();
     if (!tag) return;
     
-    // Push the tag NAME to the contact's tags array
     await Contact.findOneAndUpdate(
       { phone: phoneNumber, userId },
       { $addToSet: { tags: tag.name } }, 
