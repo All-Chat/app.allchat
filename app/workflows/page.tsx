@@ -930,6 +930,16 @@ const CallActionNode = ({ data, id }: any) => {
   const updateNode = (newData: any) => {
     setNodes((nds: Node[]) => nds.map((n: Node) => (n.id === id ? { ...n, data: { ...n.data, ...newData } } : n)));
   };
+
+  const handlePhoneChange = (val: string) => {
+    let formatted = val;
+    // Enforce the + prefix automatically
+    if (formatted && !formatted.startsWith("+")) {
+      formatted = "+" + formatted.replace(/\+/g, ""); // Remove any other + signs
+    }
+    updateNode({ phoneNumber: formatted });
+  };
+
   return (
     <div className="w-72 bg-white border border-rose-200 shadow-lg rounded-2xl overflow-hidden group">
       <Handle type="target" position={Position.Left} className="!bg-rose-500 !w-3 !h-3 !border-2 !border-white" />
@@ -960,7 +970,7 @@ const CallActionNode = ({ data, id }: any) => {
             <input
               value={data.urlLabel || ""}
               onChange={(e) => updateNode({ urlLabel: e.target.value })}
-              placeholder="Button Text"
+              placeholder="Button Text (e.g. Call Now)"
               className="w-full pl-8 pr-2 py-1.5 text-xs border border-rose-200 rounded-lg focus:outline-none focus:border-rose-400 shadow-sm bg-white text-gray-800"
             />
           </div>
@@ -968,11 +978,12 @@ const CallActionNode = ({ data, id }: any) => {
             <PhoneCall size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-rose-500" />
             <input
               value={data.phoneNumber || ""}
-              onChange={(e) => updateNode({ phoneNumber: e.target.value })}
-              placeholder="+1234567890"
+              onChange={(e) => handlePhoneChange(e.target.value)}
+              placeholder="+911234567890"
               className="w-full pl-8 pr-2 py-1.5 text-xs border border-rose-200 rounded-lg focus:outline-none focus:border-rose-400 shadow-sm bg-white text-gray-800"
             />
           </div>
+          <p className="text-[9px] text-rose-500/80 mt-1">Must include country code (e.g. +91).</p>
         </div>
       </div>
     </div>
