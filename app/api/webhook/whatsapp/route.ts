@@ -435,10 +435,11 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       callNumber = "+" + callNumber;
     }
     
-    const redirectUrl = `${baseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
+    // ✅ FIX: Strictly use NEXTAUTH_URL to ensure it's a public HTTPS domain, not localhost
+    const publicBaseUrl = process.env.NEXTAUTH_URL || baseUrl;
+    const redirectUrl = `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
 
-    // ✅ FIX: Removed the invalid "type: cta_url" inside parameters to stop API rejection
-    const buttonPayload = {
+    payload = {
       messaging_product: "whatsapp", to, type: "interactive",
       interactive: {
         type: "cta_url",
@@ -453,43 +454,14 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         }
       }
     };
-
-    try {
-      const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(buttonPayload)
-      });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        console.error(`❌ [WORKFLOW] Call Action API error:`, JSON.stringify(errData));
-        
-        // Fallback to text if it still fails
-        const fallbackText = `${step.message || ""}\n\n📞 Click here to call: ${redirectUrl}`.trim();
-        const textPayload = {
-          messaging_product: "whatsapp",
-          to,
-          type: "text",
-          text: { body: fallbackText, preview_url: true }
-        };
-        await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify(textPayload)
-        });
-      }
-    } catch (e) {
-      console.error("Call action error:", e);
-    }
-    return; 
   } 
   // ✅ URL ACTION NODE
   else if (step.stepType === "url_action" && step.url) {
-    let url = step.url;
-    if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://" + url;
+    let url = step.url.trim();
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+      url = "https://" + url;
+    }
     
-    // ✅ FIX: Removed the invalid "type: cta_url" inside parameters to stop API rejection
     payload = {
       messaging_product: "whatsapp", to, type: "interactive",
       interactive: {
@@ -518,7 +490,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
   } else {
     const m = buildMediaObj();
     if (step.mediaUrl && step.mediaType === "link") {
-      let linkUrl = step.mediaUrl;
+      let linkUrl = step.mediaUrl.trim();
       if (!linkUrl.startsWith("http://") && !linkUrl.startsWith("https://")) linkUrl = "https://" + linkUrl;
       payload = { messaging_product: "whatsapp", to, type: "text", text: { body: step.message ? `${step.message}\n\n${linkUrl}` : linkUrl, preview_url: true } };
     }
@@ -536,28 +508,12 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       body: JSON.stringify(payload) 
     }); 
     
+    const data = await res.json();
     if (!res.ok) {
-      const errData = await res.json();
-      console.error(`❌ [WORKFLOW] API error for ${step.stepType}:`, JSON.stringify(errData));
-      
-      if (step.stepType === "url_action" && step.url) {
-        let fallbackBody = step.message || "";
-        let u = step.url;
-        if (!u.startsWith("http")) u = "https://" + u;
-        fallbackBody += `\n\n${u}`;
-        
-        const fallbackPayload = {
-          messaging_product: "whatsapp",
-          to,
-          type: "text",
-          text: { body: fallbackBody.trim(), preview_url: true }
-        };
-        await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { 
-          method: "POST", 
-          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, 
-          body: JSON.stringify(fallbackPayload) 
-        });
-      }
+      // ✅ FIX: Log the exact error from WhatsApp to your server terminal.
+      // This will tell you EXACTLY why the button is failing (e.g. domain not verified, invalid url format).
+      console.error(`❌ [WORKFLOW] API Error for ${step.stepType}:`, JSON.stringify(data, null, 2));
+      console.error(`❌ [WORKFLOW] Payload Sent:`, JSON.stringify(payload, null, 2));
     }
   } catch (err: any) { 
     console.error(`❌ [WORKFLOW] Send failed:`, err.message); 
