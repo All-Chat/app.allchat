@@ -382,8 +382,6 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
   } catch (err) { console.error("❌ [WORKFLOW] Error:", err); }
 }
 
-const executedNodes = new Set<string>();
-
 async function processWorkflowStep(
   stepId: string,
   steps: Record<string, any>,
@@ -397,11 +395,6 @@ async function processWorkflowStep(
 ) {
   const step = steps[stepId];
   if (!step) return;
-
-  // 🔥 BLOCK DUPLICATE EXECUTION
-  const uniqueKey = `${customerNumber}_${stepId}`;
-  if (executedNodes.has(uniqueKey)) return;
-  executedNodes.add(uniqueKey);
 
   // =========================
   // DELAY NODE
@@ -432,12 +425,18 @@ async function processWorkflowStep(
   // =========================
   if (step.stepType === "opt_in_node") {
     await addOptOutNumber(customerNumber, userId, tenantId);
+    if (step.nextStepId && steps[step.nextStepId]) {
+      return await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
+    }
     return;
   }
 
   if (step.stepType === "tag_node") {
     if (step.selectedTag) {
       await applyTagToContact(customerNumber, step.selectedTag, userId);
+    }
+    if (step.nextStepId && steps[step.nextStepId]) {
+      return await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
     }
     return;
   }
@@ -483,54 +482,40 @@ async function processWorkflowStep(
   }
 
   // =========================
-  // 🔥 MESSAGE NODE (IMPORTANT FIX)
-  // =========================
-  if (step.stepType === "message") {
-    await sendWorkflowWhatsAppMessage(
-      accessToken,
-      phoneNumberId,
-      customerNumber,
-      step,
-      baseUrl
-    );
-
-    await Message.create({
-      userId,
-      phone: customerNumber,
-      text: step.message || "",
-      direction: "out",
-      messageType: "text",
-    });
-
-    // 🚨 IMPORTANT: STOP HERE (DO NOT AUTO MOVE)
-    return;
-  }
-
-  // =========================
-  // CTA / CALL / URL NODE
+  // CTA / CALL / URL NODE (FIXED)
   // =========================
   if (step.stepType === "call_action" || step.stepType === "url_action") {
-    await sendWorkflowWhatsAppMessage(
-      accessToken,
-      phoneNumberId,
-      customerNumber,
-      step,
-      baseUrl
-    );
-return; //
+    let historyText = step.message || "";
+    if (step.stepType === "url_action" && step.url) historyText += `\n🔗 ${step.urlLabel || "Link"}: ${step.url}`;
+    if (step.stepType === "call_action" && step.phoneNumber) historyText += `\n📞 Call: ${step.phoneNumber}`;
+
+    await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
+    
     await Message.create({
       userId,
       phone: customerNumber,
-      text: step.message || step.urlLabel || step.phoneNumber || "",
+      text: historyText.trim(),
       direction: "out",
       messageType: "text",
+      mediaUrl: step.mediaUrl || null,
     });
 
+    // Continue to next step if connected
+    if (step.nextStepId && steps[step.nextStepId]) {
+      let nextStep = steps[step.nextStepId];
+      while (nextStep && nextStep.stepType === "delay_node") { 
+        if (nextStep.delaySeconds > 0) await new Promise(r => setTimeout(r, nextStep.delaySeconds * 1000)); 
+        nextStep = nextStep.nextStepId ? steps[nextStep.nextStepId] : null; 
+      }
+      if (nextStep) {
+        return await processWorkflowStep(nextStep.id, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
+      }
+    }
     return;
   }
 
   // =========================
-  // DEFAULT STEP
+  // DEFAULT STEP (MESSAGE)
   // =========================
   await sendWorkflowWhatsAppMessage(
     accessToken,
@@ -617,17 +602,19 @@ async function sendWorkflowWhatsAppMessage(
         type: "cta_url",
         header: {
           type: "text",
-          text: step.callLabel || "Call Now",
+          text: step.urlLabel || "Call Now", // ✅ FIXED: Use urlLabel
         },
         body: {
-          text: step.callMessage || "Tap below to call",
+          text: step.message || "Tap below to call",
         },
         action: {
           name: "cta_url",
-          parameters: {
-            display_text: step.callLabel || "Call",
+          // ✅ FIX: MUST BE AN ARRAY
+          parameters: [{ 
+            type: "cta_url", 
+            display_text: step.urlLabel || "Call", // ✅ FIXED: Use urlLabel
             url: `https://wa.me/${number.replace("+", "")}`,
-          },
+          }],
         },
       },
     };
@@ -657,10 +644,12 @@ async function sendWorkflowWhatsAppMessage(
         },
         action: {
           name: "cta_url",
-          parameters: {
+          // ✅ FIX: MUST BE AN ARRAY
+          parameters: [{ 
+            type: "cta_url", 
             display_text: step.urlLabel || "Open",
             url,
-          },
+          }],
         },
       },
     };
@@ -750,6 +739,7 @@ async function sendWorkflowWhatsAppMessage(
     },
   });
 }
+
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try {
     const { default: Contact } = await import("@/models/Contact");
