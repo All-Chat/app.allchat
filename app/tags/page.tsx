@@ -429,57 +429,7 @@ export default function TagsPage() {
                     />
                   </div>
 
-                  <div
-                    className={`flex items-center gap-3 p-4 rounded-xl border cursor-pointer transition-all ${
-                      isSpecific
-                        ? "bg-indigo-50 border-indigo-200"
-                        : "bg-slate-50 border-slate-200"
-                    }`}
-                    onClick={() => {
-                      if (!isAtLimit || editingId) setIsSpecific(!isSpecific);
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      id="isSpecific"
-                      checked={isSpecific}
-                      onChange={(e) => setIsSpecific(e.target.checked)}
-                      disabled={isAtLimit && !editingId}
-                      className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
-                    />
-                    <label
-                      htmlFor="isSpecific"
-                      className="text-sm font-bold text-slate-700 flex items-center gap-1.5 cursor-pointer flex-1"
-                    >
-                      <Link2 size={14} className="text-indigo-500" />
-                      Campaign-Specific
-                    </label>
-                  </div>
-
-                  {isSpecific && (
-                    <div className="animate-slide-in">
-                      <label className="text-xs font-bold text-slate-600 mb-1.5 block">
-                        Select Campaign
-                      </label>
-                      <select
-                        value={selectedCampaign}
-                        onChange={(e) => setSelectedCampaign(e.target.value)}
-                        disabled={isAtLimit && !editingId}
-                        className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm font-medium text-slate-900 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all shadow-[inset_0_2px_4px_rgba(0,0,0,0.02)]"
-                      >
-                        <option value="">-- Select a Campaign --</option>
-                        {campaigns.map((c) => (
-                          <option key={c._id} value={c._id}>
-                            {c.name} ({c.status})
-                          </option>
-                        ))}
-                      </select>
-                      <p className="text-[11px] text-slate-500 mt-2 px-1 flex items-start gap-1.5">
-                        <AlertCircle size={12} className="mt-0.5 shrink-0 text-amber-500" />
-                        This tag will ONLY be applied if the user replies to the selected campaign.
-                      </p>
-                    </div>
-                  )}
+                  
 
                   <button
                     type="submit"
