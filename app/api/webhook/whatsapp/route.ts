@@ -479,7 +479,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     return null; 
   };
 
-  // ✅ FIX: URL Action Node. Ensure URL has https:// to prevent WhatsApp API rejection
+  // ✅ FIX: URL Action Node
   if (step.stepType === "url_action" && step.url) {
     let url = step.url;
     if (!url.startsWith("http://") && !url.startsWith("https://")) {
@@ -495,24 +495,21 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         body: { text: step.message || "Click the button below to visit the link." },
         action: {
           name: "cta_url",
-          parameters: [
-            {
-              type: "cta_url",
-              display_text: step.urlLabel || "Open",
-              url: url
-            }
-          ]
+          parameters: [{ type: "cta_url", display_text: step.urlLabel || "Open", url: url }]
         }
       }
     };
   } 
-  // ✅ FIX: Call Action Node. Use cta_url with tel: protocol so clicking the button opens the dialer automatically
+  // ✅ FIX: Call Action Node. Uses an https:// redirect to bypass WhatsApp's tel: block
   else if (step.stepType === "call_action" && step.phoneNumber) {
     let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
     if (!callNumber.startsWith("+")) {
       callNumber = "+" + callNumber;
     }
     
+    const baseUrl = process.env.NEXTAUTH_URL || "https://your-default-domain.com";
+    const redirectUrl = `${baseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
+
     payload = {
       messaging_product: "whatsapp",
       to,
@@ -520,16 +517,10 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       interactive: {
         type: "cta_url",
         header: { type: "text", text: step.urlLabel || "Call Us" },
-        body: { text: step.message || "Click the button below to call us." },
+        body: { text: step.message || `Tap the button below to call us at ${callNumber}.` },
         action: {
           name: "cta_url",
-          parameters: [
-            {
-              type: "cta_url",
-              display_text: step.urlLabel || "Call Now",
-              url: `tel:${callNumber}`
-            }
-          ]
+          parameters: [{ type: "cta_url", display_text: step.urlLabel || "Call Now", url: redirectUrl }]
         }
       }
     };
@@ -545,7 +536,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     }
   } else {
     const m = buildMediaObj();
-    // ✅ FIX: Link/Social Media in Message Node. Force https:// to make sure the thumbnail generates
+    // ✅ FIX: Link/Social Media in Message Node
     if (step.mediaUrl && step.mediaType === "link") {
       let linkUrl = step.mediaUrl;
       if (!linkUrl.startsWith("http://") && !linkUrl.startsWith("https://")) {
@@ -555,10 +546,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         messaging_product: "whatsapp", 
         to, 
         type: "text", 
-        text: { 
-          body: step.message ? `${step.message}\n\n${linkUrl}` : linkUrl, 
-          preview_url: true 
-        } 
+        text: { body: step.message ? `${step.message}\n\n${linkUrl}` : linkUrl, preview_url: true } 
       };
     }
     else if (step.mediaUrl && step.mediaType === "image" && m) payload = { messaging_product: "whatsapp", to, type: "image", image: { ...m, ...(step.message ? { caption: step.message } : {}) } };
