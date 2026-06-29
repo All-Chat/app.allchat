@@ -35,7 +35,7 @@ const clearWorkflowTimer = (phone: string) => {
   if (timerId) { clearInterval(timerId); workflowTimers.delete(phone); }
 };
 
-const startWorkflowInactivityTimer = (phone: string, userId: string, workflowId: string, accessToken: string, phoneNumberId: string) => {
+const startWorkflowInactivityTimer = (phone: string, userId: string, workflowId: string, accessToken: string, phoneNumberId: string, baseUrl: string) => {
   clearWorkflowTimer(phone);
   (async () => {
     try {
@@ -55,7 +55,7 @@ const startWorkflowInactivityTimer = (phone: string, userId: string, workflowId:
           const session = await Session.findOne({ phone, userId });
           if (!session || session.formId) { clearWorkflowTimer(phone); return; }
           if (sentCount < repeatCount) {
-            await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, { message, stepType: "text" }, "https://default.com");
+            await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, { message, stepType: "text" }, baseUrl);
             sentCount++;
           } else { clearWorkflowTimer(phone); }
         } catch (err) { console.error("Inactivity timer error:", err); clearWorkflowTimer(phone); }
@@ -409,7 +409,7 @@ async function processWorkflowStep(stepId: string, steps: Record<string, any>, m
   await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
   await Message.create({ userId, phone: customerNumber, text: historyText, direction: "out", messageType: "text", mediaUrl: step.mediaUrl || null });
   await Session.findOneAndUpdate({ phone: customerNumber, userId }, { workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() }, { upsert: true, new: true });
-  if (step.buttons?.length > 0) startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId);
+  if (step.buttons?.length > 0) startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
 }
 
 async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: string, to: string, step: any, baseUrl: string) {
@@ -439,11 +439,11 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       }
     };
   } 
+  // ✅ CALL ACTION NODE: Uses a cta_url button pointing to your redirect route
   else if (step.stepType === "call_action" && step.phoneNumber) {
     let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
     if (!callNumber.startsWith("+")) callNumber = "+" + callNumber;
     
-    // Use the dynamic base URL extracted from the request
     const redirectUrl = `${baseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
 
     payload = {
@@ -490,7 +490,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       const errData = await res.json();
       console.error(`❌ [WORKFLOW] API error for ${step.stepType}:`, JSON.stringify(errData));
       
-      // ✅ FALLBACK: If cta_url fails (e.g. due to unverified domain), send as text message
+      // Fallback to text if domain isn't verified, so at least the number shows up
       if (step.stepType === "url_action" || step.stepType === "call_action") {
         let fallbackBody = step.message || "";
         if (step.stepType === "url_action" && step.url) {
@@ -541,8 +541,6 @@ async function addOptOutNumber(phoneNumber: string, userId: string, tenantId: st
 export async function POST(req: NextRequest) {
   try {
     await connectDB();
-    
-    // ✅ Dynamically extract base URL to avoid environment variable issues
     const baseUrl = new URL(req.url).origin;
     
     const contentType = req.headers.get("content-type") || "";
