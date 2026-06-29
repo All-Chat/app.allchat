@@ -455,10 +455,9 @@ async function processWorkflowStep(stepId: string, steps: Record<string, any>, m
 
   if (["inactivity_node"].includes(step.stepType)) return;
 
-  // ✅ FIX: Save proper message history for URL and Call actions
   let historyText = step.message || `[${step.stepType?.toUpperCase()}]`;
   if (step.stepType === "url_action" && step.url) historyText = `${step.message || ""}\n🔗 ${step.urlLabel || "Link"}: ${step.url}`.trim();
-  if (step.stepType === "call_action" && step.phoneNumber) historyText = `${step.message || ""}\n📞 ${step.phoneNumber}`.trim();
+  if (step.stepType === "call_action" && step.phoneNumber) historyText = `${step.message || ""}\n📞 Call: ${step.phoneNumber}`.trim();
 
   await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step);
   await Message.create({ userId, phone: customerNumber, text: historyText, direction: "out", messageType: "text", mediaUrl: step.mediaUrl || null });
@@ -480,8 +479,12 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     return null; 
   };
 
-  // ✅ FIX: Corrected CTA URL structure to fix URL Action nodes
+  // ✅ FIX: Strict WhatsApp CTA URL structure + Force HTTPS to prevent API rejections
   if (step.stepType === "url_action" && step.url) {
+    let url = step.url;
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+      url = "https://" + url;
+    }
     payload = {
       messaging_product: "whatsapp",
       to,
@@ -496,21 +499,39 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
             {
               type: "cta_url",
               display_text: step.urlLabel || "Open",
-              url: step.url
+              url: url
             }
           ]
         }
       }
     };
   } 
-  // ✅ FIX: WhatsApp doesn't support tel: in CTA URL, so send as formatted text message
+  // ✅ FIX: WhatsApp API doesn't support `tel:` in CTA URL. We use a Reply Button with the workflow text instead.
   else if (step.stepType === "call_action" && step.phoneNumber) {
-    const msgBody = step.message ? `${step.message}\n\n📞 ${step.phoneNumber}` : `📞 ${step.phoneNumber}`;
+    let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
+    if (!callNumber.startsWith("+")) {
+      callNumber = "+" + callNumber;
+    }
+    
     payload = {
       messaging_product: "whatsapp",
       to,
-      type: "text",
-      text: { body: msgBody, preview_url: false }
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: step.message || "Please click the button below to call us." },
+        action: {
+          buttons: [
+            {
+              type: "reply",
+              reply: {
+                id: `call_action_${callNumber}`,
+                title: step.urlLabel || "Call Now"
+              }
+            }
+          ]
+        }
+      }
     };
   } 
   else if (step.buttons?.length > 0) {
@@ -524,14 +545,18 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     }
   } else {
     const m = buildMediaObj();
-    // ✅ FIX: Ensured strict formatting for Link thumbnails
+    // ✅ FIX: Ensure standard links have HTTPS to properly render the thumbnail preview
     if (step.mediaUrl && step.mediaType === "link") {
+      let linkUrl = step.mediaUrl;
+      if (!linkUrl.startsWith("http://") && !linkUrl.startsWith("https://")) {
+        linkUrl = "https://" + linkUrl;
+      }
       payload = { 
         messaging_product: "whatsapp", 
         to, 
         type: "text", 
         text: { 
-          body: step.message ? `${step.message}\n\n${step.mediaUrl}` : step.mediaUrl, 
+          body: step.message ? `${step.message}\n\n${linkUrl}` : linkUrl, 
           preview_url: true 
         } 
       };
