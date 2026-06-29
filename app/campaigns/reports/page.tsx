@@ -39,6 +39,9 @@ type Campaign = {
   [x: string]: any;
 };
 
+// ✅ Helper to normalize phone numbers (strip + and spaces) for accurate matching
+const normalizePhone = (p: string) => String(p || "").replace(/\D/g, "");
+
 export default function ReportsPage() {
   const { data: session, status } = useSession();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -55,20 +58,37 @@ export default function ReportsPage() {
   const [tags, setTags] = useState<any[]>([]);
   const [tagFilter, setTagFilter] = useState("all");
 
-  const getRepliesList = (d: ReportItem): string[] => {
+    const getRepliesList = (d: ReportItem): string[] => {
+    // 1. Always check the live fetched replies map FIRST (it has up to 5 replies)
+    if (d.phone) {
+      // Exact match
+      if (repliesMap[d.phone]?.length > 0) return repliesMap[d.phone];
+      
+      // Last 10 digits match (bulletproof against country code mismatches)
+      const p10 = normalizePhone(d.phone).slice(-10);
+      if (p10.length >= 7) {
+        for (const key in repliesMap) {
+          if (normalizePhone(key).slice(-10) === p10 && repliesMap[key].length > 0) {
+            return repliesMap[key];
+          }
+        }
+      }
+    }
+
+    // 2. Fallback to cached database replies only if the map didn't find anything
     if (d.replies && d.replies.length > 0) return d.replies;
     if (d.reply) return [d.reply];
-    if (d.phone && repliesMap[d.phone]?.length > 0) return repliesMap[d.phone];
+    
     return [];
   };
 
-  // ✅ FIXED: Removed dependency on `repliesMap` so it accurately calculates stats for ALL campaigns in the sidebar
+  // ✅ FIXED: Now uses getRepliesList() so it accurately counts replies from the map
   const getCampaignStats = (reportData: ReportItem[] = []) => {
     let read = 0, delivered = 0, sent = 0, failed = 0, pending = 0, replied = 0, invalid = 0;
     
     reportData.forEach(d => {
-      const hasReply = (d.replies && d.replies.length > 0) || d.reply;
-      if (hasReply) replied++;
+      const replies = getRepliesList(d);
+      if (replies.length > 0) replied++;
       else if (d.status === 'read') read++;
       else if (d.status === 'delivered') delivered++;
       else if (d.status === 'sent') sent++;
@@ -80,7 +100,6 @@ export default function ReportsPage() {
     return { read, delivered, sent, failed, pending, replied, invalid };
   };
 
-  // ✅ FIXED: Prevents unknown/missing statuses from defaulting to "Sent"
   const getStatusConfig = (status: string, replies: string[], error?: string) => {
     if (replies.length > 0) {
       return { color: "bg-indigo-50 text-indigo-700 border-indigo-200", icon: <MessageSquare size={10} className="inline mr-1" />, label: `Replied (${replies.length})`, isWaiting: false, tooltip: "" };
@@ -230,7 +249,6 @@ export default function ReportsPage() {
     }
   };
 
-  // ✅ FIXED: Now refreshes ALL campaigns in the sidebar instead of just the selected one
   const fetchReportData = async (id: string) => {
     try {
       const res = await fetch(`/api/campaigns/list`);
@@ -238,9 +256,7 @@ export default function ReportsPage() {
       if (data.success) {
         const validCampaigns = data.campaigns.filter((c: Campaign) => c.status !== "saved" && c.status !== "scheduled");
         
-        // Update all campaigns so sidebar stats are real-time for all running campaigns
         setCampaigns(prev => {
-          // Merge new data with existing to preserve UI smoothness
           return validCampaigns;
         });
 
