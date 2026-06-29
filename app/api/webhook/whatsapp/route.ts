@@ -428,8 +428,13 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
 
   // ✅ CALL ACTION NODE
   if (step.stepType === "call_action" && step.phoneNumber) {
+    // ✅ FIX: Strictly strip all characters except digits and the leading + sign
     let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
-    if (!callNumber.startsWith("+")) callNumber = "+" + callNumber;
+    if (callNumber.startsWith("+")) {
+      callNumber = "+" + callNumber.replace(/\+/g, ''); // Keep only the first +
+    } else {
+      callNumber = "+" + callNumber;
+    }
     
     const redirectUrl = `${baseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
 
@@ -452,7 +457,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       });
 
       if (!res.ok) {
-        // 2. Fallback: If button fails (domain not verified), send a clickable link in a text message
+        // 2. Fallback: If button fails (domain not verified), send a clean text message
         const fallbackText = `${step.message || ""}\n\n📞 Click here to call: ${redirectUrl}`.trim();
         const textPayload = {
           messaging_product: "whatsapp",
@@ -543,6 +548,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     console.error(`❌ [WORKFLOW] Send failed:`, err.message); 
   }
 }
+
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try {
     const { default: Contact } = await import("@/models/Contact");
@@ -564,7 +570,11 @@ async function addOptOutNumber(phoneNumber: string, userId: string, tenantId: st
 export async function POST(req: NextRequest) {
   try {
     await connectDB();
-    const baseUrl = new URL(req.url).origin;
+    
+    // ✅ FIX: Get the real public URL from headers instead of localhost
+    const forwardedProto = req.headers.get('x-forwarded-proto') || (req.headers.get('host')?.includes('localhost') ? 'http' : 'https');
+    const forwardedHost = req.headers.get('x-forwarded-host') || req.headers.get('host');
+    const baseUrl = `${forwardedProto}://${forwardedHost}`;
     
     const contentType = req.headers.get("content-type") || "";
     if (!contentType.includes("application/json")) {
