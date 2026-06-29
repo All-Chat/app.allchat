@@ -112,7 +112,6 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 }
 
-// ✅ MULTI-TENANT: Find user by Phone Number ID
 async function findUserByPhoneNumberId(phoneNumberId: string) {
   const user = await User.findOne({ $or: [{ whatsappPhoneNumberId: phoneNumberId }, { "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId }] }).lean();
   if (!user) return null;
@@ -213,7 +212,6 @@ async function uploadMediaToMetaFromUrl(phoneNumberId: string, accessToken: stri
   } catch (err) { console.error(`❌ [MEDIA] Upload failed:`, err); return null; }
 }
 
-// ✅ CORE WORKFLOW EXECUTION LOGIC
 async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
   try {
     if (!["text", "button", "interactive"].includes(msg.type)) return;
@@ -223,10 +221,9 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
 
     const activeSession = await Session.findOne({ phone: msg.from, userId: num.userId });
     
-    // 1. Handle Active Form Sessions
     if (activeSession && activeSession.formId) {
       if (buttonPayload && buttonPayload.startsWith("restart_form_")) {
-        // Fall through to button handler
+        // Fall through
       } else {
         const form = await Form.findById(activeSession.formId);
         if (!form) { await Session.deleteOne({ _id: activeSession._id }); return; }
@@ -271,7 +268,6 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
       }
     }
 
-    // 2. Find matching workflows
     let workflows = await Workflow.find({ userId: num.userId, wabaPhoneNumberId: num.phoneNumberId, active: true });
     if (workflows.length === 0) {
       const legacy = await Workflow.find({ userId: num.userId, $or: [{ wabaPhoneNumberId: null }, { wabaPhoneNumberId: { $exists: false } }], active: true });
@@ -281,7 +277,6 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
 
     let matchedWorkflow: any = null; let matchedByButton = false;
 
-    // 3. Handle Button Replies
     if (buttonPayload) {
       if (buttonPayload.startsWith("restart_form_")) {
         const formId = buttonPayload.replace("restart_form_", "");
@@ -335,7 +330,6 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
       for (const wf of workflows) { for (const id of Object.keys(wf.steps)) { const step = wf.steps[id]; const btn = step.buttons?.find((b: any) => b.id === buttonPayload || b.label?.toLowerCase() === incomingText.toLowerCase()); if (btn?.nextStepId) { matchedWorkflow = wf; matchedByButton = true; break; } } if (matchedByButton) break; }
     }
 
-    // 4. Handle Keyword Triggers
     if (!matchedWorkflow) {
       for (const wf of workflows) {
         const isMatch = wf.triggers.some((t: any) => { 
@@ -371,7 +365,6 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
     
     const rootStep = steps[currentStepId];
 
-    // 5. Process Extra Trigger Actions (Opt-out / Tag attached directly to trigger)
     if (rootStep?.triggerActions && rootStep.triggerActions.length > 0) {
       for (const action of rootStep.triggerActions) {
         if (action.type === "opt_in_node") await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
@@ -385,7 +378,6 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
     if (rootStep.stepType === "opt_in_node") { await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId); return; } 
     else if (rootStep.stepType === "tag_node") { if (rootStep.selectedTag) await applyTagToContact(msg.from, rootStep.selectedTag, num.userId.toString()); return; }
 
-    // 6. Process the main step
     await processWorkflowStep(currentStepId, steps, matchedWorkflow, num.accessToken, num.phoneNumberId, msg.from, num.userId.toString(), num.tenantId, baseUrl);
   } catch (err) { console.error("❌ [WORKFLOW] Error:", err); }
 }
@@ -423,284 +415,186 @@ async function processWorkflowStep(stepId: string, steps: Record<string, any>, m
 
   if (["inactivity_node"].includes(step.stepType)) return;
 
-  let historyText = step.message || `[${step.stepType?.toUpperCase()}]`;
-  if (step.stepType === "url_action" && step.url) historyText = `${step.message || ""}\n🔗 ${step.urlLabel || "Link"}: ${step.url}`.trim();
-  if (step.stepType === "call_action" && step.phoneNumber) historyText = `${step.message || ""}\n📞 Call: ${step.phoneNumber}`.trim();
+  // ✅ FIX: Properly handle Call Action and URL Action nodes without waiting for replies
+  if (step.stepType === "call_action" || step.stepType === "url_action") {
+    let historyText = step.message || `[${step.stepType?.toUpperCase()}]`;
+    if (step.stepType === "url_action" && step.url) historyText = `${step.message || ""}\n🔗 ${step.urlLabel || "Link"}: ${step.url}`.trim();
+    if (step.stepType === "call_action" && step.phoneNumber) historyText = `${step.message || ""}\n📞 Call: ${step.phoneNumber}`.trim();
 
+    await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
+    await Message.create({ userId, phone: customerNumber, text: historyText, direction: "out", messageType: "text", mediaUrl: step.mediaUrl || null });
+    
+    // Continue to next step if connected
+    if (step.nextStepId && steps[step.nextStepId]) {
+      let nextStep = steps[step.nextStepId];
+      while (nextStep && nextStep.stepType === "delay_node") { 
+        if (nextStep.delaySeconds > 0) await new Promise(r => setTimeout(r, nextStep.delaySeconds * 1000)); 
+        nextStep = nextStep.nextStepId ? steps[nextStep.nextStepId] : null; 
+      }
+      if (nextStep) {
+        await processWorkflowStep(nextStep.id, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
+      }
+    }
+    return;
+  }
+
+  // Standard Message Node
+  const historyText = step.message || `[${step.stepType?.toUpperCase()}]`;
   await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
   await Message.create({ userId, phone: customerNumber, text: historyText, direction: "out", messageType: "text", mediaUrl: step.mediaUrl || null });
   await Session.findOneAndUpdate({ phone: customerNumber, userId }, { workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() }, { upsert: true, new: true });
   if (step.buttons?.length > 0) startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
 }
 
-// ✅ WHATSAPP API SENDER (with Call/URL Button Fix)
-async function sendWorkflowWhatsAppMessage(
-  accessToken: string,
-  phoneNumberId: string,
-  to: string,
-  step: any,
-  baseUrl: string
-) {
-  let payload: any;
+// ✅ WHATSAPP API SENDER (Fixed parameters array)
+async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: string, to: string, step: any, baseUrl: string) {
+  let payload: any; 
   let resolvedMediaId: string | null = null;
-
-  if (step.mediaUrl && step.mediaType && step.mediaType !== "link") {
-    if (/^\d+$/.test(step.mediaUrl)) {
-      resolvedMediaId = step.mediaUrl;
-    } else {
-      resolvedMediaId = await uploadMediaToMetaFromUrl(
-        phoneNumberId,
-        accessToken,
-        step.mediaUrl
-      );
-    }
+  
+  if (step.mediaUrl && step.mediaType && step.mediaType !== "link") { 
+    if (/^\d+$/.test(step.mediaUrl)) resolvedMediaId = step.mediaUrl; 
+    else resolvedMediaId = await uploadMediaToMetaFromUrl(phoneNumberId, accessToken, step.mediaUrl); 
   }
-
-  const buildMediaObj = () => {
-    if (resolvedMediaId) return { id: resolvedMediaId };
-    if (step.mediaUrl?.startsWith("http")) return { link: step.mediaUrl };
-    return null;
+  const buildMediaObj = () => { 
+    if (resolvedMediaId) return { id: resolvedMediaId }; 
+    if (step.mediaUrl?.startsWith("http")) return { link: step.mediaUrl }; 
+    return null; 
   };
 
-  // ✅ FIXED BASE URL SAFETY
+  // ✅ FORCE HTTPS and REMOVE ALL SPACES to prevent WhatsApp API rejections
   let publicBaseUrl = process.env.NEXTAUTH_URL || baseUrl;
+  publicBaseUrl = publicBaseUrl.replace(/\s+/g, ""); // Remove any accidental spaces
   if (publicBaseUrl.startsWith("http://")) {
     publicBaseUrl = publicBaseUrl.replace("http://", "https://");
   }
   publicBaseUrl = publicBaseUrl.replace(/\/$/, "");
 
-  // =========================
-  // 📞 CALL ACTION BUTTON
-  // =========================
+  // ✅ CALL ACTION NODE
   if (step.stepType === "call_action" && step.phoneNumber) {
-    let callNumber = step.phoneNumber.replace(/[^\d+]/g, "");
-
+    let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
     if (callNumber.startsWith("+")) {
-      callNumber = "+" + callNumber.replace(/\+/g, "");
+      callNumber = "+" + callNumber.replace(/\+/g, '');
     } else {
       callNumber = "+" + callNumber;
     }
-
-    const redirectUrl =
-      `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
+    
+    const redirectUrl = `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
 
     payload = {
-      messaging_product: "whatsapp",
-      to,
+      messaging_product: "whatsapp", 
+      to, 
       type: "interactive",
       interactive: {
         type: "cta_url",
-        header: {
-          type: "text",
-          text: (step.urlLabel || "Call Us").substring(0, 60),
-        },
-        body: {
-          text: step.message || "Tap the button below to call.",
-        },
-        action: {
-          name: "cta_url",
-          parameters: {
-            // ✅ FIX: MUST be OBJECT (NOT ARRAY)
-            display_text: (step.urlLabel || "Call Now").substring(0, 20),
-            url: redirectUrl,
-          },
-        },
-      },
+        header: { type: "text", text: (step.urlLabel || "Call Us").substring(0, 60) },
+        body: { text: step.message || `Tap the button below to call.` },
+        action: { 
+          name: "cta_url", 
+          // ✅ FIX: MUST BE AN ARRAY
+          parameters: [{ 
+            type: "cta_url", 
+            display_text: (step.urlLabel || "Call Now").substring(0, 20), 
+            url: redirectUrl 
+          }] 
+        }
+      }
     };
-
-    console.log(`📞 [CALL_ACTION] URL: ${redirectUrl}`);
-  }
-
-  // =========================
-  // 🔗 URL ACTION BUTTON
-  // =========================
+  } 
+  // ✅ URL ACTION NODE
   else if (step.stepType === "url_action" && step.url) {
-    let url = step.url.trim();
-
+    let url = step.url.trim().replace(/\s+/g, "");
     if (!url.startsWith("http://") && !url.startsWith("https://")) {
       url = "https://" + url;
     }
-
+    
     payload = {
-      messaging_product: "whatsapp",
-      to,
+      messaging_product: "whatsapp", 
+      to, 
       type: "interactive",
       interactive: {
         type: "cta_url",
-        header: {
-          type: "text",
-          text: (step.urlLabel || "Visit Link").substring(0, 60),
-        },
-        body: {
-          text: step.message || "Click the button below to visit.",
-        },
-        action: {
-          name: "cta_url",
-          parameters: {
-            // ✅ FIX: MUST be OBJECT
-            display_text: (step.urlLabel || "Open").substring(0, 20),
-            url: url,
-          },
-        },
-      },
+        header: { type: "text", text: (step.urlLabel || "Visit Link").substring(0, 60) },
+        body: { text: step.message || "Click the button below to visit the link." },
+        action: { 
+          name: "cta_url", 
+          // ✅ FIX: MUST BE AN ARRAY
+          parameters: [{ 
+            type: "cta_url", 
+            display_text: (step.urlLabel || "Open").substring(0, 20), 
+            url: url 
+          }] 
+        }
+      }
     };
-  }
-
-  // =========================
-  // 🧾 BUTTONS / LISTS
-  // =========================
+  } 
   else if (step.buttons?.length > 0) {
     const valid = step.buttons.filter((b: any) => b.label?.trim());
-
     if (valid.length > 3) {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "interactive",
-        interactive: {
-          type: "list",
-          header: { type: "text", text: "Options" },
-          body: { text: step.message || "Select an option" },
-          action: {
-            button: step.listButtonText || "Options",
-            sections: [
-              {
-                title: "Choices",
-                rows: valid.slice(0, 10).map((b: any) => ({
-                  id: b.id,
-                  title: b.label.substring(0, 24),
-                })),
-              },
-            ],
-          },
-        },
-      };
+      payload = { messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "list", header: { type: "text", text: "Options" }, body: { text: step.message || "Select" }, action: { button: step.listButtonText || "Options", sections: [{ title: "Choices", rows: valid.slice(0, 10).map((b: any) => ({ id: b.id, title: b.label.substring(0, 24) })) }] } } };
+      const m = buildMediaObj(); if (m && step.mediaType) { if (step.mediaType === "image") payload.interactive.header = { type: "image", image: m }; else if (step.mediaType === "video") payload.interactive.header = { type: "video", video: m }; else if (step.mediaType === "document") payload.interactive.header = { type: "document", document: { ...m, filename: "Doc" } }; }
     } else {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "interactive",
-        interactive: {
-          type: "button",
-          body: { text: step.message || "" },
-          action: {
-            buttons: valid.slice(0, 3).map((b: any) => ({
-              type: "reply",
-              reply: {
-                id: b.id,
-                title: b.label.substring(0, 20),
-              },
-            })),
-          },
-        },
-      };
+      payload = { messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "button", body: { text: step.message || "" }, action: { buttons: valid.slice(0, 3).map((b: any) => ({ type: "reply", reply: { id: b.id, title: b.label.substring(0, 20) } })) } } };
+      const m = buildMediaObj(); if (m && step.mediaType) { if (step.mediaType === "image") payload.interactive.header = { type: "image", image: m }; else if (step.mediaType === "video") payload.interactive.header = { type: "video", video: m }; else if (step.mediaType === "document") payload.interactive.header = { type: "document", document: { ...m, filename: "Doc" } }; }
     }
-  }
-
-  // =========================
-  // 🧠 TEXT / MEDIA
-  // =========================
-  else {
+  } else {
     const m = buildMediaObj();
-
     if (step.mediaUrl && step.mediaType === "link") {
-      let linkUrl = step.mediaUrl.trim();
-      if (!linkUrl.startsWith("http")) linkUrl = "https://" + linkUrl;
-
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: {
-          body: step.message
-            ? `${step.message}\n\n${linkUrl}`
-            : linkUrl,
-          preview_url: true,
-        },
-      };
-    } else if (step.mediaUrl && step.mediaType === "image" && m) {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "image",
-        image: { ...m, ...(step.message ? { caption: step.message } : {}) },
-      };
-    } else if (step.mediaUrl && step.mediaType === "video" && m) {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "video",
-        video: { ...m, ...(step.message ? { caption: step.message } : {}) },
-      };
-    } else if (step.mediaUrl && step.mediaType === "audio" && m) {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "audio",
-        audio: m,
-      };
-    } else {
-      payload = {
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: { body: step.message || "", preview_url: true },
-      };
+      let linkUrl = step.mediaUrl.trim().replace(/\s+/g, "");
+      if (!linkUrl.startsWith("http://") && !linkUrl.startsWith("https://")) linkUrl = "https://" + linkUrl;
+      payload = { messaging_product: "whatsapp", to, type: "text", text: { body: step.message ? `${step.message}\n\n${linkUrl}` : linkUrl, preview_url: true } };
     }
+    else if (step.mediaUrl && step.mediaType === "image" && m) payload = { messaging_product: "whatsapp", to, type: "image", image: { ...m, ...(step.message ? { caption: step.message } : {}) } };
+    else if (step.mediaUrl && step.mediaType === "video" && m) payload = { messaging_product: "whatsapp", to, type: "video", video: { ...m, ...(step.message ? { caption: step.message } : {}) } };
+    else if (step.mediaUrl && step.mediaType === "audio" && m) payload = { messaging_product: "whatsapp", to, type: "audio", audio: m };
+    else if (step.mediaUrl && step.mediaType === "document" && m) payload = { messaging_product: "whatsapp", to, type: "document", document: { ...m, filename: "Doc", ...(step.message ? { caption: step.message } : {}) } };
+    else payload = { messaging_product: "whatsapp", to, type: "text", text: { body: step.message || "", preview_url: true } };
   }
 
-  // =========================
-  // 🚀 SEND TO META
-  // =========================
-  try {
-    const res = await fetch(
-      `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      }
-    );
-
+  try { 
+    const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { 
+      method: "POST", 
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, 
+      body: JSON.stringify(payload) 
+    }); 
+    
     const data = await res.json();
-
     if (!res.ok) {
-      console.error(
-        `❌ [WORKFLOW ERROR]`,
-        JSON.stringify(data, null, 2)
-      );
-
-      // fallback
-      await fetch(
-        `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            messaging_product: "whatsapp",
-            to,
-            type: "text",
-            text: {
-              body: step.message || "Message could not be delivered.",
-            },
-          }),
+      console.error(`❌ [WORKFLOW] API Error for ${step.stepType}:`, JSON.stringify(data, null, 2));
+      
+      // Fallback to text if button fails
+      if (step.stepType === "url_action" || step.stepType === "call_action") {
+        let fallbackBody = step.message || "";
+        if (step.stepType === "url_action" && step.url) {
+          let u = step.url;
+          if (!u.startsWith("http")) u = "https://" + u;
+          fallbackBody += `\n\n${u}`;
         }
-      );
+        if (step.stepType === "call_action" && step.phoneNumber) {
+          let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
+          if (!callNumber.startsWith("+")) callNumber = "+" + callNumber;
+          fallbackBody += `\n\n📞 Click here to call: ${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
+        }
+        
+        const fallbackPayload = {
+          messaging_product: "whatsapp",
+          to,
+          type: "text",
+          text: { body: fallbackBody.trim(), preview_url: true }
+        };
+        await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { 
+          method: "POST", 
+          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, 
+          body: JSON.stringify(fallbackPayload) 
+        });
+      }
     } else {
-      console.log("✅ [WORKFLOW] Sent successfully");
+      console.log(`✅ [WORKFLOW] Button sent successfully!`);
     }
-  } catch (err: any) {
-    console.error("❌ SEND FAILED:", err.message);
+  } catch (err: any) { 
+    console.error(`❌ [WORKFLOW] Send failed:`, err.message); 
   }
 }
 
-// ✅ HELPER: Apply Tag
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try {
     const { default: Contact } = await import("@/models/Contact");
@@ -711,7 +605,6 @@ async function applyTagToContact(phoneNumber: string, tagId: string, userId: str
   } catch (err) { console.error("Failed to apply tag to contact:", err); }
 }
 
-// ✅ HELPER: Add Opt-Out Number
 async function addOptOutNumber(phoneNumber: string, userId: string, tenantId: string | null = null) {
   try {
     const { default: OptNumber } = await import("@/models/OptNumber");
@@ -720,7 +613,6 @@ async function addOptOutNumber(phoneNumber: string, userId: string, tenantId: st
   } catch (err) { console.error("Failed to add opt-out number:", err); }
 }
 
-// ✅ MAIN POST ROUTE
 export async function POST(req: NextRequest) {
   try {
     await connectDB();
@@ -746,7 +638,6 @@ export async function POST(req: NextRequest) {
         const value = change.value; if (!value) continue;
         const phoneNumberId = value.metadata?.phone_number_id; if (!phoneNumberId) continue;
         
-        // ✅ MULTI-TENANT: Find the correct user/credentials for this webhook
         const num = await findUserByPhoneNumberId(phoneNumberId); if (!num) continue;
 
         const contactInfo = value.contacts?.[0];
@@ -763,7 +654,6 @@ export async function POST(req: NextRequest) {
           await executeWorkflowsForMessage(msg, num, baseUrl);
         }
 
-        // ✅ HANDLE MESSAGE STATUSES (CAMPAIGNS)
         for (const statusObj of value.statuses || []) {
           const { id, status, recipient_id, errors } = statusObj;
           if (status === "delivered" || status === "read") await Message.updateOne({ whatsappMessageId: id }, { $set: { status, error: null } });
