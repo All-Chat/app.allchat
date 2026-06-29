@@ -428,24 +428,29 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
 
   // ✅ CALL ACTION NODE
   if (step.stepType === "call_action" && step.phoneNumber) {
-    // ✅ FIX: Strictly strip all characters except digits and the leading + sign
     let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
     if (callNumber.startsWith("+")) {
-      callNumber = "+" + callNumber.replace(/\+/g, ''); // Keep only the first +
+      callNumber = "+" + callNumber.replace(/\+/g, '');
     } else {
       callNumber = "+" + callNumber;
     }
     
     const redirectUrl = `${baseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
 
-    // 1. Try sending the CTA URL Button (Requires verified domain in Meta Business Manager)
+    // ✅ FIX: Removed the invalid "type: cta_url" inside parameters to stop API rejection
     const buttonPayload = {
       messaging_product: "whatsapp", to, type: "interactive",
       interactive: {
         type: "cta_url",
         header: { type: "text", text: step.urlLabel || "Call Us" },
         body: { text: step.message || `Tap the button below to call us at ${callNumber}.` },
-        action: { name: "cta_url", parameters: [{ type: "cta_url", display_text: step.urlLabel || "Call Now", url: redirectUrl }] }
+        action: { 
+          name: "cta_url", 
+          parameters: [{ 
+            display_text: step.urlLabel || "Call Now", 
+            url: redirectUrl 
+          }] 
+        }
       }
     };
 
@@ -457,7 +462,10 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       });
 
       if (!res.ok) {
-        // 2. Fallback: If button fails (domain not verified), send a clean text message
+        const errData = await res.json();
+        console.error(`❌ [WORKFLOW] Call Action API error:`, JSON.stringify(errData));
+        
+        // Fallback to text if it still fails
         const fallbackText = `${step.message || ""}\n\n📞 Click here to call: ${redirectUrl}`.trim();
         const textPayload = {
           messaging_product: "whatsapp",
@@ -474,19 +482,27 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     } catch (e) {
       console.error("Call action error:", e);
     }
-    return; // Return early so it doesn't hit the bottom payload sender
+    return; 
   } 
   // ✅ URL ACTION NODE
   else if (step.stepType === "url_action" && step.url) {
     let url = step.url;
     if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://" + url;
+    
+    // ✅ FIX: Removed the invalid "type: cta_url" inside parameters to stop API rejection
     payload = {
       messaging_product: "whatsapp", to, type: "interactive",
       interactive: {
         type: "cta_url",
         header: { type: "text", text: step.urlLabel || "Visit Link" },
         body: { text: step.message || "Click the button below to visit the link." },
-        action: { name: "cta_url", parameters: [{ type: "cta_url", display_text: step.urlLabel || "Open", url: url }] }
+        action: { 
+          name: "cta_url", 
+          parameters: [{ 
+            display_text: step.urlLabel || "Open", 
+            url: url 
+          }] 
+        }
       }
     };
   } 
@@ -524,7 +540,6 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       const errData = await res.json();
       console.error(`❌ [WORKFLOW] API error for ${step.stepType}:`, JSON.stringify(errData));
       
-      // Fallback for URL Action
       if (step.stepType === "url_action" && step.url) {
         let fallbackBody = step.message || "";
         let u = step.url;
@@ -571,7 +586,6 @@ export async function POST(req: NextRequest) {
   try {
     await connectDB();
     
-    // ✅ FIX: Get the real public URL from headers instead of localhost
     const forwardedProto = req.headers.get('x-forwarded-proto') || (req.headers.get('host')?.includes('localhost') ? 'http' : 'https');
     const forwardedHost = req.headers.get('x-forwarded-host') || req.headers.get('host');
     const baseUrl = `${forwardedProto}://${forwardedHost}`;
