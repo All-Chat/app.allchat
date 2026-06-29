@@ -14,7 +14,7 @@ export const runtime = "nodejs";
 
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "watiX_webhook_verify_2024";
 const workflowTimers = new Map<string, NodeJS.Timeout>();
-const formTimers = new Map<string, NodeJS.Timeout>(); // ✅ Added to track form inactivity timers properly
+const formTimers = new Map<string, NodeJS.Timeout>();
 
 // ✅ STATUS PRIORITY HELPER FUNCTION
 const statusPriority: Record<string, number> = {
@@ -68,9 +68,7 @@ const startWorkflowInactivityTimer = (phone: string, userId: string, workflowId:
   })();
 };
 
-// ✅ FIX: Updated Form Timer to properly track and clear intervals
 const startFormInactivityTimer = (phone: string, userId: string, formId: string, fieldIndex: number, field: any, form: any, accessToken: string, phoneNumberId: string) => {
-  // Clear any existing form timer for this phone
   if (formTimers.has(phone)) {
     clearInterval(formTimers.get(phone) as NodeJS.Timeout);
     formTimers.delete(phone);
@@ -221,15 +219,12 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
     const buttonPayload = extractButtonPayload(msg);
     if (!incomingText && !buttonPayload) return;
 
-    // ✅ Check if user is currently filling out a Form
     const activeSession = await Session.findOne({ phone: msg.from, userId: num.userId });
     
     if (activeSession && activeSession.formId) {
-      // Allow the restart button to break out of the form
       if (buttonPayload && buttonPayload.startsWith("restart_form_")) {
-        // Fall through to the button handler below
+        // Fall through to button handler
       } else {
-        // ✅ CONVERSATIONAL FORM LOGIC
         const form = await Form.findById(activeSession.formId);
         if (!form) {
           await Session.deleteOne({ _id: activeSession._id });
@@ -244,19 +239,16 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
           return;
         }
 
-        // Validate required field
         if (currentField.required && !incomingText.trim()) {
           await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: "⚠️ This field is required. Please enter a valid response.", stepType: "text" });
           return;
         }
 
-        // Save answer to FormResponse
         await FormResponse.updateOne(
           { formId: form._id, phone: msg.from, status: "incomplete" },
           { $set: { [`data.${currentField.label}`]: incomingText } }
         );
 
-        // Clear the inactivity timer since we got a reply
         if (formTimers.has(msg.from)) {
           clearInterval(formTimers.get(msg.from) as NodeJS.Timeout);
           formTimers.delete(msg.from);
@@ -265,7 +257,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
         const nextFieldIndex = fieldIndex + 1;
 
         if (nextFieldIndex < form.fields.length) {
-          // Ask Next Question
           const nextField = form.fields[nextFieldIndex];
           activeSession.formFieldIndex = nextFieldIndex;
           await activeSession.save();
@@ -274,14 +265,12 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
           startFormInactivityTimer(msg.from, num.userId.toString(), form._id.toString(), nextFieldIndex, nextField, form, num.accessToken, num.phoneNumberId);
           return;
         } else {
-          // Form is Complete
           await FormResponse.updateOne(
             { formId: form._id, phone: msg.from, status: "incomplete" },
             { $set: { status: "complete" } }
           );
           await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: form.completionMessage || "✅ Thank you! Your form has been submitted.", stepType: "text" });
 
-          // Check if workflow has a next step after the form
           const workflow = await Workflow.findById(activeSession.workflowId);
           if (workflow && activeSession.currentStepId) {
             const step = workflow.steps[activeSession.currentStepId];
@@ -289,12 +278,10 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
               activeSession.formId = null;
               activeSession.formFieldIndex = 0;
               await activeSession.save();
-              // Resume the workflow
               await processWorkflowStep(step.nextStepId, workflow.steps, workflow, num.accessToken, num.phoneNumberId, msg.from, num.userId.toString(), num.tenantId);
               return;
             }
           }
-          // No next step, clear session
           await Session.deleteOne({ _id: activeSession._id });
           return;
         }
@@ -327,7 +314,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
         }
       }
       
-      // Check for active workflow session (non-form)
       if (activeSession && activeSession.workflowId && !activeSession.formId) {
         const wf = await Workflow.findById(activeSession.workflowId);
         if (wf && wf.active && wf.steps) {
@@ -364,8 +350,6 @@ async function executeWorkflowsForMessage(msg: any, num: any) {
                 }
                 activeSession.currentStepId = nextStep.id; await activeSession.save();
                 await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, nextStep);
-                await Message.create({ userId: num.userId, phone: msg.from, text: nextStep.message || `[${nextStep.stepType?.toUpperCase()}]`, direction: "out", messageType: "text" });
-                if (nextStep.buttons?.length > 0) startWorkflowInactivityTimer(msg.from, num.userId.toString(), wf._id.toString(), num.accessToken, num.phoneNumberId);
                 return;
               } else { await Session.deleteOne({ _id: activeSession._id }); return; }
             } else { await Session.deleteOne({ _id: activeSession._id }); return; }
@@ -458,14 +442,11 @@ async function processWorkflowStep(stepId: string, steps: Record<string, any>, m
     const formData = await Form.findById(step.selectedForm);
     if (formData && formData.fields.length > 0) {
       await Session.findOneAndUpdate({ phone: customerNumber, userId }, { formId: formData._id, formFieldIndex: 0, workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() }, { upsert: true, new: true });
-      
-      // ✅ Use findOneAndUpdate to prevent duplicate key errors on restart
       await FormResponse.findOneAndUpdate(
         { formId: formData._id, phone: customerNumber, status: "incomplete" },
         { $set: { userId, data: {}, status: "incomplete" } },
         { upsert: true, new: true }
       );
-      
       await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" });
       startFormInactivityTimer(customerNumber, userId, formData._id.toString(), 0, formData.fields[0], formData, accessToken, phoneNumberId);
     } 
@@ -473,19 +454,65 @@ async function processWorkflowStep(stepId: string, steps: Record<string, any>, m
   }
 
   if (["inactivity_node"].includes(step.stepType)) return;
+
+  // ✅ FIX: Save proper message history for URL and Call actions
+  let historyText = step.message || `[${step.stepType?.toUpperCase()}]`;
+  if (step.stepType === "url_action" && step.url) historyText = `${step.message || ""}\n🔗 ${step.urlLabel || "Link"}: ${step.url}`.trim();
+  if (step.stepType === "call_action" && step.phoneNumber) historyText = `${step.message || ""}\n📞 ${step.phoneNumber}`.trim();
+
   await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step);
-  await Message.create({ userId, phone: customerNumber, text: step.message || `[${step.stepType?.toUpperCase()}]`, direction: "out", messageType: step.mediaType || "text", mediaUrl: step.mediaUrl || null });
+  await Message.create({ userId, phone: customerNumber, text: historyText, direction: "out", messageType: "text", mediaUrl: step.mediaUrl || null });
   await Session.findOneAndUpdate({ phone: customerNumber, userId }, { workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() }, { upsert: true, new: true });
   if (step.buttons?.length > 0) startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId);
 }
 
 async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: string, to: string, step: any) {
-  let payload: any; let resolvedMediaId: string | null = null;
-  if (step.mediaUrl && step.mediaType && step.mediaType !== "link") { if (/^\d+$/.test(step.mediaUrl)) resolvedMediaId = step.mediaUrl; else resolvedMediaId = await uploadMediaToMetaFromUrl(phoneNumberId, accessToken, step.mediaUrl); }
-  const buildMediaObj = () => { if (resolvedMediaId) return { id: resolvedMediaId }; if (step.mediaUrl?.startsWith("http")) return { link: step.mediaUrl }; return null; };
+  let payload: any; 
+  let resolvedMediaId: string | null = null;
+  
+  if (step.mediaUrl && step.mediaType && step.mediaType !== "link") { 
+    if (/^\d+$/.test(step.mediaUrl)) resolvedMediaId = step.mediaUrl; 
+    else resolvedMediaId = await uploadMediaToMetaFromUrl(phoneNumberId, accessToken, step.mediaUrl); 
+  }
+  const buildMediaObj = () => { 
+    if (resolvedMediaId) return { id: resolvedMediaId }; 
+    if (step.mediaUrl?.startsWith("http")) return { link: step.mediaUrl }; 
+    return null; 
+  };
 
-  if (step.stepType === "url_action" && step.url) payload = { messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "cta_url", header: { type: "text", text: step.urlLabel || "Visit Link" }, body: { text: step.message || "Click below" }, cta: { title: step.urlLabel || "Open", url: step.url } } };
-  else if (step.stepType === "call_action" && step.phoneNumber) payload = { messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "cta_url", header: { type: "text", text: step.urlLabel || "Call" }, body: { text: step.message || "Click to call" }, cta: { title: step.urlLabel || "Call", url: `tel:${step.phoneNumber}` } } };
+  // ✅ FIX: Corrected CTA URL structure to fix URL Action nodes
+  if (step.stepType === "url_action" && step.url) {
+    payload = {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "cta_url",
+        header: { type: "text", text: step.urlLabel || "Visit Link" },
+        body: { text: step.message || "Click the button below to visit the link." },
+        action: {
+          name: "cta_url",
+          parameters: [
+            {
+              type: "cta_url",
+              display_text: step.urlLabel || "Open",
+              url: step.url
+            }
+          ]
+        }
+      }
+    };
+  } 
+  // ✅ FIX: WhatsApp doesn't support tel: in CTA URL, so send as formatted text message
+  else if (step.stepType === "call_action" && step.phoneNumber) {
+    const msgBody = step.message ? `${step.message}\n\n📞 ${step.phoneNumber}` : `📞 ${step.phoneNumber}`;
+    payload = {
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: { body: msgBody, preview_url: false }
+    };
+  } 
   else if (step.buttons?.length > 0) {
     const valid = step.buttons.filter((b: any) => b.label?.trim());
     if (valid.length > 3) {
@@ -497,7 +524,18 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     }
   } else {
     const m = buildMediaObj();
-    if (step.mediaUrl && step.mediaType === "link") payload = { messaging_product: "whatsapp", to, type: "text", text: { body: step.message ? `${step.message}\n\n${step.mediaUrl}` : step.mediaUrl, preview_url: true } };
+    // ✅ FIX: Ensured strict formatting for Link thumbnails
+    if (step.mediaUrl && step.mediaType === "link") {
+      payload = { 
+        messaging_product: "whatsapp", 
+        to, 
+        type: "text", 
+        text: { 
+          body: step.message ? `${step.message}\n\n${step.mediaUrl}` : step.mediaUrl, 
+          preview_url: true 
+        } 
+      };
+    }
     else if (step.mediaUrl && step.mediaType === "image" && m) payload = { messaging_product: "whatsapp", to, type: "image", image: { ...m, ...(step.message ? { caption: step.message } : {}) } };
     else if (step.mediaUrl && step.mediaType === "video" && m) payload = { messaging_product: "whatsapp", to, type: "video", video: { ...m, ...(step.message ? { caption: step.message } : {}) } };
     else if (step.mediaUrl && step.mediaType === "audio" && m) payload = { messaging_product: "whatsapp", to, type: "audio", audio: m };
@@ -505,7 +543,16 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     else payload = { messaging_product: "whatsapp", to, type: "text", text: { body: step.message || "", preview_url: true } };
   }
 
-  try { const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify(payload) }); if (!res.ok) console.error(`❌ [WORKFLOW] API error:`, await res.json()); } catch (err: any) { console.error(`❌ [WORKFLOW] Send failed:`, err.message); }
+  try { 
+    const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { 
+      method: "POST", 
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, 
+      body: JSON.stringify(payload) 
+    }); 
+    if (!res.ok) console.error(`❌ [WORKFLOW] API error:`, await res.json()); 
+  } catch (err: any) { 
+    console.error(`❌ [WORKFLOW] Send failed:`, err.message); 
+  }
 }
 
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
