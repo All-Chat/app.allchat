@@ -382,68 +382,172 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
   } catch (err) { console.error("❌ [WORKFLOW] Error:", err); }
 }
 
-async function processWorkflowStep(stepId: string, steps: Record<string, any>, matchedWorkflow: any, accessToken: string, phoneNumberId: string, customerNumber: string, userId: string, tenantId: string | null, baseUrl: string) {
-  const step = steps[stepId]; 
+async function processWorkflowStep(
+  stepId: string,
+  steps: Record<string, any>,
+  matchedWorkflow: any,
+  accessToken: string,
+  phoneNumberId: string,
+  customerNumber: string,
+  userId: string,
+  tenantId: string | null,
+  baseUrl: string
+) {
+  const step = steps[stepId];
   if (!step) return;
 
-  if (step.stepType === "delay_node") { 
-    if (step.delaySeconds > 0) await new Promise(r => setTimeout(r, step.delaySeconds * 1000)); 
-    if (step.nextStepId && steps[step.nextStepId]) await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl); 
-    return; 
-  }
+  // -------------------------
+  // Delay node
+  // -------------------------
+  if (step.stepType === "delay_node") {
+    if (step.delaySeconds > 0)
+      await new Promise((r) => setTimeout(r, step.delaySeconds * 1000));
 
-  if (step.stepType === "opt_in_node") {
-    await addOptOutNumber(customerNumber, userId, tenantId);
-    if (step.nextStepId && steps[step.nextStepId]) await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
-    return;
-  } else if (step.stepType === "tag_node") {
-    if (step.selectedTag) await applyTagToContact(customerNumber, step.selectedTag, userId);
-    if (step.nextStepId && steps[step.nextStepId]) await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
-    return;
-  }
-
-  if (step.stepType === "form_node" && step.selectedForm) {
-    const formData = await Form.findById(step.selectedForm);
-    if (formData && formData.fields.length > 0) {
-      await Session.findOneAndUpdate({ phone: customerNumber, userId }, { formId: formData._id, formFieldIndex: 0, workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() }, { upsert: true, new: true });
-      await FormResponse.findOneAndUpdate({ formId: formData._id, phone: customerNumber, status: "incomplete" }, { $set: { userId, data: {}, status: "incomplete" } }, { upsert: true, new: true });
-      await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" }, baseUrl);
-      startFormInactivityTimer(customerNumber, userId, formData._id.toString(), 0, formData.fields[0], formData, accessToken, phoneNumberId, baseUrl);
-    } 
-    return;
-  }
-
-  if (["inactivity_node"].includes(step.stepType)) return;
-
-  // ✅ FIX: Properly handle Call Action and URL Action nodes without waiting for replies
-  if (step.stepType === "call_action" || step.stepType === "url_action") {
-    let historyText = step.message || `[${step.stepType?.toUpperCase()}]`;
-    if (step.stepType === "url_action" && step.url) historyText = `${step.message || ""}\n🔗 ${step.urlLabel || "Link"}: ${step.url}`.trim();
-    if (step.stepType === "call_action" && step.phoneNumber) historyText = `${step.message || ""}\n📞 Call: ${step.phoneNumber}`.trim();
-
-    await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
-    await Message.create({ userId, phone: customerNumber, text: historyText, direction: "out", messageType: "text", mediaUrl: step.mediaUrl || null });
-    
-    // Continue to next step if connected
     if (step.nextStepId && steps[step.nextStepId]) {
-      let nextStep = steps[step.nextStepId];
-      while (nextStep && nextStep.stepType === "delay_node") { 
-        if (nextStep.delaySeconds > 0) await new Promise(r => setTimeout(r, nextStep.delaySeconds * 1000)); 
-        nextStep = nextStep.nextStepId ? steps[nextStep.nextStepId] : null; 
-      }
-      if (nextStep) {
-        await processWorkflowStep(nextStep.id, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
-      }
+      await processWorkflowStep(
+        step.nextStepId,
+        steps,
+        matchedWorkflow,
+        accessToken,
+        phoneNumberId,
+        customerNumber,
+        userId,
+        tenantId,
+        baseUrl
+      );
     }
     return;
   }
 
-  // Standard Message Node
-  const historyText = step.message || `[${step.stepType?.toUpperCase()}]`;
-  await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
-  await Message.create({ userId, phone: customerNumber, text: historyText, direction: "out", messageType: "text", mediaUrl: step.mediaUrl || null });
-  await Session.findOneAndUpdate({ phone: customerNumber, userId }, { workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() }, { upsert: true, new: true });
-  if (step.buttons?.length > 0) startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
+  // -------------------------
+  // Opt / Tag nodes
+  // -------------------------
+  if (step.stepType === "opt_in_node") {
+    await addOptOutNumber(customerNumber, userId, tenantId);
+  }
+
+  if (step.stepType === "tag_node") {
+    if (step.selectedTag)
+      await applyTagToContact(customerNumber, step.selectedTag, userId);
+  }
+
+  // -------------------------
+  // FORM NODE
+  // -------------------------
+  if (step.stepType === "form_node" && step.selectedForm) {
+    const formData = await Form.findById(step.selectedForm);
+
+    if (formData && formData.fields.length > 0) {
+      await Session.findOneAndUpdate(
+        { phone: customerNumber, userId },
+        {
+          formId: formData._id,
+          formFieldIndex: 0,
+          workflowId: matchedWorkflow._id,
+          currentStepId: step.id,
+          updatedAt: new Date(),
+        },
+        { upsert: true, new: true }
+      );
+
+      await FormResponse.findOneAndUpdate(
+        { formId: formData._id, phone: customerNumber, status: "incomplete" },
+        { $set: { userId, data: {}, status: "incomplete" } },
+        { upsert: true, new: true }
+      );
+
+      await sendWorkflowWhatsAppMessage(
+        accessToken,
+        phoneNumberId,
+        customerNumber,
+        {
+          message: `*${formData.name}*\n\n${formData.fields[0].label}`,
+          stepType: "text",
+        },
+        baseUrl
+      );
+
+      startFormInactivityTimer(
+        customerNumber,
+        userId,
+        formData._id.toString(),
+        0,
+        formData.fields[0],
+        formData,
+        accessToken,
+        phoneNumberId,
+        baseUrl
+      );
+    }
+    return;
+  }
+
+  // -------------------------
+  // CTA / URL / CALL ACTIONS
+  // 🔥 IMPORTANT FIX: NO DB MESSAGE, NO DUPLICATION
+  // -------------------------
+  if (step.stepType === "call_action" || step.stepType === "url_action") {
+    await sendWorkflowWhatsAppMessage(
+      accessToken,
+      phoneNumberId,
+      customerNumber,
+      step,
+      baseUrl
+    );
+
+    // ONLY ONE CLEAN DB LOG
+    await Message.create({
+      userId,
+      phone: customerNumber,
+      text: step.message || step.urlLabel || step.phoneNumber || "",
+      direction: "out",
+      messageType: "text",
+      mediaUrl: step.mediaUrl || null,
+    });
+
+    return; // 🔥 STOP HERE (prevents duplication)
+  }
+
+  // -------------------------
+  // NORMAL STEPS
+  // -------------------------
+  await sendWorkflowWhatsAppMessage(
+    accessToken,
+    phoneNumberId,
+    customerNumber,
+    step,
+    baseUrl
+  );
+
+  await Message.create({
+    userId,
+    phone: customerNumber,
+    text: step.message || `[${step.stepType}]`,
+    direction: "out",
+    messageType: "text",
+    mediaUrl: step.mediaUrl || null,
+  });
+
+  await Session.findOneAndUpdate(
+    { phone: customerNumber, userId },
+    {
+      workflowId: matchedWorkflow._id,
+      currentStepId: step.id,
+      updatedAt: new Date(),
+    },
+    { upsert: true, new: true }
+  );
+
+  if (step.buttons?.length > 0) {
+    startWorkflowInactivityTimer(
+      customerNumber,
+      userId,
+      matchedWorkflow._id.toString(),
+      accessToken,
+      phoneNumberId,
+      baseUrl
+    );
+  }
 }
 
 // ✅ WHATSAPP API SENDER (Fixed parameters array)
@@ -471,35 +575,40 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
 
   // ✅ CALL ACTION NODE
   if (step.stepType === "call_action" && step.phoneNumber) {
-    let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
-    if (callNumber.startsWith("+")) {
-      callNumber = "+" + callNumber.replace(/\+/g, '');
-    } else {
-      callNumber = "+" + callNumber;
-    }
-    
-    const redirectUrl = `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
+  let callNumber = step.phoneNumber.replace(/[^\d+]/g, "");
 
-    payload = {
-      messaging_product: "whatsapp", 
-      to, 
-      type: "interactive",
-      interactive: {
-        type: "cta_url",
-        header: { type: "text", text: (step.urlLabel || "Call Us").substring(0, 60) },
-        body: { text: step.message || `Tap the button below to call.` },
-        action: { 
-          name: "cta_url", 
-          // ✅ FIX: MUST BE AN ARRAY
-          parameters: [{ 
-            type: "cta_url", 
-            display_text: (step.urlLabel || "Call Now").substring(0, 20), 
-            url: redirectUrl 
-          }] 
-        }
-      }
-    };
-  } 
+  if (!callNumber.startsWith("+")) {
+    callNumber = "+" + callNumber;
+  }
+
+  const redirectUrl =
+    `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
+
+  payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "cta_url",
+      header: {
+        type: "text",
+        text: (step.urlLabel || "Call Us").substring(0, 60),
+      },
+      body: {
+        text: step.message || "Tap the button below to call.",
+      },
+      action: {
+        name: "cta_url",
+        parameters: {
+          display_text: (step.urlLabel || "Call Now").substring(0, 20),
+          url: redirectUrl,
+        },
+      },
+    },
+  };
+
+  console.log(`📞 CALL BUTTON: ${redirectUrl}`);
+}
   // ✅ URL ACTION NODE
   else if (step.stepType === "url_action" && step.url) {
     let url = step.url.trim().replace(/\s+/g, "");
