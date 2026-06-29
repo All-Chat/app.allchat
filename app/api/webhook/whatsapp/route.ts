@@ -471,6 +471,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         action: { 
           name: "cta_url", 
           parameters: [{ 
+            type: "cta_url", // ✅ FIX: WhatsApp strictly requires this field
             display_text: (step.urlLabel || "Call Now").substring(0, 20), 
             url: redirectUrl 
           }] 
@@ -496,6 +497,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         action: { 
           name: "cta_url", 
           parameters: [{ 
+            type: "cta_url", // ✅ FIX: WhatsApp strictly requires this field
             display_text: (step.urlLabel || "Open").substring(0, 20), 
             url: url 
           }] 
@@ -537,7 +539,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     if (!res.ok) {
       console.error(`❌ [WORKFLOW] API Error for ${step.stepType}:`, JSON.stringify(data, null, 2));
       
-      // Fallback for URL/Call actions if button fails (e.g. domain not verified)
+      // Fallback to text if URL Action fails
       if (step.stepType === "url_action" || step.stepType === "call_action") {
         let fallbackBody = step.message || "";
         if (step.stepType === "url_action" && step.url) {
@@ -564,6 +566,8 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
           body: JSON.stringify(fallbackPayload) 
         });
       }
+    } else {
+      console.log(`✅ [WORKFLOW] Message sent successfully for ${step.stepType}. WhatsApp ID: ${data.messages?.[0]?.id}`);
     }
   } catch (err: any) { 
     console.error(`❌ [WORKFLOW] Send failed:`, err.message); 
