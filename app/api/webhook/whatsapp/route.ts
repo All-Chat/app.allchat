@@ -1,609 +1,757 @@
+/* eslint-disable no-var */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import User from "@/models/User";
 import Message from "@/models/Message";
-import Workflow from "@/models/Workflow";
-import Session from "@/models/Session";
-import Form from "@/models/Form";
-import FormResponse from "@/models/FormResponse";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import { getPriceForCategory } from "@/lib/billing";
+import { checkLimit, incrementUsage } from "@/lib/limits";
 import fs from "fs";
 import path from "path";
 
 export const runtime = "nodejs";
 
-const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "watiX_webhook_verify_2024";
-const workflowTimers = new Map<string, NodeJS.Timeout>();
-const formTimers = new Map<string, NodeJS.Timeout>();
-
-const statusPriority: Record<string, number> = {
-  "pending": 1, "queued": 2, "sent": 3, "delivered": 4, "read": 5
-};
-
-function shouldUpdateStatus(currentStatus: string, newStatus: string): boolean {
-  const currentPriority = statusPriority[currentStatus] || 0;
-  const newPriority = statusPriority[newStatus] || 0;
-  if (newStatus === "failed" || newStatus === "invalid") {
-    return currentPriority < 4 && currentStatus !== "failed" && currentStatus !== "invalid";
-  }
-  if (currentStatus === "failed" || currentStatus === "invalid") return false;
-  return newPriority > currentPriority;
+// ✅ Strip extra quotes from strings
+function cleanStr(val: any): string {
+  if (val == null) return "";
+  let s = String(val).trim();
+  if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1);
+  if (s.startsWith("'") && s.endsWith("'")) s = s.slice(1, -1);
+  s = s.replace(/\\"/g, '"').replace(/\\'/g, "'");
+  return s;
 }
 
-const clearWorkflowTimer = (phone: string) => {
-  const timerId = workflowTimers.get(phone);
-  if (timerId) { clearInterval(timerId); workflowTimers.delete(phone); }
-};
+// ✅ UNIVERSAL CREDENTIAL RESOLVER
+function resolveCredentials(
+  user: any,
+  payer: any,
+  explicitPhoneId?: string
+): { PHONE_NUMBER_ID: string; ACCESS_TOKEN: string } {
+  let PHONE_NUMBER_ID = cleanStr(explicitPhoneId || "");
+  let ACCESS_TOKEN = "";
 
-const startWorkflowInactivityTimer = (phone: string, userId: string, workflowId: string, accessToken: string, phoneNumberId: string, baseUrl: string) => {
-  clearWorkflowTimer(phone);
-  (async () => {
-    try {
-      await connectDB();
-      const wf = await Workflow.findById(workflowId);
-      if (!wf || !wf.steps) return;
-      const inactivityNode = Object.values(wf.steps).find((s: any) => s.stepType === "inactivity_node") as any;
-      if (!inactivityNode) return;
-
-      const delaySeconds = inactivityNode.delaySeconds || 30;
-      const repeatCount = inactivityNode.repeatCount || 1;
-      const message = inactivityNode.message || "Are you still there?";
-      let sentCount = 0;
-
-      const timerId = setInterval(async () => {
-        try {
-          const session = await Session.findOne({ phone, userId });
-          if (!session || session.formId) { clearWorkflowTimer(phone); return; }
-          if (sentCount < repeatCount) {
-            await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, { message, stepType: "text" }, baseUrl);
-            sentCount++;
-          } else { clearWorkflowTimer(phone); }
-        } catch (err) { console.error("Inactivity timer error:", err); clearWorkflowTimer(phone); }
-      }, delaySeconds * 1000);
-
-      workflowTimers.set(phone, timerId);
-    } catch (err) { console.error("Failed to start inactivity timer:", err); }
-  })();
-};
-
-const startFormInactivityTimer = (phone: string, userId: string, formId: string, fieldIndex: number, field: any, form: any, accessToken: string, phoneNumberId: string, baseUrl: string) => {
-  if (formTimers.has(phone)) {
-    clearInterval(formTimers.get(phone) as NodeJS.Timeout);
-    formTimers.delete(phone);
-  }
-
-  if (field.delaySeconds > 0 && field.repeatCount > 0 && field.delayMessage) {
-    let remindersSent = 0;
-    const intervalId = setInterval(async () => {
-      try {
-        await connectDB();
-        const checkSession = await Session.findOne({ phone, userId });
-        if (!checkSession || !checkSession.formId || checkSession.formFieldIndex !== fieldIndex) { 
-          clearInterval(intervalId); 
-          formTimers.delete(phone);
-          return; 
-        }
-        if (remindersSent < field.repeatCount) {
-          await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, { message: field.delayMessage, stepType: "text" }, baseUrl);
-          remindersSent++;
-        } else {
-          clearInterval(intervalId);
-          formTimers.delete(phone);
-          const abandonmentStep = { message: form.abandonmentMessage || "It seems you are busy. Click below to restart.", stepType: "message", buttons: [{ id: `restart_form_${formId}`, label: "🔄 Restart Form", nextStepId: null }] };
-          await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, abandonmentStep, baseUrl);
-          checkSession.formId = null; checkSession.formFieldIndex = 0; await checkSession.save();
-          await FormResponse.updateOne({ formId, phone, status: "incomplete" }, { $set: { status: "abandoned" } });
-        }
-      } catch (err) { console.error("Form timer error:", err); clearInterval(intervalId); formTimers.delete(phone); }
-    }, field.delaySeconds * 1000);
-    
-    formTimers.set(phone, intervalId);
-  }
-};
-
-export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const mode = searchParams.get("hub.mode");
-  const token = searchParams.get("hub.verify_token");
-  const challenge = searchParams.get("hub.challenge");
-  if (mode === "subscribe" && token === VERIFY_TOKEN) return new NextResponse(challenge || "", { status: 200, headers: { "Content-Type": "text/plain" } });
-  return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-}
-
-async function findUserByPhoneNumberId(phoneNumberId: string) {
-  const user = await User.findOne({ $or: [{ whatsappPhoneNumberId: phoneNumberId }, { "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId }] }).lean();
-  if (!user) return null;
-  let matchedNumber: any = null;
-  if (user.whatsappNumbers && user.whatsappNumbers.length > 0) {
-    matchedNumber = user.whatsappNumbers.find((n: any) => n.whatsappPhoneNumberId === phoneNumberId && n.whatsappAccessToken);
-  }
-  if (!matchedNumber && user.whatsappPhoneNumberId === phoneNumberId && user.whatsappAccessToken) {
-    matchedNumber = { whatsappPhoneNumberId: user.whatsappPhoneNumberId, whatsappAccessToken: user.whatsappAccessToken, wabaId: user.wabaId, name: "Default Number" };
-  }
-  if (!matchedNumber) return null;
-  return { 
-    userId: user._id, 
-    tenantId: (user as any).tenantId || (user as any).parentTenantId || null, 
-    name: (matchedNumber as any).name || user.name || "Unknown", 
-    phoneNumberId: (matchedNumber as any).whatsappPhoneNumberId, 
-    accessToken: (matchedNumber as any).whatsappAccessToken, 
-    wabaId: (matchedNumber as any).wabaId || user.wabaId 
-  };
-}
-
-async function getAllWhatsappNumbersFromDB() {
-  const users = await User.find({}).lean();
-  const numbers: any[] = [];
-  for (const user of users) {
-    if (user.whatsappNumbers && user.whatsappNumbers.length > 0) {
-      for (const n of user.whatsappNumbers) {
-        if (n.whatsappPhoneNumberId && n.whatsappAccessToken) numbers.push({ userId: user._id, name: n.name || user.name || "Unknown", phoneNumberId: n.whatsappPhoneNumberId, accessToken: n.whatsappAccessToken, wabaId: n.wabaId || user.wabaId });
-      }
+  if (PHONE_NUMBER_ID) {
+    if (user?.whatsappNumbers?.length > 0) {
+      const m = user.whatsappNumbers.find(
+        (n: any) =>
+          n.whatsappPhoneNumberId === PHONE_NUMBER_ID ||
+          n.phoneNumberId === PHONE_NUMBER_ID ||
+          n.id === PHONE_NUMBER_ID
+      );
+      if (m) ACCESS_TOKEN = m.whatsappAccessToken || m.accessToken || "";
     }
-    if (user.whatsappPhoneNumberId && user.whatsappAccessToken) {
-      if (!numbers.some((n) => n.phoneNumberId === user.whatsappPhoneNumberId)) numbers.push({ userId: user._id, name: user.name || "Unknown", phoneNumberId: user.whatsappPhoneNumberId, accessToken: user.whatsappAccessToken, wabaId: user.wabaId });
+    if (!ACCESS_TOKEN && payer?.whatsappNumbers?.length > 0) {
+      const m = payer.whatsappNumbers.find(
+        (n: any) =>
+          n.whatsappPhoneNumberId === PHONE_NUMBER_ID ||
+          n.phoneNumberId === PHONE_NUMBER_ID ||
+          n.id === PHONE_NUMBER_ID
+      );
+      if (m) ACCESS_TOKEN = m.whatsappAccessToken || m.accessToken || "";
     }
+    if (!ACCESS_TOKEN) ACCESS_TOKEN = user?.whatsappAccessToken || payer?.whatsappAccessToken || "";
+    if (!ACCESS_TOKEN) ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || "";
+    return { PHONE_NUMBER_ID, ACCESS_TOKEN };
   }
-  return numbers;
+
+  if (user?.whatsappPhoneNumberId) {
+    PHONE_NUMBER_ID = user.whatsappPhoneNumberId;
+    ACCESS_TOKEN = user.whatsappAccessToken || "";
+  }
+
+  if (!PHONE_NUMBER_ID && user?.whatsappNumbers?.length > 0) {
+    const active = user.whatsappNumbers.find((n: any) => n.isActive) || user.whatsappNumbers[0];
+    PHONE_NUMBER_ID = active.whatsappPhoneNumberId || active.phoneNumberId || active.id || "";
+    ACCESS_TOKEN = active.whatsappAccessToken || active.accessToken || user.whatsappAccessToken || "";
+  }
+
+  if (!PHONE_NUMBER_ID && payer?.whatsappPhoneNumberId) {
+    PHONE_NUMBER_ID = payer.whatsappPhoneNumberId;
+    ACCESS_TOKEN = payer.whatsappAccessToken || "";
+  }
+
+  if (!PHONE_NUMBER_ID && payer?.whatsappNumbers?.length > 0) {
+    const active = payer.whatsappNumbers.find((n: any) => n.isActive) || payer.whatsappNumbers[0];
+    PHONE_NUMBER_ID = active.whatsappPhoneNumberId || active.phoneNumberId || active.id || "";
+    ACCESS_TOKEN = active.whatsappAccessToken || active.accessToken || payer.whatsappAccessToken || "";
+  }
+
+  if (!PHONE_NUMBER_ID) PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || "";
+  if (!ACCESS_TOKEN) ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || "";
+
+  return { PHONE_NUMBER_ID, ACCESS_TOKEN };
 }
 
-async function forcePullMessages(num: any, baseUrl: string) {
+// ✅ Fetch template from Meta
+async function fetchFullTemplate(
+  phoneNumberId: string,
+  accessToken: string,
+  templateName: string,
+  languageCode: string
+): Promise<any | null> {
   try {
-    const since = Math.floor((Date.now() - 5000) / 1000);
-    const res = await fetch(`https://graph.facebook.com/v21.0/${num.phoneNumberId}/messages?fields=id,from,type,text,image,video,audio,document,location,contacts,interactive,button,timestamp&limit=50&since=${since}`, { headers: { Authorization: `Bearer ${num.accessToken}` } });
-    if (!res.ok) return;
-    const data = await res.json();
-    for (const msg of data.data || []) { if (msg.from) { await processAndSaveMessage(msg, num); await executeWorkflowsForMessage(msg, num, baseUrl); } }
-  } catch (err) { console.error(`❌ [PULL] Exception:`, err); }
-}
+    let res = await fetch(
+      `https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}&language=${encodeURIComponent(languageCode)}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const tpl = data?.data?.[0];
+      if (tpl?.components?.length > 0) return tpl;
+    }
 
-function parseMessage(msg: any) {
-  let text = "", messageType = "text", mediaId: string | null = null;
-  switch (msg.type) {
-    case "text": text = msg.text?.body || ""; break;
-    case "button": text = msg.button?.text || msg.button?.payload || ""; messageType = "text"; break;
-    case "interactive": text = msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || msg.interactive?.nfm_reply?.response_json || ""; break;
-    case "image": text = msg.image?.caption || ""; messageType = "image"; mediaId = msg.image?.id || null; break;
-    case "video": text = msg.video?.caption || ""; messageType = "video"; mediaId = msg.video?.id || null; break;
-    case "document": text = msg.document?.filename || "Document"; messageType = "document"; mediaId = msg.document?.id || null; break;
-    case "audio": messageType = "audio"; mediaId = msg.audio?.id || null; break;
-    case "sticker": messageType = "sticker"; mediaId = msg.sticker?.id || null; break;
-    case "location": text = `Location: ${msg.location?.latitude ?? ""},${msg.location?.longitude ?? ""}`; break;
-    case "contacts": text = msg.contacts?.[0]?.name?.formatted_name || "Contact"; break;
-    default: text = `[${msg.type}]`; break;
+    res = await fetch(
+      `https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const tpl = data?.data?.[0];
+      if (tpl?.components?.length > 0) return tpl;
+    }
+    return null;
+  } catch {
+    return null;
   }
-  return { text, messageType, mediaId };
 }
 
-function extractButtonPayload(msg: any): string | null {
-  if (msg.type === "interactive") return msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id || null;
-  if (msg.type === "button") return msg.button?.payload || msg.button?.text || null;
+function getTemplateHeaderFormat(metaTemplate: any): string {
+  if (!metaTemplate?.components) return "none";
+  for (const comp of metaTemplate.components) {
+    if (comp.type === "HEADER") return (comp.format || "none").toUpperCase();
+  }
+  return "none";
+}
+
+function extractTemplateDisplayData(
+  metaTemplate: any,
+  variables: string[],
+  headerMediaId: string | null,
+  fallbackHeaderType: string
+) {
+  const result: any = { templateHeaderType: "none" };
+  if (!metaTemplate?.components) {
+    if (["image", "video", "document"].includes(fallbackHeaderType)) {
+      result.templateHeaderType = fallbackHeaderType;
+      if (headerMediaId) result.templateHeaderText = headerMediaId;
+    }
+    return result;
+  }
+
+  for (const comp of metaTemplate.components) {
+    if (comp.type === "HEADER") {
+      if (comp.format === "TEXT" && comp.text) {
+        result.templateHeaderType = "text";
+        result.templateHeaderText = comp.text;
+      } else if (["IMAGE", "VIDEO", "DOCUMENT"].includes(comp.format)) {
+        result.templateHeaderType = comp.format.toLowerCase();
+        if (headerMediaId) result.templateHeaderText = headerMediaId;
+      }
+    } else if (comp.type === "BODY" && comp.text) {
+      let bodyText = comp.text;
+      variables.forEach((val, idx) => {
+        bodyText = bodyText.replace(new RegExp(`\\{\\{${idx + 1}\\}\\}`, "g"), val || `{{${idx + 1}}}`);
+      });
+      result.templateBodyText = bodyText;
+    } else if (comp.type === "FOOTER" && comp.text) {
+      result.templateFooter = comp.text;
+    } else if (comp.type === "BUTTONS" && comp.buttons) {
+      result.templateButtons = comp.buttons.map((btn: any, idx: number) => {
+        const btnObj: any = {
+          type: btn.type === "quick_reply" ? "quick_reply" : btn.type === "url" ? "url" : "phone_number",
+          text: btn.text || btn.title || "",
+          index: idx,
+        };
+        if (btn.type === "url") btnObj.url = btn.url || "";
+        if (btn.type === "phone_number") btnObj.phone_number = btn.phone_number || "";
+        return btnObj;
+      });
+    }
+  }
+  return result;
+}
+
+// ✅ Build components array for templates
+function buildComponents(
+  headerFormat: string,
+  variables: string[],
+  uploadedMediaId: string | null,
+  mediaUrl: string
+): any[] {
+  const components: any[] = [];
+  const validMediaTypes = ["image", "video", "document"];
+  const needsMedia = validMediaTypes.includes(headerFormat.toLowerCase());
+
+  if (needsMedia && (uploadedMediaId || mediaUrl)) {
+    const headerType = headerFormat.toLowerCase();
+    let mediaObj: any = null;
+    if (uploadedMediaId) mediaObj = { id: uploadedMediaId };
+    else if (mediaUrl) mediaObj = mediaUrl.startsWith("http") ? { link: mediaUrl } : { id: mediaUrl };
+
+    if (mediaObj) {
+      const param: any = { type: headerType };
+      if (headerType === "image") param.image = mediaObj;
+      else if (headerType === "video") param.video = mediaObj;
+      else if (headerType === "document") param.document = { ...mediaObj, filename: "document.pdf" };
+      components.push({ type: "header", parameters: [param] });
+    }
+  }
+
+  if (variables.length > 0) {
+    components.push({ type: "body", parameters: variables.map((v: string) => ({ type: "text", text: String(v) })) });
+  }
+
+  return components;
+}
+
+// ✅ Extract WAMID regardless of HTTP status code
+function extractWamid(data: any): string | null {
+  if (data?.messages?.[0]?.id) return data.messages[0].id;
   return null;
 }
 
-async function processAndSaveMessage(msg: any, num: any) {
-  const exists = await Message.findOne({ whatsappMessageId: msg.id }).lean();
-  if (exists) {
-    if (!(exists as any).whatsappPhoneNumberId && num.phoneNumberId) await Message.updateOne({ _id: (exists as any)._id }, { $set: { whatsappPhoneNumberId: num.phoneNumberId } });
-    return;
-  }
-  const { text, messageType, mediaId } = parseMessage(msg);
-  await Message.create({ userId: num.userId, phone: msg.from, text, direction: "in", messageType, mediaUrl: mediaId, whatsappMessageId: msg.id, status: "delivered", whatsappPhoneNumberId: num.phoneNumberId, senderNumber: msg.from, createdAt: msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date() });
-}
-
-async function uploadMediaToMetaFromUrl(phoneNumberId: string, accessToken: string, mediaUrl: string): Promise<string | null> {
-  try {
-    if (/^\d+$/.test(mediaUrl)) return mediaUrl;
-    let blob: Blob | null = null; let filename = "media";
-    if (mediaUrl.startsWith("/uploads/") || mediaUrl.startsWith("/public/")) {
-      const localPath = path.join(process.cwd(), "public", mediaUrl);
-      if (fs.existsSync(localPath)) { blob = new Blob([fs.readFileSync(localPath)]); filename = `media${path.extname(localPath).toLowerCase()}`; }
-    } else if (mediaUrl.startsWith("http")) {
-      const res = await fetch(mediaUrl); if (res.ok) { blob = await res.blob(); filename = `media${path.extname(new URL(mediaUrl).pathname).toLowerCase() || ".bin"}`; }
-    } else {
-      const base = process.env.NEXTAUTH_URL || ""; if (base) { const res = await fetch(`${base}${mediaUrl.startsWith("/") ? "" : "/"}${mediaUrl}`); if (res.ok) { blob = await res.blob(); filename = `media${path.extname(new URL(base).pathname).toLowerCase() || ".bin"}`; } }
-    }
-    if (!blob) return null;
-    const formData = new FormData(); formData.append("file", blob, filename); formData.append("messaging_product", "whatsapp");
-    const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/media`, { method: "POST", headers: { Authorization: `Bearer ${accessToken}` }, body: formData });
-    const data = await res.json(); return data.id || null;
-  } catch (err) { console.error(`❌ [MEDIA] Upload failed:`, err); return null; }
-}
-
-async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
-  try {
-    if (!["text", "button", "interactive"].includes(msg.type)) return;
-    const incomingText = parseMessage(msg).text;
-    const buttonPayload = extractButtonPayload(msg);
-    if (!incomingText && !buttonPayload) return;
-
-    const activeSession = await Session.findOne({ phone: msg.from, userId: num.userId });
-    
-    if (activeSession && activeSession.formId) {
-      if (buttonPayload && buttonPayload.startsWith("restart_form_")) {
-        // Fall through
-      } else {
-        const form = await Form.findById(activeSession.formId);
-        if (!form) { await Session.deleteOne({ _id: activeSession._id }); return; }
-
-        const fieldIndex = activeSession.formFieldIndex;
-        const currentField = form.fields[fieldIndex];
-        if (!currentField) { await Session.deleteOne({ _id: activeSession._id }); return; }
-
-        if (currentField.required && !incomingText.trim()) {
-          await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: "⚠️ This field is required. Please enter a valid response.", stepType: "text" }, baseUrl);
-          return;
-        }
-
-        await FormResponse.updateOne({ formId: form._id, phone: msg.from, status: "incomplete" }, { $set: { [`data.${currentField.label}`]: incomingText } });
-
-        if (formTimers.has(msg.from)) { clearInterval(formTimers.get(msg.from) as NodeJS.Timeout); formTimers.delete(msg.from); }
-
-        const nextFieldIndex = fieldIndex + 1;
-        if (nextFieldIndex < form.fields.length) {
-          const nextField = form.fields[nextFieldIndex];
-          activeSession.formFieldIndex = nextFieldIndex;
-          await activeSession.save();
-          await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: nextField.label, stepType: "text" }, baseUrl);
-          startFormInactivityTimer(msg.from, num.userId.toString(), form._id.toString(), nextFieldIndex, nextField, form, num.accessToken, num.phoneNumberId, baseUrl);
-          return;
-        } else {
-          await FormResponse.updateOne({ formId: form._id, phone: msg.from, status: "incomplete" }, { $set: { status: "complete" } });
-          await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: form.completionMessage || "✅ Thank you!", stepType: "text" }, baseUrl);
-
-          const workflow = await Workflow.findById(activeSession.workflowId);
-          if (workflow && activeSession.currentStepId) {
-            const step = workflow.steps[activeSession.currentStepId];
-            if (step && step.nextStepId) {
-              activeSession.formId = null; activeSession.formFieldIndex = 0; await activeSession.save();
-              await processWorkflowStep(step.nextStepId, workflow.steps, workflow, num.accessToken, num.phoneNumberId, msg.from, num.userId.toString(), num.tenantId, baseUrl);
-              return;
-            }
-          }
-          await Session.deleteOne({ _id: activeSession._id });
-          return;
-        }
-      }
-    }
-
-    let workflows = await Workflow.find({ userId: num.userId, wabaPhoneNumberId: num.phoneNumberId, active: true });
-    if (workflows.length === 0) {
-      const legacy = await Workflow.find({ userId: num.userId, $or: [{ wabaPhoneNumberId: null }, { wabaPhoneNumberId: { $exists: false } }], active: true });
-      if (legacy.length > 0) { workflows = legacy; await Workflow.updateMany({ userId: num.userId, $or: [{ wabaPhoneNumberId: null }, { wabaPhoneNumberId: { $exists: false } }], active: true }, { $set: { wabaPhoneNumberId: num.phoneNumberId } }); }
-    }
-    if (workflows.length === 0) return;
-
-    let matchedWorkflow: any = null; let matchedByButton = false;
-
-    if (buttonPayload) {
-      if (buttonPayload.startsWith("restart_form_")) {
-        const formId = buttonPayload.replace("restart_form_", "");
-        const formData = await Form.findById(formId);
-        if (formData && formData.fields.length > 0) {
-          await Session.findOneAndUpdate({ phone: msg.from, userId: num.userId }, { formId: formData._id, formFieldIndex: 0, updatedAt: new Date() }, { upsert: true, new: true });
-          await FormResponse.findOneAndUpdate({ formId: formData._id, phone: msg.from, status: "incomplete" }, { $set: { userId: num.userId, data: {}, status: "incomplete" } }, { upsert: true, new: true });
-          await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" }, baseUrl);
-          startFormInactivityTimer(msg.from, num.userId.toString(), formData._id.toString(), 0, formData.fields[0], formData, num.accessToken, num.phoneNumberId, baseUrl);
-          return;
-        }
-      }
-      
-      if (activeSession && activeSession.workflowId && !activeSession.formId) {
-        const wf = await Workflow.findById(activeSession.workflowId);
-        if (wf && wf.active && wf.steps) {
-          let clickedBtn = null;
-          for (const id of Object.keys(wf.steps)) { const step = wf.steps[id]; const btn = step.buttons?.find((b: any) => b.id === buttonPayload) || step.buttons?.find((b: any) => b.label?.toLowerCase() === incomingText.toLowerCase()); if (btn) { clickedBtn = btn; break; } }
-          if (clickedBtn) {
-            if (clickedBtn.applyTagId) await applyTagToContact(msg.from, clickedBtn.applyTagId, num.userId.toString());
-            if (clickedBtn.optInNodeId) await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
-            if (clickedBtn.nextStepId) {
-              let nextStep = wf.steps[clickedBtn.nextStepId];
-              while (nextStep && nextStep.stepType === "delay_node") { if (nextStep.delaySeconds > 0) await new Promise(r => setTimeout(r, nextStep.delaySeconds * 1000)); nextStep = nextStep.nextStepId ? wf.steps[nextStep.nextStepId] : null; }
-              if (nextStep) {
-                if (nextStep.stepType === "opt_in_node") { await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId); return; } 
-                else if (nextStep.stepType === "tag_node") { if (nextStep.selectedTag) await applyTagToContact(msg.from, nextStep.selectedTag, num.userId.toString()); return; }
-                
-                if (nextStep.stepType === "form_node" && nextStep.selectedForm) {
-                  const formData = await Form.findById(nextStep.selectedForm);
-                  if (formData && formData.fields.length > 0) {
-                    activeSession.formId = formData._id; activeSession.formFieldIndex = 0; activeSession.currentStepId = nextStep.id; await activeSession.save();
-                    await FormResponse.findOneAndUpdate({ formId: formData._id, phone: msg.from, status: "incomplete" }, { $set: { userId: num.userId, data: {}, status: "incomplete" } }, { upsert: true, new: true });
-                    await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" }, baseUrl);
-                    startFormInactivityTimer(msg.from, num.userId.toString(), formData._id.toString(), 0, formData.fields[0], formData, num.accessToken, num.phoneNumberId, baseUrl);
-                    return;
-                  }
-                }
-                activeSession.currentStepId = nextStep.id; await activeSession.save();
-                await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, nextStep, baseUrl);
-                return;
-              } else { await Session.deleteOne({ _id: activeSession._id }); return; }
-            } else { await Session.deleteOne({ _id: activeSession._id }); return; }
-          } else { await Session.deleteOne({ _id: activeSession._id }); }
-        } else { if (activeSession) await Session.deleteOne({ _id: activeSession._id }); }
-      }
-      for (const wf of workflows) { for (const id of Object.keys(wf.steps)) { const step = wf.steps[id]; const btn = step.buttons?.find((b: any) => b.id === buttonPayload || b.label?.toLowerCase() === incomingText.toLowerCase()); if (btn?.nextStepId) { matchedWorkflow = wf; matchedByButton = true; break; } } if (matchedByButton) break; }
-    }
-
-    if (!matchedWorkflow) {
-      for (const wf of workflows) {
-        const isMatch = wf.triggers.some((t: any) => { const k = (t.keyword || "").trim(); const m = (t.matchMode || "contains").toLowerCase(); if (m === "exists") return true; if (k === "*" || k === "") return true; if (m === "exact") return incomingText.trim() === k; return incomingText.toLowerCase().trim().includes(k.toLowerCase()); });
-        if (isMatch) { matchedWorkflow = wf; break; }
-      }
-    }
-    if (!matchedWorkflow) return;
-
-    const steps = matchedWorkflow.steps; 
-    let currentStepId: string | null = null;
-    
-    if (matchedByButton && buttonPayload) {
-      for (const id of Object.keys(steps)) { 
-        const step = steps[id]; 
-        const btn = step.buttons?.find((b: any) => b.id === buttonPayload || b.label?.toLowerCase() === incomingText.toLowerCase()); 
-        if (btn?.nextStepId) { 
-          currentStepId = btn.nextStepId; 
-          if (btn.applyTagId) await applyTagToContact(msg.from, btn.applyTagId, num.userId.toString());
-          if (btn.optInNodeId) await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId); 
-          break; 
-        } 
-      }
-    } else { currentStepId = matchedWorkflow.rootStepId; }
-
-    if (!currentStepId || !steps[currentStepId]) return;
-    
-    const rootStep = steps[currentStepId];
-
-    if (rootStep?.triggerActions && rootStep.triggerActions.length > 0) {
-      for (const action of rootStep.triggerActions) {
-        if (action.type === "opt_in_node") await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
-        else if (action.type === "tag_node") {
-          const tagStep = steps[action.stepId];
-          if (tagStep?.selectedTag) await applyTagToContact(msg.from, tagStep.selectedTag, num.userId.toString());
-        }
-      }
-    }
-
-    if (rootStep.stepType === "opt_in_node") { await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId); return; } 
-    else if (rootStep.stepType === "tag_node") { if (rootStep.selectedTag) await applyTagToContact(msg.from, rootStep.selectedTag, num.userId.toString()); return; }
-
-    await processWorkflowStep(currentStepId, steps, matchedWorkflow, num.accessToken, num.phoneNumberId, msg.from, num.userId.toString(), num.tenantId, baseUrl);
-  } catch (err) { console.error("❌ [WORKFLOW] Error:", err); }
-}
-
-async function processWorkflowStep(stepId: string, steps: Record<string, any>, matchedWorkflow: any, accessToken: string, phoneNumberId: string, customerNumber: string, userId: string, tenantId: string | null, baseUrl: string) {
-  const step = steps[stepId]; 
-  if (!step) return;
-
-  if (step.stepType === "delay_node") { 
-    if (step.delaySeconds > 0) await new Promise(r => setTimeout(r, step.delaySeconds * 1000)); 
-    if (step.nextStepId && steps[step.nextStepId]) await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl); 
-    return; 
-  }
-
-  if (step.stepType === "opt_in_node") {
-    await addOptOutNumber(customerNumber, userId, tenantId);
-    if (step.nextStepId && steps[step.nextStepId]) await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
-    return;
-  } else if (step.stepType === "tag_node") {
-    if (step.selectedTag) await applyTagToContact(customerNumber, step.selectedTag, userId);
-    if (step.nextStepId && steps[step.nextStepId]) await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
-    return;
-  }
-
-  if (step.stepType === "form_node" && step.selectedForm) {
-    const formData = await Form.findById(step.selectedForm);
-    if (formData && formData.fields.length > 0) {
-      await Session.findOneAndUpdate({ phone: customerNumber, userId }, { formId: formData._id, formFieldIndex: 0, workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() }, { upsert: true, new: true });
-      await FormResponse.findOneAndUpdate({ formId: formData._id, phone: customerNumber, status: "incomplete" }, { $set: { userId, data: {}, status: "incomplete" } }, { upsert: true, new: true });
-      await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" }, baseUrl);
-      startFormInactivityTimer(customerNumber, userId, formData._id.toString(), 0, formData.fields[0], formData, accessToken, phoneNumberId, baseUrl);
-    } 
-    return;
-  }
-
-  if (["inactivity_node"].includes(step.stepType)) return;
-
-  let historyText = step.message || `[${step.stepType?.toUpperCase()}]`;
-  if (step.stepType === "url_action" && step.url) historyText = `${step.message || ""}\n🔗 ${step.urlLabel || "Link"}: ${step.url}`.trim();
-  if (step.stepType === "call_action" && step.phoneNumber) historyText = `${step.message || ""}\n📞 Call: ${step.phoneNumber}`.trim();
-
-  await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
-  await Message.create({ userId, phone: customerNumber, text: historyText, direction: "out", messageType: "text", mediaUrl: step.mediaUrl || null });
-  await Session.findOneAndUpdate({ phone: customerNumber, userId }, { workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() }, { upsert: true, new: true });
-  if (step.buttons?.length > 0) startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
-}
-
-async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: string, to: string, step: any, baseUrl: string) {
-  let payload: any; 
-  let resolvedMediaId: string | null = null;
-  
-  if (step.mediaUrl && step.mediaType && step.mediaType !== "link") { 
-    if (/^\d+$/.test(step.mediaUrl)) resolvedMediaId = step.mediaUrl; 
-    else resolvedMediaId = await uploadMediaToMetaFromUrl(phoneNumberId, accessToken, step.mediaUrl); 
-  }
-  const buildMediaObj = () => { 
-    if (resolvedMediaId) return { id: resolvedMediaId }; 
-    if (step.mediaUrl?.startsWith("http")) return { link: step.mediaUrl }; 
-    return null; 
+// ✅ Send template to WhatsApp API
+async function sendToWhatsApp(
+  phoneNumberId: string,
+  accessToken: string,
+  sanitizedPhone: string,
+  templateName: string,
+  languageCode: string,
+  components: any[]
+): Promise<{ ok: boolean; data: any; wamid: string | null }> {
+  const payload = {
+    messaging_product: "whatsapp",
+    to: sanitizedPhone,
+    type: "template",
+    template: { name: templateName, language: { code: languageCode }, components },
   };
 
-  // ✅ CALL ACTION NODE
-  if (step.stepType === "call_action" && step.phoneNumber) {
-    let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
-    if (callNumber.startsWith("+")) {
-      callNumber = "+" + callNumber.replace(/\+/g, '');
-    } else {
-      callNumber = "+" + callNumber;
-    }
-    
-    // ✅ FIX: Strictly use NEXTAUTH_URL to ensure it's a public HTTPS domain, not localhost
-    const publicBaseUrl = process.env.NEXTAUTH_URL || baseUrl;
-    const redirectUrl = `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
+  const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  const wamid = extractWamid(data);
+  return { ok: res.ok || !!wamid, data, wamid };
+}
 
-    payload = {
-      messaging_product: "whatsapp", to, type: "interactive",
-      interactive: {
-        type: "cta_url",
-        header: { type: "text", text: step.urlLabel || "Call Us" },
-        body: { text: step.message || `Tap the button below to call us at ${callNumber}.` },
-        action: { 
-          name: "cta_url", 
-          parameters: [{ 
-            display_text: step.urlLabel || "Call Now", 
-            url: redirectUrl 
-          }] 
-        }
-      }
-    };
-  } 
-  // ✅ URL ACTION NODE
-  else if (step.stepType === "url_action" && step.url) {
-    let url = step.url.trim();
-    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-      url = "https://" + url;
-    }
-    
-    payload = {
-      messaging_product: "whatsapp", to, type: "interactive",
-      interactive: {
-        type: "cta_url",
-        header: { type: "text", text: step.urlLabel || "Visit Link" },
-        body: { text: step.message || "Click the button below to visit the link." },
-        action: { 
-          name: "cta_url", 
-          parameters: [{ 
-            display_text: step.urlLabel || "Open", 
-            url: url 
-          }] 
-        }
-      }
-    };
-  } 
-  else if (step.buttons?.length > 0) {
-    const valid = step.buttons.filter((b: any) => b.label?.trim());
-    if (valid.length > 3) {
-      payload = { messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "list", header: { type: "text", text: "Options" }, body: { text: step.message || "Select" }, action: { button: step.listButtonText || "Options", sections: [{ title: "Choices", rows: valid.slice(0, 10).map((b: any) => ({ id: b.id, title: b.label.substring(0, 24) })) }] } } };
-      const m = buildMediaObj(); if (m && step.mediaType) { if (step.mediaType === "image") payload.interactive.header = { type: "image", image: m }; else if (step.mediaType === "video") payload.interactive.header = { type: "video", video: m }; else if (step.mediaType === "document") payload.interactive.header = { type: "document", document: { ...m, filename: "Doc" } }; }
-    } else {
-      payload = { messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "button", body: { text: step.message || "" }, action: { buttons: valid.slice(0, 3).map((b: any) => ({ type: "reply", reply: { id: b.id, title: b.label.substring(0, 20) } })) } } };
-      const m = buildMediaObj(); if (m && step.mediaType) { if (step.mediaType === "image") payload.interactive.header = { type: "image", image: m }; else if (step.mediaType === "video") payload.interactive.header = { type: "video", video: m }; else if (step.mediaType === "document") payload.interactive.header = { type: "document", document: { ...m, filename: "Doc" } }; }
-    }
-  } else {
-    const m = buildMediaObj();
-    if (step.mediaUrl && step.mediaType === "link") {
-      let linkUrl = step.mediaUrl.trim();
-      if (!linkUrl.startsWith("http://") && !linkUrl.startsWith("https://")) linkUrl = "https://" + linkUrl;
-      payload = { messaging_product: "whatsapp", to, type: "text", text: { body: step.message ? `${step.message}\n\n${linkUrl}` : linkUrl, preview_url: true } };
-    }
-    else if (step.mediaUrl && step.mediaType === "image" && m) payload = { messaging_product: "whatsapp", to, type: "image", image: { ...m, ...(step.message ? { caption: step.message } : {}) } };
-    else if (step.mediaUrl && step.mediaType === "video" && m) payload = { messaging_product: "whatsapp", to, type: "video", video: { ...m, ...(step.message ? { caption: step.message } : {}) } };
-    else if (step.mediaUrl && step.mediaType === "audio" && m) payload = { messaging_product: "whatsapp", to, type: "audio", audio: m };
-    else if (step.mediaUrl && step.mediaType === "document" && m) payload = { messaging_product: "whatsapp", to, type: "document", document: { ...m, filename: "Doc", ...(step.message ? { caption: step.message } : {}) } };
-    else payload = { messaging_product: "whatsapp", to, type: "text", text: { body: step.message || "", preview_url: true } };
-  }
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: Upload file to Meta's media API
+// ═══════════════════════════════════════════════════════════════
+async function uploadFileToMeta(
+  phoneNumberId: string,
+  accessToken: string,
+  file: File
+): Promise<string | null> {
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("messaging_product", "whatsapp");
 
-  try { 
-    const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { 
-      method: "POST", 
-      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, 
-      body: JSON.stringify(payload) 
-    }); 
-    
+    const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/media`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: formData,
+    });
+
     const data = await res.json();
-    if (!res.ok) {
-      // ✅ FIX: Log the exact error from WhatsApp to your server terminal.
-      // This will tell you EXACTLY why the button is failing (e.g. domain not verified, invalid url format).
-      console.error(`❌ [WORKFLOW] API Error for ${step.stepType}:`, JSON.stringify(data, null, 2));
-      console.error(`❌ [WORKFLOW] Payload Sent:`, JSON.stringify(payload, null, 2));
+    if (data.id) {
+      console.log(`✅ Media uploaded to Meta: ${data.id}`);
+      return data.id;
     }
-  } catch (err: any) { 
-    console.error(`❌ [WORKFLOW] Send failed:`, err.message); 
+    console.error("❌ Media upload failed:", data);
+    return null;
+  } catch (err) {
+    console.error("❌ Media upload error:", err);
+    return null;
   }
 }
 
-async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: Resolve Local/Remote URL to Meta Media ID
+// ═══════════════════════════════════════════════════════════════
+async function uploadMediaToMetaFromUrl(
+  phoneNumberId: string,
+  accessToken: string,
+  mediaUrl: string
+): Promise<string | null> {
   try {
-    const { default: Contact } = await import("@/models/Contact");
-    const { default: Tag } = await import("@/models/Tag");
-    const tag = await Tag.findById(tagId).lean();
-    if (!tag) return;
-    await Contact.findOneAndUpdate({ phone: phoneNumber, userId }, { $addToSet: { tags: tag.name } }, { upsert: true });
-  } catch (err) { console.error("Failed to apply tag to contact:", err); }
+    if (/^\d+$/.test(mediaUrl)) return mediaUrl; // Already a Meta ID
+
+    let blob: Blob | null = null;
+    let filename = "media";
+
+    // Check if it's a local file path
+    if (mediaUrl.startsWith("/uploads/") || mediaUrl.startsWith("/public/")) {
+      const localPath = path.join(process.cwd(), "public", mediaUrl);
+      if (fs.existsSync(localPath)) {
+        const fileBuffer = fs.readFileSync(localPath);
+        blob = new Blob([fileBuffer]);
+        const ext = path.extname(localPath).toLowerCase();
+        filename = `media${ext}`;
+      } else {
+        console.error(`❌ [MEDIA] Local file not found: ${localPath}`);
+      }
+    } else if (mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://")) {
+      const downloadRes = await fetch(mediaUrl);
+      if (downloadRes.ok) {
+        blob = await downloadRes.blob();
+        const ext = path.extname(new URL(mediaUrl).pathname).toLowerCase();
+        filename = `media${ext || ".bin"}`;
+      }
+    } else {
+      const baseUrl = process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_APP_URL || "";
+      if (baseUrl) {
+        const fullUrl = `${baseUrl}${mediaUrl.startsWith("/") ? "" : "/"}${mediaUrl}`;
+        const downloadRes = await fetch(fullUrl);
+        if (downloadRes.ok) {
+          blob = await downloadRes.blob();
+          const ext = path.extname(new URL(fullUrl).pathname).toLowerCase();
+          filename = `media${ext || ".bin"}`;
+        }
+      }
+    }
+
+    if (!blob) return null;
+
+    const formData = new FormData();
+    formData.append("file", blob, filename);
+    formData.append("messaging_product", "whatsapp");
+
+    const uploadRes = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/media`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: formData,
+    });
+
+    const uploadData = await uploadRes.json();
+    if (uploadData.id) return uploadData.id;
+    
+    return null;
+  } catch (err) {
+    console.error(`❌ [MEDIA] Error uploading to Meta:`, err);
+    return null;
+  }
 }
 
-async function addOptOutNumber(phoneNumber: string, userId: string, tenantId: string | null = null) {
-  try {
-    const { default: OptNumber } = await import("@/models/OptNumber");
-    const existing = await OptNumber.findOne({ phoneNumber, userId });
-    if (!existing) await OptNumber.create({ phoneNumber, userId, tenantId, createdBy: userId });
-  } catch (err) { console.error("Failed to add opt-out number:", err); }
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: Build payload for direct (non-template) media messages
+// ═══════════════════════════════════════════════════════════════
+function buildDirectPayload(
+  to: string,
+  messageType: string,
+  mediaRef: string,
+  caption: string,
+  filename?: string
+): any {
+  const isUrl = mediaRef.startsWith("http://") || mediaRef.startsWith("https://");
+  const mediaObj = isUrl ? { link: mediaRef } : { id: mediaRef };
+
+  switch (messageType) {
+    case "text":
+      return {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: { body: caption || "", preview_url: true },
+      };
+    case "image":
+      return {
+        messaging_product: "whatsapp",
+        to,
+        type: "image",
+        image: { ...mediaObj, ...(caption ? { caption } : {}) },
+      };
+    case "video":
+      return {
+        messaging_product: "whatsapp",
+        to,
+        type: "video",
+        video: { ...mediaObj, ...(caption ? { caption } : {}) },
+      };
+    case "audio":
+      return {
+        messaging_product: "whatsapp",
+        to,
+        type: "audio",
+        audio: mediaObj,
+      };
+    case "document":
+      return {
+        messaging_product: "whatsapp",
+        to,
+        type: "document",
+        document: {
+          ...mediaObj,
+          filename: filename || "document.pdf",
+          ...(caption ? { caption } : {}),
+        },
+      };
+    case "link":
+      return {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: {
+          body: caption ? `${caption}\n\n${mediaRef}` : mediaRef,
+          preview_url: true,
+        },
+      };
+    default:
+      return {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: { body: caption || "", preview_url: true },
+      };
+  }
 }
 
-export async function POST(req: NextRequest) {
+// ═══════════════════════════════════════════════════════════════
+// ✅ NEW: Send direct (non-template) media message
+// ═══════════════════════════════════════════════════════════════
+async function sendDirectMessage(
+  phoneNumberId: string,
+  accessToken: string,
+  to: string,
+  messageType: string,
+  mediaRef: string,
+  caption: string,
+  filename?: string
+): Promise<{ ok: boolean; data: any; wamid: string | null }> {
+  const payload = buildDirectPayload(to, messageType, mediaRef, caption, filename);
+
+  const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json();
+  const wamid = extractWamid(data);
+
+  return { ok: res.ok || !!wamid, data, wamid };
+}
+
+export async function POST(req: Request) {
   try {
     await connectDB();
-    
-    const forwardedProto = req.headers.get('x-forwarded-proto') || (req.headers.get('host')?.includes('localhost') ? 'http' : 'https');
-    const forwardedHost = req.headers.get('x-forwarded-host') || req.headers.get('host');
-    const baseUrl = `${forwardedProto}://${forwardedHost}`;
-    
-    const contentType = req.headers.get("content-type") || "";
-    if (!contentType.includes("application/json")) {
-      const allNumbers = await getAllWhatsappNumbersFromDB();
-      if (allNumbers.length === 0) return NextResponse.json({ success: true, pulled: 0 });
-      await Promise.all(allNumbers.map((num) => forcePullMessages(num, baseUrl)));
-      return NextResponse.json({ success: true, pulled: allNumbers.length });
+
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.id) {
+      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
     }
 
-    const body = await req.json();
-    if (!body?.entry) return NextResponse.json({ success: true });
+    const limitCheck = await checkLimit(session.user.id, "testMessages");
+    if (!limitCheck.allowed) {
+      return NextResponse.json({ success: false, message: "Test message limit reached.", limitExceeded: true }, { status: 429 });
+    }
 
-    for (const entry of body.entry || []) {
-      for (const change of entry.changes || []) {
-        if (change.field !== "messages") continue;
-        const value = change.value; if (!value) continue;
-        const phoneNumberId = value.metadata?.phone_number_id; if (!phoneNumberId) continue;
-        const num = await findUserByPhoneNumberId(phoneNumberId); if (!num) continue;
+    const user = await User.findById(session.user.id);
+    if (!user) {
+      return NextResponse.json({ success: false, message: "User not found" }, { status: 404 });
+    }
 
-        const contactInfo = value.contacts?.[0];
-        if (contactInfo?.profile?.name && contactInfo?.wa_id) {
-          try { const { default: Contact } = await import("@/models/Contact"); await Contact.findOneAndUpdate({ phone: contactInfo.wa_id, userId: num.userId }, { name: contactInfo.profile.name, phone: contactInfo.wa_id }, { upsert: true }); } catch {}
+    let payer = user;
+    if (user.parentTenantId) {
+      const parent = await User.findOne({ tenantId: user.parentTenantId });
+      if (parent) payer = parent;
+    }
+
+    const contentType = req.headers.get("content-type") || "";
+    let body: any = {};
+    let formData: FormData | null = null;
+
+    if (contentType.includes("multipart/form-data")) {
+      formData = await req.formData();
+    } else {
+      body = await req.json();
+    }
+
+    const phone = cleanStr(formData?.get("phone") || body.phone || "");
+    const messageType = cleanStr(formData?.get("messageType") || body.messageType || "template");
+    const explicitPhoneId = cleanStr(formData?.get("whatsappPhoneNumberId") || body.whatsappPhoneNumberId || "");
+    const category = cleanStr(formData?.get("category") || body.category || "MARKETING");
+
+    if (!phone) {
+      return NextResponse.json({ success: false, message: "Phone is required" }, { status: 400 });
+    }
+
+    const finalCategory = (category || "MARKETING").toUpperCase().trim();
+    let cat = finalCategory;
+    if (!["MARKETING", "UTILITY", "AUTHENTICATION"].includes(finalCategory)) cat = "MARKETING";
+
+    const { PHONE_NUMBER_ID, ACCESS_TOKEN } = resolveCredentials(user.toObject(), payer.toObject(), explicitPhoneId);
+
+    if (!PHONE_NUMBER_ID || !ACCESS_TOKEN) {
+      return NextResponse.json({ success: false, message: "WhatsApp credentials not configured." }, { status: 400 });
+    }
+
+    let messagePrice = 0;
+    if (payer.enabledCountries && payer.enabledCountries.length > 0) {
+      const matchedCountry = payer.enabledCountries.find((c: any) => phone.startsWith(c.code));
+      if (!matchedCountry) {
+        return NextResponse.json({ success: false, message: "Messaging to this country is not enabled." }, { status: 403 });
+      }
+      if (cat === "MARKETING") messagePrice = matchedCountry.priceMarketing || 0;
+      else if (cat === "UTILITY") messagePrice = matchedCountry.priceUtility || 0;
+      else if (cat === "AUTHENTICATION") messagePrice = matchedCountry.priceAuthentication || 0;
+    } else {
+      messagePrice = getPriceForCategory(payer, cat);
+    }
+
+    const currentBalance = payer.balance || 0;
+    if (messagePrice > 0 && currentBalance < messagePrice) {
+      return NextResponse.json({ success: false, message: `Insufficient balance. Required: ₹${messagePrice}, Available: ₹${currentBalance}.` }, { status: 402 });
+    }
+
+    const sanitizedPhone = phone.replace(/\+/g, "");
+
+    // ═══════════════════════════════════════════════════════════════
+    // ✅ DIRECT MEDIA/TEXT MESSAGE (non-template)
+    // ═══════════════════════════════════════════════════════════════
+    if (messageType !== "template") {
+      const message = cleanStr(formData?.get("message") || body.message || "");
+      const mediaUrl = cleanStr(formData?.get("mediaUrl") || body.mediaUrl || "");
+      const file = (formData?.get("file") as File) || null;
+
+      if (messageType === "text" && !message) {
+        return NextResponse.json({ success: false, message: "Message text is required for text messages" }, { status: 400 });
+      }
+
+      if (["image", "video", "audio", "document"].includes(messageType) && !file && !mediaUrl) {
+        return NextResponse.json({ success: false, message: "File or mediaUrl is required for media messages" }, { status: 400 });
+      }
+
+      let mediaRef = mediaUrl;
+      let filename: string | undefined = undefined;
+
+      if (file) {
+        filename = file.name || undefined;
+        const uploadedId = await uploadFileToMeta(PHONE_NUMBER_ID, ACCESS_TOKEN, file);
+        if (!uploadedId) {
+          return NextResponse.json({ success: false, message: "Failed to upload media to Meta" }, { status: 500 });
         }
-
-        for (const msg of value.messages || []) {
-          if (msg.type === "reaction" || msg.type === "system") continue;
-          await processAndSaveMessage(msg, num);
-          await executeWorkflowsForMessage(msg, num, baseUrl);
+        mediaRef = uploadedId;
+      } else if (mediaUrl) {
+        // ✅ FIX: Resolve URL to Meta ID if it's not already one
+        if (!/^\d+$/.test(mediaUrl)) {
+          const uploadedId = await uploadMediaToMetaFromUrl(PHONE_NUMBER_ID, ACCESS_TOKEN, mediaUrl);
+          if (uploadedId) {
+            mediaRef = uploadedId;
+          }
         }
+      }
 
-        for (const statusObj of value.statuses || []) {
-          const { id, status, recipient_id, errors } = statusObj;
-          if (status === "delivered" || status === "read") await Message.updateOne({ whatsappMessageId: id }, { $set: { status, error: null } });
-          else if (status === "failed") await Message.updateOne({ whatsappMessageId: id }, { $set: { status, error: errors?.[0]?.message || "Failed" } });
+      const result = await sendDirectMessage(
+        PHONE_NUMBER_ID,
+        ACCESS_TOKEN,
+        sanitizedPhone,
+        messageType,
+        mediaRef,
+        message,
+        filename
+      );
 
-          try {
-            const { default: Campaign } = await import("@/models/Campaign");
-            let errorText = null;
-            if (status === "failed" || status === "invalid") {
-              const raw = errors?.[0]?.message || "Failed to send";
-              errorText = (raw.toLowerCase().includes("undeliverable") || raw.toLowerCase().includes("unsupported")) ? "Message not delivered to maintain a healthy ecosystem." : raw;
-            }
-            const camps = await Campaign.find({ userId: num.userId, $or: [{ "reportData.phone": recipient_id }, { "reportData.phone": `+${recipient_id}` }] });
-            for (const camp of camps) {
-              for (const item of camp.reportData) {
-                if (item.phone === recipient_id || item.phone === `+${recipient_id}`) {
-                  if (shouldUpdateStatus(item.status, status)) {
-                    await Campaign.updateOne({ _id: camp._id, "reportData.phone": item.phone }, { $set: { "reportData.$.status": status, "reportData.$.error": errorText } });
-                  }
-                }
-              }
-            }
-          } catch (campErr) { console.error("Failed to update campaign status:", campErr); }
+      if (!result.ok && !result.wamid) {
+        console.error("❌ [SEND] Direct message failed:", JSON.stringify(result.data, null, 2));
+        return NextResponse.json(
+          { success: false, error: result.data.error, message: result.data.error?.message || "Failed to send" },
+          { status: 400 }
+        );
+      }
+
+      try {
+        if (messagePrice > 0) {
+          payer.balance = Math.max(0, Math.round((currentBalance - messagePrice) * 100) / 100);
+          await payer.save();
+        }
+      } catch (balErr) {
+        console.error("⚠️ Balance update failed (message still sent):", balErr);
+      }
+
+      try {
+        await incrementUsage(session.user.id, "testMessages");
+      } catch (usageErr) {
+        console.error("⚠️ Usage increment failed (message still sent):", usageErr);
+      }
+
+      try {
+        await Message.create({
+          userId: session.user.id,
+          phone: sanitizedPhone,
+          text: message || `[${messageType.toUpperCase()}]`,
+          direction: "out",
+          messageType,
+          mediaUrl: mediaRef || mediaUrl || null,
+          whatsappMessageId: result.wamid,
+          status: "sent",
+          whatsappPhoneNumberId: PHONE_NUMBER_ID,
+        });
+      } catch (dbErr) {
+        console.error("⚠️ DB save failed (message still sent):", dbErr);
+      }
+
+      return NextResponse.json({
+        success: true,
+        data: result.data,
+        wamid: result.wamid,
+        balance: payer.balance,
+        chargedAmount: messagePrice,
+        category: cat,
+        messageType,
+      });
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ✅ TEMPLATE MESSAGE
+    // ═══════════════════════════════════════════════════════════════
+    const templateName = cleanStr(formData?.get("templateName") || body.templateName || "");
+    const languageCode = cleanStr(formData?.get("languageCode") || body.languageCode || "en");
+    let variables = JSON.parse(cleanStr(formData?.get("variables") || "[]")) || body.variables || [];
+    const headerMediaType = cleanStr(formData?.get("headerMediaType") || body.headerMediaType || body.mediaType || "none");
+    const file = (formData?.get("file") as File) || null;
+    const mediaUrl = cleanStr(formData?.get("mediaUrl") || body.mediaUrl || "");
+
+    if (!templateName) {
+      return NextResponse.json({ success: false, message: "templateName is required for template messages" }, { status: 400 });
+    }
+
+    variables = (Array.isArray(variables) ? variables : []).filter((v: any) => v && String(v).trim() !== "");
+    if (cat === "AUTHENTICATION" && variables.length === 0) {
+      variables = [Math.floor(1000 + Math.random() * 9000).toString()];
+    }
+
+    const metaTemplate = await fetchFullTemplate(PHONE_NUMBER_ID, ACCESS_TOKEN, templateName, languageCode);
+    let detectedHeaderFormat = getTemplateHeaderFormat(metaTemplate);
+    const userHeaderType = headerMediaType.toLowerCase().trim();
+    const validMediaTypes = ["image", "video", "document"];
+
+    if (detectedHeaderFormat === "none" && validMediaTypes.includes(userHeaderType)) {
+      detectedHeaderFormat = userHeaderType.toUpperCase();
+    }
+
+    let uploadedMediaId: string | null = null;
+    const needsMedia = validMediaTypes.includes(detectedHeaderFormat.toLowerCase());
+
+    if (needsMedia && file) {
+      const uploadedId = await uploadFileToMeta(PHONE_NUMBER_ID, ACCESS_TOKEN, file);
+      if (!uploadedId) {
+        return NextResponse.json({ success: false, message: "Failed to upload media" }, { status: 500 });
+      }
+      uploadedMediaId = uploadedId;
+    } else if (needsMedia && mediaUrl) {
+      // ✅ FIX: Convert URLs to Meta IDs before sending templates
+      if (!/^\d+$/.test(mediaUrl)) {
+        uploadedMediaId = await uploadMediaToMetaFromUrl(PHONE_NUMBER_ID, ACCESS_TOKEN, mediaUrl);
+      } else {
+        uploadedMediaId = mediaUrl;
+      }
+    }
+
+    let components = buildComponents(detectedHeaderFormat, variables, uploadedMediaId, mediaUrl);
+
+    let result = await sendToWhatsApp(PHONE_NUMBER_ID, ACCESS_TOKEN, sanitizedPhone, templateName, languageCode, components);
+    let sendSuccess = result.ok;
+    let data = result.data;
+    let wamid = result.wamid;
+
+    if (!sendSuccess && data.error?.code === 131008 && cat === "AUTHENTICATION" && variables.length > 0) {
+      const retryComponents: any[] = [];
+      if (components.length > 0 && components[0].type === "header") retryComponents.push(components[0]);
+      retryComponents.push({ type: "body", parameters: variables.map((v: string) => ({ type: "text", text: String(v) })) });
+      retryComponents.push({ type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: String(variables[0]) }] });
+
+      result = await sendToWhatsApp(PHONE_NUMBER_ID, ACCESS_TOKEN, sanitizedPhone, templateName, languageCode, retryComponents);
+      sendSuccess = result.ok;
+      data = result.data;
+      wamid = result.wamid;
+    }
+
+    if (!sendSuccess && data.error?.code === 132012) {
+      const details = data.error?.error_data?.details || "";
+      const match = details.match(/expected\s+(\w+)/i);
+      if (match && (uploadedMediaId || mediaUrl)) {
+        const expectedFormat = match[1].toUpperCase();
+        if (validMediaTypes.includes(expectedFormat.toLowerCase())) {
+          components = buildComponents(expectedFormat, variables, uploadedMediaId, mediaUrl);
+          result = await sendToWhatsApp(PHONE_NUMBER_ID, ACCESS_TOKEN, sanitizedPhone, templateName, languageCode, components);
+          sendSuccess = result.ok;
+          data = result.data;
+          wamid = result.wamid;
         }
       }
     }
-    return NextResponse.json({ success: true });
+
+    if (!sendSuccess && data.error?.code === 132012 && components.length > 0 && components[0].type === "header") {
+      const noHeaderComponents = components.filter((c: any) => c.type !== "header");
+      result = await sendToWhatsApp(PHONE_NUMBER_ID, ACCESS_TOKEN, sanitizedPhone, templateName, languageCode, noHeaderComponents);
+      sendSuccess = result.ok;
+      data = result.data;
+      wamid = result.wamid;
+    }
+
+    if (!sendSuccess && !wamid) {
+      console.error("❌ WhatsApp Error (all attempts failed):", JSON.stringify(data, null, 2));
+      return NextResponse.json(
+        { success: false, error: data.error, message: data.error?.message || "Failed to send" },
+        { status: 400 }
+      );
+    }
+
+    try {
+      if (messagePrice > 0) {
+        payer.balance = Math.max(0, Math.round((currentBalance - messagePrice) * 100) / 100);
+        await payer.save();
+      }
+    } catch (balErr) {
+      console.error("⚠️ Balance update failed (message still sent):", balErr);
+    }
+
+    try {
+      await incrementUsage(session.user.id, "testMessages");
+    } catch (usageErr) {
+      console.error("⚠️ Usage increment failed (message still sent):", usageErr);
+    }
+
+    try {
+      const displayData = extractTemplateDisplayData(metaTemplate, variables, uploadedMediaId || null, detectedHeaderFormat.toLowerCase());
+
+      await Message.create({
+        userId: session.user.id,
+        phone: sanitizedPhone,
+        text: displayData.templateBodyText || `[Template: ${templateName}]`,
+        direction: "out",
+        messageType: "template",
+        mediaUrl: uploadedMediaId || mediaUrl || null,
+        whatsappMessageId: wamid,
+        status: "sent",
+        templateName,
+        templateLanguage: languageCode,
+        templateHeaderType: displayData.templateHeaderType || "none",
+        templateHeaderText: displayData.templateHeaderText || undefined,
+        templateBodyText: displayData.templateBodyText || undefined,
+        templateFooter: displayData.templateFooter || undefined,
+        templateButtons: displayData.templateButtons?.length > 0 ? displayData.templateButtons : undefined,
+        whatsappPhoneNumberId: PHONE_NUMBER_ID,
+      });
+    } catch (dbErr) {
+      console.error("⚠️ DB save failed (message still sent):", dbErr);
+    }
+
+    return NextResponse.json({
+      success: true,
+      data,
+      balance: payer.balance,
+      chargedAmount: messagePrice,
+      category: cat,
+    });
   } catch (error) {
-    console.error("❌ [WEBHOOK] Fatal Error:", error);
-    return NextResponse.json({ success: true });
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("❌ Send Error:", message);
+    return NextResponse.json({ success: false, message }, { status: 500 });
   }
 }
