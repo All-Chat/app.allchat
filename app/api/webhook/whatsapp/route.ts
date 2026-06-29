@@ -582,8 +582,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
   }
   publicBaseUrl = publicBaseUrl.replace(/\/$/, "");
 
-  // ✅ CALL ACTION NODE
-  // =========================
+ // =========================
 // CALL ACTION NODE (FIXED)
 // =========================
 if (step.stepType === "call_action" && step.phoneNumber) {
@@ -596,9 +595,8 @@ if (step.stepType === "call_action" && step.phoneNumber) {
   const redirectUrl =
     `${publicBaseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
 
-  // ❌ DO NOT reuse message/urlLabel from other nodes
   const callTitle = step.callLabel || "Call Now";
-  const callBody = step.callMessage || "";
+  const callBody = step.callMessage || "Tap below to call";
 
   payload = {
     messaging_product: "whatsapp",
@@ -610,7 +608,9 @@ if (step.stepType === "call_action" && step.phoneNumber) {
         type: "text",
         text: callTitle.substring(0, 60),
       },
-      body: callBody ? { text: callBody } : { text: " " },
+      body: {
+        text: callBody.trim() || "Tap below to continue"
+      },
       action: {
         name: "cta_url",
         parameters: {
@@ -634,9 +634,13 @@ else if (step.stepType === "url_action" && step.url) {
     url = "https://" + url;
   }
 
-  // ❌ STRICT FIELD ISOLATION (NO LEAKING FROM OTHER NODES)
   const urlTitle = step.urlLabel || "Open Link";
-  const urlBody = step.message || "";
+
+  // 🔥 IMPORTANT: NEVER send empty or single-space body
+  const urlBody =
+    step.message && step.message.trim().length > 0
+      ? step.message.trim()
+      : "Tap the button below to continue";
 
   payload = {
     messaging_product: "whatsapp",
@@ -648,7 +652,9 @@ else if (step.stepType === "url_action" && step.url) {
         type: "text",
         text: urlTitle.substring(0, 60),
       },
-      body: urlBody ? { text: urlBody } : { text: " " },
+      body: {
+        text: urlBody
+      },
       action: {
         name: "cta_url",
         parameters: {
