@@ -426,7 +426,51 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
     return null; 
   };
 
-  if (step.stepType === "url_action" && step.url) {
+  // ✅ CALL ACTION NODE: Sends a native Contact Card so the user can click "Call"
+  if (step.stepType === "call_action" && step.phoneNumber) {
+    let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
+    if (!callNumber.startsWith("+")) callNumber = "+" + callNumber;
+    
+    // 1. Send the text message first if it exists
+    if (step.message && step.message.trim()) {
+      const textPayload = {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: { body: step.message, preview_url: true }
+      };
+      try {
+        await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+          body: JSON.stringify(textPayload)
+        });
+      } catch (e) {}
+    }
+
+    // 2. Send the Contact Card with the button text as the contact's name
+    payload = {
+      messaging_product: "whatsapp",
+      to,
+      type: "contacts",
+      contacts: [
+        {
+          name: {
+            formatted_name: step.urlLabel || "Call Now",
+            first_name: step.urlLabel || "Call Now"
+          },
+          phones: [
+            {
+              phone: callNumber,
+              type: "Mobile"
+            }
+          ]
+        }
+      ]
+    };
+  } 
+  // ✅ URL ACTION NODE
+  else if (step.stepType === "url_action" && step.url) {
     let url = step.url;
     if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://" + url;
     payload = {
@@ -436,23 +480,6 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
         header: { type: "text", text: step.urlLabel || "Visit Link" },
         body: { text: step.message || "Click the button below to visit the link." },
         action: { name: "cta_url", parameters: [{ type: "cta_url", display_text: step.urlLabel || "Open", url: url }] }
-      }
-    };
-  } 
-  // ✅ CALL ACTION NODE: Uses a cta_url button pointing to your redirect route
-  else if (step.stepType === "call_action" && step.phoneNumber) {
-    let callNumber = step.phoneNumber.replace(/[^\d+]/g, '');
-    if (!callNumber.startsWith("+")) callNumber = "+" + callNumber;
-    
-    const redirectUrl = `${baseUrl}/api/call-redirect?phone=${encodeURIComponent(callNumber)}`;
-
-    payload = {
-      messaging_product: "whatsapp", to, type: "interactive",
-      interactive: {
-        type: "cta_url",
-        header: { type: "text", text: step.urlLabel || "Call Us" },
-        body: { text: step.message || `Tap the button below to call us at ${callNumber}.` },
-        action: { name: "cta_url", parameters: [{ type: "cta_url", display_text: step.urlLabel || "Call Now", url: redirectUrl }] }
       }
     };
   } 
@@ -490,17 +517,12 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
       const errData = await res.json();
       console.error(`❌ [WORKFLOW] API error for ${step.stepType}:`, JSON.stringify(errData));
       
-      // Fallback to text if domain isn't verified, so at least the number shows up
-      if (step.stepType === "url_action" || step.stepType === "call_action") {
+      // Fallback to text if URL Action fails (e.g. due to unverified domain)
+      if (step.stepType === "url_action" && step.url) {
         let fallbackBody = step.message || "";
-        if (step.stepType === "url_action" && step.url) {
-          let u = step.url;
-          if (!u.startsWith("http")) u = "https://" + u;
-          fallbackBody += `\n\n${u}`;
-        }
-        if (step.stepType === "call_action" && step.phoneNumber) {
-          fallbackBody += `\n\n📞 ${step.phoneNumber}`;
-        }
+        let u = step.url;
+        if (!u.startsWith("http")) u = "https://" + u;
+        fallbackBody += `\n\n${u}`;
         
         const fallbackPayload = {
           messaging_product: "whatsapp",
