@@ -37,14 +37,25 @@ const clearWorkflowTimer = (phone: string) => {
   if (timerId) { clearInterval(timerId); workflowTimers.delete(phone); }
 };
 
-const startWorkflowInactivityTimer = (phone: string, userId: string, workflowId: string, accessToken: string, phoneNumberId: string, baseUrl: string) => {
+const startWorkflowInactivityTimer = (
+  phone: string,
+  userId: string,
+  workflowId: string,
+  accessToken: string,
+  phoneNumberId: string,
+  baseUrl: string
+) => {
   clearWorkflowTimer(phone);
+
   (async () => {
     try {
       await connectDB();
       const wf = await Workflow.findById(workflowId);
       if (!wf || !wf.steps) return;
-      const inactivityNode = Object.values(wf.steps).find((s: any) => s.stepType === "inactivity_node") as any;
+
+      const inactivityNode = Object.values(wf.steps).find(
+        (s: any) => s.stepType === "inactivity_node"
+      ) as any;
       if (!inactivityNode) return;
 
       const delaySeconds = inactivityNode.delaySeconds || 30;
@@ -55,16 +66,48 @@ const startWorkflowInactivityTimer = (phone: string, userId: string, workflowId:
       const timerId = setInterval(async () => {
         try {
           const session = await Session.findOne({ phone, userId });
-          if (!session || session.formId) { clearWorkflowTimer(phone); return; }
+
+          // ✅ Only cancel if user is in a form; do NOT cancel if session simply doesn't exist yet
+          if (session && session.formId) {
+            clearWorkflowTimer(phone);
+            return;
+          }
+
           if (sentCount < repeatCount) {
-            await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, { message, stepType: "text" }, baseUrl);
+            await sendWorkflowWhatsAppMessage(
+              accessToken,
+              phoneNumberId,
+              phone,
+              { message, stepType: "text" },
+              baseUrl
+            );
+
+            // ✅ Save the inactivity message to DB so it shows in chat history
+            await Message.create({
+              userId,
+              phone,
+              text: message,
+              direction: "out",
+              messageType: "text",
+              status: "sent",
+              whatsappPhoneNumberId: phoneNumberId,
+              senderNumber: phoneNumberId,
+            });
+
             sentCount++;
-          } else { clearWorkflowTimer(phone); }
-        } catch (err) { console.error("Inactivity timer error:", err); clearWorkflowTimer(phone); }
+          } else {
+            clearWorkflowTimer(phone);
+          }
+        } catch (err) {
+          console.error("Inactivity timer error:", err);
+          clearWorkflowTimer(phone);
+        }
       }, delaySeconds * 1000);
 
       workflowTimers.set(phone, timerId);
-    } catch (err) { console.error("Failed to start inactivity timer:", err); }
+    } catch (err) {
+      console.error("Failed to start inactivity timer:", err);
+    }
   })();
 };
 
@@ -322,9 +365,22 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
                     return;
                   }
                 }
-                activeSession.currentStepId = nextStep.id; await activeSession.save();
-                await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, nextStep, baseUrl);
-                return;
+        activeSession.currentStepId = nextStep.id;
+        await activeSession.save();
+
+        await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, nextStep, baseUrl);
+
+        // ✅ Start inactivity timer after button-click navigation
+        startWorkflowInactivityTimer(
+          msg.from,
+          num.userId.toString(),
+          wf._id.toString(),
+          num.accessToken,
+          num.phoneNumberId,
+          baseUrl
+        );
+
+        return;
               } else { await Session.deleteOne({ _id: activeSession._id }); return; }
             } else { await Session.deleteOne({ _id: activeSession._id }); return; }
           } else { await Session.deleteOne({ _id: activeSession._id }); }
@@ -479,7 +535,7 @@ async function processWorkflowStep(
   }
 
   // =========================
-  // 🔥 MESSAGE NODE (IMPORTANT FIX)
+  // MESSAGE NODE
   // =========================
   if (step.stepType === "message") {
     await sendWorkflowWhatsAppMessage(
@@ -496,12 +552,34 @@ async function processWorkflowStep(
       text: step.message || "",
       direction: "out",
       messageType: "text",
+      status: "sent",
+      whatsappPhoneNumberId: phoneNumberId,
+      senderNumber: phoneNumberId,
     });
 
-    // ✅ Start inactivity timer if this workflow has an inactivity node
-    startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
+    // ✅ Create / update session so the inactivity timer can find it
+    await Session.findOneAndUpdate(
+      { phone: customerNumber, userId },
+      {
+        workflowId: matchedWorkflow._id,
+        currentStepId: step.id,
+        formId: null,
+        formFieldIndex: 0,
+        updatedAt: new Date(),
+      },
+      { upsert: true, new: true }
+    );
 
-    // 🚨 IMPORTANT: STOP HERE (DO NOT AUTO MOVE)
+    // ✅ Start inactivity timer
+    startWorkflowInactivityTimer(
+      customerNumber,
+      userId,
+      matchedWorkflow._id.toString(),
+      accessToken,
+      phoneNumberId,
+      baseUrl
+    );
+
     return;
   }
 
@@ -517,17 +595,40 @@ async function processWorkflowStep(
       baseUrl
     );
 
-    // ✅ Start inactivity timer if this workflow has an inactivity node
-    startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
-
-return; //
+    // ✅ Fixed: was dead code after a bare `return;`
     await Message.create({
       userId,
       phone: customerNumber,
       text: step.message || step.urlLabel || step.phoneNumber || "",
       direction: "out",
       messageType: "text",
+      status: "sent",
+      whatsappPhoneNumberId: phoneNumberId,
+      senderNumber: phoneNumberId,
     });
+
+    // ✅ Create / update session
+    await Session.findOneAndUpdate(
+      { phone: customerNumber, userId },
+      {
+        workflowId: matchedWorkflow._id,
+        currentStepId: step.id,
+        formId: null,
+        formFieldIndex: 0,
+        updatedAt: new Date(),
+      },
+      { upsert: true, new: true }
+    );
+
+    // ✅ Start inactivity timer
+    startWorkflowInactivityTimer(
+      customerNumber,
+      userId,
+      matchedWorkflow._id.toString(),
+      accessToken,
+      phoneNumberId,
+      baseUrl
+    );
 
     return;
   }
