@@ -62,7 +62,7 @@ export default function TagsPage() {
       ]);
 
       if (tagsRes.status === 401 || campsRes.status === 401) {
-        router.push("/signin");
+        router.push("/");
         return;
       }
 
@@ -95,7 +95,7 @@ export default function TagsPage() {
     if (status === "authenticated") {
       loadData();
     } else if (status === "unauthenticated") {
-      router.push("/signin");
+      router.push("/");
     }
   }, [status, router]);
 
