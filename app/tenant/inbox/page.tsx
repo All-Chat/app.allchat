@@ -325,12 +325,14 @@ export default function TeamInboxPage() {
   const isMine = (senderId: string) => senderId === currentUserId;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-gray-900">
+    // ✅ Fixed-height shell: the page itself never scrolls. Only the thread
+    // list and the message area (below) get their own independent scrollbars.
+    <div className="h-screen bg-slate-50 text-gray-900 overflow-hidden flex flex-col">
       <Sidebar />
-      <div className="md:ml-64 p-4 sm:p-6 lg:p-8">
-        <div className="max-w-7xl mx-auto">
+      <div className="md:ml-64 flex-1 flex flex-col min-h-0 p-4 sm:p-6 lg:p-8">
+        <div className="max-w-7xl mx-auto w-full flex-1 flex flex-col min-h-0">
 
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-6 gap-4">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-6 gap-4 shrink-0">
             <div className="flex items-center gap-4">
               <div className="p-3 bg-sky-50 rounded-2xl ring-1 ring-sky-100">
                 <Inbox className="w-6 h-6 text-sky-500" />
@@ -349,7 +351,7 @@ export default function TeamInboxPage() {
           </div>
 
           {members.length > 0 && (
-            <div className="flex items-center gap-2 mb-6 bg-white border border-slate-200 rounded-2xl px-4 py-3 shadow-sm overflow-x-auto">
+            <div className="flex items-center gap-2 mb-6 bg-white border border-slate-200 rounded-2xl px-4 py-3 shadow-sm overflow-x-auto shrink-0">
               <Users size={16} className="text-slate-400 shrink-0" />
               <span className="text-xs font-bold text-slate-500 shrink-0">Team:</span>
               {members.map(m => (
@@ -361,10 +363,13 @@ export default function TeamInboxPage() {
             </div>
           )}
 
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden grid grid-cols-1 md:grid-cols-5" style={{ minHeight: "60vh" }}>
+          {/* ✅ This card now fills the remaining viewport height (flex-1 min-h-0)
+              instead of growing with content via minHeight, so its two
+              children can each scroll independently inside a fixed box. */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden grid grid-cols-1 md:grid-cols-5 flex-1 min-h-0">
 
-            <div className={`md:col-span-2 border-r border-slate-200 flex flex-col bg-slate-50/40 ${selectedThreadId ? "hidden md:flex" : "flex"}`}>
-              <div className="p-3 border-b border-slate-100">
+            <div className={`md:col-span-2 border-r border-slate-200 flex flex-col bg-slate-50/40 min-h-0 ${selectedThreadId ? "hidden md:flex" : "flex"}`}>
+              <div className="p-3 border-b border-slate-100 shrink-0">
                 <div className="relative">
                   <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
                   <input
@@ -376,7 +381,9 @@ export default function TeamInboxPage() {
                 </div>
               </div>
 
-              <div className="flex-1 overflow-y-auto">
+              {/* ✅ Thread list: independent scrollbar, constrained to the
+                  remaining height of this column. */}
+              <div className="flex-1 min-h-0 overflow-y-auto">
                 {loading ? (
                   <div className="flex justify-center items-center h-40"><Loader2 className="w-6 h-6 animate-spin text-slate-300" /></div>
                 ) : filteredThreads.length === 0 ? (
@@ -415,7 +422,7 @@ export default function TeamInboxPage() {
               </div>
             </div>
 
-            <div className={`md:col-span-3 flex flex-col ${selectedThreadId ? "flex" : "hidden md:flex"}`}>
+            <div className={`md:col-span-3 flex flex-col min-h-0 ${selectedThreadId ? "flex" : "hidden md:flex"}`}>
               {!selectedThreadId ? (
                 <div className="flex-1 flex flex-col items-center justify-center text-slate-300">
                   <MailOpen className="w-14 h-14 mb-3" />
@@ -425,7 +432,7 @@ export default function TeamInboxPage() {
                 <div className="flex-1 flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-slate-300" /></div>
               ) : (
                 <>
-                  <div className="p-4 border-b border-slate-100 flex items-center justify-between gap-2 bg-white">
+                  <div className="p-4 border-b border-slate-100 flex items-center justify-between gap-2 bg-white shrink-0">
                     <div className="flex items-center gap-2 min-w-0">
                       <button onClick={() => { setSelectedThreadId(null); setThreadDetail(null); }} className="md:hidden p-1.5 text-slate-400 hover:bg-slate-100 rounded-lg">
                         <ArrowLeft size={18} />
@@ -446,7 +453,10 @@ export default function TeamInboxPage() {
                     </button>
                   </div>
 
-                  <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/40">
+                  {/* ✅ Message area: independent scrollbar, constrained to the
+                      remaining height of this column (header + reply box are
+                      shrink-0 so they stay fixed). */}
+                  <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3 bg-slate-50/40">
                     <MessageBubble
                       senderName={threadDetail.thread.senderName}
                       body={threadDetail.thread.body}
@@ -474,7 +484,7 @@ export default function TeamInboxPage() {
                   </div>
 
                   {replyFile && (
-                    <div className="px-3 pt-2 bg-white">
+                    <div className="px-3 pt-2 bg-white shrink-0">
                       <div className="flex items-center gap-2 bg-sky-50 text-sky-700 px-3 py-1.5 rounded-full text-xs font-medium border border-sky-100 w-fit shadow-sm">
                         <FileTypeIcon type={classifyMimeClient(replyFile.type)} />
                         <span className="truncate max-w-[160px]">{replyFile.name}</span>
@@ -486,7 +496,7 @@ export default function TeamInboxPage() {
                     </div>
                   )}
 
-                  <form onSubmit={handleReply} className="p-3 border-t border-slate-100 flex items-end gap-2 bg-white">
+                  <form onSubmit={handleReply} className="p-3 border-t border-slate-100 flex items-end gap-2 bg-white shrink-0">
                     <input
                       type="file"
                       ref={replyFileInputRef}
@@ -527,7 +537,7 @@ export default function TeamInboxPage() {
 
       {showCompose && (
         <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => { setShowCompose(false); setRecipientMenuOpen(false); }}>
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6 relative" onClick={e => e.stopPropagation()}>
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6 relative max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <button onClick={() => { setShowCompose(false); setRecipientMenuOpen(false); }} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X size={20} /></button>
             <div className="flex items-center gap-2 mb-1">
               <div className="p-1.5 bg-sky-50 ring-1 ring-sky-100 rounded-lg">
