@@ -105,7 +105,7 @@ const parseTemplateButtons = (buttons: TemplateButton[] | string | undefined): T
 };
 
 const handleUnauthorized = (res: Response) => {
-  if (res.status === 401) { window.location.href = "/signin"; return true; }
+  if (res.status === 401) { window.location.href = "/"; return true; }
   return false;
 };
 
@@ -373,7 +373,7 @@ export default function ChatPage() {
     if (status === "authenticated") {
       fetchWhatsappNumbers();
     } else if (status === "unauthenticated") {
-      window.location.href = "/signin";
+      window.location.href = "/";
     }
   }, [status, fetchWhatsappNumbers]);
 
