@@ -1,15 +1,13 @@
-// app/api/call-redirect/route.ts
 import { NextResponse } from "next/server";
 
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const phone = searchParams.get("phone");
-  
-  if (phone) {
-    return new NextResponse(null, {
-      status: 302,
-      headers: { Location: `tel:${phone}` },
-    });
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const number = searchParams.get("number");
+
+  if (number) {
+    // Redirects the mobile browser to the phone's dialer
+    return NextResponse.redirect(`tel:${number}`, { status: 302 });
   }
-  return new NextResponse("Phone number required", { status: 400 });
+
+  return NextResponse.json({ error: "Number missing" }, { status: 400 });
 }
