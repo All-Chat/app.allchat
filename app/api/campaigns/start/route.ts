@@ -5,12 +5,27 @@ import { connectDB } from "@/lib/mongodb";
 import Campaign from "@/models/Campaign";
 import User from "@/models/User";
 import Message from "@/models/Message";
+import mongoose from "mongoose";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getPriceForCategory } from "@/lib/billing";
 import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
 
 export const runtime = "nodejs";
+
+// ✅ Same inline Transaction model used by billing / test-message routes.
+// Writing here too means campaign spend is logged permanently, independent
+// of the Campaign document — deleting a campaign later won't touch this.
+const TransactionSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  type: String, // 'recharge' | 'test_message' | 'campaign'
+  amount: Number,
+  description: String,
+  status: String,
+  createdAt: { type: Date, default: Date.now },
+  metadata: Object
+});
+const Transaction = mongoose.models.Transaction || mongoose.model('Transaction', TransactionSchema);
 
 /* ============================================================================
    1. UTILITY FUNCTIONS
@@ -237,6 +252,31 @@ async function safeUpdateCampaign(campaignId: string, campaignData: any, batchIn
   } catch (e) { console.error("Scalar update error:", e); }
 }
 
+// ✅ NEW: Write a permanent Transaction row for the amount deducted in THIS
+// run only (so resuming a paused campaign doesn't double-log past spend).
+// This is a snapshot — it survives even if the Campaign document is deleted.
+async function logCampaignTransaction(payerId: any, campaignId: string, campaignName: string, amount: number, sentThisRun: number, failedThisRun: number) {
+  if (!amount || amount <= 0) return;
+  try {
+    await Transaction.create({
+      userId: payerId,
+      type: "campaign",
+      amount,
+      description: `Campaign Sent: ${campaignName}`,
+      status: "success",
+      createdAt: new Date(),
+      metadata: {
+        campaignId: String(campaignId),
+        campaignName,
+        sentCount: sentThisRun,
+        failedCount: failedThisRun,
+      },
+    });
+  } catch (txErr) {
+    console.error("⚠️ Failed to log campaign transaction:", txErr);
+  }
+}
+
 /* ============================================================================
    3. MAIN POST ROUTE - START / RESUME
    ============================================================================ */
@@ -308,6 +348,10 @@ export async function POST(req: Request) {
     await Campaign.updateOne({ _id: campaignId }, { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID, templateName: cTName, languageCode: cLang } });
 
     let sent = campaign.sentCount || 0, failed = campaign.failedCount || 0, skipped = campaign.skippedCount || 0, ded = campaign.totalDeducted || 0;
+    // ✅ NEW: track sent/failed/deducted for THIS run only, separate from the
+    // campaign's lifetime totals, so transaction logging never double-counts
+    // amounts that were already logged in a previous run before a pause.
+    let sentThisRun = 0, failedThisRun = 0, dedThisRun = 0;
     const BS = 4; // Batch Size
     let idx = 0;
 
@@ -321,6 +365,7 @@ export async function POST(req: Request) {
         await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
         await safeUpdateCampaign(campaignId, campaign, []);
         await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } }); // Explicitly save final status
+        await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
         return NextResponse.json({ success: true, message: `Campaign ${live.status}`, sent, failed, skipped });
       }
       
@@ -330,6 +375,7 @@ export async function POST(req: Request) {
         await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
         await safeUpdateCampaign(campaignId, campaign, []);
         await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } }); // Explicitly save final status
+        await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
         return NextResponse.json({ success: false, message: `Paused. Required: ₹${bPrice}, Available: ₹${payer.balance}.`, sent, failed, skipped, balancePaused: true });
       }
 
@@ -382,7 +428,7 @@ export async function POST(req: Request) {
         const ph = bp[i].replace(/\+/g, "");
         
         if (r.status === "sent") {
-          sent++; 
+          sent++; sentThisRun++;
           const pp = getPriceForPhone(payer, ph, cat); 
           bd += pp;
           if (campaign.reportData[ci]) { 
@@ -399,7 +445,7 @@ export async function POST(req: Request) {
             }); 
           } catch {}
         } else if (r.status === "failed") {
-          failed++; 
+          failed++; failedThisRun++;
           if (campaign.reportData[ci]) { 
             campaign.reportData[ci].status = "failed"; 
             campaign.reportData[ci].error = r.error || "Unknown error"; 
@@ -414,6 +460,7 @@ export async function POST(req: Request) {
         payer.balance = Math.round((payer.balance - bd) * 100) / 100; 
         if (payer.balance < 0) payer.balance = 0; 
         ded = Math.round((ded + bd) * 100) / 100; 
+        dedThisRun = Math.round((dedThisRun + bd) * 100) / 100;
       }
       
       await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
@@ -432,6 +479,7 @@ export async function POST(req: Request) {
     await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
     await safeUpdateCampaign(campaignId, campaign, []);
     await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } }); // Explicitly save final status
+    await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
     
     try { await syncCampaignToGoogleSheet(userId, { name: campaign.name, reportData: campaign.reportData }); } catch {}
 
