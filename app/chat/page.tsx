@@ -46,6 +46,8 @@ type Message = {
   templateHeaderText?: string;
   templateBodyText?: string;
   templateFooter?: string;
+  // ✅ Also used as a generic "buttons" carrier for workflow-sent messages
+  // (quick replies / CTA URL / CTA phone) that aren't WhatsApp templates.
   templateButtons?: TemplateButton[] | string;
   templateLanguage?: string;
   whatsappPhoneNumberId?: string;
@@ -511,6 +513,34 @@ export default function ChatPage() {
     );
   };
 
+  // ✅ NEW: Generic button/CTA renderer shared by both template AND
+  // workflow-sent (non-template) messages, since they use the same
+  // `templateButtons` field as their carrier.
+  const renderButtonRow = (msg: Message) => {
+    const buttons = parseTemplateButtons(msg.templateButtons);
+    if (buttons.length === 0) return null;
+    return (
+      <div className="mt-2 border-t border-gray-200/80 pt-1">
+        {buttons.map((btn, idx) => (
+          <button
+            key={idx}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (btn.type === "url" && btn.url) window.open(btn.url, "_blank");
+              if (btn.type === "phone_number" && btn.phone_number) window.open(`tel:${btn.phone_number}`);
+            }}
+            className="w-full py-2 text-indigo-600 hover:bg-indigo-50 rounded-lg text-[13px] font-semibold flex items-center justify-center gap-2 transition-colors border-t border-gray-100 first:border-t-0"
+          >
+            {btn.type === "url" && <ExternalLink size={14} />}
+            {btn.type === "phone_number" && <Phone size={14} />}
+            {btn.type === "quick_reply" && <MessageSquare size={14} />}
+            {btn.text}
+          </button>
+        ))}
+      </div>
+    );
+  };
+
   const renderMediaContent = (msg: Message) => {
     const type = msg.messageType || "text";
     const src = getMediaSrc(msg.mediaUrl);
@@ -521,6 +551,7 @@ export default function ChatPage() {
         <div className="mb-1">
           {renderPlaceholder(type)}
           {msg.text && <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words mt-1.5">{msg.text}</p>}
+          {renderButtonRow(msg)}
         </div>
       );
     }
@@ -530,6 +561,7 @@ export default function ChatPage() {
         <div className="mb-1 max-w-[220px] sm:max-w-[300px]">
           <img src={src} alt="Image" className="rounded-xl max-w-full object-cover shadow-sm" onError={() => setMediaErrors((prev) => ({ ...prev, [msg._id]: true }))} />
           {msg.text && <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words mt-1.5">{msg.text}</p>}
+          {renderButtonRow(msg)}
         </div>
       );
     if (type === "video" && src)
@@ -537,6 +569,7 @@ export default function ChatPage() {
         <div className="mb-1 max-w-[220px] sm:max-w-[300px]">
           <video src={src} controls className="rounded-xl max-w-full object-cover shadow-sm" onError={() => setMediaErrors((prev) => ({ ...prev, [msg._id]: true }))} />
           {msg.text && <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words mt-1.5">{msg.text}</p>}
+          {renderButtonRow(msg)}
         </div>
       );
     if (type === "audio" && src)
@@ -545,19 +578,28 @@ export default function ChatPage() {
           <audio controls className="w-full outline-none" onError={() => setMediaErrors((prev) => ({ ...prev, [msg._id]: true }))}>
             <source src={src} type="audio/ogg" />
           </audio>
+          {renderButtonRow(msg)}
         </div>
       );
     if (type === "document" && src)
       return (
-        <a href={src} target="_blank" rel="noopener noreferrer" className="mb-1 flex items-center gap-3 bg-white/80 rounded-xl p-3 hover:bg-white transition-colors shadow-sm">
-          <FileText className="w-8 h-8 text-red-500 shrink-0" />
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-gray-900 truncate">{msg.text || "Document.pdf"}</p>
-            <p className="text-[11px] text-indigo-600 font-medium">Click to download</p>
-          </div>
-        </a>
+        <div className="mb-1">
+          <a href={src} target="_blank" rel="noopener noreferrer" className="flex items-center gap-3 bg-white/80 rounded-xl p-3 hover:bg-white transition-colors shadow-sm">
+            <FileText className="w-8 h-8 text-red-500 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-gray-900 truncate">{msg.text || "Document.pdf"}</p>
+              <p className="text-[11px] text-indigo-600 font-medium">Click to download</p>
+            </div>
+          </a>
+          {renderButtonRow(msg)}
+        </div>
       );
-    return <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words">{msg.text}</p>;
+    return (
+      <>
+        <p className="text-[14px] leading-relaxed text-gray-800 whitespace-pre-wrap break-words">{msg.text}</p>
+        {renderButtonRow(msg)}
+      </>
+    );
   };
 
   const renderTemplateContent = (msg: Message) => {
