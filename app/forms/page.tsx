@@ -54,7 +54,7 @@ export default function FormsPage() {
 
   useEffect(() => {
     if (status === "authenticated") fetchData();
-    if (status === "unauthenticated") window.location.href = "/signin";
+    if (status === "unauthenticated") window.location.href = "/";
   }, [status]);
 
   const fetchData = async () => {
@@ -65,7 +65,7 @@ export default function FormsPage() {
       ]);
 
       if (formsRes.status === 401) {
-        window.location.href = "/signin";
+        window.location.href = "/";
         return;
       }
 
