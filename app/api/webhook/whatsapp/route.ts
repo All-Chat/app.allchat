@@ -709,7 +709,7 @@ async function sendWorkflowWhatsAppMessage(
       "wa.me",
     ].some((d) => url.includes(d));
 
-  // ===============================
+    // ===============================
   // 1. CALL ACTION (FIXED)
   // ===============================
   if (step.stepType === "call_action" && step.phoneNumber) {
@@ -724,15 +724,15 @@ async function sendWorkflowWhatsAppMessage(
         type: "cta_url",
         header: {
           type: "text",
-          text: step.callLabel || "Call Now",
+          text: step.urlLabel || "Call Now", // ✅ FIXED: uses urlLabel from UI
         },
         body: {
-          text: step.callMessage || "Tap below to call",
+          text: step.message || "Tap below to call", // ✅ FIXED: uses message from UI
         },
         action: {
           name: "cta_url",
           parameters: {
-            display_text: step.callLabel || "Call",
+            display_text: step.urlLabel || "Call", // ✅ FIXED: uses urlLabel from UI
             url: `https://wa.me/${number.replace("+", "")}`,
           },
         },
@@ -775,20 +775,29 @@ async function sendWorkflowWhatsAppMessage(
     return sendMessage(payload);
   }
 
-  // ===============================
+   // ===============================
   // 3. SOCIAL LINKS (TEXT ONLY FIX)
   // ===============================
   if (step.mediaType === "link" || isSocialLink(step.mediaUrl)) {
     const url = step.mediaUrl?.startsWith("http")
       ? step.mediaUrl
       : `https://${step.mediaUrl}`;
+      
+    let bodyText = step.message || "";
+
+    // ✅ Only add URL automatically if the user didn't already type it in the message
+    if (bodyText && !bodyText.includes(url)) {
+      bodyText = `${bodyText}\n\n${url}`;
+    } else if (!bodyText) {
+      bodyText = url;
+    }
 
     return sendMessage({
       messaging_product: "whatsapp",
       to,
       type: "text",
       text: {
-        body: `${step.message || ""}\n\n${url}`,
+        body: bodyText,
         preview_url: true,
       },
     });
