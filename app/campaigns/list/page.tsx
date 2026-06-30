@@ -165,7 +165,11 @@ export default function CampaignList() {
       return;
     }
     if (!confirm("Start this campaign now? Balance will be deducted dynamically for each successful delivery.")) return;
+    
+    // ✅ INSTANT UI UPDATE: Swap to Running state immediately
+    setCampaigns(prev => prev.map(c => c._id === id ? { ...c, status: "running" } : c));
     setStartingId(id);
+    
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -184,6 +188,7 @@ export default function CampaignList() {
         setCanSendMessage(false);
         fetchBilling();
         setStartingId(null);
+        loadCampaigns(); // Revert UI
         return;
       }
 
@@ -194,6 +199,7 @@ export default function CampaignList() {
         loadCampaigns();
       } else {
         toast.error(data.message || "Failed to start campaign");
+        loadCampaigns(); // Revert UI
       }
     } catch (err: any) {
       if (err.name === 'AbortError') {
@@ -202,6 +208,7 @@ export default function CampaignList() {
       } else {
         console.error("Start campaign error:", err);
         toast.error("Failed to start campaign");
+        loadCampaigns(); // Revert UI
       }
     } finally {
       setStartingId(null);
@@ -209,6 +216,10 @@ export default function CampaignList() {
   };
 
   const handleCampaignAction = async (id: string, action: "pause" | "resume" | "stop") => {
+    // ✅ INSTANT UI UPDATE: Swap buttons immediately
+    const newStatus = action === "pause" ? "paused" : action === "resume" ? "running" : "completed";
+    setCampaigns(prev => prev.map(c => c._id === id ? { ...c, status: newStatus } : c));
+    
     setActionId(id);
     try {
       const res = await fetch(`/api/campaigns/${action}`, {
@@ -218,13 +229,28 @@ export default function CampaignList() {
       });
       const data = await res.json();
       if (data.success) {
-        toast.success(`Campaign ${action}d successfully!`);
+        toast.success(`Campaign ${action}ed successfully!`);
         loadCampaigns();
+        
+        // ✅ If resuming, trigger the start API to continue the background loop
+        if (action === "resume") {
+          try {
+            await fetch("/api/campaigns/start", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ campaignId: id }),
+            });
+          } catch (e) {
+            console.error("Failed to trigger resume start", e);
+          }
+        }
       } else {
         toast.error(data.message || `Failed to ${action} campaign`);
+        loadCampaigns(); // Revert UI if failed
       }
     } catch (err) {
       toast.error(`Error trying to ${action} campaign`);
+      loadCampaigns(); // Revert UI if failed
     } finally {
       setActionId(null);
     }
@@ -236,7 +262,11 @@ export default function CampaignList() {
       return;
     }
     if (!confirm("Rerun this campaign? Balance will be deducted dynamically.")) return;
+    
+    // ✅ INSTANT UI UPDATE: Swap to Running state immediately
+    setCampaigns(prev => prev.map(c => c._id === id ? { ...c, status: "running", sentCount: 0, failedCount: 0, totalDeducted: 0 } : c));
     setStartingId(id);
+    
     try {
       const campaign = campaigns.find(c => c._id === id);
       if (!campaign) return;
@@ -252,6 +282,7 @@ export default function CampaignList() {
       if (!updateRes.ok) {
         toast.error("Failed to reset campaign for rerun");
         setStartingId(null);
+        loadCampaigns();
         return;
       }
 
@@ -624,14 +655,14 @@ export default function CampaignList() {
                         )}
 
                         {c.status === "paused" && (
-                          <>
+                          <div className="flex items-center gap-1.5">
                             <button onClick={() => handleCampaignAction(c._id, "resume")} disabled={actionId === c._id} className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-emerald-500 text-white hover:bg-emerald-600 transition-all shadow-sm">
                               {actionId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Resume
                             </button>
                             <button onClick={() => handleCampaignAction(c._id, "stop")} disabled={actionId === c._id} className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-red-500 text-white hover:bg-red-600 transition-all shadow-sm">
                               {actionId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Square size={12} />} Stop
                             </button>
-                          </>
+                          </div>
                         )}
 
                         {isCompleted && (
