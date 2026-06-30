@@ -28,6 +28,7 @@ import {
   Menu,
   X,
   ChevronDown,
+  ReceiptText,
   Users,
   UserCog,
   MessagesSquare,
@@ -102,6 +103,7 @@ const categories: NavCategory[] = [
 ];
 
 const bottomLinks: NavLink[] = [
+  { name: "Transactions", icon: ReceiptText, href: "/billing/history" },
   { name: "Settings", icon: Cog, href: "/settings" },
 ];
 
