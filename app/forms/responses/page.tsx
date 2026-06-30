@@ -31,7 +31,7 @@ export default function FormResponsesPage() {
         setLoading(false);
       }).catch(() => setLoading(false));
     }
-    if (status === "unauthenticated") window.location.href = "/signin";
+    if (status === "unauthenticated") window.location.href = "/";
   }, [status]);
 
   if (loading) return (
