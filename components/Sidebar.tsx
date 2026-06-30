@@ -24,6 +24,7 @@ import {
   FormInput,
   ClipboardCheck,
   Cog,
+  Inbox,
   ShieldCheck,
   Menu,
   X,
@@ -98,6 +99,7 @@ const categories: NavCategory[] = [
     icon: Users,
     items: [
       { name: "Users", icon: UserCog, href: "/tenant/users" },
+      { name: "Team Inbox", icon: Inbox, href: "/tenant/inbox" },
     ],
   },
 ];
