@@ -56,7 +56,7 @@ export default function OptNumbersPage() {
       ]);
 
       if (numbersRes.status === 401) {
-        window.location.href = "/signin";
+        window.location.href = "/";
         return;
       }
 
@@ -84,7 +84,7 @@ export default function OptNumbersPage() {
 
   useEffect(() => {
     if (status === "authenticated") loadData();
-    if (status === "unauthenticated") window.location.href = "/signin";
+    if (status === "unauthenticated") window.location.href = "/";
   }, [status]);
 
   const handleAdd = async (e: React.FormEvent) => {
