@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useSession } from "next-auth/react";
 import Sidebar from "@/components/Sidebar";
 import {
@@ -32,6 +32,9 @@ export default function CreateCampaign() {
   const [selectedCountryCode, setSelectedCountryCode] = useState("91");
   
   const [campaignName, setCampaignName] = useState("");
+  const [nameStatus, setNameStatus] = useState<"idle" | "checking" | "taken" | "available">("idle");
+  const nameCheckTimer = useRef<NodeJS.Timeout | null>(null);
+
   const [variables, setVariables] = useState<string[]>([]);
   const [bodyText, setBodyText] = useState("");
   const [mediaUrl, setMediaUrl] = useState("");
@@ -59,9 +62,6 @@ export default function CreateCampaign() {
   const [additionalFields, setAdditionalFields] = useState<string[]>([]);
   const [additionalFieldsData, setAdditionalFieldsData] = useState<string[][]>([]);
 
-  const [existingCampaignNames, setExistingCampaignNames] = useState<string[]>([]);
-  const [nameError, setNameError] = useState("");
-
   const [stats, setStats] = useState({ valid: 0, invalid: 0, duplicates: 0, optedOut: 0 });
   const [optedOutNumbers, setOptedOutNumbers] = useState<string[]>([]);
 
@@ -88,7 +88,6 @@ export default function CreateCampaign() {
       fetchOptNumbers();
       fetchLimits();
       fetchSettings();
-      fetchCampaignNames();
     } else if (status === "unauthenticated") {
       window.location.href = "/signin";
     }
@@ -116,18 +115,6 @@ export default function CreateCampaign() {
       }
     } catch (error) {
       console.error("Failed to fetch limits", error);
-    }
-  };
-
-  const fetchCampaignNames = async () => {
-    try {
-      const res = await fetch("/api/campaigns/list");
-      const data = await res.json();
-      if (data.success) {
-        setExistingCampaignNames(data.campaigns.map((c: any) => (c.name || "").toLowerCase()));
-      }
-    } catch (err) {
-      console.error("Failed to fetch campaign names", err);
     }
   };
 
@@ -181,14 +168,30 @@ export default function CreateCampaign() {
     }
   };
 
+  // ✅ LIVE DEBOUNCED NAME CHECK
   const handleCampaignNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setCampaignName(value);
-    if (value && existingCampaignNames.includes(value.toLowerCase())) {
-      setNameError("⚠️ This campaign name already exists. Please use another name.");
-    } else {
-      setNameError("");
+    
+    if (nameCheckTimer.current) clearTimeout(nameCheckTimer.current);
+    
+    if (!value.trim()) {
+      setNameStatus("idle");
+      return;
     }
+
+    setNameStatus("checking");
+    nameCheckTimer.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/campaigns/list?check=${encodeURIComponent(value)}`);
+        const data = await res.json();
+        if (data.success) {
+          setNameStatus(data.exists ? "taken" : "available");
+        }
+      } catch (err) {
+        console.error("Name check failed", err);
+      }
+    }, 400);
   };
 
   const handleTagSelect = async (tagName: string) => {
@@ -276,7 +279,6 @@ export default function CreateCampaign() {
     return preview;
   };
 
-  // ✅ FIXED: Valid numbers now strictly exclude duplicates and opted-out numbers
    const cleanAndValidateNumbers = (
     nums: string[], 
     names: string[], 
@@ -306,26 +308,22 @@ export default function CreateCampaign() {
 
       if (!clean) continue;
 
-      // Check for duplicates
       if (seen.has(clean)) {
         duplicates++;
         continue;
       } 
       seen.add(clean);
 
-      // Check for opted out
       if (optedOutNumbers.includes(clean)) {
         optedOut++;
         continue;
       }
 
-      // Basic validation: just check length
       if (clean.length < 7) {
         invalid++;
         continue;
       }
 
-      // Valid and sendable
       valid++;
       finalNumbers.push(clean);
       finalNames.push(names[index] || "");
@@ -533,7 +531,7 @@ export default function CreateCampaign() {
                 : "text-slate-500 hover:text-slate-700"
             }`}
           >
-            <Upload size={14} /> Upload
+  <Upload size={14} /> Upload
           </button>
         </div>
         {mediaInputType === "url" ? (
@@ -637,13 +635,8 @@ const handleSave = async (isSchedule: boolean) => {
       toast.error("Fill all required fields");
       return;
     }
-    if (existingCampaignNames.includes(campaignName.toLowerCase())) {
+    if (nameStatus === "taken") {
       toast.error("Campaign name already exists. Please use another name.");
-      setNameError("⚠️ This campaign name already exists. Please use another name.");
-      return;
-    }
-    if (nameError) {
-      toast.error("Please fix the campaign name before saving.");
       return;
     }
     if (isAtLimit) {
@@ -860,12 +853,22 @@ const handleSave = async (isSchedule: boolean) => {
                     placeholder="e.g. Diwali Dhamaka Offer"
                     disabled={isAtLimit}
                     className={`w-full px-4 sm:px-5 py-3 sm:py-3.5 bg-slate-50 border rounded-xl focus:ring-4 focus:ring-emerald-100 focus:border-emerald-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)] disabled:opacity-50 disabled:cursor-not-allowed ${
-                      nameError ? "border-red-400" : "border-slate-200"
+                      nameStatus === "taken" ? "border-red-400" : nameStatus === "available" ? "border-emerald-400" : "border-slate-200"
                     }`}
                   />
-                  {nameError && (
+                  {nameStatus === "taken" && (
                     <p className="text-xs text-red-600 font-medium mt-1.5 flex items-center gap-1">
-                      <AlertCircle size={12} /> {nameError}
+                      <AlertCircle size={12} /> This campaign name already exists. Please use another name.
+                    </p>
+                  )}
+                  {nameStatus === "available" && (
+                    <p className="text-xs text-emerald-600 font-medium mt-1.5 flex items-center gap-1">
+                      <CheckCircle2 size={12} /> Name is available!
+                    </p>
+                  )}
+                  {nameStatus === "checking" && (
+                    <p className="text-xs text-slate-500 font-medium mt-1.5 flex items-center gap-1">
+                      <Loader2 size={12} className="animate-spin" /> Checking availability...
                     </p>
                   )}
                 </div>
@@ -1060,8 +1063,7 @@ const handleSave = async (isSchedule: boolean) => {
                 </div>
               )}
             </div>
-
-            <div className="lg:col-span-3 space-y-6 sm:space-y-8">
+ <div className="lg:col-span-3 space-y-6 sm:space-y-8">
               <div className="bg-white p-5 sm:p-8 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 space-y-5 sm:space-y-6 hover:shadow-md transition-shadow">
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                   <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest">
@@ -1313,14 +1315,14 @@ const handleSave = async (isSchedule: boolean) => {
                   <div className="flex flex-col sm:flex-row gap-3">
                     <button
                       onClick={() => handleSave(false)}
-                      disabled={saving || isAtLimit || !!nameError}
+                      disabled={saving || isAtLimit || nameStatus === "taken"}
                       className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-slate-100 border border-slate-200 rounded-xl font-bold hover:bg-slate-200 flex items-center justify-center gap-2 text-sm transition-colors text-slate-700 shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       <FileSpreadsheet size={16} /> Save Draft
                     </button>
                     <button
                       onClick={() => handleSave(true)}
-                      disabled={saving || !scheduleDate || isAtLimit || !!nameError}
+                      disabled={saving || !scheduleDate || isAtLimit || nameStatus === "taken"}
                       className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-xl font-bold hover:from-indigo-600 hover:to-purple-600 flex items-center justify-center gap-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-md"
                     >
                       <Clock size={16} /> Schedule
