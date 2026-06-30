@@ -109,7 +109,7 @@ function EditCampaignContent() {
     try {
       const res = await fetch("/api/campaigns/templates");
       const data = await res.json();
-      if (res.status === 401) { window.location.href = "/signin"; return; }
+      if (res.status === 401) { window.location.href = "/"; return; }
       if (data.success) setTemplates(data.templates);
     } catch (err) { console.error("Failed to fetch templates", err); }
   };
@@ -204,7 +204,7 @@ function EditCampaignContent() {
   const fetchCampaignData = async () => {
     try {
       const res = await fetch("/api/campaigns/list");
-      if (res.status === 401) { window.location.href = "/signin"; return; }
+      if (res.status === 401) { window.location.href = "/"; return; }
       const data = await res.json();
       if (data.success) {
         const campaign = data.campaigns.find((c: any) => c._id === campaignId);
@@ -568,7 +568,7 @@ const handleSave = async (isSchedule: boolean) => {
         });
       }
 
-      if (res.status === 401) { toast.error("Session expired."); setTimeout(() => (window.location.href = "/signin"), 1500); return; }
+      if (res.status === 401) { toast.error("Session expired."); setTimeout(() => (window.location.href = "/"), 1500); return; }
       const data = await res.json();
       if (data.success) {
         toast.success(isSchedule ? "Campaign Rescheduled!" : "Campaign Updated!");
