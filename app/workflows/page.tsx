@@ -1819,7 +1819,7 @@ export default function Home() {
         fetch("/api/user/numbers"),
       ]);
       if (wfRes.status === 401) {
-        window.location.href = "/signin";
+        window.location.href = "/";
         return;
       }
       const data = await wfRes.json();
@@ -1852,7 +1852,7 @@ export default function Home() {
 
   useEffect(() => {
     if (status === "authenticated") load();
-    else if (status === "unauthenticated") window.location.href = "/signin";
+    else if (status === "unauthenticated") window.location.href = "/";
   }, [status]);
 
   const startCreating = () => {
