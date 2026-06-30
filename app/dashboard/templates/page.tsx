@@ -1,12 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import Sidebar from "@/components/Sidebar";
 import {
   Type, Image, Video, FileText, MousePointerClick, ExternalLink, Phone,
-  Trash2, Send, Loader2, Upload, X, Globe, AlertTriangle,
-  Gauge, Infinity as InfinityIcon, // ✅ LIMIT ADDED
+  Trash2, Send, Loader2, Upload, X, Globe, AlertTriangle, CheckCircle2,
+  Gauge, Infinity as InfinityIcon, 
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -25,6 +25,11 @@ export default function TemplatesPage() {
   const [category, setCategory] = useState("MARKETING");
   const [language, setLanguage] = useState("en");
   const [submitting, setSubmitting] = useState(false);
+
+  // ✅ NEW: Live Name Check States
+  const [existingTemplateNames, setExistingTemplateNames] = useState<string[]>([]);
+  const [nameStatus, setNameStatus] = useState<"idle" | "checking" | "taken" | "available">("idle");
+  const nameCheckTimer = useRef<NodeJS.Timeout | null>(null);
 
   const [headerType, setHeaderType] = useState<HeaderType>("none");
   const [headerText, setHeaderText] = useState("");
@@ -60,8 +65,8 @@ export default function TemplatesPage() {
     if (status === "unauthenticated") {
       window.location.href = "/";
     }
-    // ✅ LIMIT ADDED: Fetch limits
     if (status === "authenticated") {
+      // ✅ Fetch Limits
       fetch("/api/user/limits?resource=templates")
         .then((res) => res.json())
         .then((data) => {
@@ -75,11 +80,40 @@ export default function TemplatesPage() {
           }
         })
         .catch(console.error);
+
+      // ✅ NEW: Fetch Existing Template Names for Live Validation
+      fetch("/api/campaigns/templates")
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success && data.templates) {
+            setExistingTemplateNames(data.templates.map((t: any) => t.name));
+          }
+        })
+        .catch(console.error);
     }
   }, [status]);
 
-  const handleNameChange = (val: string) =>
-    setName(val.toLowerCase().replace(/[^a-z0-9_]/g, "_"));
+  // ✅ NEW: Live Debounced Name Check
+  const handleNameChange = (val: string) => {
+    const formatted = val.toLowerCase().replace(/[^a-z0-9_]/g, "_");
+    setName(formatted);
+    
+    if (nameCheckTimer.current) clearTimeout(nameCheckTimer.current);
+    
+    if (!formatted.trim()) {
+      setNameStatus("idle");
+      return;
+    }
+
+    setNameStatus("checking");
+    nameCheckTimer.current = setTimeout(() => {
+      if (existingTemplateNames.includes(formatted)) {
+        setNameStatus("taken");
+      } else {
+        setNameStatus("available");
+      }
+    }, 400);
+  };
 
   const handleSampleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -123,11 +157,13 @@ export default function TemplatesPage() {
     setName(""); setBodyText(""); setHeaderText(""); setFooterText("");
     setHeaderType("none"); setSampleFile(null); setSampleUrl("");
     setSampleSource("upload"); setButtons([]); setBodyExamples({});
-    setMediaPermissionWarning(false);
+    setMediaPermissionWarning(false); setNameStatus("idle");
   };
 
   const createTemplate = async () => {
     if (!name) { toast.error("Template name is required"); return; }
+    // ✅ Prevent submission if name is taken
+    if (nameStatus === "taken") { toast.error("Template name already exists. Please use another name."); return; }
     
     if (!isAuthTemplate) {
       if (!bodyText) { toast.error("Body text is required"); return; }
@@ -153,8 +189,6 @@ export default function TemplatesPage() {
       const components: any[] = [];
 
       if (isAuthTemplate) {
-        // For Authentication, backend auto-injects Body and OTP Button. 
-        // We only need to send Footer if code expiration is specified.
         if (footerText) {
           const mins = parseInt(footerText, 10);
           if (!isNaN(mins) && mins > 0) {
@@ -213,7 +247,6 @@ export default function TemplatesPage() {
         return;
       }
 
-      // ✅ LIMIT ADDED: Handle limit exceeded
       if (res.status === 429) {
         const data = await res.json();
         toast.error(data.message || "Template limit reached", { autoClose: 8000 });
@@ -253,7 +286,9 @@ export default function TemplatesPage() {
       }
 
       resetForm();
-      // ✅ LIMIT ADDED: Refresh limits after creation
+      // ✅ NEW: Add the newly created template name to the local list so it shows as taken if they type it again
+      setExistingTemplateNames(prev => [...prev, name]);
+      
       fetch("/api/user/limits?resource=templates")
         .then((r) => r.json())
         .then((d) => {
@@ -301,7 +336,6 @@ export default function TemplatesPage() {
                   <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Create Template</h1>
                   <p className="text-gray-500 text-xs sm:text-sm mt-1">Design rich WhatsApp messages for Meta approval.</p>
                 </div>
-                {/* ✅ LIMIT ADDED: Badge */}
                 {templateLimit && (
                   <div className={`hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold shrink-0 ${
                     isAtLimit ? "bg-red-50 border-red-200 text-red-700" :
@@ -319,7 +353,6 @@ export default function TemplatesPage() {
               </div>
             </div>
 
-            {/* ✅ LIMIT ADDED: Warning Bar */}
             {isLimitActive && (
               <div className={`mb-5 rounded-xl p-3 flex items-center gap-3 text-sm border ${
                 isAtLimit ? "bg-red-50 border-red-200 text-red-700" :
@@ -343,7 +376,6 @@ export default function TemplatesPage() {
               </div>
             )}
 
-            {/* MEDIA PERMISSION WARNING BANNER */}
             {mediaPermissionWarning && (
               <div className="mb-5 bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start gap-3">
                 <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
@@ -371,7 +403,31 @@ export default function TemplatesPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-6 gap-4">
                   <div className="sm:col-span-3">
                     <label className="text-xs font-bold text-gray-800 mb-2 block">Template Name</label>
-                    <input className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition text-sm font-mono" placeholder="welcome_message" value={name} onChange={(e) => handleNameChange(e.target.value)} disabled={isAtLimit} />
+                    <input 
+                      className={`w-full px-4 py-2.5 bg-gray-50 border rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-400 transition text-sm font-mono ${
+                        nameStatus === "taken" ? "border-red-400" : nameStatus === "available" ? "border-emerald-400" : "border-gray-200"
+                      }`} 
+                      placeholder="welcome_message" 
+                      value={name} 
+                      onChange={(e) => handleNameChange(e.target.value)} 
+                      disabled={isAtLimit} 
+                    />
+                    {/* ✅ NEW: Live Status Messages */}
+                    {nameStatus === "taken" && (
+                      <p className="text-xs text-red-600 font-medium mt-1.5 flex items-center gap-1">
+                        <AlertTriangle size={12} /> This template name already exists in your Meta account.
+                      </p>
+                    )}
+                    {nameStatus === "available" && (
+                      <p className="text-xs text-emerald-600 font-medium mt-1.5 flex items-center gap-1">
+                        <CheckCircle2 size={12} /> Name is available!
+                      </p>
+                    )}
+                    {nameStatus === "checking" && (
+                      <p className="text-xs text-slate-500 font-medium mt-1.5 flex items-center gap-1">
+                        <Loader2 size={12} className="animate-spin" /> Checking availability...
+                      </p>
+                    )}
                   </div>
                   <div className="sm:col-span-2">
                     <label className="text-xs font-bold text-gray-800 mb-2 block">Category</label>
@@ -587,9 +643,9 @@ export default function TemplatesPage() {
               <div className="flex justify-center sm:justify-end pt-2 pb-12">
                 <button
                   onClick={createTemplate}
-                  disabled={submitting || isAtLimit}
+                  disabled={submitting || isAtLimit || nameStatus === "taken"}
                   className={`w-full sm:w-auto flex items-center justify-center gap-2 px-8 py-3 font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm ${
-                    isAtLimit
+                    isAtLimit || nameStatus === "taken"
                       ? "bg-slate-400 text-white cursor-not-allowed"
                       : "bg-emerald-500 text-white hover:bg-emerald-600"
                   }`}
