@@ -6,6 +6,19 @@ import mongoose from "mongoose";
 
 const ADMIN_SECRET = process.env.ADMIN_SECRET_KEY || "admin123";
 
+// ✅ Same inline Transaction model as used in /api/user/transactions
+// so recharges actually get logged and show up in the user's history.
+const TransactionSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  type: String, // 'recharge' or 'usage'
+  amount: Number,
+  description: String,
+  status: String,
+  createdAt: { type: Date, default: Date.now },
+  metadata: Object
+});
+const Transaction = mongoose.models.Transaction || mongoose.model('Transaction', TransactionSchema);
+
 function validateAdminKey(req: Request): boolean {
   return req.headers.get("x-admin-key") === ADMIN_SECRET;
 }
@@ -203,15 +216,19 @@ export async function PUT(req: Request) {
     // ==========================================
     // HANDLE BILLING (INCLUDING COUNTRIES)
     // ==========================================
+    let rechargeAppliedAmount = 0; // track outside the if-block so we can log it after save()
+
     if (action === "billing") {
       if (body.priceMarketing !== undefined && body.priceMarketing !== null) user.priceMarketing = Math.round(Number(body.priceMarketing) * 100) / 100;
       if (body.priceUtility !== undefined && body.priceUtility !== null) user.priceUtility = Math.round(Number(body.priceUtility) * 100) / 100;
       if (body.priceAuthentication !== undefined && body.priceAuthentication !== null) user.priceAuthentication = Math.round(Number(body.priceAuthentication) * 100) / 100;
       if (body.pricePerMessage !== undefined && body.pricePerMessage !== null) user.pricePerMessage = Math.round(Number(body.pricePerMessage) * 100) / 100;
-      
+
       if (body.rechargeAmount !== undefined && body.rechargeAmount !== null && Number(body.rechargeAmount) > 0) {
-        user.balance = Math.round(((user.balance || 0) + Number(body.rechargeAmount)) * 100) / 100;
-        user.totalRecharged = Math.round(((user.totalRecharged || 0) + Number(body.rechargeAmount)) * 100) / 100;
+        const amount = Math.round(Number(body.rechargeAmount) * 100) / 100;
+        user.balance = Math.round(((user.balance || 0) + amount) * 100) / 100;
+        user.totalRecharged = Math.round(((user.totalRecharged || 0) + amount) * 100) / 100;
+        rechargeAppliedAmount = amount; // remember it so we can write a Transaction row below
       }
 
       // ✅ FIX: Assign array directly and mark as modified so Mongoose saves it
@@ -317,6 +334,32 @@ export async function PUT(req: Request) {
 
     // ✅ SAVE USER (This forces Mongoose to validate and persist everything)
     await user.save();
+
+    // ==========================================
+    // ✅ LOG THE RECHARGE AS A TRANSACTION
+    // (This is the part that was missing — without this, the recharge
+    // history tab on the user's billing page has nothing to show.)
+    // ==========================================
+    if (rechargeAppliedAmount > 0) {
+      try {
+        await Transaction.create({
+          userId: user._id,
+          type: "recharge",
+          amount: rechargeAppliedAmount,
+          description: `Wallet recharge by admin`,
+          status: "success",
+          createdAt: new Date(),
+          metadata: {
+            method: "admin",
+            newBalance: user.balance,
+          },
+        });
+      } catch (txErr) {
+        // Don't fail the whole request if logging fails — the balance update
+        // already succeeded — but make sure it's visible in the server logs.
+        console.error("Failed to log recharge transaction:", txErr);
+      }
+    }
 
     return NextResponse.json({ success: true, message: "User updated successfully", user: user.toObject() });
   } catch (error) {
