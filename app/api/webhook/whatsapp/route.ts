@@ -32,6 +32,93 @@ function shouldUpdateStatus(currentStatus: string, newStatus: string): boolean {
   return newPriority > currentPriority;
 }
 
+// ============================================================================
+// ✅ NEW: Build the "outgoing message" representation (text, media, buttons)
+// for ANY step we send via the workflow engine, so it can be saved to the
+// Message collection and rendered correctly in the live chat UI.
+// ============================================================================
+type OutgoingPayload = {
+  text: string;
+  messageType: string;
+  mediaUrl: string | null;
+  buttons: Array<{ type: string; text: string; url?: string; phone_number?: string }>;
+};
+
+function buildOutgoingMessagePayload(step: any): OutgoingPayload {
+  let text = step.message || "";
+  let messageType = "text";
+  let mediaUrl: string | null = null;
+  let buttons: OutgoingPayload["buttons"] = [];
+
+  // --- Call action (phone CTA button) ---
+  if (step.stepType === "call_action" && step.phoneNumber) {
+    text = step.message || step.urlLabel || step.phoneNumber || "";
+    buttons = [
+      {
+        type: "phone_number",
+        text: step.urlLabel || "Call",
+        phone_number: step.phoneNumber,
+      },
+    ];
+    return { text, messageType, mediaUrl, buttons };
+  }
+
+  // --- URL action (link CTA button) ---
+  if (step.stepType === "url_action" && step.url) {
+    let url = step.url.trim();
+    if (!url.startsWith("http")) url = "https://" + url;
+    text = step.message || step.urlLabel || step.url || "";
+    buttons = [
+      {
+        type: "url",
+        text: step.urlLabel || "Open",
+        url,
+      },
+    ];
+    return { text, messageType, mediaUrl, buttons };
+  }
+
+  // --- Media attached directly to a message step (image/video/document) ---
+  if (step.mediaUrl && ["image", "video", "document"].includes(step.mediaType)) {
+    messageType = step.mediaType;
+    mediaUrl = step.mediaUrl;
+  }
+
+  // --- Quick-reply / list buttons on a message step ---
+  if (step.buttons?.length > 0) {
+    const valid = step.buttons.filter((b: any) => b.label?.trim());
+    if (valid.length > 0) {
+      buttons = valid.map((b: any) => ({ type: "quick_reply", text: b.label }));
+    }
+  }
+
+  return { text, messageType, mediaUrl, buttons };
+}
+
+async function saveOutgoingWorkflowMessage(
+  userId: string,
+  customerNumber: string,
+  phoneNumberId: string,
+  step: any
+) {
+  const { text, messageType, mediaUrl, buttons } = buildOutgoingMessagePayload(step);
+  await Message.create({
+    userId,
+    phone: customerNumber,
+    text,
+    direction: "out",
+    messageType,
+    mediaUrl,
+    // Re-using the templateButtons field as a generic "buttons" carrier so the
+    // live chat UI (which already knows how to parse/render this field) can
+    // show the same buttons/CTAs that were actually sent on WhatsApp.
+    templateButtons: buttons.length > 0 ? JSON.stringify(buttons) : undefined,
+    status: "sent",
+    whatsappPhoneNumberId: phoneNumberId,
+    senderNumber: phoneNumberId,
+  });
+}
+
 const clearWorkflowTimer = (phone: string) => {
   const timerId = workflowTimers.get(phone);
   if (timerId) { clearInterval(timerId); workflowTimers.delete(phone); }
@@ -370,6 +457,9 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
 
         await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, nextStep, baseUrl);
 
+        // ✅ Save the outgoing message (with media/buttons) so it shows in live chat
+        await saveOutgoingWorkflowMessage(num.userId.toString(), msg.from, num.phoneNumberId, nextStep);
+
         // ✅ Start inactivity timer after button-click navigation
         startWorkflowInactivityTimer(
           msg.from,
@@ -546,16 +636,9 @@ async function processWorkflowStep(
       baseUrl
     );
 
-    await Message.create({
-      userId,
-      phone: customerNumber,
-      text: step.message || "",
-      direction: "out",
-      messageType: "text",
-      status: "sent",
-      whatsappPhoneNumberId: phoneNumberId,
-      senderNumber: phoneNumberId,
-    });
+    // ✅ Save the outgoing message INCLUDING media + buttons so it renders
+    // correctly in the live chat UI (previously only plain text was saved).
+    await saveOutgoingWorkflowMessage(userId, customerNumber, phoneNumberId, step);
 
     // ✅ Create / update session so the inactivity timer can find it
     await Session.findOneAndUpdate(
@@ -595,17 +678,8 @@ async function processWorkflowStep(
       baseUrl
     );
 
-    // ✅ Fixed: was dead code after a bare `return;`
-    await Message.create({
-      userId,
-      phone: customerNumber,
-      text: step.message || step.urlLabel || step.phoneNumber || "",
-      direction: "out",
-      messageType: "text",
-      status: "sent",
-      whatsappPhoneNumberId: phoneNumberId,
-      senderNumber: phoneNumberId,
-    });
+    // ✅ Save with the CTA button info (phone/url) attached
+    await saveOutgoingWorkflowMessage(userId, customerNumber, phoneNumberId, step);
 
     // ✅ Create / update session
     await Session.findOneAndUpdate(
@@ -644,13 +718,8 @@ async function processWorkflowStep(
     baseUrl
   );
 
-  await Message.create({
-    userId,
-    phone: customerNumber,
-    text: step.message || "",
-    direction: "out",
-    messageType: "text",
-  });
+  // ✅ Save with media/buttons too (previously plain text only)
+  await saveOutgoingWorkflowMessage(userId, customerNumber, phoneNumberId, step);
 
   await Session.findOneAndUpdate(
     { phone: customerNumber, userId },
@@ -804,6 +873,66 @@ async function sendWorkflowWhatsAppMessage(
         preview_url: true,
       },
     });
+  }
+
+  // ===============================
+  // 3b. MEDIA (IMAGE / VIDEO / DOCUMENT) MESSAGE NODE
+  // ===============================
+  if (step.mediaUrl && ["image", "video", "document"].includes(step.mediaType)) {
+    const mediaId = await uploadMediaToMetaFromUrl(phoneNumberId, accessToken, step.mediaUrl);
+    if (mediaId) {
+      const mediaPayload: any = {
+        messaging_product: "whatsapp",
+        to,
+        type: step.mediaType,
+      };
+      if (step.mediaType === "image") {
+        mediaPayload.image = { id: mediaId, caption: step.message || undefined };
+      } else if (step.mediaType === "video") {
+        mediaPayload.video = { id: mediaId, caption: step.message || undefined };
+      } else {
+        mediaPayload.document = { id: mediaId, caption: step.message || undefined, filename: step.mediaFilename || "Document" };
+      }
+
+      // If there are also quick-reply buttons, WhatsApp media messages don't support
+      // inline buttons directly, so send the media first, then the buttons as a follow-up.
+      await sendMessage(mediaPayload);
+
+      if (step.buttons?.length > 0) {
+        const valid = step.buttons.filter((b: any) => b.label?.trim());
+        if (valid.length > 0) {
+          if (valid.length > 3) {
+            return sendMessage({
+              messaging_product: "whatsapp",
+              to,
+              type: "interactive",
+              interactive: {
+                type: "list",
+                body: { text: step.message || "Select option" },
+                action: {
+                  button: step.listButtonText || "Options",
+                  sections: [{ title: "Menu", rows: valid.slice(0, 10).map((b: any) => ({ id: b.id, title: b.label.substring(0, 24) })) }],
+                },
+              },
+            });
+          }
+          return sendMessage({
+            messaging_product: "whatsapp",
+            to,
+            type: "interactive",
+            interactive: {
+              type: "button",
+              body: { text: step.message || "" },
+              action: {
+                buttons: valid.slice(0, 3).map((b: any) => ({ type: "reply", reply: { id: b.id, title: b.label.substring(0, 20) } })),
+              },
+            },
+          });
+        }
+      }
+      return;
+    }
+    // Media upload failed — fall through to send as plain text below
   }
 
   // ===============================
