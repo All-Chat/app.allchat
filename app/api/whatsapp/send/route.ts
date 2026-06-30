@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import User from "@/models/User";
 import Message from "@/models/Message";
+import mongoose from "mongoose";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getPriceForCategory } from "@/lib/billing";
@@ -12,6 +13,20 @@ import fs from "fs";
 import path from "path";
 
 export const runtime = "nodejs";
+
+// ✅ Same inline Transaction model used by the billing route and the
+// transactions API, so test message deductions get logged and show up
+// in the user's transaction history.
+const TransactionSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  type: String, // 'recharge' or 'usage' or 'test_message'
+  amount: Number,
+  description: String,
+  status: String,
+  createdAt: { type: Date, default: Date.now },
+  metadata: Object
+});
+const Transaction = mongoose.models.Transaction || mongoose.model('Transaction', TransactionSchema);
 
 // ✅ Strip extra quotes from strings
 function cleanStr(val: any): string {
@@ -239,7 +254,7 @@ async function sendToWhatsApp(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ NEW: Upload file to Meta's media API
+// ✅ Upload file to Meta's media API
 // ═══════════════════════════════════════════════════════════════
 async function uploadFileToMeta(
   phoneNumberId: string,
@@ -271,7 +286,7 @@ async function uploadFileToMeta(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ NEW: Resolve Local/Remote URL to Meta Media ID
+// ✅ Resolve Local/Remote URL to Meta Media ID
 // ═══════════════════════════════════════════════════════════════
 async function uploadMediaToMetaFromUrl(
   phoneNumberId: string,
@@ -338,7 +353,7 @@ async function uploadMediaToMetaFromUrl(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ NEW: Build payload for direct (non-template) media messages
+// ✅ Build payload for direct (non-template) media messages
 // ═══════════════════════════════════════════════════════════════
 function buildDirectPayload(
   to: string,
@@ -411,7 +426,7 @@ function buildDirectPayload(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ✅ NEW: Send direct (non-template) media message
+// ✅ Send direct (non-template) media message
 // ═══════════════════════════════════════════════════════════════
 async function sendDirectMessage(
   phoneNumberId: string,
@@ -568,6 +583,27 @@ export async function POST(req: Request) {
         if (messagePrice > 0) {
           payer.balance = Math.max(0, Math.round((currentBalance - messagePrice) * 100) / 100);
           await payer.save();
+
+          // ✅ Log this deduction as a transaction so it shows up in history
+          try {
+            await Transaction.create({
+              userId: payer._id,
+              type: "test_message",
+              amount: messagePrice,
+              description: `Test message sent (${messageType}) to ${sanitizedPhone}`,
+              status: "success",
+              createdAt: new Date(),
+              metadata: {
+                phone: sanitizedPhone,
+                messageType,
+                category: cat,
+                newBalance: payer.balance,
+                sentBy: session.user.id,
+              },
+            });
+          } catch (txErr) {
+            console.error("⚠️ Failed to log test message transaction:", txErr);
+          }
         }
       } catch (balErr) {
         console.error("⚠️ Balance update failed (message still sent):", balErr);
@@ -706,6 +742,28 @@ export async function POST(req: Request) {
       if (messagePrice > 0) {
         payer.balance = Math.max(0, Math.round((currentBalance - messagePrice) * 100) / 100);
         await payer.save();
+
+        // ✅ Log this deduction as a transaction so it shows up in history
+        try {
+          await Transaction.create({
+            userId: payer._id,
+            type: "test_message",
+            amount: messagePrice,
+            description: `Test template message sent: ${templateName}`,
+            status: "success",
+            createdAt: new Date(),
+            metadata: {
+              phone: sanitizedPhone,
+              templateName,
+              languageCode,
+              category: cat,
+              newBalance: payer.balance,
+              sentBy: session.user.id,
+            },
+          });
+        } catch (txErr) {
+          console.error("⚠️ Failed to log test message transaction:", txErr);
+        }
       }
     } catch (balErr) {
       console.error("⚠️ Balance update failed (message still sent):", balErr);
