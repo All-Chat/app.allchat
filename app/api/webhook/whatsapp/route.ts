@@ -709,12 +709,15 @@ async function sendWorkflowWhatsAppMessage(
       "wa.me",
     ].some((d) => url.includes(d));
 
-    // ===============================
+     // ===============================
   // 1. CALL ACTION (FIXED)
   // ===============================
   if (step.stepType === "call_action" && step.phoneNumber) {
     let number = step.phoneNumber.replace(/[^\d+]/g, "");
     if (!number.startsWith("+")) number = "+" + number;
+
+    // ✅ WhatsApp blocks 'tel:' links. We route it through your site to trigger the dialer.
+    const redirectUrl = `${baseUrl}/api/redirect-call?number=${encodeURIComponent(number)}`;
 
     const payload = {
       messaging_product: "whatsapp",
@@ -724,16 +727,16 @@ async function sendWorkflowWhatsAppMessage(
         type: "cta_url",
         header: {
           type: "text",
-          text: step.urlLabel || "Call Now", // ✅ FIXED: uses urlLabel from UI
+          text: step.urlLabel || "Call Now",
         },
         body: {
-          text: step.message || "Tap below to call", // ✅ FIXED: uses message from UI
+          text: step.message || "Tap below to call",
         },
         action: {
           name: "cta_url",
           parameters: {
-            display_text: step.urlLabel || "Call", // ✅ FIXED: uses urlLabel from UI
-            url: `https://wa.me/${number.replace("+", "")}`,
+            display_text: step.urlLabel || "Call",
+            url: redirectUrl, // ✅ Uses the safe HTTPS link
           },
         },
       },
