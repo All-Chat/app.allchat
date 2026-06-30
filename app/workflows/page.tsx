@@ -1284,9 +1284,9 @@ function FlowCanvas({
       if (!type) return;
       const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
       let newData: any = { message: "" };
-      if (type === "message") newData = { message: "", buttons: [], mediaUrl: null, mediaType: null, listButtonText: "" };
-      if (type === "url_action") newData = { message: "", urlLabel: "", url: "" };
-      if (type === "call_action") newData = { message: "", urlLabel: "", phoneNumber: "" };
+      if (type === "message") newData = { message: "", buttons: [], mediaUrl: null, mediaType: null, listButtonText: "Menu" };
+      if (type === "url_action") newData = { message: "Tap below to open the link.", urlLabel: "Open Link", url: "" };
+      if (type === "call_action") newData = { message: "Tap below to call us.", urlLabel: "Call Now", phoneNumber: "" };
       if (type === "tag_node") newData = { selectedTag: "" };
       if (type === "opt_in_node") newData = {};
       if (type === "form_node") newData = { selectedForm: "" };
@@ -1303,9 +1303,9 @@ function FlowCanvas({
     const rect = wrapper.getBoundingClientRect();
     const position = screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
     let newData: any = { message: "" };
-    if (type === "message") newData = { message: "", buttons: [], mediaUrl: null, mediaType: null, listButtonText: "" };
-    if (type === "url_action") newData = { message: "", urlLabel: "", url: "" };
-    if (type === "call_action") newData = { message: "", urlLabel: "", phoneNumber: "" };
+    if (type === "message") newData = { message: "", buttons: [], mediaUrl: null, mediaType: null, listButtonText: "Menu" };
+    if (type === "url_action") newData = { message: "Tap below to open the link.", urlLabel: "Open Link", url: "" };
+    if (type === "call_action") newData = { message: "Tap below to call us.", urlLabel: "Call Now", phoneNumber: "" };
     if (type === "tag_node") newData = { selectedTag: "" };
     if (type === "opt_in_node") newData = {};
     if (type === "form_node") newData = { selectedForm: "" };
