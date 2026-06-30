@@ -184,12 +184,13 @@ export async function POST(req: Request) {
       );
     }
 
-    const safeName = `${name
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9_]/g, "_")
-      .replace(/__+/g, "_")
-      .substring(0, 40)}_${Date.now()}`;
+const safeName = name
+  .toLowerCase()
+  .trim()
+  .replace(/[^a-z0-9_]/g, "_")
+  .replace(/__+/g, "_")
+  .replace(/^_+|_+$/g, "")
+  .substring(0, 40);
 
     // ==========================================
     // 4. HANDLE SAMPLE MEDIA
