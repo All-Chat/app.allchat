@@ -126,16 +126,44 @@ export default function Sidebar() {
   // 🔴 TENANT & WHITE LABEL LOGIC
   // ==========================================
   const isTenant = (session?.user as any)?.isTenant === true;
+
+  // ✅ A "sub-user" is someone who belongs to a tenant's team but is not the
+  // tenant owner themselves (e.g. an agent/team member added under a tenant).
+  // We detect this by the presence of a parent tenant reference on the user
+  // while the user is NOT itself flagged as the tenant.
+  const sessionUserAny = session?.user as any;
+  const parentTenantRef =
+    sessionUserAny?.parentTenantId ||
+    sessionUserAny?.tenantId ||
+    sessionUserAny?.parentId ||
+    null;
+  const isSubUser = !isTenant && !!parentTenantRef;
+
+  // True for both the tenant owner and any team member working under a tenant.
+  const hasTeamAccess = isTenant || isSubUser;
   
   // ✅ White Label Name Logic (Only name, no logo in sidebar)
   const wl = (session?.user as any)?.whiteLabel;
   const isWhiteLabel = wl?.enabled;
   const sidebarAppName = isWhiteLabel && wl?.appName ? `${wl.appName} CRM` : "All Chat CRM";
 
-  const visibleCategories = categories.filter(cat => {
-    if (cat.title === "Team") return isTenant;
-    return true;
-  });
+  // ✅ Build the visible categories. The "Team" category now shows for both
+  // tenants and sub-users — but only the tenant owner sees "Users" (team
+  // management), while "Team Inbox" is visible to both.
+  const visibleCategories = categories
+    .map((cat) => {
+      if (cat.title === "Team") {
+        if (!hasTeamAccess) return null;
+        const items = cat.items.filter((item) => {
+          if (item.name === "Users") return isTenant;
+          if (item.name === "Team Inbox") return hasTeamAccess;
+          return true;
+        });
+        return items.length > 0 ? { ...cat, items } : null;
+      }
+      return cat;
+    })
+    .filter((cat): cat is NavCategory => cat !== null);
 
   useEffect(() => setMounted(true), []);
 
@@ -168,7 +196,8 @@ export default function Sidebar() {
         return { [activeCat.title]: true };
       });
     }
-  }, [pathname, isTenant]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname, isTenant, isSubUser]);
 
   // Restore scroll position on mount and route change
   useEffect(() => {
