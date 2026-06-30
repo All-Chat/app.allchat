@@ -176,7 +176,7 @@ export default function SendMessagePage() {
       fetchLimits();
       fetchSettings();
     } else if (status === "unauthenticated") {
-      window.location.href = "/signin";
+      window.location.href = "/";
     }
   }, [status]);
 
@@ -188,7 +188,7 @@ export default function SendMessagePage() {
     setLoading(true);
     try {
       const res = await fetch("/api/campaigns/templates");
-      if (res.status === 401) { window.location.href = "/signin"; return; }
+      if (res.status === 401) { window.location.href = "/"; return; }
       const data = await res.json();
       if (data.success && data.templates) {
         setTemplates(data.templates);
@@ -286,7 +286,7 @@ export default function SendMessagePage() {
 
       const res = await fetch("/api/whatsapp/send", { method: "POST", body: formData });
 
-      if (res.status === 401) { toast.error("Session expired. Please log in again."); setTimeout(() => (window.location.href = "/signin"), 1500); return; }
+      if (res.status === 401) { toast.error("Session expired. Please log in again."); setTimeout(() => (window.location.href = "/"), 1500); return; }
       if (res.status === 402) { const data402 = await res.json(); toast.error(data402.message || "Insufficient balance. Please recharge."); setCanSendMessage(false); fetchBilling(); return; }
       if (res.status === 403) { const data403 = await res.json(); toast.error(data403.message || "Country not allowed."); return; }
       if (res.status === 429) {
