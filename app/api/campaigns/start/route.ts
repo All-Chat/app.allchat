@@ -352,7 +352,14 @@ export async function POST(req: Request) {
     // campaign's lifetime totals, so transaction logging never double-counts
     // amounts that were already logged in a previous run before a pause.
     let sentThisRun = 0, failedThisRun = 0, dedThisRun = 0;
-    const BS = 4; // Batch Size
+
+    // ✅ PERFORMANCE OPTIMIZATIONS
+    const BS = 20; // Increased Batch Size from 4 to 20
+    const FLUSH_INTERVAL = 100; // Flush DB writes every 100 processed contacts
+    let processedSinceLastFlush = 0;
+    let pendingBatchIndices: number[] = [];
+    let messageBatchArr: any[] = [];
+    
     let idx = 0;
 
     // Main sending loop
@@ -362,8 +369,11 @@ export async function POST(req: Request) {
       if (["paused", "completed", "stopped"].includes(live.status)) {
         campaign.status = live.status === "paused" ? "paused" : "completed";
         campaign.sentCount = sent; campaign.failedCount = failed; campaign.skippedCount = skipped; campaign.totalDeducted = ded;
+        
+        // Flush remaining writes before exiting
+        if (messageBatchArr.length > 0) { try { await Message.insertMany(messageBatchArr); } catch (e) {} }
         await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
-        await safeUpdateCampaign(campaignId, campaign, []);
+        await safeUpdateCampaign(campaignId, campaign, pendingBatchIndices);
         await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } }); // Explicitly save final status
         await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
         return NextResponse.json({ success: true, message: `Campaign ${live.status}`, sent, failed, skipped });
@@ -372,8 +382,11 @@ export async function POST(req: Request) {
       // Balance check
       if (bPrice > 0 && payer.balance < bPrice) {
         campaign.status = "paused"; campaign.sentCount = sent; campaign.failedCount = failed; campaign.skippedCount = skipped; campaign.totalDeducted = ded; campaign.pausedReason = "Insufficient balance";
+        
+        // Flush remaining writes before exiting
+        if (messageBatchArr.length > 0) { try { await Message.insertMany(messageBatchArr); } catch (e) {} }
         await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
-        await safeUpdateCampaign(campaignId, campaign, []);
+        await safeUpdateCampaign(campaignId, campaign, pendingBatchIndices);
         await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } }); // Explicitly save final status
         await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
         return NextResponse.json({ success: false, message: `Paused. Required: ₹${bPrice}, Available: ₹${payer.balance}.`, sent, failed, skipped, balancePaused: true });
@@ -437,13 +450,12 @@ export async function POST(req: Request) {
             campaign.reportData[ci].charged = true; 
             campaign.reportData[ci].chargedAmount = pp; 
           }
-          try { 
-            await Message.create({ 
-              userId, phone: ph, text: "", direction: "out", messageType: "template", 
-              mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", 
-              templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID 
-            }); 
-          } catch {}
+          // ✅ PERFORMANCE: Push to array for bulk insert later
+          messageBatchArr.push({ 
+            userId, phone: ph, text: "", direction: "out", messageType: "template", 
+            mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", 
+            templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID 
+          }); 
         } else if (r.status === "failed") {
           failed++; failedThisRun++;
           if (campaign.reportData[ci]) { 
@@ -455,7 +467,7 @@ export async function POST(req: Request) {
         }
       }
 
-      // Deduct balance dynamically
+      // Deduct balance dynamically in memory
       if (bd > 0) { 
         payer.balance = Math.round((payer.balance - bd) * 100) / 100; 
         if (payer.balance < 0) payer.balance = 0; 
@@ -463,8 +475,22 @@ export async function POST(req: Request) {
         dedThisRun = Math.round((dedThisRun + bd) * 100) / 100;
       }
       
-      await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
-      await safeUpdateCampaign(campaignId, campaign, bi);
+      // ✅ PERFORMANCE: Accumulate indices and count processed items
+      pendingBatchIndices.push(...bi);
+      processedSinceLastFlush += res.length;
+
+      // ✅ PERFORMANCE: Flush to DB only every FLUSH_INTERVAL (100 items)
+      if (processedSinceLastFlush >= FLUSH_INTERVAL) {
+        if (messageBatchArr.length > 0) { 
+          try { await Message.insertMany(messageBatchArr); } catch (e) { console.error("Message bulk insert error:", e); }
+          messageBatchArr = []; 
+        }
+        await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
+        await safeUpdateCampaign(campaignId, campaign, pendingBatchIndices);
+        pendingBatchIndices = [];
+        processedSinceLastFlush = 0;
+      }
+      
       await new Promise(r => setTimeout(r, 50)); // Tiny delay to prevent API spam
     }
 
@@ -476,8 +502,10 @@ export async function POST(req: Request) {
     campaign.completedAt = new Date();
     campaign.status = (sent > 0 || skipped > 0) ? "completed" : "failed";
     
+    // Final flush for any remaining items
+    if (messageBatchArr.length > 0) { try { await Message.insertMany(messageBatchArr); } catch (e) {} }
     await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
-    await safeUpdateCampaign(campaignId, campaign, []);
+    await safeUpdateCampaign(campaignId, campaign, pendingBatchIndices);
     await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } }); // Explicitly save final status
     await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
     
