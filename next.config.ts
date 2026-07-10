@@ -1,8 +1,13 @@
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  allowedDevOrigins: [
-    'cardboard-squeamish-genre.ngrok-free.dev'
-  ],
-}
+import type { NextConfig } from "next";
 
-export default nextConfig
+const nextConfig: NextConfig = {
+  allowedDevOrigins: [
+    "cardboard-squeamish-genre.ngrok-free.dev",
+  ],
+
+  compress: true,
+  poweredByHeader: false,
+  reactStrictMode: false,
+};
+
+export default nextConfig;
