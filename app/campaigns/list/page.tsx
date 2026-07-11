@@ -71,7 +71,6 @@ const getCategoryColor = (category: string) => {
   }
 };
 
-// ✅ FAST: Reads directly from the liveStats object provided by the backend
 const getCampaignStats = (c: Campaign): LiveStats => {
   return c.liveStats || { total: c.totalMessages, replied: 0, read: 0, delivered: 0, sent: 0, failed: 0, invalid: 0, duplicate: 0, pending: 0, deliveredRead: 0, failedInvalid: 0, progress: 0 };
 };
@@ -161,6 +160,7 @@ export default function CampaignList() {
     } catch (err) { console.error("Failed to load campaigns", err); }
   };
 
+  // ✅ FIX: Removed AbortController. The backend now returns instantly, so the frontend won't kill the connection.
   const startCampaign = async (id: string) => {
     if (!canSendMessage) {
       toast.error("Insufficient balance. Please recharge your account.");
@@ -172,16 +172,11 @@ export default function CampaignList() {
     setStartingId(id);
     
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-
       const res = await fetch("/api/campaigns/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ campaignId: id }),
-        signal: controller.signal,
       });
-      clearTimeout(timeoutId);
 
       if (res.status === 402) {
         const data402 = await res.json();
@@ -203,14 +198,9 @@ export default function CampaignList() {
         loadCampaigns(); 
       }
     } catch (err: any) {
-      if (err.name === 'AbortError') {
-        toast.success(`Campaign started in background! Sending in progress...`);
-        loadCampaigns();
-      } else {
-        console.error("Start campaign error:", err);
-        toast.error("Failed to start campaign");
-        loadCampaigns(); 
-      }
+      console.error("Start campaign error:", err);
+      toast.error("Failed to start campaign");
+      loadCampaigns(); 
     } finally {
       setStartingId(null);
     }
@@ -255,6 +245,7 @@ export default function CampaignList() {
     }
   };
 
+  // ✅ FIX: Removed AbortController for rerun as well.
   const rerunCampaign = async (id: string) => {
     if (!canSendMessage) {
       toast.error("Insufficient balance. Please recharge your account.");
@@ -284,16 +275,11 @@ export default function CampaignList() {
         return;
       }
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-
       const startRes = await fetch("/api/campaigns/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ campaignId: id }),
-        signal: controller.signal,
       });
-      clearTimeout(timeoutId);
 
       if (startRes.status === 402) {
         const data402 = await startRes.json();
@@ -314,14 +300,9 @@ export default function CampaignList() {
         loadCampaigns();
       }
     } catch (err: any) {
-      if (err.name === 'AbortError') {
-        toast.success(`Rerun started in background! Sending in progress...`);
-        loadCampaigns();
-      } else {
-        console.error("Rerun error:", err);
-        toast.error("Failed to rerun campaign");
-        loadCampaigns();
-      }
+      console.error("Rerun error:", err);
+      toast.error("Failed to rerun campaign");
+      loadCampaigns();
     } finally {
       setStartingId(null);
     }
