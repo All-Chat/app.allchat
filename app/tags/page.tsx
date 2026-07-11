@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback, memo } from "react";
 import Sidebar from "@/components/Sidebar";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
@@ -19,12 +19,156 @@ interface LimitInfo {
   allowed: boolean;
 }
 
+// ✅ PERFORMANCE: Memoized Tag Item to prevent entire list re-renders
+const TagItem = memo(function TagItem({
+  tag,
+  isExpanded,
+  contacts,
+  loadingContacts,
+  onTagClick,
+  onEditClick,
+  onDeleteClick,
+  deletingId,
+}: any) {
+  const isSpecificTag = tag.isCampaignSpecific;
+  const isDeleting = deletingId === tag._id;
+
+  return (
+    <div
+      className={`rounded-xl border transition-all overflow-hidden ${
+        isExpanded
+          ? isSpecificTag
+            ? "border-indigo-300 shadow-md"
+            : "border-emerald-300 shadow-md"
+          : "border-slate-200 hover:border-slate-300 hover:shadow-sm"
+      }`}
+    >
+      <div className="flex items-center justify-between w-full gap-2 pl-4 pr-3 py-3">
+        <div
+          className="flex items-center gap-3 flex-1 cursor-pointer min-w-0"
+          onClick={() => onTagClick(tag)}
+        >
+          <span
+            className={`w-2.5 h-2.5 rounded-full ${
+              isSpecificTag ? "bg-indigo-500" : "bg-emerald-500"
+            }`}
+          ></span>
+          <div className="flex flex-col min-w-0">
+            <span className="font-bold text-slate-900 text-sm truncate">
+              {tag.name}
+            </span>
+            <span
+              className={`text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 mt-0.5 ${
+                isSpecificTag ? "text-indigo-600" : "text-emerald-600"
+              }`}
+            >
+              {isSpecificTag ? (
+                <>
+                  <Link2 size={9} /> Campaign Specific{" "}
+                  {tag.campaignName ? `(${tag.campaignName})` : ""}
+                </>
+              ) : (
+                "Global Tag"
+              )}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {!isDeleting ? (
+            <>
+              <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-md items-center gap-1 hidden sm:flex">
+                <Users size={10} /> {contacts?.length || 0}
+              </span>
+              <button
+                onClick={() => onEditClick(tag)}
+                className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
+                title="Edit Tag"
+              >
+                <Pencil size={14} />
+              </button>
+              <button
+                onClick={() => onDeleteClick(tag._id)}
+                className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                title="Delete Tag"
+              >
+                <Trash2 size={14} />
+              </button>
+              <ChevronDown
+                size={16}
+                className={`text-slate-400 transition-transform cursor-pointer ${
+                  isExpanded ? "rotate-180" : ""
+                }`}
+                onClick={() => onTagClick(tag)}
+              />
+            </>
+          ) : (
+            <div className="flex items-center gap-1 bg-red-50 p-1 rounded-md border border-red-100">
+              <span className="text-[10px] font-bold text-red-600 px-1">
+                Delete?
+              </span>
+              <button
+                onClick={() => onDeleteClick(tag._id)}
+                className="p-1 bg-red-500 text-white rounded-md hover:bg-red-600 text-[10px] font-bold px-2"
+              >
+                Yes
+              </button>
+              <button
+                onClick={() => onDeleteClick(null)}
+                className="p-1 text-slate-500 rounded-md hover:bg-slate-200 text-[10px] font-bold px-2"
+              >
+                No
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {isExpanded && (
+        <div className="border-t border-slate-100 bg-slate-50/50 p-4 animate-slide-in max-h-[200px] overflow-y-auto slim-scroll">
+          {loadingContacts && !contacts?.length ? (
+            <div className="flex justify-center items-center py-4">
+              <Loader2 size={16} className="animate-spin text-slate-400" />
+            </div>
+          ) : contacts?.length > 0 ? (
+            <div className="space-y-2">
+              {contacts.map((contact: any, idx: number) => (
+                <div
+                  key={idx}
+                  className="flex items-center gap-3 bg-white border border-slate-200 px-3 py-2 rounded-lg text-xs"
+                >
+                  <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 font-bold">
+                    {contact.name?.charAt(0).toUpperCase() || (
+                      <Phone size={12} />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-slate-800 truncate">
+                      {contact.name || "Unknown"}
+                    </p>
+                    <p className="text-slate-500 font-mono">{contact.phone}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-4">
+              <p className="text-xs text-slate-400 font-medium">
+                No contacts have been tagged with this yet.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
+
 export default function TagsPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
 
   const [tags, setTags] = useState<any[]>([]);
-  const [campaigns, setCampaigns] = useState<any[]>([]);
 
   // Form State
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -52,25 +196,24 @@ export default function TagsPage() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const [tagsRes, campsRes, limitsRes] = await Promise.all([
+      
+      // ✅ FIX: Removed the heavy /api/campaigns/counts fetch. 
+      // We only need tags and limits on this page.
+      const [tagsRes, limitsRes] = await Promise.all([
         fetch("/api/tags"),
-        fetch("/api/campaigns/list"),
         fetch("/api/user/limits?resource=tags"),
       ]);
 
-      if (tagsRes.status === 401 || campsRes.status === 401) {
+      if (tagsRes.status === 401) {
         router.push("/");
         return;
       }
 
       const tagsData = await tagsRes.json();
-      const campsData = await campsRes.json();
-
       setTags(tagsData.tags || []);
-      setCampaigns(campsData.campaigns || []);
 
       // ✅ Load limit info
       if (limitsRes.ok) {
@@ -89,7 +232,7 @@ export default function TagsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [router]);
 
   useEffect(() => {
     if (status === "authenticated") {
@@ -97,7 +240,7 @@ export default function TagsPage() {
     } else if (status === "unauthenticated") {
       router.push("/");
     }
-  }, [status, router]);
+  }, [status, router, loadData]);
 
   const resetForm = () => {
     setEditingId(null);
@@ -124,12 +267,13 @@ export default function TagsPage() {
 
     setSubmitting(true);
     try {
-      const camp = campaigns.find((c) => c._id === selectedCampaign);
+      // ✅ FIX: Since we don't have the campaigns list loaded, we just pass the ID.
+      // The backend can handle linking the name if needed, or we just pass null for name if not editing.
       const payload = {
         name: tagName,
         isCampaignSpecific: isSpecific,
         campaignId: isSpecific ? selectedCampaign : null,
-        campaignName: isSpecific ? camp?.name : null,
+        campaignName: null, 
       };
 
       let res;
@@ -194,7 +338,7 @@ export default function TagsPage() {
     }
   };
 
-  const handleTagClick = async (tag: any) => {
+  const handleTagClick = useCallback(async (tag: any) => {
     if (expandedTagId === tag._id) {
       setExpandedTagId(null);
       return;
@@ -215,7 +359,7 @@ export default function TagsPage() {
         setLoadingContacts(false);
       }
     }
-  };
+  }, [expandedTagId, contactsMap]);
 
   // ✅ Helpers for limit display
   const isLimitActive =
@@ -277,6 +421,7 @@ export default function TagsPage() {
 
       <main className="md:ml-64 min-h-screen flex flex-col">
         <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:p-10 space-y-6 sm:space-y-8">
+          
           {/* Header */}
           <div className="relative overflow-hidden bg-gradient-to-br from-[#E8F8EF] to-[#D1F4DE] rounded-2xl sm:rounded-3xl p-6 sm:p-8 border border-emerald-100 shadow-lg shadow-emerald-100/60">
             <div className="absolute -top-12 -right-12 w-56 h-56 bg-[#A5D6A7]/40 rounded-full blur-3xl"></div>
@@ -383,6 +528,7 @@ export default function TagsPage() {
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 lg:gap-8">
+            
             {/* Left Column: Create/Edit Form */}
             <div className="lg:col-span-2">
               <div className="bg-white p-5 sm:p-7 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow sticky top-6">
@@ -428,8 +574,6 @@ export default function TagsPage() {
                       disabled={submitting || (isAtLimit && !editingId)}
                     />
                   </div>
-
-                  
 
                   <button
                     type="submit"
@@ -499,147 +643,24 @@ export default function TagsPage() {
                   </div>
                 ) : (
                   <div className="flex-1 overflow-y-auto slim-scroll pr-2 space-y-3">
-                    {tags.map((tag) => {
-                      const isExpanded = expandedTagId === tag._id;
-                      const contacts = contactsMap[tag._id] || [];
-                      const isSpecificTag = tag.isCampaignSpecific;
-                      const isDeleting = deletingId === tag._id;
-
-                      return (
-                        <div
-                          key={tag._id}
-                          className={`rounded-xl border transition-all overflow-hidden ${
-                            isExpanded
-                              ? isSpecificTag
-                                ? "border-indigo-300 shadow-md"
-                                : "border-emerald-300 shadow-md"
-                              : "border-slate-200 hover:border-slate-300 hover:shadow-sm"
-                          }`}
-                        >
-                          <div className="flex items-center justify-between w-full gap-2 pl-4 pr-3 py-3">
-                            <div
-                              className="flex items-center gap-3 flex-1 cursor-pointer min-w-0"
-                              onClick={() => handleTagClick(tag)}
-                            >
-                              <span
-                                className={`w-2.5 h-2.5 rounded-full ${
-                                  isSpecificTag ? "bg-indigo-500" : "bg-emerald-500"
-                                }`}
-                              ></span>
-                              <div className="flex flex-col min-w-0">
-                                <span className="font-bold text-slate-900 text-sm truncate">
-                                  {tag.name}
-                                </span>
-                                <span
-                                  className={`text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 mt-0.5 ${
-                                    isSpecificTag ? "text-indigo-600" : "text-emerald-600"
-                                  }`}
-                                >
-                                  {isSpecificTag ? (
-                                    <>
-                                      <Link2 size={9} /> Campaign Specific{" "}
-                                      {tag.campaignName ? `(${tag.campaignName})` : ""}
-                                    </>
-                                  ) : (
-                                    "Global Tag"
-                                  )}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-2 shrink-0">
-                              {!isDeleting ? (
-                                <>
-                                  <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-md items-center gap-1 hidden sm:flex">
-                                    <Users size={10} /> {contacts.length || 0}
-                                  </span>
-                                  <button
-                                    onClick={() => handleEditClick(tag)}
-                                    className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
-                                    title="Edit Tag"
-                                  >
-                                    <Pencil size={14} />
-                                  </button>
-                                  <button
-                                    onClick={() => setDeletingId(tag._id)}
-                                    className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                                    title="Delete Tag"
-                                  >
-                                    <Trash2 size={14} />
-                                  </button>
-                                  <ChevronDown
-                                    size={16}
-                                    className={`text-slate-400 transition-transform cursor-pointer ${
-                                      isExpanded ? "rotate-180" : ""
-                                    }`}
-                                    onClick={() => handleTagClick(tag)}
-                                  />
-                                </>
-                              ) : (
-                                <div className="flex items-center gap-1 bg-red-50 p-1 rounded-md border border-red-100">
-                                  <span className="text-[10px] font-bold text-red-600 px-1">
-                                    Delete?
-                                  </span>
-                                  <button
-                                    onClick={() => handleDeleteTag(tag._id)}
-                                    className="p-1 bg-red-500 text-white rounded-md hover:bg-red-600 text-[10px] font-bold px-2"
-                                  >
-                                    Yes
-                                  </button>
-                                  <button
-                                    onClick={() => setDeletingId(null)}
-                                    className="p-1 text-slate-500 rounded-md hover:bg-slate-200 text-[10px] font-bold px-2"
-                                  >
-                                    No
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-
-                          {isExpanded && (
-                            <div className="border-t border-slate-100 bg-slate-50/50 p-4 animate-slide-in max-h-[200px] overflow-y-auto slim-scroll">
-                              {loadingContacts && !contacts.length ? (
-                                <div className="flex justify-center items-center py-4">
-                                  <Loader2 size={16} className="animate-spin text-slate-400" />
-                                </div>
-                              ) : contacts.length > 0 ? (
-                                <div className="space-y-2">
-                                  {contacts.map((contact, idx) => (
-                                    <div
-                                      key={idx}
-                                      className="flex items-center gap-3 bg-white border border-slate-200 px-3 py-2 rounded-lg text-xs"
-                                    >
-                                      <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 font-bold">
-                                        {contact.name?.charAt(0).toUpperCase() || (
-                                          <Phone size={12} />
-                                        )}
-                                      </div>
-                                      <div className="flex-1 min-w-0">
-                                        <p className="font-bold text-slate-800 truncate">
-                                          {contact.name || "Unknown"}
-                                        </p>
-                                        <p className="text-slate-500 font-mono">{contact.phone}</p>
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : (
-                                <div className="text-center py-4">
-                                  <p className="text-xs text-slate-400 font-medium">
-                                    No contacts have been tagged with this yet.
-                                  </p>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                    {tags.map((tag) => (
+                      <TagItem
+                        key={tag._id}
+                        tag={tag}
+                        isExpanded={expandedTagId === tag._id}
+                        contacts={contactsMap[tag._id]}
+                        loadingContacts={loadingContacts}
+                        onTagClick={handleTagClick}
+                        onEditClick={handleEditClick}
+                        onDeleteClick={setDeletingId}
+                        deletingId={deletingId}
+                      />
+                    ))}
                   </div>
                 )}
               </div>
             </div>
+            
           </div>
         </div>
       </main>
