@@ -1,25 +1,14 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions */
-/* eslint-disable prefer-const */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Campaign from "@/models/Campaign";
 import User from "@/models/User";
-import Message from "@/models/Message";
-import mongoose from "mongoose";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getPriceForCategory } from "@/lib/billing";
-import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
+import { campaignQueue } from "@/lib/queue";
 
 export const runtime = "nodejs";
-
-const TransactionSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  type: String, amount: Number, description: String, status: String,
-  createdAt: { type: Date, default: Date.now }, metadata: Object
-});
-const Transaction = mongoose.models.Transaction || mongoose.model('Transaction', TransactionSchema);
 
 function cleanStr(val: any): string {
   if (val == null) return "";
@@ -28,149 +17,6 @@ function cleanStr(val: any): string {
   if (s.startsWith("'") && s.endsWith("'")) s = s.slice(1, -1);
   s = s.replace(/\\"/g, '"').replace(/\\'/g, "'");
   return s;
-}
-
-function translateMetaError(error: any): string {
-  if (!error) return "Unknown error occurred";
-  const code = error.code;
-  const msg = (error.message || "").toLowerCase();
-  if (code === 132012) return "Media sent does not match template requirements.";
-  if (code === 131008) return "Missing button text in the template link.";
-  if (code === 132001) return "Template name or language does not exist.";
-  if (code === 100) return "Invalid data format sent to WhatsApp.";
-  if (code === 80007) return "Phone number is invalid or not on WhatsApp.";
-  if (code === 130429) return "Sending too fast. Rate limit reached.";
-  if (code === 470) return "Message failed. Number might have blocked you.";
-  if (code === 131051) return "Template is paused or disabled in Meta.";
-  if (msg.includes("recipient not on whatsapp")) return "Number is not active on WhatsApp.";
-  if (msg.includes("template name does not exist")) return "Template was deleted or name is wrong.";
-  if (msg.includes("format mismatch")) return "Wrong media type for template header.";
-  if (msg.includes("undeliverable") || msg.includes("unsupported message type")) return "Message not delivered to maintain a healthy ecosystem.";
-  return msg.replace(/[_\{\}\[\]]/g, " ").replace(/\s+/g, " ").trim() || "Failed to send";
-}
-
-function resolveCredentials(user: any, payer: any, explicitPhoneId?: string): { PHONE_NUMBER_ID: string; ACCESS_TOKEN: string } {
-  let PHONE_NUMBER_ID = cleanStr(explicitPhoneId || "");
-  let ACCESS_TOKEN = "";
-  if (PHONE_NUMBER_ID) {
-    if (user?.whatsappNumbers?.length > 0) { const m = user.whatsappNumbers.find((n: any) => n.whatsappPhoneNumberId === PHONE_NUMBER_ID || n.phoneNumberId === PHONE_NUMBER_ID || n.id === PHONE_NUMBER_ID || n._id?.toString() === PHONE_NUMBER_ID); if (m) ACCESS_TOKEN = m.whatsappAccessToken || m.accessToken || ""; }
-    if (!ACCESS_TOKEN && payer?.whatsappNumbers?.length > 0) { const m = payer.whatsappNumbers.find((n: any) => n.whatsappPhoneNumberId === PHONE_NUMBER_ID || n.phoneNumberId === PHONE_NUMBER_ID || n.id === PHONE_NUMBER_ID || n._id?.toString() === PHONE_NUMBER_ID); if (m) ACCESS_TOKEN = m.whatsappAccessToken || m.accessToken || ""; }
-    if (!ACCESS_TOKEN) ACCESS_TOKEN = user?.whatsappAccessToken || payer?.whatsappAccessToken || "";
-    if (!ACCESS_TOKEN) ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || "";
-    return { PHONE_NUMBER_ID, ACCESS_TOKEN };
-  }
-  if (user?.whatsappPhoneNumberId) { PHONE_NUMBER_ID = user.whatsappPhoneNumberId; ACCESS_TOKEN = user.whatsappAccessToken || ""; }
-  if (!PHONE_NUMBER_ID && user?.whatsappNumbers?.length > 0) { const a = user.whatsappNumbers.find((n: any) => n.isActive) || user.whatsappNumbers[0]; PHONE_NUMBER_ID = a.whatsappPhoneNumberId || a.phoneNumberId || a.id || ""; ACCESS_TOKEN = a.whatsappAccessToken || a.accessToken || user.whatsappAccessToken || ""; }
-  if (!PHONE_NUMBER_ID && payer?.whatsappPhoneNumberId) { PHONE_NUMBER_ID = payer.whatsappPhoneNumberId; ACCESS_TOKEN = payer.whatsappAccessToken || ""; }
-  if (!PHONE_NUMBER_ID && payer?.whatsappNumbers?.length > 0) { const a = payer.whatsappNumbers.find((n: any) => n.isActive) || payer.whatsappNumbers[0]; PHONE_NUMBER_ID = a.whatsappPhoneNumberId || a.phoneNumberId || a.id || ""; ACCESS_TOKEN = a.whatsappAccessToken || a.accessToken || payer.whatsappAccessToken || ""; }
-  if (!PHONE_NUMBER_ID) PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || "";
-  if (!ACCESS_TOKEN) ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || "";
-  return { PHONE_NUMBER_ID, ACCESS_TOKEN };
-}
-
-function getPriceForPhone(payer: any, phone: string, category: string): number {
-  if (payer.enabledCountries && payer.enabledCountries.length > 0) {
-    const c = payer.enabledCountries.find((c: any) => phone.startsWith(c.code));
-    if (c) {
-      if (category === "MARKETING") return c.priceMarketing ?? getPriceForCategory(payer, category);
-      if (category === "UTILITY") return c.priceUtility ?? getPriceForCategory(payer, category);
-      if (category === "AUTHENTICATION") return c.priceAuthentication ?? getPriceForCategory(payer, category);
-    }
-    return getPriceForCategory(payer, category);
-  }
-  return getPriceForCategory(payer, category);
-}
-
-async function fetchTemplateHeaderFormat(phoneNumberId: string, accessToken: string, templateName: string, languageCode: string, userProvidedMediaType: string): Promise<string> {
-  const valid = ["image", "video", "document"]; 
-  const clean = cleanStr(userProvidedMediaType).toLowerCase().trim();
-  try {
-    let res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}&language=${encodeURIComponent(languageCode)}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (res.ok) { const d = await res.json(); const t = d?.data?.[0]; if (t?.components) for (const c of t.components) if (c.type === "HEADER") return (c.format || "none").toUpperCase(); }
-    res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (res.ok) { const d = await res.json(); const t = d?.data?.[0]; if (t?.components) for (const c of t.components) if (c.type === "HEADER") return (c.format || "none").toUpperCase(); }
-  } catch (e) {}
-  if (valid.includes(clean)) return clean.toUpperCase();
-  return "none";
-}
-
-function buildCampaignComponents(headerFormat: string, variables: string[], mediaUrl: string): any[] {
-  const comps: any[] = []; 
-  const valid = ["image", "video", "document"];
-  if (valid.includes(headerFormat.toLowerCase()) && mediaUrl) {
-    const hType = headerFormat.toLowerCase(); 
-    const mObj: any = mediaUrl.startsWith("http") ? { link: mediaUrl } : { id: mediaUrl };
-    const param: any = { type: hType };
-    if (hType === "image") param.image = mObj; 
-    else if (hType === "video") param.video = mObj; 
-    else if (hType === "document") param.document = { ...mObj, filename: "document.pdf" };
-    comps.push({ type: "header", parameters: [param] });
-  }
-  if (variables.length > 0) comps.push({ type: "body", parameters: variables.map((v: string) => ({ type: "text", text: String(v) })) });
-  return comps;
-}
-
-function extractWamid(data: any): string | null {
-  if (data?.messages?.[0]?.id) return data.messages[0].id;
-  if (data?.message_id) return data.message_id;
-  return null;
-}
-
-// 🚀 WORKER: Meta API Sender (30s timeout to prevent hanging)
-async function metaSenderWorker(phone: string, variables: string[], tc: any, token: string, pnId: string, thf: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
-  try {
-    let cv = variables; 
-    let comps = buildCampaignComponents(thf, cv, tc.mediaUrl || "");
-    
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
-
-    let sendRes = await fetch(`https://graph.facebook.com/v21.0/${pnId}/messages`, { 
-      method: "POST", 
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, 
-      body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } }),
-      signal: controller.signal
-    });
-    
-    clearTimeout(timeoutId);
-    
-    if (sendRes.ok) { let wamid = null; try { const d = await sendRes.json(); wamid = extractWamid(d); } catch {} return { status: "sent", wamid }; }
-    
-    let sendData: any = { error: {} }; 
-    try { sendData = await sendRes.json(); } catch { return { status: "failed", error: "Meta API invalid response" }; }
-    
-    let wamid = extractWamid(sendData); 
-    if (wamid) return { status: "sent", wamid };
-
-    if (sendData.error?.code === 131008 && tc.templateCategory === "AUTHENTICATION" && cv.length > 0) {
-      const rc: any[] = []; 
-      if (comps.length > 0 && comps[0].type === "header") rc.push(comps[0]);
-      rc.push({ type: "body", parameters: cv.map((v: string) => ({ type: "text", text: String(v) })) });
-      rc.push({ type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: String(cv[0]) }] });
-      sendRes = await fetch(`https://graph.facebook.com/v21.0/${pnId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: rc } }) });
-      if (sendRes.ok) { try { return { status: "sent", wamid: extractWamid(await sendRes.json()) }; } catch { return { status: "sent" }; } }
-      try { sendData = await sendRes.json(); if (extractWamid(sendData)) return { status: "sent", wamid: extractWamid(sendData) }; } catch {}
-    }
-    if (sendData.error?.code === 132012 && tc.mediaUrl) {
-      const m = (sendData.error?.error_data?.details || "").match(/expected\s+(\w+)/i);
-      if (m && ["IMAGE", "VIDEO", "DOCUMENT"].includes(m[1].toUpperCase())) {
-        comps = buildCampaignComponents(m[1].toUpperCase(), cv, tc.mediaUrl);
-        sendRes = await fetch(`https://graph.facebook.com/v21.0/${pnId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } }) });
-        if (sendRes.ok) { try { return { status: "sent", wamid: extractWamid(await sendRes.json()) }; } catch { return { status: "sent" }; } }
-        try { sendData = await sendRes.json(); if (extractWamid(sendData)) return { status: "sent", wamid: extractWamid(sendData) }; } catch {}
-      }
-    }
-    if (sendData.error?.code === 132012 && comps.length > 0 && comps[0].type === "header") {
-      const nc = comps.filter((c: any) => c.type !== "header");
-      sendRes = await fetch(`https://graph.facebook.com/v21.0/${pnId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: nc } }) });
-      if (sendRes.ok) { try { return { status: "sent", wamid: extractWamid(await sendRes.json()) }; } catch { return { status: "sent" }; } }
-      try { sendData = await sendRes.json(); if (extractWamid(sendData)) return { status: "sent", wamid: extractWamid(sendData) }; } catch {}
-    }
-    return { status: "failed", error: translateMetaError(sendData.error) };
-  } catch (err: any) { 
-    if (err.name === 'AbortError') return { status: "failed", error: "Meta API Timeout (30s)" };
-    return { status: "failed", error: err.message || "System error" }; 
-  }
 }
 
 export async function POST(req: Request) {
@@ -187,7 +33,7 @@ export async function POST(req: Request) {
     if (!campaign || campaign.userId.toString() !== userId) return NextResponse.json({ success: false, message: "Not found" }, { status: 404 });
     
     if (["paused", "stopped", "completed"].includes(campaign.status)) {
-      return NextResponse.json({ success: true, hasMore: false, message: "Campaign stopped or already completed." });
+      return NextResponse.json({ success: true, message: "Campaign stopped or already completed." });
     }
 
     const user = await User.findById(userId); 
@@ -198,149 +44,46 @@ export async function POST(req: Request) {
     let exPhone = ""; 
     if (campaign.senderPhoneId) { const n = user.whatsappNumbers?.find((n: any) => n._id?.toString() === campaign.senderPhoneId); exPhone = n?.whatsappPhoneNumberId || campaign.senderPhoneId; }
 
-    const { PHONE_NUMBER_ID, ACCESS_TOKEN } = resolveCredentials(user.toObject(), payer.toObject(), exPhone);
+    let PHONE_NUMBER_ID = cleanStr(exPhone || "");
+    let ACCESS_TOKEN = "";
+    if (user?.whatsappNumbers?.length > 0) { const m = user.whatsappNumbers.find((n: any) => n.whatsappPhoneNumberId === PHONE_NUMBER_ID || n.phoneNumberId === PHONE_NUMBER_ID || n.id === PHONE_NUMBER_ID || n._id?.toString() === PHONE_NUMBER_ID); if (m) ACCESS_TOKEN = m.whatsappAccessToken || ""; }
+    if (!ACCESS_TOKEN && payer?.whatsappNumbers?.length > 0) { const m = payer.whatsappNumbers.find((n: any) => n.whatsappPhoneNumberId === PHONE_NUMBER_ID || n.phoneNumberId === PHONE_NUMBER_ID || n.id === PHONE_NUMBER_ID || n._id?.toString() === PHONE_NUMBER_ID); if (m) ACCESS_TOKEN = m.whatsappAccessToken || ""; }
+    if (!ACCESS_TOKEN) ACCESS_TOKEN = user?.whatsappAccessToken || payer?.whatsappAccessToken || process.env.META_ACCESS_TOKEN || "";
+    if (!PHONE_NUMBER_ID) PHONE_NUMBER_ID = user?.whatsappPhoneNumberId || payer?.whatsappPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || "";
+
     if (!PHONE_NUMBER_ID || !ACCESS_TOKEN) return NextResponse.json({ success: false, message: "WhatsApp credentials not configured." }, { status: 400 });
-
-    const cTName = cleanStr(campaign.templateName); 
-    const cLang = cleanStr(campaign.languageCode || "en"); 
-    const cMedia = cleanStr(campaign.mediaType || "none");
-
-    let thf = campaign.templateHeaderFormat || "";
-    if (!thf) {
-      thf = await fetchTemplateHeaderFormat(PHONE_NUMBER_ID, ACCESS_TOKEN, cTName, cLang, cMedia);
-      campaign.templateHeaderFormat = thf; 
-    }
 
     const cat = (campaign.templateCategory || "MARKETING").toUpperCase().trim(); 
     const bPrice = getPriceForCategory(payer, cat);
-    
-    if (bPrice > 0 && (payer.balance || 0) < bPrice) {
-      await Campaign.updateOne({ _id: campaignId }, { $set: { status: "paused", pausedReason: "Insufficient balance" } });
-      return NextResponse.json({ success: false, hasMore: false, message: `Paused. Insufficient balance.` });
-    }
-
-    const tc = { templateName: cTName, languageCode: cLang, templateCategory: campaign.templateCategory, generateOtp: campaign.generateOtp, otpLength: campaign.otpLength || 4, mediaUrl: campaign.mediaUrl };
-
-    if (campaign.status !== "running") {
-      campaign.status = "running";
-      await Campaign.updateOne({ _id: campaignId }, { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID, templateName: cTName, languageCode: cLang, templateHeaderFormat: thf } });
-    }
+    if (bPrice > 0 && (payer.balance || 0) < bPrice) return NextResponse.json({ success: false, message: `Insufficient balance.` }, { status: 402 });
 
     await Campaign.updateMany({ _id: campaignId, "reportData.status": "queued" }, { $set: { "reportData.$.status": "pending" } });
+    await Campaign.updateOne({ _id: campaignId }, { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID } });
 
-    let sent = campaign.sentCount || 0, failed = campaign.failedCount || 0, skipped = campaign.skippedCount || 0, ded = campaign.totalDeducted || 0;
-    let payerBalance = payer.balance || 0;
+    // Divide 10,000 numbers into chunks of 50
+    const CHUNK_SIZE = 50;
+    const totalNumbers = campaign.phoneNumbers.length;
+    const jobs = [];
 
-    const BS = 20; // ✅ Reduced to 20 to guarantee it finishes in < 2 seconds (prevents server timeouts)
-    const metaPromises: Promise<any>[] = []; 
-    const batchIndices: number[] = []; 
-    const batchPhones: string[] = [];
-    const claimOps: any[] = [];
-    let hasMore = false;
-
-    for (let ci = 0; ci < campaign.phoneNumbers.length; ci++) {
-      if (metaPromises.length >= BS) {
-        hasMore = true; 
-        break;
-      }
-      
-      const ph = campaign.phoneNumbers[ci];
-      const cs = campaign.reportData[ci]?.status;
-      
-      if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(cs)) {
-        continue; 
-      } else {
-        claimOps.push({ updateOne: { filter: { _id: campaignId, [`reportData.${ci}.status`]: "pending" }, update: { $set: { [`reportData.${ci}.status`]: "queued" } } } });
-        
-        let cv: string[] = [];
-        if (campaign.templateCategory === "AUTHENTICATION") { 
-          if (campaign.generateOtp || !campaign.mappedVariables?.[ci]?.length) { 
-            const l = campaign.otpLength || 4; 
-            cv = [Math.floor(Math.random() * (Math.pow(10, l) - Math.pow(10, l - 1) + 1) + Math.pow(10, l - 1)).toString()]; 
-          } else cv = campaign.mappedVariables[ci]; 
-        } else cv = (campaign.mappedVariables?.[ci]?.length > 0) ? campaign.mappedVariables[ci] : (campaign.variables || []);
-        
-        cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
-        metaPromises.push(metaSenderWorker(ph, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
-        batchIndices.push(ci); 
-        batchPhones.push(ph);
-      }
+    for (let i = 0; i < totalNumbers; i += CHUNK_SIZE) {
+      jobs.push({
+        name: 'send-chunk',
+        data: {
+          campaignId,
+          userId,
+          payerId: payer._id.toString(),
+          startIdx: i,
+          endIdx: Math.min(i + CHUNK_SIZE, totalNumbers),
+          PHONE_NUMBER_ID,
+          ACCESS_TOKEN,
+        }
+      });
     }
 
-    if (claimOps.length > 0) try { await Campaign.bulkWrite(claimOps); } catch (e) {}
+    // Add all jobs to BullMQ Queue in bulk
+    await campaignQueue.addBulk(jobs);
 
-    const metaResults = await Promise.all(metaPromises); 
-    let bd = 0;
-    const campaignBulkOps: any[] = [];
-    const messagesToCreate: any[] = [];
-    
-    for (let i = 0; i < metaResults.length; i++) {
-      const r = metaResults[i]; 
-      const ci = batchIndices[i]; 
-      const ph = batchPhones[i].replace(/\+/g, "");
-      
-      if (r.status === "sent") {
-        sent++;
-        const pp = getPriceForPhone(payer, ph, cat); 
-        bd += pp;
-        
-        campaignBulkOps.push({
-          updateOne: { 
-            filter: { _id: campaignId, [`reportData.${ci}.status`]: "queued" }, 
-            update: { $set: {
-              [`reportData.${ci}.status`]: "sent",
-              [`reportData.${ci}.sentWamid`]: r.wamid,
-              [`reportData.${ci}.charged`]: true,
-              [`reportData.${ci}.chargedAmount`]: pp
-            }}
-          }
-        });
-
-        messagesToCreate.push({ userId, phone: ph, text: "", direction: "out", messageType: "template", mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID });
-      } else if (r.status === "failed") {
-        failed++;
-        campaignBulkOps.push({
-          updateOne: { 
-            filter: { _id: campaignId, [`reportData.${ci}.status`]: "queued" }, 
-            update: { $set: {
-              [`reportData.${ci}.status`]: "failed",
-              [`reportData.${ci}.error`]: r.error || "Unknown error"
-            }}
-          }
-        });
-      }
-    }
-
-    if (bd > 0) { 
-      payerBalance = Math.round((payerBalance - bd) * 100) / 100; 
-      if (payerBalance < 0) payerBalance = 0; 
-      ded = Math.round((ded + bd) * 100) / 100;
-    }
-
-    if (campaignBulkOps.length > 0) try { await Campaign.bulkWrite(campaignBulkOps); } catch (e) {}
-    if (messagesToCreate.length > 0) try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) {}
-
-    await User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } });
-    await Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded } });
-
-    if (!hasMore && metaPromises.length === 0) {
-      const finalStatus = (sent > 0 || skipped > 0) ? "completed" : "failed";
-      await Campaign.updateOne({ _id: campaignId }, { $set: { status: finalStatus, completedAt: new Date() } });
-      
-      try {
-        const freshCampaign = await Campaign.findById(campaignId).lean();
-        const plainReportData = (freshCampaign?.reportData || []).map((r: any) => ({
-          name: r.name || "", phone: r.phone || "", status: r.status || "", error: r.error || "",
-          replies: r.replies || [], reply: r.reply || null, tags: r.tags || [], additionalData: r.additionalData || []
-        }));
-        await syncCampaignToGoogleSheet(userId, { name: freshCampaign?.name || "Campaign", reportData: plainReportData });
-      } catch (e) { console.error("Sheet sync failed:", e); }
-
-      return NextResponse.json({ success: true, hasMore: false, message: "Campaign complete." });
-    }
-
-    return NextResponse.json({ success: true, hasMore });
-
+    return NextResponse.json({ success: true, message: "Campaign started in background queue!" });
   } catch (error: any) {
     console.error("❌ Start Campaign Error:", error);
     return NextResponse.json({ success: false, message: error.message }, { status: 500 });
