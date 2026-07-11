@@ -32,8 +32,27 @@ export async function POST(req: Request) {
     const campaign = await Campaign.findById(campaignId);
     if (!campaign || campaign.userId.toString() !== userId) return NextResponse.json({ success: false, message: "Not found" }, { status: 404 });
     
-    if (["paused", "stopped", "completed"].includes(campaign.status)) {
-      return NextResponse.json({ success: true, message: "Campaign stopped or already completed." });
+    if (["completed", "stopped"].includes(campaign.status)) {
+      return NextResponse.json({ success: true, message: "Campaign already completed or stopped." });
+    }
+
+    // 🚀 FIX: block re-starting a campaign that's already actively running.
+    // Previously "running" fell through and re-queued EVERY chunk from
+    // scratch on every call — if /start got hit twice (double-click,
+    // frontend retry, etc.) this flooded the shared queue with duplicate
+    // jobs for the whole campaign, starving real progress.
+    if (campaign.status === "running") {
+      const activeCount = await campaignQueue.getActiveCount();
+      const waitingCount = await campaignQueue.getWaitingCount();
+      if (activeCount > 0 || waitingCount > 0) {
+        return NextResponse.json({
+          success: true,
+          message: "Campaign is already running and has jobs in progress.",
+        });
+      }
+      // status says "running" but queue is empty -> genuinely stuck, fall
+      // through and let the recovery logic below re-queue it safely
+      // (deterministic jobIds below make this idempotent even if wrong).
     }
 
     const user = await User.findById(userId); 
@@ -57,10 +76,19 @@ export async function POST(req: Request) {
     const bPrice = getPriceForCategory(payer, cat);
     if (bPrice > 0 && (payer.balance || 0) < bPrice) return NextResponse.json({ success: false, message: `Insufficient balance.` }, { status: 402 });
 
-    await Campaign.updateMany({ _id: campaignId, "reportData.status": "queued" }, { $set: { "reportData.$.status": "pending" } });
+    // 🚀 FIX: positional `$` only patches the FIRST matching array element.
+    // Any campaign that ever had more than one item stuck in "queued"
+    // (crashed job, restart, timeout) would leave the rest stuck forever,
+    // since the worker permanently skips "queued" items. arrayFilters with
+    // $[elem] patches ALL matching elements in one go.
+    await Campaign.updateOne(
+      { _id: campaignId },
+      { $set: { "reportData.$[elem].status": "pending" } },
+      { arrayFilters: [{ "elem.status": "queued" }] }
+    );
     await Campaign.updateOne({ _id: campaignId }, { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID } });
 
-    // Divide 10,000 numbers into chunks of 50
+    // Divide numbers into chunks of 50
     const CHUNK_SIZE = 50;
     const totalNumbers = campaign.phoneNumbers.length;
     const jobs = [];
@@ -76,11 +104,23 @@ export async function POST(req: Request) {
           endIdx: Math.min(i + CHUNK_SIZE, totalNumbers),
           PHONE_NUMBER_ID,
           ACCESS_TOKEN,
+        },
+        opts: {
+          attempts: 3,
+          backoff: {
+            type: 'exponential',
+            delay: 2000
+          },
+          // 🚀 FIX: deterministic jobId per (campaign, chunk). BullMQ will
+          // refuse/no-op adding a job whose ID already exists and hasn't
+          // completed — this makes /start idempotent even if it's called
+          // multiple times concurrently, instead of duplicating every
+          // chunk of the entire campaign each time.
+          jobId: `${campaignId}-chunk-${i}`,
         }
       });
     }
 
-    // Add all jobs to BullMQ Queue in bulk
     await campaignQueue.addBulk(jobs);
 
     return NextResponse.json({ success: true, message: "Campaign started in background queue!" });
