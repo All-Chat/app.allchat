@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Sidebar from "@/components/Sidebar";
 import { 
   BarChart3, Download, Loader2, Search, CheckCircle, XCircle, Clock, 
@@ -26,6 +26,18 @@ type ReportItem = {
   additionalData?: string[];
 };
 
+type LiveStats = {
+  total: number;
+  replied: number;
+  read: number;
+  delivered: number;
+  sent: number;
+  failed: number;
+  invalid: number;
+  duplicate: number;
+  pending: number;
+};
+
 type Campaign = {
   _id: string;
   name: string;
@@ -37,6 +49,7 @@ type Campaign = {
   templateName?: string;
   createdAt?: string;
   additionalFields?: string[];
+  liveStats?: LiveStats;
   [x: string]: any;
 };
 
@@ -65,13 +78,11 @@ export default function ReportsPage() {
   const [tags, setTags] = useState<any[]>([]);
   const [tagFilter, setTagFilter] = useState("all");
 
-  // ✅ Pagination State
   const [reportCurrentPage, setReportCurrentPage] = useState(1);
   const [reportTotalPages, setReportTotalPages] = useState(1);
 
-  // ==========================================
-  // HELPER FUNCTIONS
-  // ==========================================
+  // ✅ AbortController to cancel old requests if user switches campaigns quickly
+  const fetchReportController = useRef<AbortController | null>(null);
 
   const getRepliesList = (d: ReportItem): string[] => {
     if (d.phone) {
@@ -90,12 +101,14 @@ export default function ReportsPage() {
     return [];
   };
 
-  const getCampaignStats = (c: Campaign) => {
+  const getCampaignStats = (c: Campaign): LiveStats => {
+    if (c.liveStats) return c.liveStats;
     return {
+      total: c.totalMessages || 0,
       replied: 0, read: 0, delivered: 0, 
       sent: c.sentCount || 0, 
       failed: c.failedCount || 0, 
-      invalid: 0, 
+      invalid: 0, duplicate: 0,
       pending: c.totalMessages - ((c.sentCount || 0) + (c.failedCount || 0))
     };
   };
@@ -116,10 +129,6 @@ export default function ReportsPage() {
     }
   };
 
-  // ==========================================
-  // EFFECTS & DATA FETCHING
-  // ==========================================
-
   useEffect(() => {
     if (status === "authenticated") {
       fetchCampaigns();
@@ -132,14 +141,10 @@ export default function ReportsPage() {
 
   useEffect(() => {
     if (!selectedId) return;
-    
-    // Fetch initial page 1 ONCE when a campaign is selected.
     fetchReportData(selectedId, 1);
     fetchReplies(selectedId);
-    
   }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ✅ Re-fetch from backend whenever filters or search change to ensure 50 items per page
   useEffect(() => { 
     if (selectedId) {
       fetchReportData(selectedId, 1);
@@ -154,7 +159,8 @@ export default function ReportsPage() {
       if (data.success) {
         const validCampaigns = data.campaigns.filter((c: Campaign) => c.status !== "saved" && c.status !== "scheduled");
         setCampaigns(validCampaigns);
-        if (!selectedId && validCampaigns.length > 0) setSelectedId(validCampaigns[0]._id || null);
+        // ✅ Select the LAST campaign in the list by default
+        if (!selectedId && validCampaigns.length > 0) setSelectedId(validCampaigns[validCampaigns.length - 1]._id || null);
       }
     } catch (error) { 
       console.error("Failed to fetch campaigns", error); 
@@ -213,11 +219,17 @@ export default function ReportsPage() {
     }
   };
 
-  // ✅ Fetches ONLY 50 numbers from the backend, passing filters so backend does the heavy lifting
   const fetchReportData = async (id: string, page: number = 1) => {
+    // ✅ Abort previous request if still loading
+    if (fetchReportController.current) {
+      fetchReportController.current.abort();
+    }
+    const controller = new AbortController();
+    fetchReportController.current = controller;
+    
     setLoadingReport(true);
     setReportCurrentPage(page);
-    setReportData([]); // Clear old data immediately to prevent showing wrong campaign data
+    setReportData([]);
     
     try {
       const params = new URLSearchParams();
@@ -227,24 +239,21 @@ export default function ReportsPage() {
       if (filterOut.length > 0) params.set('filterOut', filterOut.join(','));
       if (search) params.set('search', search);
       
-      const res = await fetch(`/api/campaigns/list?${params.toString()}`);
+      const res = await fetch(`/api/campaigns/list?${params.toString()}`, { signal: controller.signal });
       const data = await res.json();
       
       if (data.success && data.campaigns[0]) {
         setReportData(data.campaigns[0].reportData || []);
         setReportTotalPages(data.totalPages || 1);
-        setCampaignStats(data.campaignStats || {}); // ✅ Store true total stats
+        setCampaignStats(data.campaignStats || {});
       }
-    } catch (error) { 
+    } catch (error: any) { 
+      if (error.name === 'AbortError') return; // Ignore aborts
       console.error("Failed to fetch report data", error); 
     } finally { 
       setLoadingReport(false); 
     }
   };
-
-  // ==========================================
-  // FILTERING & MODAL LOGIC
-  // ==========================================
 
   const toggleArrayValue = (arr: string[], value: string, setter: (v: string[]) => void) => {
     if (arr.includes(value)) setter(arr.filter(v => v !== value));
@@ -256,10 +265,6 @@ export default function ReportsPage() {
     if (tagFilter === "untagged") return !d.tags || d.tags.length === 0;
     return d.tags?.includes(tagFilter);
   });
-
-  // ==========================================
-  // EXCEL DOWNLOAD
-  // ==========================================
 
   const downloadExcel = () => {
     if (reportData.length === 0) { toast.error("No data to download"); return; }
@@ -286,10 +291,6 @@ export default function ReportsPage() {
     XLSX.writeFile(wb, `${campName}_Report.xlsx`);
   };
 
-  // ==========================================
-  // RENDER HELPERS
-  // ==========================================
-
   const selectedCamp = campaigns.find(c => c._id === selectedId);
   const additionalFieldsCount = selectedCamp?.additionalFields?.length || 0;
 
@@ -298,7 +299,6 @@ export default function ReportsPage() {
     setShowCampaignList(false); 
   };
 
-  // ✅ FIX: Use `campaignStats` for the Brief Modal so it always shows true total numbers
   const totalMessages = campaignStats.total || 0;
   const repliedCount = campaignStats.replied || 0;
   const readCount = campaignStats.read || 0;
@@ -352,7 +352,6 @@ export default function ReportsPage() {
     <div className="min-h-screen bg-slate-50 text-gray-900">
       <Sidebar />
 
-      {/* ✅ BRIEF REPORT MODAL */}
       {isBriefOpen && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4" onClick={() => setIsBriefOpen(false)}>
           <div className="bg-white rounded-3xl w-full max-w-4xl shadow-2xl overflow-hidden flex flex-col border border-slate-100 max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
@@ -423,7 +422,6 @@ export default function ReportsPage() {
 
       <div className="md:ml-64 flex h-screen overflow-hidden">
         
-        {/* LEFT: CAMPAIGN LIST PANEL */}
         <div className={`w-full md:w-80 bg-white md:border-r border-slate-200 flex flex-col shadow-sm flex-shrink-0 ${
           showCampaignList ? "flex" : "hidden md:flex"
         }`}>
@@ -476,7 +474,6 @@ export default function ReportsPage() {
           </div>
         </div>
 
-        {/* RIGHT: REPORT TABLE PANEL */}
         <div className={`flex-1 flex flex-col bg-slate-50 overflow-hidden ${
           !showCampaignList ? "flex" : "hidden md:flex"
         }`}>
@@ -545,7 +542,6 @@ export default function ReportsPage() {
 
               <div className="flex-1 overflow-y-auto overflow-x-auto p-4 sm:p-6 space-y-4">
                 
-                {/* Multi-Select Filters Card */}
                 <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
                   <div>
                     <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest flex items-center gap-2 mb-2">
@@ -561,7 +557,6 @@ export default function ReportsPage() {
                   </div>
                 </div>
 
-                {/* Data Table */}
                 <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden min-w-[640px]">
                   {loadingReport ? (
                     <div className="flex justify-center items-center h-64">
@@ -640,7 +635,6 @@ export default function ReportsPage() {
                   )}
                 </div>
 
-                {/* ✅ Report Pagination Controls (Fetches next 50 from DB) */}
                 {reportTotalPages > 1 && (
                   <div className="flex justify-center items-center gap-4 mt-8">
                     <button 
@@ -668,7 +662,6 @@ export default function ReportsPage() {
         </div>
       </div>
 
-      {/* AUDIENCE DETAILS MODAL */}
       {isModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden">
