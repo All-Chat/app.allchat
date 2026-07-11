@@ -30,6 +30,43 @@ function cleanStr(val: any): string {
   return s;
 }
 
+// ✅ RESTORED: Fetch template header format from Meta
+async function fetchTemplateHeaderFormat(phoneNumberId: string, accessToken: string, templateName: string, languageCode: string, userProvidedMediaType: string): Promise<string> {
+  const valid = ["image", "video", "document"]; 
+  const clean = cleanStr(userProvidedMediaType).toLowerCase().trim();
+  try {
+    let res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}&language=${encodeURIComponent(languageCode)}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (res.ok) { const d = await res.json(); const t = d?.data?.[0]; if (t?.components) for (const c of t.components) if (c.type === "HEADER") return (c.format || "none").toUpperCase(); }
+    res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (res.ok) { const d = await res.json(); const t = d?.data?.[0]; if (t?.components) for (const c of t.components) if (c.type === "HEADER") return (c.format || "none").toUpperCase(); }
+  } catch (e) {}
+  if (valid.includes(clean)) return clean.toUpperCase();
+  return "none";
+}
+
+// ✅ RESTORED: Build components including Header (Media) and Body (Text)
+function buildCampaignComponents(headerFormat: string, variables: string[], mediaUrl: string): any[] {
+  const comps: any[] = []; 
+  const valid = ["image", "video", "document"];
+  if (valid.includes(headerFormat.toLowerCase()) && mediaUrl) {
+    const hType = headerFormat.toLowerCase(); 
+    const mObj: any = mediaUrl.startsWith("http") ? { link: mediaUrl } : { id: mediaUrl };
+    const param: any = { type: hType };
+    if (hType === "image") param.image = mObj; 
+    else if (hType === "video") param.video = mObj; 
+    else if (hType === "document") param.document = { ...mObj, filename: "document.pdf" };
+    comps.push({ type: "header", parameters: [param] });
+  }
+  if (variables.length > 0) {
+    const params = new Array(variables.length);
+    for (let i = 0; i < variables.length; i++) {
+      params[i] = { type: "text", text: String(variables[i]) };
+    }
+    comps.push({ type: "body", parameters: params });
+  }
+  return comps;
+}
+
 // ==========================================
 // 3. REDIS & QUEUE CONFIGURATION
 // ==========================================
@@ -133,6 +170,7 @@ async function processCampaignChunk(data: any) {
     languageCode: 1,
     mediaType: 1,
     mediaUrl: 1,
+    templateHeaderFormat: 1, // ✅ RESTORED: Fetch cached header format
     generateOtp: 1,
     otpLength: 1,
     variables: 1,
@@ -144,10 +182,17 @@ async function processCampaignChunk(data: any) {
 
   if (["paused", "stopped", "completed"].includes(campaign.status)) return;
 
-  // ✅ FIX 132001: Meta API requires template names to be strictly lowercase and match exactly
   const cTName = cleanStr(campaign.templateName).toLowerCase();
   const cLang = cleanStr(campaign.languageCode || "en");
+  const cMedia = cleanStr(campaign.mediaType || "none");
   const cat = (campaign.templateCategory || "MARKETING").toUpperCase();
+
+  // ✅ RESTORED: Fetch template header format if not cached
+  let thf = campaign.templateHeaderFormat || "";
+  if (!thf) {
+    thf = await fetchTemplateHeaderFormat(PHONE_NUMBER_ID, ACCESS_TOKEN, cTName, cLang, cMedia);
+    await Campaign.updateOne({ _id: campaignId }, { $set: { templateHeaderFormat: thf } });
+  }
 
   const tc = { 
     templateName: cTName, languageCode: cLang, templateCategory: campaign.templateCategory, 
@@ -185,7 +230,8 @@ async function processCampaignChunk(data: any) {
     
     cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
     
-    metaPromises.push(metaSenderWorker(ph, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID));
+    // ✅ RESTORED: Pass `thf` to worker
+    metaPromises.push(metaSenderWorker(ph, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
     batchAbsoluteIndices.push(absoluteIndex); 
     batchPhones.push(ph);
   }
@@ -280,7 +326,6 @@ async function processCampaignChunk(data: any) {
     }
   }
 
-  // ATOMIC USER BALANCE UPDATE
   if (bd > 0) {
     try {
       await User.updateOne({ _id: payerId }, { $inc: { balance: -bd } });
@@ -289,7 +334,6 @@ async function processCampaignChunk(data: any) {
     }
   }
 
-  // ATOMIC CAMPAIGN COMPLETION & SHEET SYNC LOCK
   try {
     await Campaign.updateOne(
       { _id: campaignId }, 
@@ -330,24 +374,9 @@ async function processCampaignChunk(data: any) {
 // ==========================================
 // 6. META API WORKER FUNCTION
 // ==========================================
-async function metaSenderWorker(phone: string, variables: string[], tc: any, token: string, pnId: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
-  const comps: any[] = [];
+async function metaSenderWorker(phone: string, variables: string[], tc: any, token: string, pnId: string, thf: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
+  let comps = buildCampaignComponents(thf, variables, tc.mediaUrl || "");
   
-  if (variables.length > 0) {
-    const params = new Array(variables.length);
-    for (let i = 0; i < variables.length; i++) {
-      params[i] = { type: "text", text: String(variables[i]) };
-    }
-    comps.push({ type: "body", parameters: params });
-  }
-
-  const payload = JSON.stringify({ 
-    messaging_product: "whatsapp", 
-    to: phone, 
-    type: "template", 
-    template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } 
-  });
-
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   const url = `https://graph.facebook.com/v21.0/${pnId}/messages`;
 
@@ -359,36 +388,44 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
     const timeoutId = setTimeout(() => controller.abort(), 30000);
 
     try {
-      const sendRes = await fetch(url, { 
-        method: "POST", 
-        headers, 
-        body: payload,
-        signal: controller.signal
+      const payload = JSON.stringify({ 
+        messaging_product: "whatsapp", to: phone, type: "template", 
+        template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } 
       });
-      
+
+      const sendRes = await fetch(url, { method: "POST", headers, body: payload, signal: controller.signal });
       clearTimeout(timeoutId);
       
       if (sendRes.ok) { 
         let wamid = null; 
-        try { 
-          const d = await sendRes.json(); 
-          wamid = d?.messages?.[0]?.id || d?.message_id; 
-        } catch (e) {
+        try { const d = await sendRes.json(); wamid = d?.messages?.[0]?.id || d?.message_id; } catch (e) {
           console.error(`[Meta API] Failed to parse success JSON for ${phone}:`, e);
         } 
         return { status: "sent", wamid }; 
       }
       
       let sendData: any = null; 
-      try { 
-        sendData = await sendRes.json(); 
-      } catch { 
-        return { status: "failed", error: "Meta API invalid response" }; 
-      }
+      try { sendData = await sendRes.json(); } catch { return { status: "failed", error: "Meta API invalid response" }; }
 
       const statusCode = sendRes.status;
       const errorMsg = sendData?.error?.message || "Failed to send";
 
+      // ✅ RESTORED: Retry Logic for Media Format Mismatch (132012)
+      if (sendData.error?.code === 132012 && tc.mediaUrl) {
+        const m = (sendData.error?.error_data?.details || "").match(/expected\s+(\w+)/i);
+        if (m && ["IMAGE", "VIDEO", "DOCUMENT"].includes(m[1].toUpperCase())) {
+          comps = buildCampaignComponents(m[1].toUpperCase(), variables, tc.mediaUrl);
+          attempt++; // Count as a retry to prevent infinite loop
+          continue;
+        }
+      }
+      if (sendData.error?.code === 132012 && comps.length > 0 && comps[0].type === "header") {
+        comps = comps.filter((c: any) => c.type !== "header");
+        attempt++;
+        continue;
+      }
+
+      // Retry only on Timeout (429), 500, 502, 503, 504
       if (statusCode === 429 || statusCode >= 500) {
         if (attempt < maxRetries) {
           const delay = Math.pow(2, attempt) * 1000; 
