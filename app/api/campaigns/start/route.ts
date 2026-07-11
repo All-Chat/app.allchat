@@ -517,3 +517,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: false, message: error.message }, { status: 500 });
   }
 }
+
+function logCampaignTransaction(_id: mongoose.Types.ObjectId, campaignId: any, name: any, dedThisRun: number, sentThisRun: number, failedThisRun: number) {
+  throw new Error("Function not implemented.");
+}
