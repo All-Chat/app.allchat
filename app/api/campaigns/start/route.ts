@@ -17,7 +17,7 @@ export const runtime = "nodejs";
 // ✅ Same inline Transaction model used by billing / test-message routes.
 const TransactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  type: String, // 'recharge' | 'test_message' | 'campaign'
+  type: String,
   amount: Number,
   description: String,
   status: String,
@@ -341,21 +341,26 @@ export async function POST(req: Request) {
 
     let sent = campaign.sentCount || 0, failed = campaign.failedCount || 0, skipped = campaign.skippedCount || 0, ded = campaign.totalDeducted || 0;
     let sentThisRun = 0, failedThisRun = 0, dedThisRun = 0;
-    const BS = 20; // ✅ Increased Batch Size to 20 for maximum speed (Meta handles this easily)
+    const BS = 50; // ✅ MASSIVE SPEED BOOST: Increased Batch Size to 50 for maximum concurrency
     let idx = 0;
+    let batchCounter = 0; // ✅ To prevent DB read on every single batch
 
     // Main sending loop
     while (idx < campaign.phoneNumbers.length) {
-      // Check live status (Pause/Stop detection)
-      const live = await Campaign.findById(campaignId).select("status");
-      if (["paused", "completed", "stopped"].includes(live.status)) {
-        campaign.status = live.status === "paused" ? "paused" : "completed";
-        campaign.sentCount = sent; campaign.failedCount = failed; campaign.skippedCount = skipped; campaign.totalDeducted = ded;
-        await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
-        await safeUpdateCampaign(campaignId, campaign, []);
-        await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } });
-        await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
-        return NextResponse.json({ success: true, message: `Campaign ${live.status}`, sent, failed, skipped });
+      batchCounter++;
+      
+      // ✅ SPEED OPTIMIZATION: Only check Pause/Stop status every 5 batches (saves DB reads)
+      if (batchCounter % 5 === 0) {
+        const live = await Campaign.findById(campaignId).select("status");
+        if (["paused", "completed", "stopped"].includes(live.status)) {
+          campaign.status = live.status === "paused" ? "paused" : "completed";
+          campaign.sentCount = sent; campaign.failedCount = failed; campaign.skippedCount = skipped; campaign.totalDeducted = ded;
+          await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
+          await safeUpdateCampaign(campaignId, campaign, []);
+          await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } });
+          await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
+          return NextResponse.json({ success: true, message: `Campaign ${live.status}`, sent, failed, skipped });
+        }
       }
       
       // Balance check
@@ -370,7 +375,7 @@ export async function POST(req: Request) {
 
       const wp: any[] = []; const bi: number[] = []; const bp: string[] = [];
       const messagesToCreate: any[] = []; 
-      const bulkQueueOps: any[] = []; // ✅ Collect claims for bulk write
+      const bulkQueueOps: any[] = [];
       
       // Prepare batch
       for (let w = 0; w < BS; w++) {
@@ -382,7 +387,6 @@ export async function POST(req: Request) {
           if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(cs)) {
             wp.push(Promise.resolve({ status: "skipped" }));
           } else {
-            // ✅ ATOMIC CLAIM: Add to bulk operation to save DB calls
             bulkQueueOps.push({
               updateOne: {
                 filter: { _id: campaignId, [`reportData.${ci}.status`]: "pending" },
@@ -406,13 +410,9 @@ export async function POST(req: Request) {
         }
       }
 
-      // ✅ Execute all claims in 1 single DB call
+      // Execute all claims in 1 single DB call
       if (bulkQueueOps.length > 0) {
-        try { 
-          const claimRes = await Campaign.bulkWrite(bulkQueueOps); 
-          // If any claim failed (modifiedCount = 0), we need to mark it as skipped in the results
-          claimRes.modifiedCount; // We trust that if it was pending, it's now queued. 
-        } catch (e) { console.error("Bulk queue error:", e); }
+        try { await Campaign.bulkWrite(bulkQueueOps); } catch (e) { console.error("Bulk queue error:", e); }
       }
 
       const res = await Promise.all(wp); 
@@ -450,12 +450,11 @@ export async function POST(req: Request) {
         }
       }
 
-      // ✅ Bulk insert messages to speed up DB operations drastically
+      // ✅ SPEED OPTIMIZATION: Fire and forget DB inserts/updates so the loop continues instantly!
       if (messagesToCreate.length > 0) {
-        try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) { console.error("Message bulk insert error:", e); }
+        Message.insertMany(messagesToCreate, { ordered: false }).catch(e => console.error("Message bulk insert error:", e));
       }
 
-      // Deduct balance dynamically
       if (bd > 0) { 
         payer.balance = Math.round((payer.balance - bd) * 100) / 100; 
         if (payer.balance < 0) payer.balance = 0; 
@@ -463,7 +462,10 @@ export async function POST(req: Request) {
         dedThisRun = Math.round((dedThisRun + bd) * 100) / 100;
       }
       
-      await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
+      // Fire and forget user balance update
+      User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } }).exec().catch(e => console.error("Balance update error:", e));
+      
+      // Wait for campaign status update (this is important to prevent skipping)
       await safeUpdateCampaign(campaignId, campaign, bi);
     }
 
@@ -480,7 +482,7 @@ export async function POST(req: Request) {
     await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } });
     await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
     
-    // ✅ FIX: Google Sheet Sync - Convert Mongoose docs to plain objects to prevent serialization crashes
+    // Google Sheet Sync
     try {
       const plainReportData = campaign.reportData.map((r: any) => {
         const obj = r.toObject ? r.toObject() : { ...r };
