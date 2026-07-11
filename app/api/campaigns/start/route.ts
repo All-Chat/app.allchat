@@ -14,8 +14,6 @@ import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
 export const runtime = "nodejs";
 
 // ✅ Same inline Transaction model used by billing / test-message routes.
-// Writing here too means campaign spend is logged permanently, independent
-// of the Campaign document — deleting a campaign later won't touch this.
 const TransactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   type: String, // 'recharge' | 'test_message' | 'campaign'
@@ -206,29 +204,30 @@ async function workerProcess(phone: string, variables: string[], tc: any, token:
   }
 }
 
-// ✅ FIX: Bulletproof safe update that NEVER crashes the route
+// ✅ FIX: Bulletproof safe update that uses O(1) Array Indexes instead of O(N) scans
 async function safeUpdateCampaign(campaignId: string, campaignData: any, batchIndices: number[]) {
   const bulkOps = [];
   for (const i of batchIndices) {
     const item = campaignData.reportData[i]; 
     if (!item) continue;
     
+    if (item.status !== "sent" && item.status !== "failed") continue;
+    
     const uSet: any = {}; 
-    let allow = ["pending", "queued", "sent", "failed", "invalid"]; // Added 'queued' to allow transition
+    // ✅ Use `reportData.${i}.status` for instant O(1) database updates!
+    uSet[`reportData.${i}.status`] = item.status;
     
     if (item.status === "sent") { 
-      uSet["reportData.$.status"] = "sent"; 
-      uSet["reportData.$.sentWamid"] = item.sentWamid; 
-      uSet["reportData.$.charged"] = item.charged; 
-      uSet["reportData.$.chargedAmount"] = item.chargedAmount; 
+      uSet[`reportData.${i}.sentWamid`] = item.sentWamid; 
+      uSet[`reportData.${i}.charged`] = item.charged; 
+      uSet[`reportData.${i}.chargedAmount`] = item.chargedAmount; 
     } else if (item.status === "failed") { 
-      uSet["reportData.$.status"] = "failed"; 
-      uSet["reportData.$.error"] = item.error; 
-    } else continue;
+      uSet[`reportData.${i}.error`] = item.error; 
+    }
     
     bulkOps.push({ 
       updateOne: { 
-        filter: { _id: campaignId, "reportData.phone": item.phone, "reportData.status": { $in: allow } }, 
+        filter: { _id: campaignId }, 
         update: { $set: uSet } 
       } 
     });
@@ -245,16 +244,11 @@ async function safeUpdateCampaign(campaignId: string, campaignData: any, batchIn
         totalDeducted: campaignData.totalDeducted, 
         pausedReason: campaignData.pausedReason, 
         completedAt: campaignData.completedAt 
-        // ✅ FIX: REMOVED `status: campaignData.status` from here. 
-        // This was overwriting the "paused" status in the DB every batch!
       } 
     }); 
   } catch (e) { console.error("Scalar update error:", e); }
 }
 
-// ✅ NEW: Write a permanent Transaction row for the amount deducted in THIS
-// run only (so resuming a paused campaign doesn't double-log past spend).
-// This is a snapshot — it survives even if the Campaign document is deleted.
 async function logCampaignTransaction(payerId: any, campaignId: string, campaignName: string, amount: number, sentThisRun: number, failedThisRun: number) {
   if (!amount || amount <= 0) return;
   try {
@@ -295,7 +289,6 @@ export async function POST(req: Request) {
     const campaign = await Campaign.findById(campaignId);
     if (!campaign || campaign.userId.toString() !== userId) return NextResponse.json({ success: false, message: "Not found" }, { status: 404 });
     
-    // ✅ FIX: If it was paused before the loop could start, abort immediately.
     if (campaign.status === "paused") {
       return NextResponse.json({ success: false, message: "Campaign was paused before it could start." }, { status: 400 });
     }
@@ -305,7 +298,6 @@ export async function POST(req: Request) {
       if (totalProcessed >= campaign.phoneNumbers.length) {
         return NextResponse.json({ success: false, message: "Already completed" }, { status: 400 });
       }
-      // If not completed, we let it proceed to restart the loop (Resume logic)
     }
 
     const user = await User.findById(userId); 
@@ -339,7 +331,7 @@ export async function POST(req: Request) {
       mediaUrl: campaign.mediaUrl 
     };
     
-    // ✅ FIX: Recover any messages that were marked "queued" in a previous crashed/paused loop
+    // ✅ Recover any messages that were marked "queued" in a previous crashed/paused loop
     await Campaign.updateMany(
       { _id: campaignId, "reportData.status": "queued" },
       { $set: { "reportData.$.status": "pending" } }
@@ -348,11 +340,8 @@ export async function POST(req: Request) {
     await Campaign.updateOne({ _id: campaignId }, { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID, templateName: cTName, languageCode: cLang } });
 
     let sent = campaign.sentCount || 0, failed = campaign.failedCount || 0, skipped = campaign.skippedCount || 0, ded = campaign.totalDeducted || 0;
-    // ✅ NEW: track sent/failed/deducted for THIS run only, separate from the
-    // campaign's lifetime totals, so transaction logging never double-counts
-    // amounts that were already logged in a previous run before a pause.
     let sentThisRun = 0, failedThisRun = 0, dedThisRun = 0;
-    const BS = 4; // Batch Size
+    const BS = 10; // ✅ Increased Batch Size to 10 for faster sending
     let idx = 0;
 
     // Main sending loop
@@ -364,7 +353,7 @@ export async function POST(req: Request) {
         campaign.sentCount = sent; campaign.failedCount = failed; campaign.skippedCount = skipped; campaign.totalDeducted = ded;
         await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
         await safeUpdateCampaign(campaignId, campaign, []);
-        await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } }); // Explicitly save final status
+        await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } });
         await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
         return NextResponse.json({ success: true, message: `Campaign ${live.status}`, sent, failed, skipped });
       }
@@ -374,12 +363,13 @@ export async function POST(req: Request) {
         campaign.status = "paused"; campaign.sentCount = sent; campaign.failedCount = failed; campaign.skippedCount = skipped; campaign.totalDeducted = ded; campaign.pausedReason = "Insufficient balance";
         await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
         await safeUpdateCampaign(campaignId, campaign, []);
-        await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } }); // Explicitly save final status
+        await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } });
         await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
         return NextResponse.json({ success: false, message: `Paused. Required: ₹${bPrice}, Available: ₹${payer.balance}.`, sent, failed, skipped, balancePaused: true });
       }
 
       const wp: any[] = []; const bi: number[] = []; const bp: string[] = [];
+      const messagesToCreate: any[] = []; // ✅ Collect messages to insert in bulk
       
       // Prepare batch
       for (let w = 0; w < BS; w++) {
@@ -391,10 +381,10 @@ export async function POST(req: Request) {
           if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(cs)) {
             wp.push(Promise.resolve({ status: "skipped" }));
           } else {
-            // ✅ ATOMIC CLAIM: Lock this number so duplicate loops don't send it
+            // ✅ ATOMIC CLAIM: Use array index `ci` for O(1) update instead of O(N) scan
             const claim = await Campaign.updateOne(
-              { _id: campaignId, "reportData.phone": ph, "reportData.status": "pending" },
-              { $set: { "reportData.$.status": "queued" } }
+              { _id: campaignId, [`reportData.${ci}.status`]: "pending" },
+              { $set: { [`reportData.${ci}.status`]: "queued" } }
             );
             
             if (claim.modifiedCount > 0) {
@@ -410,7 +400,6 @@ export async function POST(req: Request) {
               cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
               wp.push(workerProcess(ph, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
             } else {
-              // Failed to claim (another loop got it), skip
               wp.push(Promise.resolve({ status: "skipped" }));
             }
           }
@@ -437,13 +426,12 @@ export async function POST(req: Request) {
             campaign.reportData[ci].charged = true; 
             campaign.reportData[ci].chargedAmount = pp; 
           }
-          try { 
-            await Message.create({ 
-              userId, phone: ph, text: "", direction: "out", messageType: "template", 
-              mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", 
-              templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID 
-            }); 
-          } catch {}
+          // ✅ Add to array for bulk insert
+          messagesToCreate.push({ 
+            userId, phone: ph, text: "", direction: "out", messageType: "template", 
+            mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", 
+            templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID 
+          });
         } else if (r.status === "failed") {
           failed++; failedThisRun++;
           if (campaign.reportData[ci]) { 
@@ -453,6 +441,11 @@ export async function POST(req: Request) {
         } else if (r.status === "skipped") {
           skipped++;
         }
+      }
+
+      // ✅ Bulk insert messages to speed up DB operations drastically
+      if (messagesToCreate.length > 0) {
+        try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) { console.error("Message bulk insert error:", e); }
       }
 
       // Deduct balance dynamically
@@ -465,7 +458,6 @@ export async function POST(req: Request) {
       
       await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
       await safeUpdateCampaign(campaignId, campaign, bi);
-      await new Promise(r => setTimeout(r, 50)); // Tiny delay to prevent API spam
     }
 
     // Loop finished naturally
@@ -478,7 +470,7 @@ export async function POST(req: Request) {
     
     await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
     await safeUpdateCampaign(campaignId, campaign, []);
-    await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } }); // Explicitly save final status
+    await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } });
     await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
     
     try { await syncCampaignToGoogleSheet(userId, { name: campaign.name, reportData: campaign.reportData }); } catch {}
