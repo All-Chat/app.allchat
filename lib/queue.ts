@@ -13,15 +13,25 @@ import { syncCampaignToGoogleSheet } from '@/lib/googleSheetSync';
 // 1. DATABASE CONNECTION OPTIMIZATION
 // ==========================================
 export async function ensureDbConnected() {
-  // FIX #3: Use Mongoose readyState instead of a boolean variable
-  // 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
   if (mongoose.connection.readyState !== 1) {
     await connectDB();
   }
 }
 
 // ==========================================
-// 2. REDIS & QUEUE CONFIGURATION
+// 2. HELPER FUNCTIONS
+// ==========================================
+function cleanStr(val: any): string {
+  if (val == null) return "";
+  let s = String(val).trim();
+  if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1);
+  if (s.startsWith("'") && s.endsWith("'")) s = s.slice(1, -1);
+  s = s.replace(/\\"/g, '"').replace(/\\'/g, "'");
+  return s;
+}
+
+// ==========================================
+// 3. REDIS & QUEUE CONFIGURATION
 // ==========================================
 const connection = {
   host: process.env.REDIS_HOST || '127.0.0.1',
@@ -48,8 +58,6 @@ if (!global.campaignWorker) {
     }
   }, { 
     connection,
-    // FIX #16: Reduced from 20 to 10 to prevent Meta API 429 Rate Limiting
-    // 10 concurrency * 50 chunk size = 500 concurrent requests (safe limit)
     concurrency: 10 
   });
 
@@ -58,7 +66,6 @@ if (!global.campaignWorker) {
   });
 
   global.campaignWorker.on('failed', (job: any, err: Error) => {
-    // FIX #7: Never swallow errors. Log meaningfully.
     console.error(`❌ Chunk ${job?.data.startIdx}-${job?.data.endIdx} failed:`, err.message);
   });
 
@@ -66,9 +73,8 @@ if (!global.campaignWorker) {
 }
 
 // ==========================================
-// 3. PRICE CACHE OPTIMIZATION (O(1) + TTL)
+// 4. PRICE CACHE OPTIMIZATION (O(1) + TTL)
 // ==========================================
-// FIX #4 & #5: True O(1) lookup with TTL invalidation
 const priceMapCache = new Map<string, { map: Map<string, number>, defaultPrice: number, timestamp: number }>();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
@@ -76,7 +82,6 @@ function getOptimizedPriceForPhone(payerId: string, payer: any, phone: string, c
   const now = Date.now();
   let cache = priceMapCache.get(payerId);
 
-  // Rebuild cache if missing or older than 5 minutes (fixes stale pricing)
   if (!cache || (now - cache.timestamp > CACHE_TTL)) {
     const map = new Map<string, number>();
     const defaultPrice = getPriceForCategory(payer, category);
@@ -97,8 +102,6 @@ function getOptimizedPriceForPhone(payerId: string, payer: any, phone: string, c
 
   const catPrefix = category.charAt(0) + '-';
   
-  // O(1) lookups: check prefixes 1 to 4 digits long.
-  // This avoids iterating over a Map while maintaining O(1) complexity.
   for (let i = 1; i <= 4; i++) {
     if (phone.length < i) break;
     const prefix = phone.substring(0, i);
@@ -110,7 +113,7 @@ function getOptimizedPriceForPhone(payerId: string, payer: any, phone: string, c
 }
 
 // ==========================================
-// 4. WORKER LOGIC: Process 50 messages
+// 5. WORKER LOGIC: Process 50 messages
 // ==========================================
 async function processCampaignChunk(data: any) {
   const { campaignId, userId, payerId, startIdx, endIdx, PHONE_NUMBER_ID, ACCESS_TOKEN } = data;
@@ -118,11 +121,9 @@ async function processCampaignChunk(data: any) {
 
   await ensureDbConnected();
 
-  // FIX #13: Use lean() to avoid Mongoose hydration overhead
   const payer = await User.findById(payerId).lean();
   if (!payer) throw new Error("User not found");
 
-  // FIX #5: Use $slice to ONLY download the 50 items we need
   const campaign = await Campaign.findById(campaignId, {
     phoneNumbers: { $slice: [startIdx, chunkSize] },
     reportData: { $slice: [startIdx, chunkSize] },
@@ -143,9 +144,9 @@ async function processCampaignChunk(data: any) {
 
   if (["paused", "stopped", "completed"].includes(campaign.status)) return;
 
-  // FIX #11: Cache CPU operations outside loops
-  const cTName = campaign.templateName || "";
-  const cLang = campaign.languageCode || "en";
+  // ✅ FIX 132001: Meta API requires template names to be strictly lowercase and match exactly
+  const cTName = cleanStr(campaign.templateName).toLowerCase();
+  const cLang = cleanStr(campaign.languageCode || "en");
   const cat = (campaign.templateCategory || "MARKETING").toUpperCase();
 
   const tc = { 
@@ -182,7 +183,6 @@ async function processCampaignChunk(data: any) {
       } else cv = campaign.mappedVariables[i]; 
     } else cv = (campaign.mappedVariables?.[i]?.length > 0) ? campaign.mappedVariables[i] : (campaign.variables || []);
     
-    // FIX #11: Optimize array filtering
     cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
     
     metaPromises.push(metaSenderWorker(ph, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID));
@@ -190,15 +190,10 @@ async function processCampaignChunk(data: any) {
     batchPhones.push(ph);
   }
 
-  // FIX #8: Claim Race Condition Prevention
-  // Since chunks are strictly disjoint by startIdx/endIdx, bulkWrite claims will succeed.
-  // If an external rerun caused a duplicate job, the filter `status: "pending"` ensures 
-  // only ONE bulkWrite modifies it. If modifiedCount < claimOps.length, we re-fetch.
   if (claimOps.length > 0) {
     try {
       const claimResult = await Campaign.bulkWrite(claimOps);
       if (claimResult.modifiedCount < claimOps.length) {
-        // FIX #7: Log instead of silent failure
         console.warn(`[Worker] Claim mismatch for campaign ${campaignId}. Expected ${claimOps.length}, got ${claimResult.modifiedCount}.`);
       }
     } catch (e) {
@@ -206,7 +201,6 @@ async function processCampaignChunk(data: any) {
     }
   }
 
-  // FIX #7: Use Promise.allSettled to prevent one failure from crashing the batch
   const metaResults = await Promise.allSettled(metaPromises); 
   let bd = 0;
   let sent = 0, failed = 0, ded = 0;
@@ -286,8 +280,7 @@ async function processCampaignChunk(data: any) {
     }
   }
 
-  // FIX #1: ATOMIC USER BALANCE UPDATE
-  // Prevents race conditions where multiple workers overwrite balance
+  // ATOMIC USER BALANCE UPDATE
   if (bd > 0) {
     try {
       await User.updateOne({ _id: payerId }, { $inc: { balance: -bd } });
@@ -296,8 +289,7 @@ async function processCampaignChunk(data: any) {
     }
   }
 
-  // FIX #1 & #2: ATOMIC CAMPAIGN COMPLETION & SHEET SYNC LOCK
-  // Step 1: Atomically increment counters
+  // ATOMIC CAMPAIGN COMPLETION & SHEET SYNC LOCK
   try {
     await Campaign.updateOne(
       { _id: campaignId }, 
@@ -307,23 +299,19 @@ async function processCampaignChunk(data: any) {
     console.error(`[Worker] Campaign counter increment error:`, e);
   }
 
-  // Step 2: Atomically try to complete the campaign
-  // The filter `status: { $ne: "completed" }` ensures ONLY ONE worker can change the status
   try {
     const completedCampaign = await Campaign.findOneAndUpdate(
       { 
         _id: campaignId, 
-        status: { $ne: "completed" }, // Must not be already completed
+        status: { $ne: "completed" }, 
         $expr: { $gte: [ { $add: ["$sentCount", "$failedCount", { $ifNull: ["$skippedCount", 0] } ] }, "$totalMessages" ] }
       },
       { $set: { status: "completed", completedAt: new Date() } },
       { new: true, fields: "status" }
     );
 
-    // Step 3: Only sync sheet if this specific worker completed it
     if (completedCampaign && completedCampaign.status === "completed") {
       try {
-        // Only download the full array ONCE at the very end of the campaign
         const finalCampaign = await Campaign.findById(campaignId).lean();
         const plainReportData = (finalCampaign?.reportData || []).map((r: any) => ({
           name: r.name || "", phone: r.phone || "", status: r.status || "", error: r.error || "",
@@ -340,12 +328,11 @@ async function processCampaignChunk(data: any) {
 }
 
 // ==========================================
-// 5. META API WORKER FUNCTION
+// 6. META API WORKER FUNCTION
 // ==========================================
 async function metaSenderWorker(phone: string, variables: string[], tc: any, token: string, pnId: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
   const comps: any[] = [];
   
-  // FIX #10 & #11: Pre-allocate array and cache loop variables
   if (variables.length > 0) {
     const params = new Array(variables.length);
     for (let i = 0; i < variables.length; i++) {
@@ -361,11 +348,9 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
     template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } 
   });
 
-  // FIX #9: Reuse headers object
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   const url = `https://graph.facebook.com/v21.0/${pnId}/messages`;
 
-  // FIX #6: Exponential Backoff Retries
   const maxRetries = 3;
   let attempt = 0;
 
@@ -389,7 +374,6 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
           const d = await sendRes.json(); 
           wamid = d?.messages?.[0]?.id || d?.message_id; 
         } catch (e) {
-          // FIX #7: Log JSON parse error
           console.error(`[Meta API] Failed to parse success JSON for ${phone}:`, e);
         } 
         return { status: "sent", wamid }; 
@@ -405,10 +389,9 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
       const statusCode = sendRes.status;
       const errorMsg = sendData?.error?.message || "Failed to send";
 
-      // Retry only on Timeout (429), 500, 502, 503, 504
       if (statusCode === 429 || statusCode >= 500) {
         if (attempt < maxRetries) {
-          const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+          const delay = Math.pow(2, attempt) * 1000; 
           await new Promise(r => setTimeout(r, delay));
           attempt++;
           continue;
@@ -416,7 +399,6 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
         return { status: "failed", error: `Retry limit reached: ${errorMsg}` };
       }
 
-      // Non-retryable error (e.g., 400 Bad Request)
       return { status: "failed", error: errorMsg };
       
     } catch (err: any) { 
@@ -430,7 +412,6 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
         }
         return { status: "failed", error: "Meta API Timeout (30s)" };
       }
-      // Network error, retry
       if (attempt < maxRetries) {
         const delay = Math.pow(2, attempt) * 1000;
         await new Promise(r => setTimeout(r, delay));
