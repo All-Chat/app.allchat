@@ -157,7 +157,9 @@ export default function ReportsPage() {
       if (res.status === 401) { window.location.href = "/"; return; }
       const data = await res.json();
       if (data.success) {
-        const validCampaigns = data.campaigns.filter((c: Campaign) => c.status !== "saved" && c.status !== "scheduled");
+        // ✅ CRITICAL FIX: Ensure campaigns is an array before filtering
+        const allCampaigns = Array.isArray(data.campaigns) ? data.campaigns : [];
+        const validCampaigns = allCampaigns.filter((c: Campaign) => c.status !== "saved" && c.status !== "scheduled");
         setCampaigns(validCampaigns);
         if (!selectedId && validCampaigns.length > 0) setSelectedId(validCampaigns[validCampaigns.length - 1]._id || null);
       }
@@ -240,14 +242,20 @@ export default function ReportsPage() {
       const res = await fetch(`/api/campaigns/list?${params.toString()}`, { signal: controller.signal });
       const data = await res.json();
       
-      if (data.success && data.campaigns[0]) {
+      // ✅ CRITICAL FIX: Safely check if campaigns array exists and has items
+      if (data.success && Array.isArray(data.campaigns) && data.campaigns[0]) {
         setReportData(data.campaigns[0].reportData || []);
         setReportTotalPages(data.totalPages || 1);
         setCampaignStats(data.campaignStats || {});
+      } else {
+        // Fallback to empty if API fails or returns unexpected shape
+        setReportData([]);
+        setReportTotalPages(1);
       }
     } catch (error: any) { 
       if (error.name === 'AbortError') return;
       console.error("Failed to fetch report data", error); 
+      setReportData([]); // Prevent crash on fetch failure
     } finally { 
       setLoadingReport(false); 
     }
@@ -289,7 +297,6 @@ export default function ReportsPage() {
     XLSX.writeFile(wb, `${campName}_Report.xlsx`);
   };
 
-  // ✅ FIX: Generate Google Sheet and open it
   const handleSyncSheet = async (id: string) => {
     setSyncingSheet(true);
     try {
@@ -551,7 +558,6 @@ export default function ReportsPage() {
                     >
                       <BarChart3 size={12}/> Brief
                     </button>
-                    {/* ✅ NEW: Google Sheet Sync Button */}
                     <button 
                       onClick={() => handleSyncSheet(selectedCamp._id)} 
                       disabled={syncingSheet}
