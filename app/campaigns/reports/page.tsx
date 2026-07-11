@@ -7,7 +7,7 @@ import Sidebar from "@/components/Sidebar";
 import { 
   BarChart3, Download, Loader2, Search, CheckCircle, XCircle, Clock, 
   MessageSquare, Eye, CheckCheck, AlertTriangle, Copy, Ban, Radio, ArrowLeft, X, 
-  Tag as TagIcon, Users, PieChart, Database, Filter, FilterX, ChevronLeft, ChevronRight
+  Tag as TagIcon, Users, PieChart, Database, Filter, FilterX, ChevronLeft, ChevronRight, ExternalLink
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -65,6 +65,7 @@ export default function ReportsPage() {
   const [reportData, setReportData] = useState<ReportItem[]>([]);
   const [loadingReport, setLoadingReport] = useState(false);
   const [campaignStats, setCampaignStats] = useState<any>({});
+  const [syncingSheet, setSyncingSheet] = useState(false);
   
   const [showOnly, setShowOnly] = useState<string[]>([]);
   const [filterOut, setFilterOut] = useState<string[]>([]);
@@ -81,7 +82,6 @@ export default function ReportsPage() {
   const [reportCurrentPage, setReportCurrentPage] = useState(1);
   const [reportTotalPages, setReportTotalPages] = useState(1);
 
-  // ✅ AbortController to cancel old requests if user switches campaigns quickly
   const fetchReportController = useRef<AbortController | null>(null);
 
   const getRepliesList = (d: ReportItem): string[] => {
@@ -159,7 +159,6 @@ export default function ReportsPage() {
       if (data.success) {
         const validCampaigns = data.campaigns.filter((c: Campaign) => c.status !== "saved" && c.status !== "scheduled");
         setCampaigns(validCampaigns);
-        // ✅ Select the LAST campaign in the list by default
         if (!selectedId && validCampaigns.length > 0) setSelectedId(validCampaigns[validCampaigns.length - 1]._id || null);
       }
     } catch (error) { 
@@ -220,7 +219,6 @@ export default function ReportsPage() {
   };
 
   const fetchReportData = async (id: string, page: number = 1) => {
-    // ✅ Abort previous request if still loading
     if (fetchReportController.current) {
       fetchReportController.current.abort();
     }
@@ -248,7 +246,7 @@ export default function ReportsPage() {
         setCampaignStats(data.campaignStats || {});
       }
     } catch (error: any) { 
-      if (error.name === 'AbortError') return; // Ignore aborts
+      if (error.name === 'AbortError') return;
       console.error("Failed to fetch report data", error); 
     } finally { 
       setLoadingReport(false); 
@@ -289,6 +287,29 @@ export default function ReportsPage() {
     XLSX.utils.book_append_sheet(wb, ws, "Report");
     const campName = campaigns.find(c => c._id === selectedId)?.name || "Campaign";
     XLSX.writeFile(wb, `${campName}_Report.xlsx`);
+  };
+
+  // ✅ FIX: Generate Google Sheet and open it
+  const handleSyncSheet = async (id: string) => {
+    setSyncingSheet(true);
+    try {
+      const res = await fetch("/api/campaigns/sync-sheet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ campaignId: id })
+      });
+      const data = await res.json();
+      if (data.success && data.url) {
+        toast.success("Google Sheet generated successfully!");
+        window.open(data.url, "_blank");
+      } else {
+        toast.error(data.message || "Failed to sync Google Sheet");
+      }
+    } catch (err) {
+      toast.error("Error syncing sheet");
+    } finally {
+      setSyncingSheet(false);
+    }
   };
 
   const selectedCamp = campaigns.find(c => c._id === selectedId);
@@ -459,7 +480,7 @@ export default function ReportsPage() {
                       </span>
                     </div>
                     <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px]">
-                      {stats.replied > 0 && <span className="flex items-center gap-1 text-indigo-600 font-medium"><MessageSquare size={10}/> {stats.replied} Replied</span>}
+                      {stats.replied > 0 && <span className="flex items-center gap-1 text-indigo-600 font-medium"><MessageSquare size={10}/> {stats.replied} Total</span>}
                       {stats.read > 0 && <span className="flex items-center gap-1 text-blue-600 font-medium"><Eye size={10}/> {stats.read} Read</span>}
                       {stats.delivered > 0 && <span className="flex items-center gap-1 text-cyan-600 font-medium"><CheckCheck size={10}/> {stats.delivered} Delivered</span>}
                       {stats.sent > 0 && <span className="flex items-center gap-1 text-emerald-600 font-medium"><CheckCircle size={10}/> {stats.sent} Sent</span>}
@@ -529,6 +550,14 @@ export default function ReportsPage() {
                       className="px-4 py-2 bg-white border border-indigo-200 text-indigo-600 rounded-lg text-xs font-bold hover:bg-indigo-50 flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0"
                     >
                       <BarChart3 size={12}/> Brief
+                    </button>
+                    {/* ✅ NEW: Google Sheet Sync Button */}
+                    <button 
+                      onClick={() => handleSyncSheet(selectedCamp._id)} 
+                      disabled={syncingSheet}
+                      className="px-4 py-2 bg-indigo-500 text-white rounded-lg text-xs font-bold hover:bg-indigo-600 flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-50"
+                    >
+                      {syncingSheet ? <Loader2 size={12} className="animate-spin"/> : <ExternalLink size={12}/>} Create Sheet
                     </button>
                     <button 
                       onClick={downloadExcel} 
