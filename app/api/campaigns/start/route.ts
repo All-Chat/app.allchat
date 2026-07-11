@@ -13,7 +13,7 @@ import { getPriceForCategory } from "@/lib/billing";
 import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
 
 export const runtime = "nodejs";
-// ✅ CRITICAL: Prevents Vercel/Next.js from killing the route after 10 seconds
+// ✅ CRITICAL: Prevents Vercel/Next.js from killing the route early
 export const maxDuration = 300; 
 
 const TransactionSchema = new mongoose.Schema({
@@ -175,7 +175,7 @@ async function logCampaignTransaction(payerId: any, campaignId: string, campaign
   } catch (e) { console.error("Tx log error:", e); }
 }
 
-// 🚀 THE BACKGROUND LOOP
+// 🚀 THE SENDING LOOP
 async function runSendingLoop(campaignId: any, userId: any, payerId: any, tc: any, PHONE_NUMBER_ID: string, ACCESS_TOKEN: string, thf: string, cat: string, bPrice: number) {
   let sent = 0, failed = 0, skipped = 0, ded = 0;
   let sentThisRun = 0, failedThisRun = 0, dedThisRun = 0;
@@ -268,11 +268,32 @@ async function runSendingLoop(campaignId: any, userId: any, payerId: any, tc: an
           sent++; sentThisRun++;
           const pp = getPriceForPhone(payer, ph, cat); 
           bd += pp;
-          campaignBulkOps.push({ updateOne: { filter: { _id: campaignId }, update: { $set: { [`reportData.${ci}.status`]: "sent", [`reportData.${ci}.sentWamid`]: r.wamid, [`reportData.${ci}.charged`]: true, [`reportData.${ci}.chargedAmount`]: pp } } } });
+          
+          // ✅ CRITICAL FIX: Only update if status is still 'queued' to prevent overwriting 'delivered'/'read' from Webhook!
+          campaignBulkOps.push({
+            updateOne: { 
+              filter: { _id: campaignId, [`reportData.${ci}.status`]: "queued" }, 
+              update: { $set: {
+                [`reportData.${ci}.status`]: "sent",
+                [`reportData.${ci}.sentWamid`]: r.wamid,
+                [`reportData.${ci}.charged`]: true,
+                [`reportData.${ci}.chargedAmount`]: pp
+              }}
+            }
+          });
+
           messagesToCreate.push({ userId, phone: ph, text: "", direction: "out", messageType: "template", mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID });
         } else if (r.status === "failed") {
           failed++; failedThisRun++;
-          campaignBulkOps.push({ updateOne: { filter: { _id: campaignId }, update: { $set: { [`reportData.${ci}.status`]: "failed", [`reportData.${ci}.error`]: r.error || "Unknown error" } } } });
+          campaignBulkOps.push({
+            updateOne: { 
+              filter: { _id: campaignId, [`reportData.${ci}.status`]: "queued" }, 
+              update: { $set: {
+                [`reportData.${ci}.status`]: "failed",
+                [`reportData.${ci}.error`]: r.error || "Unknown error"
+              }}
+            }
+          });
         } else if (r.status === "skipped") {
           skipped++;
         }
@@ -293,12 +314,12 @@ async function runSendingLoop(campaignId: any, userId: any, payerId: any, tc: an
         addBackgroundTask(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded } }));
       }
 
-      if (backgroundTasks.length > 50) {
+      if (backgroundTasks.length > 20) { // Wait if too many DB operations are pending
         await Promise.all(backgroundTasks);
         backgroundTasks.length = 0; 
       }
 
-      // ✅ CRITICAL: Yield to the Node.js Event Loop so the Webhook can process Delivered/Read statuses!
+      // ✅ Yield to Node.js event loop so Webhook can process Delivered/Read statuses side-by-side
       await new Promise(resolve => setImmediate(resolve));
     }
 
@@ -365,11 +386,13 @@ export async function POST(req: Request) {
     await Campaign.updateMany({ _id: campaignId, "reportData.status": "queued" }, { $set: { "reportData.$.status": "pending" } });
     await Campaign.updateOne({ _id: campaignId }, { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID, templateName: cTName, languageCode: cLang } });
 
-    // 🚀 FIRE THE LOOP IN THE BACKGROUND (DO NOT AWAIT)
-    // This returns the HTTP response instantly, preventing the frontend 5s timeout from killing the loop!
-    runSendingLoop(campaignId, userId, payer._id, tc, PHONE_NUMBER_ID, ACCESS_TOKEN, thf, cat, bPrice).catch(console.error);
+    // 🚀 WE MUST AWAIT THIS LOOP!
+    // If we don't await it, Vercel/Next.js kills the process the moment it returns the HTTP response.
+    // Your frontend is already polling /counts every 5 seconds, so the UI will still update live side-by-side!
+    await runSendingLoop(campaignId, userId, payer._id, tc, PHONE_NUMBER_ID, ACCESS_TOKEN, thf, cat, bPrice);
 
-    return NextResponse.json({ success: true, message: "Campaign started in background! Sending in progress..." });
+    // Once the loop finishes, return the final success response
+    return NextResponse.json({ success: true, message: "Campaign complete." });
   } catch (error: any) {
     console.error("❌ Start Campaign Error:", error);
     return NextResponse.json({ success: false, message: error.message }, { status: 500 });
