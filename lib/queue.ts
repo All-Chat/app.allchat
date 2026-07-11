@@ -93,9 +93,17 @@ if (!global.campaignWorker) {
     }
   }, { 
     connection,
-    concurrency: 4,
+    // 🚀 FIX: old limiter (max:2/1000ms = 100 msgs/sec) was a GLOBAL cap
+    // shared across every user/campaign on the platform, way below what
+    // Meta actually allows (≈80 msgs/sec PER phone number). The real
+    // per-number throttle already happens via the 429 retry/backoff logic
+    // in metaSenderWorker below — so raise this ceiling and let Meta's
+    // actual per-number rate limits (via 429s) be the real constraint.
+    // Tune `max` based on your VPS's CPU/network headroom — start here
+    // and watch server load; lower it back down if the box struggles.
+    concurrency: 20,
     limiter: {
-      max: 2,
+      max: 20,
       duration: 1000
     },
     stalledInterval: 300000, 
@@ -497,10 +505,12 @@ async function generateCountsData(userId: string, cacheKey: string, lockKey: str
   try {
     await ensureDbConnected();
 
+    // 🚀 FIX (from earlier list-speed pass): ObjectId match instead of
+    // $toString, so the {userId:1, createdAt:-1} index is actually used.
     const campaigns = await Campaign.aggregate([
       { 
         $match: { 
-          $expr: { $eq: [{ $toString: "$userId" }, userId] } 
+          userId: new mongoose.Types.ObjectId(userId)
         } 
       },
       { $sort: { createdAt: -1 } },
@@ -614,8 +624,11 @@ async function generateCountsData(userId: string, cacheKey: string, lockKey: str
       const invalid = ls.invalid || 0;
       const duplicate = ls.duplicate || 0;
       
-      const processed = replied + read + delivered + sent + failed + invalid + duplicate;
+      // 🐛 FIX: same double-counting issue as before — "replied" overlaps
+      // with status-based buckets, don't add it into processed/progress math.
+      const processed = read + delivered + sent + failed + invalid + duplicate;
       const pending = Math.max(0, total - processed);
+      const progress = total > 0 ? Math.min(100, Math.round(((delivered + read + sent) / total) * 100)) : 0;
 
       return {
         ...c,
@@ -625,17 +638,15 @@ async function generateCountsData(userId: string, cacheKey: string, lockKey: str
           failed,
           skipped,
           pending,
-          deliveredRead: delivered + read + replied,
+          deliveredRead: delivered + read,
           failedInvalid: failed + invalid,
-          progress: total > 0 ? Math.round(((delivered + read + replied + sent) / total) * 100) : 0
+          progress
         },
         languageCode: c.languageCode || "en",
         totalDeducted: c.totalDeducted || 0,
       };
     });
 
-    // ✅ PURE STALE-WHILE-REVALIDATE CACHING
-    // Store the timestamp inside the JSON payload so the API route can check staleness
     const cachePayload = JSON.stringify({
       campaigns: fixedCampaigns,
       _cachedAt: Date.now()
@@ -643,8 +654,6 @@ async function generateCountsData(userId: string, cacheKey: string, lockKey: str
     
     if (countsQueue.client) {
       const redisClient = await countsQueue.client;
-      // Set TTL to 1 hour (3600s) so the cache never disappears completely.
-      // The API route will refresh it in the background if _cachedAt is > 10s old.
       await (redisClient as any).set(cacheKey, cachePayload, 'EX', 3600);
     }
 
@@ -653,7 +662,6 @@ async function generateCountsData(userId: string, cacheKey: string, lockKey: str
     console.error("❌ Counts generation error:", error);
     return { success: false, message: "Failed to generate counts" };
   } finally {
-    // ✅ CRITICAL: Always release the lock so future polls can trigger updates
     if (countsQueue.client) {
       const redisClient = await countsQueue.client;
       await redisClient.del(lockKey).catch(() => {});
@@ -706,7 +714,7 @@ async function refreshReportCache(data: any) {
           from: "messages",
           let: { camp_createdAt: "$createdAt", user_id: "$userId" },
           pipeline: [
-            { $match: { $expr: { $and: [ { $eq: [{ $toString: "$userId" }, { $toString: "$$user_id" }] }, { $eq: ["$direction", "in"] }, { $gte: ["$createdAt", "$$camp_createdAt"] } ] } } },
+            { $match: { $expr: { $and: [ { $eq: ["$userId", "$$user_id"] }, { $eq: ["$direction", "in"] }, { $gte: ["$createdAt", "$$camp_createdAt"] } ] } } },
             { $project: { phone: 1, _id: 0 } }
           ],
           as: "inboundMsgs"
@@ -788,7 +796,7 @@ async function refreshReportCache(data: any) {
         data: campaign.mappedReportData,
         meta: { name: campaign.name, templateName: campaign.templateName, additionalFields: campaign.additionalFields, languageCode: campaign.languageCode, totalDeducted: campaign.totalDeducted }
       });
-      await (redisClient as any).set(cacheKey, cachePayload, 'EX', 3600); // Cache for 1 hour, refreshed in background
+      await (redisClient as any).set(cacheKey, cachePayload, 'EX', 3600);
     }
 
     return { success: true };
