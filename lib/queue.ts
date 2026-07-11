@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // lib/queue.ts
-import { Queue, Worker } from 'bullmq';
+import { Queue, Worker, QueueEvents } from 'bullmq';
 import { connectDB } from '@/lib/mongodb';
 import Campaign from '@/models/Campaign';
 import User from '@/models/User';
@@ -30,7 +30,6 @@ function cleanStr(val: any): string {
   return s;
 }
 
-// ✅ RESTORED: Fetch template header format from Meta
 async function fetchTemplateHeaderFormat(phoneNumberId: string, accessToken: string, templateName: string, languageCode: string, userProvidedMediaType: string): Promise<string> {
   const valid = ["image", "video", "document"]; 
   const clean = cleanStr(userProvidedMediaType).toLowerCase().trim();
@@ -44,7 +43,6 @@ async function fetchTemplateHeaderFormat(phoneNumberId: string, accessToken: str
   return "none";
 }
 
-// ✅ RESTORED: Build components including Header (Media) and Body (Text)
 function buildCampaignComponents(headerFormat: string, variables: string[], mediaUrl: string): any[] {
   const comps: any[] = []; 
   const valid = ["image", "video", "document"];
@@ -70,7 +68,7 @@ function buildCampaignComponents(headerFormat: string, variables: string[], medi
 // ==========================================
 // 3. REDIS & QUEUE CONFIGURATION
 // ==========================================
-const connection = {
+export const connection = {
   host: process.env.REDIS_HOST || '127.0.0.1',
   port: parseInt(process.env.REDIS_PORT || '6379'),
   password: process.env.REDIS_PASSWORD || undefined,
@@ -95,7 +93,13 @@ if (!global.campaignWorker) {
     }
   }, { 
     connection,
-    concurrency: 10 
+    concurrency: 4,
+    limiter: {
+      max: 2,
+      duration: 1000
+    },
+    stalledInterval: 300000, 
+    maxStalledCount: 2
   });
 
   global.campaignWorker.on('completed', (job: any) => {
@@ -113,13 +117,13 @@ if (!global.campaignWorker) {
 // 4. PRICE CACHE OPTIMIZATION (O(1) + TTL)
 // ==========================================
 const priceMapCache = new Map<string, { map: Map<string, number>, defaultPrice: number, timestamp: number }>();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const PRICE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 function getOptimizedPriceForPhone(payerId: string, payer: any, phone: string, category: string): number {
   const now = Date.now();
   let cache = priceMapCache.get(payerId);
 
-  if (!cache || (now - cache.timestamp > CACHE_TTL)) {
+  if (!cache || (now - cache.timestamp > PRICE_CACHE_TTL)) {
     const map = new Map<string, number>();
     const defaultPrice = getPriceForCategory(payer, category);
     
@@ -170,7 +174,7 @@ async function processCampaignChunk(data: any) {
     languageCode: 1,
     mediaType: 1,
     mediaUrl: 1,
-    templateHeaderFormat: 1, // ✅ RESTORED: Fetch cached header format
+    templateHeaderFormat: 1,
     generateOtp: 1,
     otpLength: 1,
     variables: 1,
@@ -187,7 +191,6 @@ async function processCampaignChunk(data: any) {
   const cMedia = cleanStr(campaign.mediaType || "none");
   const cat = (campaign.templateCategory || "MARKETING").toUpperCase();
 
-  // ✅ RESTORED: Fetch template header format if not cached
   let thf = campaign.templateHeaderFormat || "";
   if (!thf) {
     thf = await fetchTemplateHeaderFormat(PHONE_NUMBER_ID, ACCESS_TOKEN, cTName, cLang, cMedia);
@@ -230,7 +233,6 @@ async function processCampaignChunk(data: any) {
     
     cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
     
-    // ✅ RESTORED: Pass `thf` to worker
     metaPromises.push(metaSenderWorker(ph, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
     batchAbsoluteIndices.push(absoluteIndex); 
     batchPhones.push(ph);
@@ -410,12 +412,11 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
       const statusCode = sendRes.status;
       const errorMsg = sendData?.error?.message || "Failed to send";
 
-      // ✅ RESTORED: Retry Logic for Media Format Mismatch (132012)
       if (sendData.error?.code === 132012 && tc.mediaUrl) {
         const m = (sendData.error?.error_data?.details || "").match(/expected\s+(\w+)/i);
         if (m && ["IMAGE", "VIDEO", "DOCUMENT"].includes(m[1].toUpperCase())) {
           comps = buildCampaignComponents(m[1].toUpperCase(), variables, tc.mediaUrl);
-          attempt++; // Count as a retry to prevent infinite loop
+          attempt++; 
           continue;
         }
       }
@@ -425,7 +426,6 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
         continue;
       }
 
-      // Retry only on Timeout (429), 500, 502, 503, 504
       if (statusCode === 429 || statusCode >= 500) {
         if (attempt < maxRetries) {
           const delay = Math.pow(2, attempt) * 1000; 
@@ -459,4 +459,346 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
     }
   }
   return { status: "failed", error: "Exited retry loop unexpectedly" };
+}
+
+// ==========================================
+// 7. COUNTS QUEUE & WORKER (For Fast List Loading)
+// ==========================================
+export const countsQueue = new Queue('counts-processing', { connection });
+export const countsQueueEvents = new QueueEvents('counts-processing', { connection });
+
+declare global {
+  // eslint-disable-next-line no-var
+  var countsWorker: any;
+}
+
+if (!global.countsWorker) {
+  global.countsWorker = new Worker('counts-processing', async (job) => {
+    if (job.name === 'generate-counts') {
+      return await generateCountsData(job.data.userId, job.data.cacheKey, job.data.lockKey);
+    }
+  }, { 
+    connection,
+    concurrency: 5 
+  });
+
+  global.countsWorker.on('completed', (job: any) => {
+    console.log(`✅ Counts job completed for user`);
+  });
+
+  global.countsWorker.on('failed', (job: any, err: Error) => {
+    console.error(`❌ Counts job failed:`, err.message);
+  });
+
+  console.log('🚀 BullMQ Counts Worker started in background...');
+}
+
+async function generateCountsData(userId: string, cacheKey: string, lockKey: string) {
+  try {
+    await ensureDbConnected();
+
+    const campaigns = await Campaign.aggregate([
+      { 
+        $match: { 
+          $expr: { $eq: [{ $toString: "$userId" }, userId] } 
+        } 
+      },
+      { $sort: { createdAt: -1 } },
+      {
+        $project: {
+          name: 1,
+          templateName: 1,
+          templateCategory: 1,
+          variables: 1,
+          mappedVariables: 1,
+          generateOtp: 1,
+          otpLength: 1,
+          
+          phoneNumbers: { $slice: [{ $ifNull: ["$phoneNumbers", []] }, 15] },
+          names: { $slice: [{ $ifNull: ["$names", []] }, 15] },
+          additionalFieldsData: { $slice: [{ $ifNull: ["$additionalFieldsData", []] }, 15] },
+          
+          mediaUrl: 1,
+          mediaType: 1,
+          languageCode: 1,
+          status: 1,
+          totalMessages: 1,
+          totalDeducted: 1,
+          scheduledAt: 1,
+          createdAt: 1,
+          additionalFields: 1,
+          
+          sentCount: 1,
+          failedCount: 1,
+          skippedCount: 1,
+          
+          liveStats: {
+            total: { $ifNull: ["$totalMessages", 0] },
+            replied: {
+              $size: {
+                $filter: {
+                  input: { $ifNull: ["$reportData", []] },
+                  as: "r",
+                  cond: {
+                    $or: [
+                      { $ne: [ { $ifNull: ["$$r.reply", ""] }, "" ] },
+                      { 
+                        $gt: [
+                          {
+                            $size: {
+                              $filter: {
+                                input: { $ifNull: ["$$r.replies", []] },
+                                as: "rep",
+                                cond: { $ne: ["$$rep", ""] }
+                              }
+                            }
+                          },
+                          0
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            read: {
+              $size: {
+                $filter: {
+                  input: { $ifNull: ["$reportData", []] },
+                  as: "r",
+                  cond: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "read"] }
+                }
+              }
+            },
+            delivered: {
+              $size: {
+                $filter: {
+                  input: { $ifNull: ["$reportData", []] },
+                  as: "r",
+                  cond: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "delivered"] }
+                }
+              }
+            },
+            invalid: {
+              $size: {
+                $filter: {
+                  input: { $ifNull: ["$reportData", []] },
+                  as: "r",
+                  cond: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "invalid"] }
+                }
+              }
+            },
+            duplicate: {
+              $size: {
+                $filter: {
+                  input: { $ifNull: ["$reportData", []] },
+                  as: "r",
+                  cond: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "duplicate"] }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]);
+
+    const fixedCampaigns = campaigns.map((c: any) => {
+      const ls = c.liveStats || {};
+      const total = ls.total || 0;
+      const replied = ls.replied || 0;
+      const read = ls.read || 0;
+      const delivered = ls.delivered || 0;
+      const sent = c.sentCount || 0;
+      const failed = c.failedCount || 0;
+      const skipped = c.skippedCount || 0;
+      const invalid = ls.invalid || 0;
+      const duplicate = ls.duplicate || 0;
+      
+      const processed = replied + read + delivered + sent + failed + invalid + duplicate;
+      const pending = Math.max(0, total - processed);
+
+      return {
+        ...c,
+        liveStats: {
+          ...ls,
+          sent,
+          failed,
+          skipped,
+          pending,
+          deliveredRead: delivered + read + replied,
+          failedInvalid: failed + invalid,
+          progress: total > 0 ? Math.round(((delivered + read + replied + sent) / total) * 100) : 0
+        },
+        languageCode: c.languageCode || "en",
+        totalDeducted: c.totalDeducted || 0,
+      };
+    });
+
+    // ✅ PURE STALE-WHILE-REVALIDATE CACHING
+    // Store the timestamp inside the JSON payload so the API route can check staleness
+    const cachePayload = JSON.stringify({
+      campaigns: fixedCampaigns,
+      _cachedAt: Date.now()
+    });
+    
+    if (countsQueue.client) {
+      const redisClient = await countsQueue.client;
+      // Set TTL to 1 hour (3600s) so the cache never disappears completely.
+      // The API route will refresh it in the background if _cachedAt is > 10s old.
+      await (redisClient as any).set(cacheKey, cachePayload, 'EX', 3600);
+    }
+
+    return { success: true, campaigns: fixedCampaigns };
+  } catch (error) {
+    console.error("❌ Counts generation error:", error);
+    return { success: false, message: "Failed to generate counts" };
+  } finally {
+    // ✅ CRITICAL: Always release the lock so future polls can trigger updates
+    if (countsQueue.client) {
+      const redisClient = await countsQueue.client;
+      await redisClient.del(lockKey).catch(() => {});
+    }
+  }
+}
+
+// ==========================================
+// 8. REPORT QUEUE & WORKER (Microsecond Loading)
+// ==========================================
+export const reportQueue = new Queue('report-processing', { connection });
+export const reportQueueEvents = new QueueEvents('report-processing', { connection });
+
+declare global {
+  // eslint-disable-next-line no-var
+  var reportWorker: any;
+}
+
+if (!global.reportWorker) {
+  global.reportWorker = new Worker('report-processing', async (job) => {
+    if (job.name === 'refresh-report-cache') {
+      return await refreshReportCache(job.data);
+    }
+  }, { 
+    connection,
+    concurrency: 5 
+  });
+
+  global.reportWorker.on('completed', (job: any) => {
+    console.log(`✅ Report cache refreshed for campaign ${job.data.campaignId}`);
+  });
+
+  global.reportWorker.on('failed', (job: any, err: Error) => {
+    console.error(`❌ Report job failed:`, err.message);
+  });
+
+  console.log('🚀 BullMQ Report Worker started in background...');
+}
+
+async function refreshReportCache(data: any) {
+  const { campaignId, userId, cacheKey, lockKey } = data;
+
+  try {
+    await ensureDbConnected();
+
+    const pipeline: any[] = [
+      { $match: { _id: new mongoose.Types.ObjectId(campaignId), userId: new mongoose.Types.ObjectId(userId) } },
+      {
+        $lookup: {
+          from: "messages",
+          let: { camp_createdAt: "$createdAt", user_id: "$userId" },
+          pipeline: [
+            { $match: { $expr: { $and: [ { $eq: [{ $toString: "$userId" }, { $toString: "$$user_id" }] }, { $eq: ["$direction", "in"] }, { $gte: ["$createdAt", "$$camp_createdAt"] } ] } } },
+            { $project: { phone: 1, _id: 0 } }
+          ],
+          as: "inboundMsgs"
+        }
+      },
+      {
+        $addFields: {
+          repliedPhonesArr: {
+            $map: {
+              input: { $filter: { input: "$inboundMsgs", as: "msg", cond: { $ne: [{ $toString: { $ifNull: ["$$msg.phone", ""] } }, ""] } } },
+              as: "msg", in: { $toString: "$$msg.phone" }
+            }
+          }
+        }
+      },
+      {
+        $project: {
+          name: 1, templateName: 1, additionalFields: 1, languageCode: 1, totalDeducted: 1,
+          mappedReportData: {
+            $map: {
+              input: { $ifNull: ["$reportData", []] },
+              as: "r",
+              in: {
+                $mergeObjects: [
+                  "$$r",
+                  {
+                    _effStatus: {
+                      $switch: {
+                        branches: [
+                          { case: { $or: [ { $ne: [ { $ifNull: ["$$r.reply", ""] }, "" ] }, { $gt: [ { $size: { $filter: { input: { $ifNull: ["$$r.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0 ] }, { $in: [{ $toString: { $ifNull: ["$$r.phone", ""] } }, "$repliedPhonesArr"] } ] }, then: "replied" },
+                          { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "read"] }, then: "read" },
+                          { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "delivered"] }, then: "delivered" },
+                          { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "sent"] }, then: "sent" },
+                          { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "failed"] }, then: "failed" },
+                          { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "invalid"] }, then: "invalid" },
+                          { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "duplicate"] }, then: "duplicate" }
+                        ],
+                        default: "pending"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        $project: {
+          name: 1, templateName: 1, additionalFields: 1, languageCode: 1, totalDeducted: 1,
+          campaignStats: {
+            total: { $size: { $ifNull: ["$mappedReportData", []] } },
+            replied: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "replied"] } } } },
+            read: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "read"] } } } },
+            delivered: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "delivered"] } } } },
+            sent: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "sent"] } } } },
+            failed: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "failed"] } } } },
+            invalid: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "invalid"] } } } },
+            duplicate: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "duplicate"] } } } },
+            pending: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "pending"] } } } }
+          },
+          mappedReportData: 1
+        }
+      }
+    ];
+
+    const result = await Campaign.aggregate(pipeline);
+    
+    if (!result || result.length === 0) {
+      return { success: false, message: "Campaign not found", status: 404 };
+    }
+
+    const campaign = result[0];
+
+    if (reportQueue.client) {
+      const redisClient = await reportQueue.client;
+      const cachePayload = JSON.stringify({
+        stats: campaign.campaignStats,
+        data: campaign.mappedReportData,
+        meta: { name: campaign.name, templateName: campaign.templateName, additionalFields: campaign.additionalFields, languageCode: campaign.languageCode, totalDeducted: campaign.totalDeducted }
+      });
+      await (redisClient as any).set(cacheKey, cachePayload, 'EX', 3600); // Cache for 1 hour, refreshed in background
+    }
+
+    return { success: true };
+  } catch (error: any) {
+    console.error("❌ Report Worker Error:", error);
+    return { success: false, message: error.message, status: 500 };
+  } finally {
+    if (reportQueue.client) {
+      const redisClient = await reportQueue.client;
+      await redisClient.del(lockKey).catch(() => {});
+    }
+  }
 }
