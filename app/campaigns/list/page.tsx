@@ -131,7 +131,7 @@ export default function CampaignList() {
     } catch (err) { console.error("Failed to load campaigns", err); }
   };
 
-  // 🚀 CHUNKED LOOP: Keeps calling the backend until hasMore is false
+  // 🚀 CHUNKED LOOP: Fires immediately after the previous chunk finishes
   const startCampaign = async (id: string) => {
     if (!canSendMessage) { toast.error("Insufficient balance."); return; }
     if (!confirm("Start this campaign now?")) return;
@@ -153,7 +153,7 @@ export default function CampaignList() {
           toast.error(data402.message || "Insufficient balance.");
           setCanSendMessage(false);
           fetchBilling();
-          break; // Stop the loop
+          break; 
         }
 
         const data = await res.json();
@@ -163,10 +163,10 @@ export default function CampaignList() {
         }
         
         hasMore = data.hasMore;
-        loadCampaigns(); // Update UI side-by-side
+        loadCampaigns(); 
         
         if (hasMore) {
-          await new Promise(r => setTimeout(r, 500)); // 500ms delay between chunks
+          await new Promise(r => setTimeout(r, 10)); // 10ms delay to prevent browser freezing
         }
       }
       fetchBilling();
@@ -212,7 +212,7 @@ export default function CampaignList() {
     }
   };
 
-  // 🚀 CHUNKED LOOP: Keeps calling the backend until hasMore is false
+  // 🚀 CHUNKED LOOP: Fires immediately after the previous chunk finishes
   const rerunCampaign = async (id: string) => {
     if (!canSendMessage) { toast.error("Insufficient balance."); return; }
     if (!confirm("Rerun this campaign?")) return;
@@ -263,7 +263,7 @@ export default function CampaignList() {
         loadCampaigns(); 
         
         if (hasMore) {
-          await new Promise(r => setTimeout(r, 500)); 
+          await new Promise(r => setTimeout(r, 10)); 
         }
       }
       fetchBilling();
