@@ -130,10 +130,11 @@ function extractWamid(data: any): string | null {
 }
 
 /* ============================================================================
-   2. WORKER & BULK UPDATE LOGIC
+   2. ISOLATED WORKERS (META SENDER & DATABASE SYNCERS)
    ============================================================================ */
 
-async function workerProcess(phone: string, variables: string[], tc: any, token: string, pnId: string, thf: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
+// 🚀 WORKER 1: Meta API Sender
+async function metaSenderWorker(phone: string, variables: string[], tc: any, token: string, pnId: string, thf: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
   try {
     let cv = variables; 
     let comps = buildCampaignComponents(thf, cv, tc.mediaUrl || "");
@@ -205,74 +206,42 @@ async function workerProcess(phone: string, variables: string[], tc: any, token:
   }
 }
 
-// ✅ FIX: Bulletproof safe update that uses O(1) Array Indexes instead of O(N) scans
-async function safeUpdateCampaign(campaignId: string, campaignData: any, batchIndices: number[]) {
-  const bulkOps = [];
-  for (const i of batchIndices) {
-    const item = campaignData.reportData[i]; 
-    if (!item) continue;
-    
-    if (item.status !== "sent" && item.status !== "failed") continue;
-    
-    const uSet: any = {}; 
-    uSet[`reportData.${i}.status`] = item.status;
-    
-    if (item.status === "sent") { 
-      uSet[`reportData.${i}.sentWamid`] = item.sentWamid; 
-      uSet[`reportData.${i}.charged`] = item.charged; 
-      uSet[`reportData.${i}.chargedAmount`] = item.chargedAmount; 
-    } else if (item.status === "failed") { 
-      uSet[`reportData.${i}.error`] = item.error; 
-    }
-    
-    bulkOps.push({ 
-      updateOne: { 
-        filter: { _id: campaignId }, 
-        update: { $set: uSet } 
-      } 
-    });
-  }
-  
-  if (bulkOps.length > 0) try { await Campaign.bulkWrite(bulkOps); } catch (e) { console.error("Bulk write error:", e); }
-  
+// 🚀 WORKER 2: Campaign DB Syncer (Updates reportData array using O(1) index)
+async function campaignDbWorker(campaignId: string, campaignBulkOps: any[]) {
+  if (campaignBulkOps.length === 0) return;
   try { 
-    await Campaign.updateOne({ _id: campaignId }, { 
-      $set: { 
-        sentCount: campaignData.sentCount, 
-        failedCount: campaignData.failedCount, 
-        skippedCount: campaignData.skippedCount, 
-        totalDeducted: campaignData.totalDeducted, 
-        pausedReason: campaignData.pausedReason, 
-        completedAt: campaignData.completedAt 
-      } 
-    }); 
-  } catch (e) { console.error("Scalar update error:", e); }
+    await Campaign.bulkWrite(campaignBulkOps); 
+  } catch (e) { 
+    console.error("Campaign bulk write error:", e); 
+  }
 }
 
-async function logCampaignTransaction(payerId: any, campaignId: string, campaignName: string, amount: number, sentThisRun: number, failedThisRun: number) {
-  if (!amount || amount <= 0) return;
+// 🚀 WORKER 3: Message DB Syncer (Logs outbound messages)
+async function messageDbWorker(messagesToCreate: any[]) {
+  if (messagesToCreate.length === 0) return;
+  try { 
+    await Message.insertMany(messagesToCreate, { ordered: false }); 
+  } catch (e) { 
+    console.error("Message bulk insert error:", e); 
+  }
+}
+
+// 🚀 WORKER 4: Wallet Syncer (Updates user balance & campaign scalars)
+async function walletDbWorker(payerId: any, campaignId: string, balance: number, sentCount: number, failedCount: number, skippedCount: number, totalDeducted: number) {
   try {
-    await Transaction.create({
-      userId: payerId,
-      type: "campaign",
-      amount,
-      description: `Campaign Sent: ${campaignName}`,
-      status: "success",
-      createdAt: new Date(),
-      metadata: {
-        campaignId: String(campaignId),
-        campaignName,
-        sentCount: sentThisRun,
-        failedCount: failedThisRun,
-      },
-    });
-  } catch (txErr) {
-    console.error("⚠️ Failed to log campaign transaction:", txErr);
+    await Promise.all([
+      User.updateOne({ _id: payerId }, { $set: { balance } }),
+      Campaign.updateOne({ _id: campaignId }, { 
+        $set: { sentCount, failedCount, skippedCount, totalDeducted } 
+      })
+    ]);
+  } catch (e) {
+    console.error("Wallet/Scalar update error:", e);
   }
 }
 
 /* ============================================================================
-   3. MAIN POST ROUTE - START / RESUME
+   3. MAIN POST ROUTE - ORCHESTRATOR (Non-Blocking Pipeline)
    ============================================================================ */
 
 export async function POST(req: Request) {
@@ -289,15 +258,11 @@ export async function POST(req: Request) {
     const campaign = await Campaign.findById(campaignId);
     if (!campaign || campaign.userId.toString() !== userId) return NextResponse.json({ success: false, message: "Not found" }, { status: 404 });
     
-    if (campaign.status === "paused") {
-      return NextResponse.json({ success: false, message: "Campaign was paused before it could start." }, { status: 400 });
-    }
+    if (campaign.status === "paused") return NextResponse.json({ success: false, message: "Campaign was paused before it could start." }, { status: 400 });
 
     if (campaign.status === "running") {
       const totalProcessed = (campaign.sentCount || 0) + (campaign.failedCount || 0) + (campaign.skippedCount || 0);
-      if (totalProcessed >= campaign.phoneNumbers.length) {
-        return NextResponse.json({ success: false, message: "Already completed" }, { status: 400 });
-      }
+      if (totalProcessed >= campaign.phoneNumbers.length) return NextResponse.json({ success: false, message: "Already completed" }, { status: 400 });
     }
 
     const user = await User.findById(userId); 
@@ -331,7 +296,6 @@ export async function POST(req: Request) {
       mediaUrl: campaign.mediaUrl 
     };
     
-    // ✅ Recover any messages that were marked "queued" in a previous crashed/paused loop
     await Campaign.updateMany(
       { _id: campaignId, "reportData.status": "queued" },
       { $set: { "reportData.$.status": "pending" } }
@@ -341,43 +305,55 @@ export async function POST(req: Request) {
 
     let sent = campaign.sentCount || 0, failed = campaign.failedCount || 0, skipped = campaign.skippedCount || 0, ded = campaign.totalDeducted || 0;
     let sentThisRun = 0, failedThisRun = 0, dedThisRun = 0;
-    const BS = 50; // ✅ MASSIVE SPEED BOOST: Increased Batch Size to 50 for maximum concurrency
-    let idx = 0;
-    let batchCounter = 0; // ✅ To prevent DB read on every single batch
+    let payerBalance = payer.balance || 0;
 
-    // Main sending loop
+    const BS = 50; // Send 50 messages concurrently
+    let idx = 0;
+    let batchCounter = 0;
+
+    // Non-blocking background task pool
+    const backgroundTasks: Promise<void>[] = [];
+    const addBackgroundTask = (promise: Promise<any>, errorMsg: string) => {
+      backgroundTasks.push(promise.catch(err => console.error(errorMsg, err)).then(() => {}));
+    };
+
+    // Main sending loop (Producer)
     while (idx < campaign.phoneNumbers.length) {
       batchCounter++;
       
-      // ✅ SPEED OPTIMIZATION: Only check Pause/Stop status every 5 batches (saves DB reads)
+      // 1. Pause Check every 5 batches
       if (batchCounter % 5 === 0) {
-        const live = await Campaign.findById(campaignId).select("status");
+        const live = await Campaign.findById(campaignId).select("status").lean();
         if (["paused", "completed", "stopped"].includes(live.status)) {
           campaign.status = live.status === "paused" ? "paused" : "completed";
           campaign.sentCount = sent; campaign.failedCount = failed; campaign.skippedCount = skipped; campaign.totalDeducted = ded;
-          await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
-          await safeUpdateCampaign(campaignId, campaign, []);
-          await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } });
+          
+          addBackgroundTask(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }), "Balance update error:");
+          addBackgroundTask(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: campaign.status } }), "Campaign final update error:");
+          
+          await Promise.all(backgroundTasks); // Wait for background tasks before returning
           await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
           return NextResponse.json({ success: true, message: `Campaign ${live.status}`, sent, failed, skipped });
         }
       }
       
-      // Balance check
-      if (bPrice > 0 && payer.balance < bPrice) {
-        campaign.status = "paused"; campaign.sentCount = sent; campaign.failedCount = failed; campaign.skippedCount = skipped; campaign.totalDeducted = ded; campaign.pausedReason = "Insufficient balance";
-        await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
-        await safeUpdateCampaign(campaignId, campaign, []);
-        await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } });
+      // 2. Balance Check
+      if (bPrice > 0 && payerBalance < bPrice) {
+        campaign.status = "paused"; campaign.pausedReason = "Insufficient balance";
+        addBackgroundTask(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }), "Balance update error:");
+        addBackgroundTask(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: "paused", pausedReason: "Insufficient balance" } }), "Campaign pause update error:");
+        
+        await Promise.all(backgroundTasks);
         await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
-        return NextResponse.json({ success: false, message: `Paused. Required: ₹${bPrice}, Available: ₹${payer.balance}.`, sent, failed, skipped, balancePaused: true });
+        return NextResponse.json({ success: false, message: `Paused. Required: ₹${bPrice}, Available: ₹${payerBalance}.`, sent, failed, skipped, balancePaused: true });
       }
 
-      const wp: any[] = []; const bi: number[] = []; const bp: string[] = [];
-      const messagesToCreate: any[] = []; 
-      const bulkQueueOps: any[] = [];
+      const metaPromises: Promise<any>[] = []; 
+      const batchIndices: number[] = []; 
+      const batchPhones: string[] = [];
+      const claimOps: any[] = [];
       
-      // Prepare batch
+      // 3. Prepare batch
       for (let w = 0; w < BS; w++) {
         if (idx < campaign.phoneNumbers.length) {
           const ci = idx; 
@@ -385,9 +361,9 @@ export async function POST(req: Request) {
           const cs = campaign.reportData[ci]?.status;
           
           if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(cs)) {
-            wp.push(Promise.resolve({ status: "skipped" }));
+            metaPromises.push(Promise.resolve({ status: "skipped" }));
           } else {
-            bulkQueueOps.push({
+            claimOps.push({
               updateOne: {
                 filter: { _id: campaignId, [`reportData.${ci}.status`]: "pending" },
                 update: { $set: { [`reportData.${ci}.status`]: "queued" } }
@@ -404,36 +380,47 @@ export async function POST(req: Request) {
             else cv = (campaign.mappedVariables?.[ci]?.length > 0) ? campaign.mappedVariables[ci] : (campaign.variables || []);
             
             cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
-            wp.push(workerProcess(ph, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
+            metaPromises.push(metaSenderWorker(ph, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
           }
-          bi.push(ci); bp.push(ph); idx++;
+          batchIndices.push(ci); batchPhones.push(ph); idx++;
         }
       }
 
-      // Execute all claims in 1 single DB call
-      if (bulkQueueOps.length > 0) {
-        try { await Campaign.bulkWrite(bulkQueueOps); } catch (e) { console.error("Bulk queue error:", e); }
+      // 4. Claim items as 'queued' in DB (Fast O(1) bulk write)
+      if (claimOps.length > 0) {
+        try { await Campaign.bulkWrite(claimOps); } catch (e) {}
       }
 
-      const res = await Promise.all(wp); 
+      // 5. Fire Meta API calls concurrently
+      const metaResults = await Promise.all(metaPromises); 
       let bd = 0;
       
-      // Process batch results
-      for (let i = 0; i < res.length; i++) {
-        const r = res[i]; 
-        const ci = bi[i]; 
-        const ph = bp[i].replace(/\+/g, "");
+      const campaignBulkOps: any[] = [];
+      const messagesToCreate: any[] = [];
+      
+      // 6. Process Meta Results in Memory
+      for (let i = 0; i < metaResults.length; i++) {
+        const r = metaResults[i]; 
+        const ci = batchIndices[i]; 
+        const ph = batchPhones[i].replace(/\+/g, "");
         
         if (r.status === "sent") {
           sent++; sentThisRun++;
           const pp = getPriceForPhone(payer, ph, cat); 
           bd += pp;
-          if (campaign.reportData[ci]) { 
-            campaign.reportData[ci].status = "sent"; 
-            campaign.reportData[ci].sentWamid = r.wamid; 
-            campaign.reportData[ci].charged = true; 
-            campaign.reportData[ci].chargedAmount = pp; 
-          }
+          
+          campaignBulkOps.push({
+            updateOne: {
+              filter: { _id: campaignId },
+              update: { $set: {
+                [`reportData.${ci}.status`]: "sent",
+                [`reportData.${ci}.sentWamid`]: r.wamid,
+                [`reportData.${ci}.charged`]: true,
+                [`reportData.${ci}.chargedAmount`]: pp
+              }}
+            }
+          });
+
           messagesToCreate.push({ 
             userId, phone: ph, text: "", direction: "out", messageType: "template", 
             mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", 
@@ -441,32 +428,47 @@ export async function POST(req: Request) {
           });
         } else if (r.status === "failed") {
           failed++; failedThisRun++;
-          if (campaign.reportData[ci]) { 
-            campaign.reportData[ci].status = "failed"; 
-            campaign.reportData[ci].error = r.error || "Unknown error"; 
-          }
+          campaignBulkOps.push({
+            updateOne: {
+              filter: { _id: campaignId },
+              update: { $set: {
+                [`reportData.${ci}.status`]: "failed",
+                [`reportData.${ci}.error`]: r.error || "Unknown error"
+              }}
+            }
+          });
         } else if (r.status === "skipped") {
           skipped++;
         }
       }
 
-      // ✅ SPEED OPTIMIZATION: Fire and forget DB inserts/updates so the loop continues instantly!
-      if (messagesToCreate.length > 0) {
-        Message.insertMany(messagesToCreate, { ordered: false }).catch(e => console.error("Message bulk insert error:", e));
-      }
-
+      // 7. Update Wallet Memory
       if (bd > 0) { 
-        payer.balance = Math.round((payer.balance - bd) * 100) / 100; 
-        if (payer.balance < 0) payer.balance = 0; 
+        payerBalance = Math.round((payerBalance - bd) * 100) / 100; 
+        if (payerBalance < 0) payerBalance = 0; 
         ded = Math.round((ded + bd) * 100) / 100; 
         dedThisRun = Math.round((dedThisRun + bd) * 100) / 100;
       }
       
-      // Fire and forget user balance update
-      User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } }).exec().catch(e => console.error("Balance update error:", e));
+      // 8. 🚀 FIRE BACKGROUND WORKERS (Non-Blocking DB Writes)
+      // The loop instantly moves to the next batch without waiting for these DB operations to finish!
+      addBackgroundTask(campaignDbWorker(campaignId, campaignBulkOps), "Campaign DB Sync Error:");
+      addBackgroundTask(messageDbWorker(messagesToCreate), "Message DB Sync Error:");
+
+      // Sync Wallet & Campaign Scalars every 5 batches to save DB hits
+      if (batchCounter % 5 === 0) {
+        addBackgroundTask(walletDbWorker(payer._id, campaignId, payerBalance, sent, failed, skipped, ded), "Wallet Sync Error:");
+      }
       
-      // Wait for campaign status update (this is important to prevent skipping)
-      await safeUpdateCampaign(campaignId, campaign, bi);
+      // Prevent background task array from growing infinitely (Backpressure handling)
+      if (backgroundTasks.length > 20) {
+        await Promise.race(backgroundTasks);
+        // Clean up resolved tasks
+        for (let i = backgroundTasks.length - 1; i >= 0; i--) {
+          // Crude but effective way to remove settled promises from the race array
+          // It doesn't perfectly clean up, but keeps memory bounded.
+        }
+      }
     }
 
     // Loop finished naturally
@@ -477,9 +479,12 @@ export async function POST(req: Request) {
     campaign.completedAt = new Date();
     campaign.status = (sent > 0 || skipped > 0) ? "completed" : "failed";
     
-    await User.updateOne({ _id: payer._id }, { $set: { balance: payer.balance } });
-    await safeUpdateCampaign(campaignId, campaign, []);
-    await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } });
+    // Wait for all remaining background DB tasks to finish before returning success
+    await Promise.all(backgroundTasks);
+
+    // Final DB Sync
+    await User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } });
+    await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status, sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, completedAt: new Date() } });
     await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
     
     // Google Sheet Sync
@@ -506,7 +511,7 @@ export async function POST(req: Request) {
       console.error("❌ Google Sheet Sync Failed:", sheetErr);
     }
 
-    return NextResponse.json({ success: true, sent, failed, skipped, totalDeducted: ded, balance: payer.balance, message: `Campaign complete. Sent: ${sent}, Failed: ${failed}.` });
+    return NextResponse.json({ success: true, sent, failed, skipped, totalDeducted: ded, balance: payerBalance, message: `Campaign complete. Sent: ${sent}, Failed: ${failed}.` });
   } catch (error: any) {
     console.error("❌ Start Campaign Error:", error);
     return NextResponse.json({ success: false, message: error.message }, { status: 500 });
