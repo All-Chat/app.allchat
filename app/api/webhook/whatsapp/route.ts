@@ -34,8 +34,6 @@ function shouldUpdateStatus(currentStatus: string, newStatus: string): boolean {
 
 // ============================================================================
 // ✅ NEW: Build the "outgoing message" representation (text, media, buttons)
-// for ANY step we send via the workflow engine, so it can be saved to the
-// Message collection and rendered correctly in the live chat UI.
 // ============================================================================
 type OutgoingPayload = {
   text: string;
@@ -50,41 +48,25 @@ function buildOutgoingMessagePayload(step: any): OutgoingPayload {
   let mediaUrl: string | null = null;
   let buttons: OutgoingPayload["buttons"] = [];
 
-  // --- Call action (phone CTA button) ---
   if (step.stepType === "call_action" && step.phoneNumber) {
     text = step.message || step.urlLabel || step.phoneNumber || "";
-    buttons = [
-      {
-        type: "phone_number",
-        text: step.urlLabel || "Call",
-        phone_number: step.phoneNumber,
-      },
-    ];
+    buttons = [{ type: "phone_number", text: step.urlLabel || "Call", phone_number: step.phoneNumber }];
     return { text, messageType, mediaUrl, buttons };
   }
 
-  // --- URL action (link CTA button) ---
   if (step.stepType === "url_action" && step.url) {
     let url = step.url.trim();
     if (!url.startsWith("http")) url = "https://" + url;
     text = step.message || step.urlLabel || step.url || "";
-    buttons = [
-      {
-        type: "url",
-        text: step.urlLabel || "Open",
-        url,
-      },
-    ];
+    buttons = [{ type: "url", text: step.urlLabel || "Open", url }];
     return { text, messageType, mediaUrl, buttons };
   }
 
-  // --- Media attached directly to a message step (image/video/document) ---
   if (step.mediaUrl && ["image", "video", "document"].includes(step.mediaType)) {
     messageType = step.mediaType;
     mediaUrl = step.mediaUrl;
   }
 
-  // --- Quick-reply / list buttons on a message step ---
   if (step.buttons?.length > 0) {
     const valid = step.buttons.filter((b: any) => b.label?.trim());
     if (valid.length > 0) {
@@ -109,9 +91,6 @@ async function saveOutgoingWorkflowMessage(
     direction: "out",
     messageType,
     mediaUrl,
-    // Re-using the templateButtons field as a generic "buttons" carrier so the
-    // live chat UI (which already knows how to parse/render this field) can
-    // show the same buttons/CTAs that were actually sent on WhatsApp.
     templateButtons: buttons.length > 0 ? JSON.stringify(buttons) : undefined,
     status: "sent",
     whatsappPhoneNumberId: phoneNumberId,
@@ -154,7 +133,6 @@ const startWorkflowInactivityTimer = (
         try {
           const session = await Session.findOne({ phone, userId });
 
-          // ✅ Only cancel if user is in a form; do NOT cancel if session simply doesn't exist yet
           if (session && session.formId) {
             clearWorkflowTimer(phone);
             return;
@@ -169,7 +147,6 @@ const startWorkflowInactivityTimer = (
               baseUrl
             );
 
-            // ✅ Save the inactivity message to DB so it shows in chat history
             await Message.create({
               userId,
               phone,
@@ -349,7 +326,6 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
     const buttonPayload = extractButtonPayload(msg);
     if (!incomingText && !buttonPayload) return;
 
-    // ✅ Clear inactivity timer on ANY new message from user
     clearWorkflowTimer(msg.from);
 
     const activeSession = await Session.findOne({ phone: msg.from, userId: num.userId });
@@ -452,25 +428,13 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
                     return;
                   }
                 }
-        activeSession.currentStepId = nextStep.id;
-        await activeSession.save();
+                activeSession.currentStepId = nextStep.id;
+                await activeSession.save();
 
-        await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, nextStep, baseUrl);
-
-        // ✅ Save the outgoing message (with media/buttons) so it shows in live chat
-        await saveOutgoingWorkflowMessage(num.userId.toString(), msg.from, num.phoneNumberId, nextStep);
-
-        // ✅ Start inactivity timer after button-click navigation
-        startWorkflowInactivityTimer(
-          msg.from,
-          num.userId.toString(),
-          wf._id.toString(),
-          num.accessToken,
-          num.phoneNumberId,
-          baseUrl
-        );
-
-        return;
+                await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, nextStep, baseUrl);
+                await saveOutgoingWorkflowMessage(num.userId.toString(), msg.from, num.phoneNumberId, nextStep);
+                startWorkflowInactivityTimer(msg.from, num.userId.toString(), wf._id.toString(), num.accessToken, num.phoneNumberId, baseUrl);
+                return;
               } else { await Session.deleteOne({ _id: activeSession._id }); return; }
             } else { await Session.deleteOne({ _id: activeSession._id }); return; }
           } else { await Session.deleteOne({ _id: activeSession._id }); }
@@ -545,459 +509,115 @@ async function processWorkflowStep(
   const step = steps[stepId];
   if (!step) return;
 
-  // =========================
-  // DELAY NODE
-  // =========================
   if (step.stepType === "delay_node") {
-    if (step.delaySeconds > 0) {
-      await new Promise((r) => setTimeout(r, step.delaySeconds * 1000));
-    }
-
-    if (step.nextStepId) {
-      return await processWorkflowStep(
-        step.nextStepId,
-        steps,
-        matchedWorkflow,
-        accessToken,
-        phoneNumberId,
-        customerNumber,
-        userId,
-        tenantId,
-        baseUrl
-      );
-    }
+    if (step.delaySeconds > 0) await new Promise((r) => setTimeout(r, step.delaySeconds * 1000));
+    if (step.nextStepId) return await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
     return;
   }
 
-  // =========================
-  // OPT / TAG NODE
-  // =========================
-  if (step.stepType === "opt_in_node") {
-    await addOptOutNumber(customerNumber, userId, tenantId);
-    return;
-  }
+  if (step.stepType === "opt_in_node") { await addOptOutNumber(customerNumber, userId, tenantId); return; }
+  if (step.stepType === "tag_node") { if (step.selectedTag) await applyTagToContact(customerNumber, step.selectedTag, userId); return; }
 
-  if (step.stepType === "tag_node") {
-    if (step.selectedTag) {
-      await applyTagToContact(customerNumber, step.selectedTag, userId);
-    }
-    return;
-  }
-
-  // =========================
-  // FORM NODE
-  // =========================
   if (step.stepType === "form_node" && step.selectedForm) {
     const formData = await Form.findById(step.selectedForm);
-
     if (!formData || !formData.fields.length) return;
 
-    await Session.findOneAndUpdate(
-      { phone: customerNumber, userId },
-      {
-        formId: formData._id,
-        formFieldIndex: 0,
-        workflowId: matchedWorkflow._id,
-        currentStepId: step.id,
-        updatedAt: new Date(),
-      },
-      { upsert: true, new: true }
-    );
-
-    await FormResponse.findOneAndUpdate(
-      { formId: formData._id, phone: customerNumber, status: "incomplete" },
-      { $set: { userId, data: {}, status: "incomplete" } },
-      { upsert: true, new: true }
-    );
-
-    await sendWorkflowWhatsAppMessage(
-      accessToken,
-      phoneNumberId,
-      customerNumber,
-      {
-        message: `*${formData.name}*\n\n${formData.fields[0].label}`,
-        stepType: "text",
-      },
-      baseUrl
-    );
-
+    await Session.findOneAndUpdate({ phone: customerNumber, userId }, { formId: formData._id, formFieldIndex: 0, workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() }, { upsert: true, new: true });
+    await FormResponse.findOneAndUpdate({ formId: formData._id, phone: customerNumber, status: "incomplete" }, { $set: { userId, data: {}, status: "incomplete" } }, { upsert: true, new: true });
+    await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" }, baseUrl);
     return;
   }
 
-  // =========================
-  // MESSAGE NODE
-  // =========================
-  if (step.stepType === "message") {
-    await sendWorkflowWhatsAppMessage(
-      accessToken,
-      phoneNumberId,
-      customerNumber,
-      step,
-      baseUrl
-    );
-
-    // ✅ Save the outgoing message INCLUDING media + buttons so it renders
-    // correctly in the live chat UI (previously only plain text was saved).
+  if (step.stepType === "message" || step.stepType === "call_action" || step.stepType === "url_action" || step.stepType === undefined) {
+    await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
     await saveOutgoingWorkflowMessage(userId, customerNumber, phoneNumberId, step);
-
-    // ✅ Create / update session so the inactivity timer can find it
-    await Session.findOneAndUpdate(
-      { phone: customerNumber, userId },
-      {
-        workflowId: matchedWorkflow._id,
-        currentStepId: step.id,
-        formId: null,
-        formFieldIndex: 0,
-        updatedAt: new Date(),
-      },
-      { upsert: true, new: true }
-    );
-
-    // ✅ Start inactivity timer
-    startWorkflowInactivityTimer(
-      customerNumber,
-      userId,
-      matchedWorkflow._id.toString(),
-      accessToken,
-      phoneNumberId,
-      baseUrl
-    );
-
+    await Session.findOneAndUpdate({ phone: customerNumber, userId }, { workflowId: matchedWorkflow._id, currentStepId: step.id, formId: null, formFieldIndex: 0, updatedAt: new Date() }, { upsert: true, new: true });
+    startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
     return;
   }
 
-  // =========================
-  // CTA / CALL / URL NODE
-  // =========================
-  if (step.stepType === "call_action" || step.stepType === "url_action") {
-    await sendWorkflowWhatsAppMessage(
-      accessToken,
-      phoneNumberId,
-      customerNumber,
-      step,
-      baseUrl
-    );
-
-    // ✅ Save with the CTA button info (phone/url) attached
-    await saveOutgoingWorkflowMessage(userId, customerNumber, phoneNumberId, step);
-
-    // ✅ Create / update session
-    await Session.findOneAndUpdate(
-      { phone: customerNumber, userId },
-      {
-        workflowId: matchedWorkflow._id,
-        currentStepId: step.id,
-        formId: null,
-        formFieldIndex: 0,
-        updatedAt: new Date(),
-      },
-      { upsert: true, new: true }
-    );
-
-    // ✅ Start inactivity timer
-    startWorkflowInactivityTimer(
-      customerNumber,
-      userId,
-      matchedWorkflow._id.toString(),
-      accessToken,
-      phoneNumberId,
-      baseUrl
-    );
-
-    return;
-  }
-
-  // =========================
-  // DEFAULT STEP
-  // =========================
-  await sendWorkflowWhatsAppMessage(
-    accessToken,
-    phoneNumberId,
-    customerNumber,
-    step,
-    baseUrl
-  );
-
-  // ✅ Save with media/buttons too (previously plain text only)
+  await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
   await saveOutgoingWorkflowMessage(userId, customerNumber, phoneNumberId, step);
-
-  await Session.findOneAndUpdate(
-    { phone: customerNumber, userId },
-    {
-      workflowId: matchedWorkflow._id,
-      currentStepId: step.id,
-      updatedAt: new Date(),
-    },
-    { upsert: true, new: true }
-  );
-
-  // ✅ Start inactivity timer if this workflow has an inactivity node
+  await Session.findOneAndUpdate({ phone: customerNumber, userId }, { workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() }, { upsert: true, new: true });
   startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
 }
 
-// ✅ WHATSAPP API SENDER (Fixed parameters array)
-async function sendWorkflowWhatsAppMessage(
-  accessToken: string,
-  phoneNumberId: string,
-  to: string,
-  step: any,
-  baseUrl: string
-) {
+async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: string, to: string, step: any, baseUrl: string) {
   const sendMessage = async (payload: any) => {
     try {
-      const res = await fetch(
-        `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-        }
-      );
-
+      const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const data = await res.json();
-      if (!res.ok) {
-        console.error("❌ WhatsApp API ERROR:", JSON.stringify(data, null, 2));
-      }
-    } catch (err: any) {
-      console.error("❌ Send failed:", err.message);
-    }
+      if (!res.ok) console.error("❌ WhatsApp API ERROR:", JSON.stringify(data, null, 2));
+    } catch (err: any) { console.error("❌ Send failed:", err.message); }
   };
 
-  const isSocialLink = (url?: string) =>
-    url &&
-    [
-      "instagram.com",
-      "facebook.com",
-      "youtube.com",
-      "tiktok.com",
-      "linkedin.com",
-      "twitter.com",
-      "wa.me",
-    ].some((d) => url.includes(d));
+  const isSocialLink = (url?: string) => url && ["instagram.com", "facebook.com", "youtube.com", "tiktok.com", "linkedin.com", "twitter.com", "wa.me"].some((d) => url.includes(d));
 
-     // ===============================
-  // 1. CALL ACTION (FIXED)
-  // ===============================
   if (step.stepType === "call_action" && step.phoneNumber) {
     let number = step.phoneNumber.replace(/[^\d+]/g, "");
     if (!number.startsWith("+")) number = "+" + number;
-
-    // ✅ WhatsApp blocks 'tel:' links. We route it through your site to trigger the dialer.
     const redirectUrl = `${baseUrl}/api/redirect-call?number=${encodeURIComponent(number)}`;
-
-    const payload = {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "cta_url",
-        header: {
-          type: "text",
-          text: step.urlLabel || "Call Now",
-        },
-        body: {
-          text: step.message || "Tap below to call",
-        },
-        action: {
-          name: "cta_url",
-          parameters: {
-            display_text: step.urlLabel || "Call",
-            url: redirectUrl, // ✅ Uses the safe HTTPS link
-          },
-        },
-      },
-    };
-
-    return sendMessage(payload);
-  }
-
-  // ===============================
-  // 2. URL ACTION (FIXED)
-  // ===============================
-  if (step.stepType === "url_action" && step.url) {
-    let url = step.url.trim();
-    if (!url.startsWith("http")) url = "https://" + url;
-
-    const payload = {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "cta_url",
-        header: {
-          type: "text",
-          text: step.urlLabel || "Open Link",
-        },
-        body: {
-          text: step.message || "Tap below to continue",
-        },
-        action: {
-          name: "cta_url",
-          parameters: {
-            display_text: step.urlLabel || "Open",
-            url,
-          },
-        },
-      },
-    };
-
-    return sendMessage(payload);
-  }
-
-   // ===============================
-  // 3. SOCIAL LINKS (TEXT ONLY FIX)
-  // ===============================
-  if (step.mediaType === "link" || isSocialLink(step.mediaUrl)) {
-    const url = step.mediaUrl?.startsWith("http")
-      ? step.mediaUrl
-      : `https://${step.mediaUrl}`;
-      
-    let bodyText = step.message || "";
-
-    // ✅ Only add URL automatically if the user didn't already type it in the message
-    if (bodyText && !bodyText.includes(url)) {
-      bodyText = `${bodyText}\n\n${url}`;
-    } else if (!bodyText) {
-      bodyText = url;
-    }
-
     return sendMessage({
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: {
-        body: bodyText,
-        preview_url: true,
+      messaging_product: "whatsapp", to, type: "interactive", interactive: {
+        type: "cta_url", header: { type: "text", text: step.urlLabel || "Call Now" }, body: { text: step.message || "Tap below to call" },
+        action: { name: "cta_url", parameters: { display_text: step.urlLabel || "Call", url: redirectUrl } },
       },
     });
   }
 
-  // ===============================
-  // 3b. MEDIA (IMAGE / VIDEO / DOCUMENT) MESSAGE NODE
-  // ===============================
+  if (step.stepType === "url_action" && step.url) {
+    let url = step.url.trim();
+    if (!url.startsWith("http")) url = "https://" + url;
+    return sendMessage({
+      messaging_product: "whatsapp", to, type: "interactive", interactive: {
+        type: "cta_url", header: { type: "text", text: step.urlLabel || "Open Link" }, body: { text: step.message || "Tap below to continue" },
+        action: { name: "cta_url", parameters: { display_text: step.urlLabel || "Open", url } },
+      },
+    });
+  }
+
+  if (step.mediaType === "link" || isSocialLink(step.mediaUrl)) {
+    const url = step.mediaUrl?.startsWith("http") ? step.mediaUrl : `https://${step.mediaUrl}`;
+    let bodyText = step.message || "";
+    if (bodyText && !bodyText.includes(url)) bodyText = `${bodyText}\n\n${url}`;
+    else if (!bodyText) bodyText = url;
+    return sendMessage({ messaging_product: "whatsapp", to, type: "text", text: { body: bodyText, preview_url: true } });
+  }
+
   if (step.mediaUrl && ["image", "video", "document"].includes(step.mediaType)) {
     const mediaId = await uploadMediaToMetaFromUrl(phoneNumberId, accessToken, step.mediaUrl);
     if (mediaId) {
-      const mediaPayload: any = {
-        messaging_product: "whatsapp",
-        to,
-        type: step.mediaType,
-      };
-      if (step.mediaType === "image") {
-        mediaPayload.image = { id: mediaId, caption: step.message || undefined };
-      } else if (step.mediaType === "video") {
-        mediaPayload.video = { id: mediaId, caption: step.message || undefined };
-      } else {
-        mediaPayload.document = { id: mediaId, caption: step.message || undefined, filename: step.mediaFilename || "Document" };
-      }
+      const mediaPayload: any = { messaging_product: "whatsapp", to, type: step.mediaType };
+      if (step.mediaType === "image") mediaPayload.image = { id: mediaId, caption: step.message || undefined };
+      else if (step.mediaType === "video") mediaPayload.video = { id: mediaId, caption: step.message || undefined };
+      else mediaPayload.document = { id: mediaId, caption: step.message || undefined, filename: step.mediaFilename || "Document" };
 
-      // If there are also quick-reply buttons, WhatsApp media messages don't support
-      // inline buttons directly, so send the media first, then the buttons as a follow-up.
       await sendMessage(mediaPayload);
 
       if (step.buttons?.length > 0) {
         const valid = step.buttons.filter((b: any) => b.label?.trim());
         if (valid.length > 0) {
           if (valid.length > 3) {
-            return sendMessage({
-              messaging_product: "whatsapp",
-              to,
-              type: "interactive",
-              interactive: {
-                type: "list",
-                body: { text: step.message || "Select option" },
-                action: {
-                  button: step.listButtonText || "Options",
-                  sections: [{ title: "Menu", rows: valid.slice(0, 10).map((b: any) => ({ id: b.id, title: b.label.substring(0, 24) })) }],
-                },
-              },
-            });
+            return sendMessage({ messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "list", body: { text: step.message || "Select option" }, action: { button: step.listButtonText || "Options", sections: [{ title: "Menu", rows: valid.slice(0, 10).map((b: any) => ({ id: b.id, title: b.label.substring(0, 24) })) }] } } });
           }
-          return sendMessage({
-            messaging_product: "whatsapp",
-            to,
-            type: "interactive",
-            interactive: {
-              type: "button",
-              body: { text: step.message || "" },
-              action: {
-                buttons: valid.slice(0, 3).map((b: any) => ({ type: "reply", reply: { id: b.id, title: b.label.substring(0, 20) } })),
-              },
-            },
-          });
+          return sendMessage({ messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "button", body: { text: step.message || "" }, action: { buttons: valid.slice(0, 3).map((b: any) => ({ type: "reply", reply: { id: b.id, title: b.label.substring(0, 20) } })) } } });
         }
       }
       return;
     }
-    // Media upload failed — fall through to send as plain text below
   }
 
-  // ===============================
-  // 4. BUTTON / LIST (UNCHANGED BUT SAFE)
-  // ===============================
   if (step.buttons?.length > 0) {
     const valid = step.buttons.filter((b: any) => b.label?.trim());
-
     if (valid.length > 3) {
-      return sendMessage({
-        messaging_product: "whatsapp",
-        to,
-        type: "interactive",
-        interactive: {
-          type: "list",
-          body: { text: step.message || "Select option" },
-          action: {
-            button: step.listButtonText || "Options",
-            sections: [
-              {
-                title: "Menu",
-                rows: valid.slice(0, 10).map((b: any) => ({
-                  id: b.id,
-                  title: b.label.substring(0, 24),
-                })),
-              },
-            ],
-          },
-        },
-      });
+      return sendMessage({ messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "list", body: { text: step.message || "Select option" }, action: { button: step.listButtonText || "Options", sections: [{ title: "Menu", rows: valid.slice(0, 10).map((b: any) => ({ id: b.id, title: b.label.substring(0, 24) })) }] } } });
     }
-
-    return sendMessage({
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "button",
-        body: { text: step.message || "" },
-        action: {
-          buttons: valid.slice(0, 3).map((b: any) => ({
-            type: "reply",
-            reply: {
-              id: b.id,
-              title: b.label.substring(0, 20),
-            },
-          })),
-        },
-      },
-    });
+    return sendMessage({ messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "button", body: { text: step.message || "" }, action: { buttons: valid.slice(0, 3).map((b: any) => ({ type: "reply", reply: { id: b.id, title: b.label.substring(0, 20) } })) } } });
   }
 
-  // ===============================
-  // 5. DEFAULT TEXT
-  // ===============================
-  return sendMessage({
-    messaging_product: "whatsapp",
-    to,
-    type: "text",
-    text: {
-      body: step.message || "",
-      preview_url: true,
-    },
-  });
+  return sendMessage({ messaging_product: "whatsapp", to, type: "text", text: { body: step.message || "", preview_url: true } });
 }
+
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try {
     const { default: Contact } = await import("@/models/Contact");
@@ -1057,32 +677,62 @@ export async function POST(req: NextRequest) {
           await executeWorkflowsForMessage(msg, num, baseUrl);
         }
 
+        // ==========================================
+        // ✅ BLAZING FAST CAMPAIGN STATUS UPDATES
+        // ==========================================
         for (const statusObj of value.statuses || []) {
           const { id, status, recipient_id, errors } = statusObj;
-          if (status === "delivered" || status === "read") await Message.updateOne({ whatsappMessageId: id }, { $set: { status, error: null } });
-          else if (status === "failed") await Message.updateOne({ whatsappMessageId: id }, { $set: { status, error: errors?.[0]?.message || "Failed" } });
 
+          // 1. Update the main Messages collection (Fast)
+          if (status === "delivered" || status === "read") {
+            await Message.updateOne({ whatsappMessageId: id }, { $set: { status, error: null } });
+          } else if (status === "failed") {
+            await Message.updateOne({ whatsappMessageId: id }, { $set: { status, error: errors?.[0]?.message || "Failed" } });
+          }
+
+          // 2. Update the Campaign reportData array efficiently
           try {
-            const { default: Campaign } = await import("@/models/Campaign");
             let errorText = null;
             if (status === "failed" || status === "invalid") {
               const raw = errors?.[0]?.message || "Failed to send";
-              errorText = (raw.toLowerCase().includes("undeliverable") || raw.toLowerCase().includes("unsupported")) ? "Message not delivered to maintain a healthy ecosystem." : raw;
+              errorText = (raw.toLowerCase().includes("undeliverable") || raw.toLowerCase().includes("unsupported")) 
+                ? "Message not delivered to maintain a healthy ecosystem." 
+                : raw;
             }
-            const camps = await Campaign.find({ userId: num.userId, $or: [{ "reportData.phone": recipient_id }, { "reportData.phone": `+${recipient_id}` }] });
+            
+            // Match both 123 and +123 formats
+            const phonesToMatch = [recipient_id, `+${recipient_id}`];
+
+            // ✅ CRITICAL OPTIMIZATION: Use "reportData.$": 1 projection.
+            // This tells MongoDB to ONLY return the matching array element, 
+            // preventing downloading 10,000 phone numbers just to find 1.
+            const camps = await Campaign.find(
+              { 
+                userId: num.userId, 
+                "reportData.phone": { $in: phonesToMatch } 
+              },
+              { "reportData.$": 1 }
+            ).lean();
+
             for (const camp of camps) {
-              for (const item of camp.reportData) {
-                if (item.phone === recipient_id || item.phone === `+${recipient_id}`) {
-                  if (shouldUpdateStatus(item.status, status)) {
-                    await Campaign.updateOne(
-                      { _id: camp._id, "reportData.phone": item.phone },
-                      { $set: { "reportData.$.status": status, "reportData.$.error": errorText } }
-                    );
-                  }
-                }
+              const item = camp.reportData?.[0];
+              if (!item) continue;
+
+              // Only update if the new status is higher priority than the current
+              if (shouldUpdateStatus(item.status, status)) {
+                // Use positional $ to update ONLY this element in the array
+                await Campaign.updateOne(
+                  { _id: camp._id, "reportData.phone": item.phone },
+                  { $set: { 
+                      "reportData.$.status": status, 
+                      "reportData.$.error": errorText 
+                  }}
+                );
               }
             }
-          } catch (campErr) { console.error("Failed to update campaign status:", campErr); }
+          } catch (campErr) { 
+            console.error("Failed to update campaign status:", campErr); 
+          }
         }
       }
     }
