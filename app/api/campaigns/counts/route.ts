@@ -9,49 +9,147 @@ export async function GET() {
   try {
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
-
-
-    // ✅ 1. Check Authentication
+    
     if (!userId) {
-      return NextResponse.json(
-        { success: false, message: "Unauthorized" }, 
-        { status: 401 }
-      );
+      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
     }
 
     await connectDB();
 
+    const campaigns = await Campaign.aggregate([
+      { 
+        $match: { 
+          $expr: { $eq: [{ $toString: "$userId" }, userId] } 
+        } 
+      },
+      { $sort: { createdAt: -1 } },
+      {
+        $project: {
+          name: 1,
+          templateName: 1,
+          templateCategory: 1,
+          variables: 1,
+          mappedVariables: 1,
+          generateOtp: 1,
+          otpLength: 1,
+          
+          phoneNumbers: { $slice: [{ $ifNull: ["$phoneNumbers", []] }, 15] },
+          names: { $slice: [{ $ifNull: ["$names", []] }, 15] },
+          additionalFieldsData: { $slice: [{ $ifNull: ["$additionalFieldsData", []] }, 15] },
+          
+          mediaUrl: 1,
+          mediaType: 1,
+          languageCode: 1,
+          status: 1,
+          totalMessages: 1,
+          totalDeducted: 1,
+          scheduledAt: 1,
+          createdAt: 1,
+          additionalFields: 1,
+          
+          liveStats: {
+            total: { $ifNull: ["$totalMessages", 0] },
+            replied: {
+              $size: {
+                $filter: {
+                  input: { $ifNull: ["$reportData", []] },
+                  as: "r",
+                  cond: {
+                    $or: [
+                      { $ne: ["$$r.reply", null] },
+                      { $gt: [{ $size: { $ifNull: ["$$r.replies", []] } }, 0] }
+                    ]
+                  }
+                }
+              }
+            },
+            read: {
+              $size: {
+                $filter: {
+                  input: { $ifNull: ["$reportData", []] },
+                  as: "r",
+                  cond: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "read"] }
+                }
+              }
+            },
+            // ✅ STRICTLY counts only status === "delivered"
+            delivered: {
+              $size: {
+                $filter: {
+                  input: { $ifNull: ["$reportData", []] },
+                  as: "r",
+                  cond: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "delivered"] }
+                }
+              }
+            },
+            sent: {
+              $size: {
+                $filter: {
+                  input: { $ifNull: ["$reportData", []] },
+                  as: "r",
+                  cond: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "sent"] }
+                }
+              }
+            },
+            failed: {
+              $size: {
+                $filter: {
+                  input: { $ifNull: ["$reportData", []] },
+                  as: "r",
+                  cond: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "failed"] }
+                }
+              }
+            },
+            invalid: {
+              $size: {
+                $filter: {
+                  input: { $ifNull: ["$reportData", []] },
+                  as: "r",
+                  cond: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "invalid"] }
+                }
+              }
+            },
+            duplicate: {
+              $size: {
+                $filter: {
+                  input: { $ifNull: ["$reportData", []] },
+                  as: "r",
+                  cond: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "duplicate"] }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]);
 
-    // ✅ 2. Fetch Campaigns (Extremely Fast)
-    // We only select the summary fields, completely ignoring the 10,000 number arrays.
-    // This reduces payload size by 99%, making it load instantly.
-    const campaigns = await Campaign.find({ userId })
-      .select(
-        "name templateName templateCategory variables mediaUrl mediaType " +
-        "languageCode status totalMessages sentCount failedCount totalDeducted " +
-        "scheduledAt createdAt additionalFields generateOtp otpLength"
-      )
-      .sort({ createdAt: -1 })
-      .lean();
+    if (!campaigns || campaigns.length === 0) {
+      return NextResponse.json({ success: true, campaigns: [] });
+    }
 
-
-    // ✅ 3. Format Stats to Match Frontend Expectations
-    // We calculate "Pending" and "Progress" here so the frontend doesn't have to.
     const fixedCampaigns = campaigns.map((c: any) => {
-      const total = c.totalMessages || 0;
-      const sent = c.sentCount || 0;
-      const failed = c.failedCount || 0;
-      const pending = Math.max(0, total - (sent + failed));
+      const ls = c.liveStats || {};
+      const total = ls.total || 0;
+      const replied = ls.replied || 0;
+      const read = ls.read || 0;
+      const delivered = ls.delivered || 0;
+      const sent = ls.sent || 0;
+      const failed = ls.failed || 0;
+      const invalid = ls.invalid || 0;
+      const duplicate = ls.duplicate || 0;
       
+      const processed = replied + read + delivered + sent + failed + invalid + duplicate;
+      const pending = Math.max(0, total - processed);
+
       return {
         ...c,
         liveStats: {
-          deliveredRead: sent, // Delivered uses the same DB count as Sent for the UI
-          sent: sent,
-          failedInvalid: failed, // This ensures the "Failed" count shows up perfectly
-          pending: pending,
-          total: total,
-          progress: total > 0 ? Math.round(((sent + failed) / total) * 100) : 0
+          ...ls,
+          pending,
+          // Keep aggregated fields for UI progress bars
+          deliveredRead: delivered + read + replied,
+          failedInvalid: failed + invalid,
+          progress: total > 0 ? Math.round(((delivered + read + replied + sent) / total) * 100) : 0
         },
         languageCode: c.languageCode || "en",
         totalDeducted: c.totalDeducted || 0,
@@ -59,12 +157,8 @@ export async function GET() {
     });
 
     return NextResponse.json({ success: true, campaigns: fixedCampaigns });
-
   } catch (error: any) {
     console.error("❌ Counts API Error:", error);
-    return NextResponse.json(
-      { success: false, message: error.message }, 
-      { status: 500 }
-    );
+    return NextResponse.json({ success: false, message: error.message }, { status: 500 });
   }
 }
