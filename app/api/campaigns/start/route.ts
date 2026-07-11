@@ -13,24 +13,15 @@ import { getPriceForCategory } from "@/lib/billing";
 import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
 
 export const runtime = "nodejs";
-// ✅ CRITICAL: Prevents Vercel/Next.js from killing the route after 10 seconds (which is why it stuck at 200)
+// ✅ CRITICAL: Prevents Vercel/Next.js from killing the route after 10 seconds
 export const maxDuration = 300; 
 
-// ✅ Inline Transaction model
 const TransactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  type: String,
-  amount: Number,
-  description: String,
-  status: String,
-  createdAt: { type: Date, default: Date.now },
-  metadata: Object
+  type: String, amount: Number, description: String, status: String,
+  createdAt: { type: Date, default: Date.now }, metadata: Object
 });
 const Transaction = mongoose.models.Transaction || mongoose.model('Transaction', TransactionSchema);
-
-/* ============================================================================
-   1. UTILITY FUNCTIONS
-   ============================================================================ */
 
 function cleanStr(val: any): string {
   if (val == null) return "";
@@ -45,7 +36,6 @@ function translateMetaError(error: any): string {
   if (!error) return "Unknown error occurred";
   const code = error.code;
   const msg = (error.message || "").toLowerCase();
-
   if (code === 132012) return "Media sent does not match template requirements.";
   if (code === 131008) return "Missing button text in the template link.";
   if (code === 132001) return "Template name or language does not exist.";
@@ -54,19 +44,16 @@ function translateMetaError(error: any): string {
   if (code === 130429) return "Sending too fast. Rate limit reached.";
   if (code === 470) return "Message failed. Number might have blocked you.";
   if (code === 131051) return "Template is paused or disabled in Meta.";
-
   if (msg.includes("recipient not on whatsapp")) return "Number is not active on WhatsApp.";
   if (msg.includes("template name does not exist")) return "Template was deleted or name is wrong.";
   if (msg.includes("format mismatch")) return "Wrong media type for template header.";
   if (msg.includes("undeliverable") || msg.includes("unsupported message type")) return "Message not delivered to maintain a healthy ecosystem.";
-
   return msg.replace(/[_\{\}\[\]]/g, " ").replace(/\s+/g, " ").trim() || "Failed to send";
 }
 
 function resolveCredentials(user: any, payer: any, explicitPhoneId?: string): { PHONE_NUMBER_ID: string; ACCESS_TOKEN: string } {
   let PHONE_NUMBER_ID = cleanStr(explicitPhoneId || "");
   let ACCESS_TOKEN = "";
-
   if (PHONE_NUMBER_ID) {
     if (user?.whatsappNumbers?.length > 0) { const m = user.whatsappNumbers.find((n: any) => n.whatsappPhoneNumberId === PHONE_NUMBER_ID || n.phoneNumberId === PHONE_NUMBER_ID || n.id === PHONE_NUMBER_ID || n._id?.toString() === PHONE_NUMBER_ID); if (m) ACCESS_TOKEN = m.whatsappAccessToken || m.accessToken || ""; }
     if (!ACCESS_TOKEN && payer?.whatsappNumbers?.length > 0) { const m = payer.whatsappNumbers.find((n: any) => n.whatsappPhoneNumberId === PHONE_NUMBER_ID || n.phoneNumberId === PHONE_NUMBER_ID || n.id === PHONE_NUMBER_ID || n._id?.toString() === PHONE_NUMBER_ID); if (m) ACCESS_TOKEN = m.whatsappAccessToken || m.accessToken || ""; }
@@ -131,84 +118,49 @@ function extractWamid(data: any): string | null {
   return null;
 }
 
-/* ============================================================================
-   2. ISOLATED BACKGROUND WORKERS
-   ============================================================================ */
-
-// 🚀 WORKER 1: Meta API Sender (With 15s timeout to prevent hanging)
 async function metaSenderWorker(phone: string, variables: string[], tc: any, token: string, pnId: string, thf: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
   try {
     let cv = variables; 
     let comps = buildCampaignComponents(thf, cv, tc.mediaUrl || "");
-    
-    // ✅ FIX: Abort Meta API call if it takes more than 15 seconds to prevent hanging
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
-
     let sendRes = await fetch(`https://graph.facebook.com/v21.0/${pnId}/messages`, { 
       method: "POST", 
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, 
       body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } }),
       signal: controller.signal
     });
-    
     clearTimeout(timeoutId);
-    
-    if (sendRes.ok) { 
-      let wamid = null; 
-      try { const d = await sendRes.json(); wamid = extractWamid(d); } catch {} 
-      return { status: "sent", wamid }; 
-    }
-    
+    if (sendRes.ok) { let wamid = null; try { const d = await sendRes.json(); wamid = extractWamid(d); } catch {} return { status: "sent", wamid }; }
     let sendData: any = { error: {} }; 
     try { sendData = await sendRes.json(); } catch { return { status: "failed", error: "Meta API invalid response" }; }
-    
     let wamid = extractWamid(sendData); 
     if (wamid) return { status: "sent", wamid };
 
-    // Retry Logic 1: Missing URL button text for Auth templates
     if (sendData.error?.code === 131008 && tc.templateCategory === "AUTHENTICATION" && cv.length > 0) {
       const rc: any[] = []; 
       if (comps.length > 0 && comps[0].type === "header") rc.push(comps[0]);
       rc.push({ type: "body", parameters: cv.map((v: string) => ({ type: "text", text: String(v) })) });
       rc.push({ type: "button", sub_type: "url", index: 0, parameters: [{ type: "text", text: String(cv[0]) }] });
-      
-      sendRes = await fetch(`https://graph.facebook.com/v21.0/${pnId}/messages`, { 
-        method: "POST", 
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, 
-        body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: rc } }) 
-      });
+      sendRes = await fetch(`https://graph.facebook.com/v21.0/${pnId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: rc } }) });
       if (sendRes.ok) { try { return { status: "sent", wamid: extractWamid(await sendRes.json()) }; } catch { return { status: "sent" }; } }
       try { sendData = await sendRes.json(); if (extractWamid(sendData)) return { status: "sent", wamid: extractWamid(sendData) }; } catch {}
     }
-    
-    // Retry Logic 2: Media Format Mismatch
     if (sendData.error?.code === 132012 && tc.mediaUrl) {
       const m = (sendData.error?.error_data?.details || "").match(/expected\s+(\w+)/i);
       if (m && ["IMAGE", "VIDEO", "DOCUMENT"].includes(m[1].toUpperCase())) {
         comps = buildCampaignComponents(m[1].toUpperCase(), cv, tc.mediaUrl);
-        sendRes = await fetch(`https://graph.facebook.com/v21.0/${pnId}/messages`, { 
-          method: "POST", 
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, 
-          body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } }) 
-        });
+        sendRes = await fetch(`https://graph.facebook.com/v21.0/${pnId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } }) });
         if (sendRes.ok) { try { return { status: "sent", wamid: extractWamid(await sendRes.json()) }; } catch { return { status: "sent" }; } }
         try { sendData = await sendRes.json(); if (extractWamid(sendData)) return { status: "sent", wamid: extractWamid(sendData) }; } catch {}
       }
     }
-    
-    // Retry Logic 3: Remove header completely if it keeps failing
     if (sendData.error?.code === 132012 && comps.length > 0 && comps[0].type === "header") {
       const nc = comps.filter((c: any) => c.type !== "header");
-      sendRes = await fetch(`https://graph.facebook.com/v21.0/${pnId}/messages`, { 
-        method: "POST", 
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, 
-        body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: nc } }) 
-      });
+      sendRes = await fetch(`https://graph.facebook.com/v21.0/${pnId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: nc } }) });
       if (sendRes.ok) { try { return { status: "sent", wamid: extractWamid(await sendRes.json()) }; } catch { return { status: "sent" }; } }
       try { sendData = await sendRes.json(); if (extractWamid(sendData)) return { status: "sent", wamid: extractWamid(sendData) }; } catch {}
     }
-    
     return { status: "failed", error: translateMetaError(sendData.error) };
   } catch (err: any) { 
     if (err.name === 'AbortError') return { status: "failed", error: "Meta API Timeout (15s)" };
@@ -216,117 +168,39 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
   }
 }
 
-// 🚀 WORKER 2: Campaign DB Syncer
-async function campaignDbWorker(campaignId: string, campaignBulkOps: any[]) {
-  if (campaignBulkOps.length === 0) return;
-  try { await Campaign.bulkWrite(campaignBulkOps); } catch (e) { console.error("Campaign bulk write error:", e); }
-}
-
-// 🚀 WORKER 3: Message DB Syncer
-async function messageDbWorker(messagesToCreate: any[]) {
-  if (messagesToCreate.length === 0) return;
-  try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) { console.error("Message bulk insert error:", e); }
-}
-
-// 🚀 WORKER 4: Wallet Syncer
-async function walletDbWorker(payerId: any, campaignId: string, balance: number, sentCount: number, failedCount: number, skippedCount: number, totalDeducted: number) {
-  try {
-    await Promise.all([
-      User.updateOne({ _id: payerId }, { $set: { balance } }),
-      Campaign.updateOne({ _id: campaignId }, { $set: { sentCount, failedCount, skippedCount, totalDeducted } })
-    ]);
-  } catch (e) { console.error("Wallet/Scalar update error:", e); }
-}
-
-// 🚀 WORKER 5: Transaction Logger
 async function logCampaignTransaction(payerId: any, campaignId: string, campaignName: string, amount: number, sentThisRun: number, failedThisRun: number) {
   if (!amount || amount <= 0) return;
   try {
-    await Transaction.create({
-      userId: payerId,
-      type: "campaign",
-      amount,
-      description: `Campaign Sent: ${campaignName}`,
-      status: "success",
-      createdAt: new Date(),
-      metadata: { campaignId: String(campaignId), campaignName, sentCount: sentThisRun, failedCount: failedThisRun },
-    });
-  } catch (txErr) {
-    console.error("⚠️ Failed to log campaign transaction:", txErr);
-  }
+    await Transaction.create({ userId: payerId, type: "campaign", amount, description: `Campaign Sent: ${campaignName}`, status: "success", createdAt: new Date(), metadata: { campaignId: String(campaignId), campaignName, sentCount: sentThisRun, failedCount: failedThisRun } });
+  } catch (e) { console.error("Tx log error:", e); }
 }
 
-/* ============================================================================
-   3. MAIN POST ROUTE - ORCHESTRATOR
-   ============================================================================ */
-
-export async function POST(req: Request) {
+// 🚀 THE BACKGROUND LOOP
+async function runSendingLoop(campaignId: any, userId: any, payerId: any, tc: any, PHONE_NUMBER_ID: string, ACCESS_TOKEN: string, thf: string, cat: string, bPrice: number) {
+  let sent = 0, failed = 0, skipped = 0, ded = 0;
+  let sentThisRun = 0, failedThisRun = 0, dedThisRun = 0;
+  let payerBalance = 0;
+  
   try {
     await connectDB();
-    const session = await getServerSession(authOptions); 
-    const userId = session?.user?.id;
-    
-    if (!userId) return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
-    
-    const { campaignId } = await req.json(); 
-    if (!campaignId) return NextResponse.json({ success: false, message: "ID required" }, { status: 400 });
-    
     const campaign = await Campaign.findById(campaignId);
-    if (!campaign || campaign.userId.toString() !== userId) return NextResponse.json({ success: false, message: "Not found" }, { status: 404 });
-    
-    if (campaign.status === "paused") return NextResponse.json({ success: false, message: "Campaign was paused before it could start." }, { status: 400 });
+    const payer = await User.findById(payerId);
+    if (!campaign || !payer) return;
 
-    if (campaign.status === "running") {
-      const totalProcessed = (campaign.sentCount || 0) + (campaign.failedCount || 0) + (campaign.skippedCount || 0);
-      if (totalProcessed >= campaign.phoneNumbers.length) return NextResponse.json({ success: false, message: "Already completed" }, { status: 400 });
-    }
+    payerBalance = payer.balance || 0;
+    sent = campaign.sentCount || 0; failed = campaign.failedCount || 0; skipped = campaign.skippedCount || 0; ded = campaign.totalDeducted || 0;
 
-    const user = await User.findById(userId); 
-    if (!user) return NextResponse.json({ success: false, message: "User not found" }, { status: 404 });
-    
-    let payer = user; 
-    if (user.parentTenantId) { const p = await User.findOne({ tenantId: user.parentTenantId }); if (p) payer = p; }
-    
-    let exPhone = ""; 
-    if (campaign.senderPhoneId) { const n = user.whatsappNumbers?.find((n: any) => n._id?.toString() === campaign.senderPhoneId); exPhone = n?.whatsappPhoneNumberId || campaign.senderPhoneId; }
-
-    const { PHONE_NUMBER_ID, ACCESS_TOKEN } = resolveCredentials(user.toObject(), payer.toObject(), exPhone);
-    if (!PHONE_NUMBER_ID || !ACCESS_TOKEN) return NextResponse.json({ success: false, message: "WhatsApp credentials not configured." }, { status: 400 });
-
-    const cTName = cleanStr(campaign.templateName); 
-    const cLang = cleanStr(campaign.languageCode || "en"); 
-    const cMedia = cleanStr(campaign.mediaType || "none");
-    
-    const thf = await fetchTemplateHeaderFormat(PHONE_NUMBER_ID, ACCESS_TOKEN, cTName, cLang, cMedia);
-    const cat = (campaign.templateCategory || "MARKETING").toUpperCase().trim(); 
-    const bPrice = getPriceForCategory(payer, cat);
-    
-    if (bPrice > 0 && (payer.balance || 0) < bPrice) return NextResponse.json({ success: false, message: `Insufficient balance. Required: ₹${bPrice}, Available: ₹${payer.balance}.` }, { status: 402 });
-
-    const tc = { 
-      templateName: cTName, 
-      languageCode: cLang, 
-      templateCategory: campaign.templateCategory, 
-      generateOtp: campaign.generateOtp, 
-      otpLength: campaign.otpLength || 4, 
-      mediaUrl: campaign.mediaUrl 
-    };
-    
-    await Campaign.updateMany(
-      { _id: campaignId, "reportData.status": "queued" },
-      { $set: { "reportData.$.status": "pending" } }
-    );
-
-    await Campaign.updateOne({ _id: campaignId }, { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID, templateName: cTName, languageCode: cLang } });
-
-    let sent = campaign.sentCount || 0, failed = campaign.failedCount || 0, skipped = campaign.skippedCount || 0, ded = campaign.totalDeducted || 0;
-    let sentThisRun = 0, failedThisRun = 0, dedThisRun = 0;
-    let payerBalance = payer.balance || 0;
-
-    const BS = 50; // Send 50 messages concurrently
+    const BS = 50;
     let idx = 0;
     let batchCounter = 0;
     const backgroundTasks: Promise<void>[] = [];
+    const addBackgroundTask = (promise: Promise<any>) => {
+      const p = promise.catch(console.error).then(() => {
+        const index = backgroundTasks.indexOf(p);
+        if (index > -1) backgroundTasks.splice(index, 1);
+      });
+      backgroundTasks.push(p);
+    };
 
     while (idx < campaign.phoneNumbers.length) {
       batchCounter++;
@@ -334,25 +208,20 @@ export async function POST(req: Request) {
       if (batchCounter % 5 === 0) {
         const live = await Campaign.findById(campaignId).select("status").lean();
         if (["paused", "completed", "stopped"].includes(live.status)) {
-          campaign.status = live.status === "paused" ? "paused" : "completed";
-          
-          backgroundTasks.push(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }).catch(console.error).then(() => {}));
-          backgroundTasks.push(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: campaign.status } }).catch(console.error).then(() => {}));
-          
+          addBackgroundTask(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }));
+          addBackgroundTask(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: live.status === "paused" ? "paused" : "completed" } }));
           await Promise.all(backgroundTasks);
           await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
-          return NextResponse.json({ success: true, message: `Campaign ${live.status}`, sent, failed, skipped });
+          return;
         }
       }
       
       if (bPrice > 0 && payerBalance < bPrice) {
-        campaign.status = "paused"; campaign.pausedReason = "Insufficient balance";
-        backgroundTasks.push(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }).catch(console.error).then(() => {}));
-        backgroundTasks.push(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: "paused", pausedReason: "Insufficient balance" } }).catch(console.error).then(() => {}));
-        
+        addBackgroundTask(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }));
+        addBackgroundTask(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: "paused", pausedReason: "Insufficient balance" } }));
         await Promise.all(backgroundTasks);
         await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
-        return NextResponse.json({ success: false, message: `Paused. Required: ₹${bPrice}, Available: ₹${payerBalance}.`, sent, failed, skipped, balancePaused: true });
+        return;
       }
 
       const metaPromises: Promise<any>[] = []; 
@@ -369,22 +238,14 @@ export async function POST(req: Request) {
           if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(cs)) {
             metaPromises.push(Promise.resolve({ status: "skipped" }));
           } else {
-            claimOps.push({
-              updateOne: {
-                filter: { _id: campaignId, [`reportData.${ci}.status`]: "pending" },
-                update: { $set: { [`reportData.${ci}.status`]: "queued" } }
-              }
-            });
-            
+            claimOps.push({ updateOne: { filter: { _id: campaignId, [`reportData.${ci}.status`]: "pending" }, update: { $set: { [`reportData.${ci}.status`]: "queued" } } } });
             let cv: string[] = [];
             if (campaign.templateCategory === "AUTHENTICATION") { 
               if (campaign.generateOtp || !campaign.mappedVariables?.[ci]?.length) { 
                 const l = campaign.otpLength || 4; 
                 cv = [Math.floor(Math.random() * (Math.pow(10, l) - Math.pow(10, l - 1) + 1) + Math.pow(10, l - 1)).toString()]; 
               } else cv = campaign.mappedVariables[ci]; 
-            }
-            else cv = (campaign.mappedVariables?.[ci]?.length > 0) ? campaign.mappedVariables[ci] : (campaign.variables || []);
-            
+            } else cv = (campaign.mappedVariables?.[ci]?.length > 0) ? campaign.mappedVariables[ci] : (campaign.variables || []);
             cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
             metaPromises.push(metaSenderWorker(ph, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
           }
@@ -392,13 +253,10 @@ export async function POST(req: Request) {
         }
       }
 
-      if (claimOps.length > 0) {
-        try { await Campaign.bulkWrite(claimOps); } catch (e) {}
-      }
+      if (claimOps.length > 0) try { await Campaign.bulkWrite(claimOps); } catch (e) {}
 
       const metaResults = await Promise.all(metaPromises); 
       let bd = 0;
-      
       const campaignBulkOps: any[] = [];
       const messagesToCreate: any[] = [];
       
@@ -406,40 +264,15 @@ export async function POST(req: Request) {
         const r = metaResults[i]; 
         const ci = batchIndices[i]; 
         const ph = batchPhones[i].replace(/\+/g, "");
-        
         if (r.status === "sent") {
           sent++; sentThisRun++;
           const pp = getPriceForPhone(payer, ph, cat); 
           bd += pp;
-          
-          campaignBulkOps.push({
-            updateOne: {
-              filter: { _id: campaignId },
-              update: { $set: {
-                [`reportData.${ci}.status`]: "sent",
-                [`reportData.${ci}.sentWamid`]: r.wamid,
-                [`reportData.${ci}.charged`]: true,
-                [`reportData.${ci}.chargedAmount`]: pp
-              }}
-            }
-          });
-
-          messagesToCreate.push({ 
-            userId, phone: ph, text: "", direction: "out", messageType: "template", 
-            mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", 
-            templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID 
-          });
+          campaignBulkOps.push({ updateOne: { filter: { _id: campaignId }, update: { $set: { [`reportData.${ci}.status`]: "sent", [`reportData.${ci}.sentWamid`]: r.wamid, [`reportData.${ci}.charged`]: true, [`reportData.${ci}.chargedAmount`]: pp } } } });
+          messagesToCreate.push({ userId, phone: ph, text: "", direction: "out", messageType: "template", mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID });
         } else if (r.status === "failed") {
           failed++; failedThisRun++;
-          campaignBulkOps.push({
-            updateOne: {
-              filter: { _id: campaignId },
-              update: { $set: {
-                [`reportData.${ci}.status`]: "failed",
-                [`reportData.${ci}.error`]: r.error || "Unknown error"
-              }}
-            }
-          });
+          campaignBulkOps.push({ updateOne: { filter: { _id: campaignId }, update: { $set: { [`reportData.${ci}.status`]: "failed", [`reportData.${ci}.error`]: r.error || "Unknown error" } } } });
         } else if (r.status === "skipped") {
           skipped++;
         }
@@ -452,59 +285,91 @@ export async function POST(req: Request) {
         dedThisRun = Math.round((dedThisRun + bd) * 100) / 100;
       }
       
-      // 🚀 FIRE BACKGROUND WORKERS
-      backgroundTasks.push(campaignDbWorker(campaignId, campaignBulkOps).catch(console.error).then(() => {}));
-      backgroundTasks.push(messageDbWorker(messagesToCreate).catch(console.error).then(() => {}));
+      if (campaignBulkOps.length > 0) addBackgroundTask(Campaign.bulkWrite(campaignBulkOps));
+      if (messagesToCreate.length > 0) addBackgroundTask(Message.insertMany(messagesToCreate, { ordered: false }));
 
       if (batchCounter % 5 === 0) {
-        backgroundTasks.push(walletDbWorker(payer._id, campaignId, payerBalance, sent, failed, skipped, ded).catch(console.error).then(() => {}));
+        addBackgroundTask(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }));
+        addBackgroundTask(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded } }));
       }
 
-      // ✅ BACKPRESSURE HANDLING: Prevent memory exhaustion if DB is slower than API
       if (backgroundTasks.length > 50) {
         await Promise.all(backgroundTasks);
-        backgroundTasks.length = 0; // Clear array to free memory
+        backgroundTasks.length = 0; 
       }
+
+      // ✅ CRITICAL: Yield to the Node.js Event Loop so the Webhook can process Delivered/Read statuses!
+      await new Promise(resolve => setImmediate(resolve));
     }
 
-    // Loop finished naturally
-    campaign.sentCount = sent; 
-    campaign.failedCount = failed; 
-    campaign.skippedCount = skipped; 
-    campaign.totalDeducted = ded; 
-    campaign.completedAt = new Date();
-    campaign.status = (sent > 0 || skipped > 0) ? "completed" : "failed";
-    
-    await Promise.all(backgroundTasks);
-
+    const finalStatus = (sent > 0 || skipped > 0) ? "completed" : "failed";
     await User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } });
-    await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status, sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, completedAt: new Date() } });
+    await Campaign.updateOne({ _id: campaignId }, { $set: { status: finalStatus, sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, completedAt: new Date() } });
     await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
     
     try {
       const plainReportData = campaign.reportData.map((r: any) => {
         const obj = r.toObject ? r.toObject() : { ...r };
-        return {
-          name: obj.name || "",
-          phone: obj.phone || "",
-          status: obj.status || "",
-          error: obj.error || "",
-          replies: obj.replies || [],
-          reply: obj.reply || null,
-          tags: obj.tags || [],
-          additionalData: obj.additionalData || []
-        };
+        return { name: obj.name || "", phone: obj.phone || "", status: obj.status || "", error: obj.error || "", replies: obj.replies || [], reply: obj.reply || null, tags: obj.tags || [], additionalData: obj.additionalData || [] };
       });
+      await syncCampaignToGoogleSheet(userId, { name: campaign.name, reportData: plainReportData });
+    } catch (e) { console.error("Sheet sync failed:", e); }
 
-      await syncCampaignToGoogleSheet(userId, {
-        name: campaign.name,
-        reportData: plainReportData
-      });
-    } catch (sheetErr) {
-      console.error("❌ Google Sheet Sync Failed:", sheetErr);
+  } catch (err) {
+    console.error("❌ Background Loop Error:", err);
+    try { await Campaign.updateOne({ _id: campaignId }, { $set: { status: "failed", pausedReason: "System error in background loop" } }); } catch (e) {}
+  }
+}
+
+export async function POST(req: Request) {
+  try {
+    await connectDB();
+    const session = await getServerSession(authOptions); 
+    const userId = session?.user?.id;
+    if (!userId) return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+    
+    const { campaignId } = await req.json(); 
+    if (!campaignId) return NextResponse.json({ success: false, message: "ID required" }, { status: 400 });
+    
+    const campaign = await Campaign.findById(campaignId);
+    if (!campaign || campaign.userId.toString() !== userId) return NextResponse.json({ success: false, message: "Not found" }, { status: 404 });
+    
+    if (campaign.status === "paused") return NextResponse.json({ success: false, message: "Campaign was paused before it could start." }, { status: 400 });
+    if (campaign.status === "running") {
+      const totalProcessed = (campaign.sentCount || 0) + (campaign.failedCount || 0) + (campaign.skippedCount || 0);
+      if (totalProcessed >= campaign.phoneNumbers.length) return NextResponse.json({ success: false, message: "Already completed" }, { status: 400 });
     }
 
-    return NextResponse.json({ success: true, sent, failed, skipped, totalDeducted: ded, balance: payerBalance, message: `Campaign complete. Sent: ${sent}, Failed: ${failed}.` });
+    const user = await User.findById(userId); 
+    if (!user) return NextResponse.json({ success: false, message: "User not found" }, { status: 404 });
+    let payer = user; 
+    if (user.parentTenantId) { const p = await User.findOne({ tenantId: user.parentTenantId }); if (p) payer = p; }
+    
+    let exPhone = ""; 
+    if (campaign.senderPhoneId) { const n = user.whatsappNumbers?.find((n: any) => n._id?.toString() === campaign.senderPhoneId); exPhone = n?.whatsappPhoneNumberId || campaign.senderPhoneId; }
+
+    const { PHONE_NUMBER_ID, ACCESS_TOKEN } = resolveCredentials(user.toObject(), payer.toObject(), exPhone);
+    if (!PHONE_NUMBER_ID || !ACCESS_TOKEN) return NextResponse.json({ success: false, message: "WhatsApp credentials not configured." }, { status: 400 });
+
+    const cTName = cleanStr(campaign.templateName); 
+    const cLang = cleanStr(campaign.languageCode || "en"); 
+    const cMedia = cleanStr(campaign.mediaType || "none");
+    const thf = await fetchTemplateHeaderFormat(PHONE_NUMBER_ID, ACCESS_TOKEN, cTName, cLang, cMedia);
+    const cat = (campaign.templateCategory || "MARKETING").toUpperCase().trim(); 
+    const bPrice = getPriceForCategory(payer, cat);
+    
+    if (bPrice > 0 && (payer.balance || 0) < bPrice) return NextResponse.json({ success: false, message: `Insufficient balance. Required: ₹${bPrice}, Available: ₹${payer.balance}.` }, { status: 402 });
+
+    const tc = { templateName: cTName, languageCode: cLang, templateCategory: campaign.templateCategory, generateOtp: campaign.generateOtp, otpLength: campaign.otpLength || 4, mediaUrl: campaign.mediaUrl };
+    
+    await Campaign.updateMany({ _id: campaignId, "reportData.status": "queued" }, { $set: { "reportData.$.status": "pending" } });
+    await Campaign.updateOne({ _id: campaignId }, { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID, templateName: cTName, languageCode: cLang } });
+
+    // 🚀 FIRE THE LOOP IN THE BACKGROUND (DO NOT AWAIT)
+    // This returns the HTTP response instantly, preventing the frontend 5s timeout from killing the loop!
+    runSendingLoop(campaignId, userId, payer._id, tc, PHONE_NUMBER_ID, ACCESS_TOKEN, thf, cat, bPrice).catch(console.error);
+
+    return NextResponse.json({ success: true, message: "Campaign started in background! Sending in progress..." });
   } catch (error: any) {
     console.error("❌ Start Campaign Error:", error);
     return NextResponse.json({ success: false, message: error.message }, { status: 500 });
