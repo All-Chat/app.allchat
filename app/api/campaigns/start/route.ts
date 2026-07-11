@@ -13,8 +13,6 @@ import { getPriceForCategory } from "@/lib/billing";
 import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
 
 export const runtime = "nodejs";
-// ✅ CRITICAL: Prevents Vercel/Next.js from killing the route early
-export const maxDuration = 300; 
 
 const TransactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -118,22 +116,23 @@ function extractWamid(data: any): string | null {
   return null;
 }
 
+// 🚀 WORKER: Meta API Sender (NO TIMEOUT - let it take its time)
 async function metaSenderWorker(phone: string, variables: string[], tc: any, token: string, pnId: string, thf: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
   try {
     let cv = variables; 
     let comps = buildCampaignComponents(thf, cv, tc.mediaUrl || "");
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    
     let sendRes = await fetch(`https://graph.facebook.com/v21.0/${pnId}/messages`, { 
       method: "POST", 
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, 
-      body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } }),
-      signal: controller.signal
+      body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } }) 
     });
-    clearTimeout(timeoutId);
+    
     if (sendRes.ok) { let wamid = null; try { const d = await sendRes.json(); wamid = extractWamid(d); } catch {} return { status: "sent", wamid }; }
+    
     let sendData: any = { error: {} }; 
     try { sendData = await sendRes.json(); } catch { return { status: "failed", error: "Meta API invalid response" }; }
+    
     let wamid = extractWamid(sendData); 
     if (wamid) return { status: "sent", wamid };
 
@@ -163,182 +162,7 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
     }
     return { status: "failed", error: translateMetaError(sendData.error) };
   } catch (err: any) { 
-    if (err.name === 'AbortError') return { status: "failed", error: "Meta API Timeout (15s)" };
     return { status: "failed", error: err.message || "System error" }; 
-  }
-}
-
-async function logCampaignTransaction(payerId: any, campaignId: string, campaignName: string, amount: number, sentThisRun: number, failedThisRun: number) {
-  if (!amount || amount <= 0) return;
-  try {
-    await Transaction.create({ userId: payerId, type: "campaign", amount, description: `Campaign Sent: ${campaignName}`, status: "success", createdAt: new Date(), metadata: { campaignId: String(campaignId), campaignName, sentCount: sentThisRun, failedCount: failedThisRun } });
-  } catch (e) { console.error("Tx log error:", e); }
-}
-
-// 🚀 THE SENDING LOOP
-async function runSendingLoop(campaignId: any, userId: any, payerId: any, tc: any, PHONE_NUMBER_ID: string, ACCESS_TOKEN: string, thf: string, cat: string, bPrice: number) {
-  let sent = 0, failed = 0, skipped = 0, ded = 0;
-  let sentThisRun = 0, failedThisRun = 0, dedThisRun = 0;
-  let payerBalance = 0;
-  
-  try {
-    await connectDB();
-    const campaign = await Campaign.findById(campaignId);
-    const payer = await User.findById(payerId);
-    if (!campaign || !payer) return;
-
-    payerBalance = payer.balance || 0;
-    sent = campaign.sentCount || 0; failed = campaign.failedCount || 0; skipped = campaign.skippedCount || 0; ded = campaign.totalDeducted || 0;
-
-    const BS = 50;
-    let idx = 0;
-    let batchCounter = 0;
-    const backgroundTasks: Promise<void>[] = [];
-    const addBackgroundTask = (promise: Promise<any>) => {
-      const p = promise.catch(console.error).then(() => {
-        const index = backgroundTasks.indexOf(p);
-        if (index > -1) backgroundTasks.splice(index, 1);
-      });
-      backgroundTasks.push(p);
-    };
-
-    while (idx < campaign.phoneNumbers.length) {
-      batchCounter++;
-      
-      if (batchCounter % 5 === 0) {
-        const live = await Campaign.findById(campaignId).select("status").lean();
-        if (["paused", "completed", "stopped"].includes(live.status)) {
-          addBackgroundTask(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }));
-          addBackgroundTask(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: live.status === "paused" ? "paused" : "completed" } }));
-          await Promise.all(backgroundTasks);
-          await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
-          return;
-        }
-      }
-      
-      if (bPrice > 0 && payerBalance < bPrice) {
-        addBackgroundTask(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }));
-        addBackgroundTask(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: "paused", pausedReason: "Insufficient balance" } }));
-        await Promise.all(backgroundTasks);
-        await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
-        return;
-      }
-
-      const metaPromises: Promise<any>[] = []; 
-      const batchIndices: number[] = []; 
-      const batchPhones: string[] = [];
-      const claimOps: any[] = [];
-      
-      for (let w = 0; w < BS; w++) {
-        if (idx < campaign.phoneNumbers.length) {
-          const ci = idx; 
-          const ph = campaign.phoneNumbers[ci];
-          const cs = campaign.reportData[ci]?.status;
-          
-          if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(cs)) {
-            metaPromises.push(Promise.resolve({ status: "skipped" }));
-          } else {
-            claimOps.push({ updateOne: { filter: { _id: campaignId, [`reportData.${ci}.status`]: "pending" }, update: { $set: { [`reportData.${ci}.status`]: "queued" } } } });
-            let cv: string[] = [];
-            if (campaign.templateCategory === "AUTHENTICATION") { 
-              if (campaign.generateOtp || !campaign.mappedVariables?.[ci]?.length) { 
-                const l = campaign.otpLength || 4; 
-                cv = [Math.floor(Math.random() * (Math.pow(10, l) - Math.pow(10, l - 1) + 1) + Math.pow(10, l - 1)).toString()]; 
-              } else cv = campaign.mappedVariables[ci]; 
-            } else cv = (campaign.mappedVariables?.[ci]?.length > 0) ? campaign.mappedVariables[ci] : (campaign.variables || []);
-            cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
-            metaPromises.push(metaSenderWorker(ph, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
-          }
-          batchIndices.push(ci); batchPhones.push(ph); idx++;
-        }
-      }
-
-      if (claimOps.length > 0) try { await Campaign.bulkWrite(claimOps); } catch (e) {}
-
-      const metaResults = await Promise.all(metaPromises); 
-      let bd = 0;
-      const campaignBulkOps: any[] = [];
-      const messagesToCreate: any[] = [];
-      
-      for (let i = 0; i < metaResults.length; i++) {
-        const r = metaResults[i]; 
-        const ci = batchIndices[i]; 
-        const ph = batchPhones[i].replace(/\+/g, "");
-        if (r.status === "sent") {
-          sent++; sentThisRun++;
-          const pp = getPriceForPhone(payer, ph, cat); 
-          bd += pp;
-          
-          // ✅ CRITICAL FIX: Only update if status is still 'queued' to prevent overwriting 'delivered'/'read' from Webhook!
-          campaignBulkOps.push({
-            updateOne: { 
-              filter: { _id: campaignId, [`reportData.${ci}.status`]: "queued" }, 
-              update: { $set: {
-                [`reportData.${ci}.status`]: "sent",
-                [`reportData.${ci}.sentWamid`]: r.wamid,
-                [`reportData.${ci}.charged`]: true,
-                [`reportData.${ci}.chargedAmount`]: pp
-              }}
-            }
-          });
-
-          messagesToCreate.push({ userId, phone: ph, text: "", direction: "out", messageType: "template", mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID });
-        } else if (r.status === "failed") {
-          failed++; failedThisRun++;
-          campaignBulkOps.push({
-            updateOne: { 
-              filter: { _id: campaignId, [`reportData.${ci}.status`]: "queued" }, 
-              update: { $set: {
-                [`reportData.${ci}.status`]: "failed",
-                [`reportData.${ci}.error`]: r.error || "Unknown error"
-              }}
-            }
-          });
-        } else if (r.status === "skipped") {
-          skipped++;
-        }
-      }
-
-      if (bd > 0) { 
-        payerBalance = Math.round((payerBalance - bd) * 100) / 100; 
-        if (payerBalance < 0) payerBalance = 0; 
-        ded = Math.round((ded + bd) * 100) / 100; 
-        dedThisRun = Math.round((dedThisRun + bd) * 100) / 100;
-      }
-      
-      if (campaignBulkOps.length > 0) addBackgroundTask(Campaign.bulkWrite(campaignBulkOps));
-      if (messagesToCreate.length > 0) addBackgroundTask(Message.insertMany(messagesToCreate, { ordered: false }));
-
-      if (batchCounter % 5 === 0) {
-        addBackgroundTask(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }));
-        addBackgroundTask(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded } }));
-      }
-
-      if (backgroundTasks.length > 20) { // Wait if too many DB operations are pending
-        await Promise.all(backgroundTasks);
-        backgroundTasks.length = 0; 
-      }
-
-      // ✅ Yield to Node.js event loop so Webhook can process Delivered/Read statuses side-by-side
-      await new Promise(resolve => setImmediate(resolve));
-    }
-
-    const finalStatus = (sent > 0 || skipped > 0) ? "completed" : "failed";
-    await User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } });
-    await Campaign.updateOne({ _id: campaignId }, { $set: { status: finalStatus, sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, completedAt: new Date() } });
-    await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
-    
-    try {
-      const plainReportData = campaign.reportData.map((r: any) => {
-        const obj = r.toObject ? r.toObject() : { ...r };
-        return { name: obj.name || "", phone: obj.phone || "", status: obj.status || "", error: obj.error || "", replies: obj.replies || [], reply: obj.reply || null, tags: obj.tags || [], additionalData: obj.additionalData || [] };
-      });
-      await syncCampaignToGoogleSheet(userId, { name: campaign.name, reportData: plainReportData });
-    } catch (e) { console.error("Sheet sync failed:", e); }
-
-  } catch (err) {
-    console.error("❌ Background Loop Error:", err);
-    try { await Campaign.updateOne({ _id: campaignId }, { $set: { status: "failed", pausedReason: "System error in background loop" } }); } catch (e) {}
   }
 }
 
@@ -355,10 +179,9 @@ export async function POST(req: Request) {
     const campaign = await Campaign.findById(campaignId);
     if (!campaign || campaign.userId.toString() !== userId) return NextResponse.json({ success: false, message: "Not found" }, { status: 404 });
     
-    if (campaign.status === "paused") return NextResponse.json({ success: false, message: "Campaign was paused before it could start." }, { status: 400 });
-    if (campaign.status === "running") {
-      const totalProcessed = (campaign.sentCount || 0) + (campaign.failedCount || 0) + (campaign.skippedCount || 0);
-      if (totalProcessed >= campaign.phoneNumbers.length) return NextResponse.json({ success: false, message: "Already completed" }, { status: 400 });
+    // ✅ If paused or stopped, stop immediately.
+    if (["paused", "stopped", "completed"].includes(campaign.status)) {
+      return NextResponse.json({ success: true, hasMore: false, message: "Campaign stopped or already completed." });
     }
 
     const user = await User.findById(userId); 
@@ -375,24 +198,157 @@ export async function POST(req: Request) {
     const cTName = cleanStr(campaign.templateName); 
     const cLang = cleanStr(campaign.languageCode || "en"); 
     const cMedia = cleanStr(campaign.mediaType || "none");
-    const thf = await fetchTemplateHeaderFormat(PHONE_NUMBER_ID, ACCESS_TOKEN, cTName, cLang, cMedia);
+
+    // Fetch template header format only if not already cached on the campaign
+    let thf = campaign.templateHeaderFormat || "";
+    if (!thf) {
+      thf = await fetchTemplateHeaderFormat(PHONE_NUMBER_ID, ACCESS_TOKEN, cTName, cLang, cMedia);
+      campaign.templateHeaderFormat = thf; // Cache for next chunk
+    }
+
     const cat = (campaign.templateCategory || "MARKETING").toUpperCase().trim(); 
     const bPrice = getPriceForCategory(payer, cat);
     
-    if (bPrice > 0 && (payer.balance || 0) < bPrice) return NextResponse.json({ success: false, message: `Insufficient balance. Required: ₹${bPrice}, Available: ₹${payer.balance}.` }, { status: 402 });
+    // Balance check
+    if (bPrice > 0 && (payer.balance || 0) < bPrice) {
+      await Campaign.updateOne({ _id: campaignId }, { $set: { status: "paused", pausedReason: "Insufficient balance" } });
+      return NextResponse.json({ success: false, hasMore: false, message: `Paused. Insufficient balance.` });
+    }
 
     const tc = { templateName: cTName, languageCode: cLang, templateCategory: campaign.templateCategory, generateOtp: campaign.generateOtp, otpLength: campaign.otpLength || 4, mediaUrl: campaign.mediaUrl };
-    
+
+    // Set to running if it was saved
+    if (campaign.status !== "running") {
+      campaign.status = "running";
+      await Campaign.updateOne({ _id: campaignId }, { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID, templateName: cTName, languageCode: cLang, templateHeaderFormat: thf } });
+    }
+
+    // Recover crashed items
     await Campaign.updateMany({ _id: campaignId, "reportData.status": "queued" }, { $set: { "reportData.$.status": "pending" } });
-    await Campaign.updateOne({ _id: campaignId }, { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID, templateName: cTName, languageCode: cLang } });
 
-    // 🚀 WE MUST AWAIT THIS LOOP!
-    // If we don't await it, Vercel/Next.js kills the process the moment it returns the HTTP response.
-    // Your frontend is already polling /counts every 5 seconds, so the UI will still update live side-by-side!
-    await runSendingLoop(campaignId, userId, payer._id, tc, PHONE_NUMBER_ID, ACCESS_TOKEN, thf, cat, bPrice);
+    let sent = campaign.sentCount || 0, failed = campaign.failedCount || 0, skipped = campaign.skippedCount || 0, ded = campaign.totalDeducted || 0;
+    let payerBalance = payer.balance || 0;
 
-    // Once the loop finishes, return the final success response
-    return NextResponse.json({ success: true, message: "Campaign complete." });
+    const BS = 50; // Process 50 per chunk
+    const metaPromises: Promise<any>[] = []; 
+    const batchIndices: number[] = []; 
+    const batchPhones: string[] = [];
+    const claimOps: any[] = [];
+    let hasMore = false;
+
+    // Gather 50 pending items
+    for (let ci = 0; ci < campaign.phoneNumbers.length; ci++) {
+      if (metaPromises.length >= BS) {
+        hasMore = true; // There are more to process after this batch
+        break;
+      }
+      
+      const ph = campaign.phoneNumbers[ci];
+      const cs = campaign.reportData[ci]?.status;
+      
+      if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(cs)) {
+        continue; // Skip already processed
+      } else {
+        claimOps.push({ updateOne: { filter: { _id: campaignId, [`reportData.${ci}.status`]: "pending" }, update: { $set: { [`reportData.${ci}.status`]: "queued" } } } });
+        
+        let cv: string[] = [];
+        if (campaign.templateCategory === "AUTHENTICATION") { 
+          if (campaign.generateOtp || !campaign.mappedVariables?.[ci]?.length) { 
+            const l = campaign.otpLength || 4; 
+            cv = [Math.floor(Math.random() * (Math.pow(10, l) - Math.pow(10, l - 1) + 1) + Math.pow(10, l - 1)).toString()]; 
+          } else cv = campaign.mappedVariables[ci]; 
+        } else cv = (campaign.mappedVariables?.[ci]?.length > 0) ? campaign.mappedVariables[ci] : (campaign.variables || []);
+        
+        cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
+        metaPromises.push(metaSenderWorker(ph, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
+        batchIndices.push(ci); 
+        batchPhones.push(ph);
+      }
+    }
+
+    // Claim items in DB
+    if (claimOps.length > 0) {
+      try { await Campaign.bulkWrite(claimOps); } catch (e) {}
+    }
+
+    // Fire Meta API calls for this chunk
+    const metaResults = await Promise.all(metaPromises); 
+    let bd = 0;
+    const campaignBulkOps: any[] = [];
+    const messagesToCreate: any[] = [];
+    
+    for (let i = 0; i < metaResults.length; i++) {
+      const r = metaResults[i]; 
+      const ci = batchIndices[i]; 
+      const ph = batchPhones[i].replace(/\+/g, "");
+      
+      if (r.status === "sent") {
+        sent++;
+        const pp = getPriceForPhone(payer, ph, cat); 
+        bd += pp;
+        
+        // ✅ CRITICAL: Only update if status is 'queued' to prevent overwriting 'delivered'/'read' from Webhook!
+        campaignBulkOps.push({
+          updateOne: { 
+            filter: { _id: campaignId, [`reportData.${ci}.status`]: "queued" }, 
+            update: { $set: {
+              [`reportData.${ci}.status`]: "sent",
+              [`reportData.${ci}.sentWamid`]: r.wamid,
+              [`reportData.${ci}.charged`]: true,
+              [`reportData.${ci}.chargedAmount`]: pp
+            }}
+          }
+        });
+
+        messagesToCreate.push({ userId, phone: ph, text: "", direction: "out", messageType: "template", mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID });
+      } else if (r.status === "failed") {
+        failed++;
+        campaignBulkOps.push({
+          updateOne: { 
+            filter: { _id: campaignId, [`reportData.${ci}.status`]: "queued" }, 
+            update: { $set: {
+              [`reportData.${ci}.status`]: "failed",
+              [`reportData.${ci}.error`]: r.error || "Unknown error"
+            }}
+          }
+        });
+      }
+    }
+
+    if (bd > 0) { 
+      payerBalance = Math.round((payerBalance - bd) * 100) / 100; 
+      if (payerBalance < 0) payerBalance = 0; 
+      ded = Math.round((ded + bd) * 100) / 100;
+    }
+
+    // Execute DB writes for this chunk
+    if (campaignBulkOps.length > 0) try { await Campaign.bulkWrite(campaignBulkOps); } catch (e) {}
+    if (messagesToCreate.length > 0) try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) {}
+
+    await User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } });
+    await Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded } });
+
+    // If no more pending items, mark as completed
+    if (!hasMore && metaPromises.length === 0) {
+      const finalStatus = (sent > 0 || skipped > 0) ? "completed" : "failed";
+      await Campaign.updateOne({ _id: campaignId }, { $set: { status: finalStatus, completedAt: new Date() } });
+      
+      // Sync to Google Sheet at the very end
+      try {
+        const freshCampaign = await Campaign.findById(campaignId).lean();
+        const plainReportData = (freshCampaign?.reportData || []).map((r: any) => ({
+          name: r.name || "", phone: r.phone || "", status: r.status || "", error: r.error || "",
+          replies: r.replies || [], reply: r.reply || null, tags: r.tags || [], additionalData: r.additionalData || []
+        }));
+        await syncCampaignToGoogleSheet(userId, { name: freshCampaign?.name || "Campaign", reportData: plainReportData });
+      } catch (e) { console.error("Sheet sync failed:", e); }
+
+      return NextResponse.json({ success: true, hasMore: false, message: "Campaign complete." });
+    }
+
+    // Return hasMore: true so the frontend calls the route again for the next 50 items
+    return NextResponse.json({ success: true, hasMore });
+
   } catch (error: any) {
     console.error("❌ Start Campaign Error:", error);
     return NextResponse.json({ success: false, message: error.message }, { status: 500 });
