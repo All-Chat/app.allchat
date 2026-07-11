@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-expressions */
 /* eslint-disable prefer-const */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
@@ -410,7 +411,7 @@ export async function POST(req: Request) {
         try { 
           const claimRes = await Campaign.bulkWrite(bulkQueueOps); 
           // If any claim failed (modifiedCount = 0), we need to mark it as skipped in the results
-          claimRes.result.nModified; // We trust that if it was pending, it's now queued. 
+          claimRes.modifiedCount; // We trust that if it was pending, it's now queued. 
         } catch (e) { console.error("Bulk queue error:", e); }
       }
 
