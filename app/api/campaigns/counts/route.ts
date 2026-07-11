@@ -47,6 +47,7 @@ export async function GET() {
           createdAt: 1,
           additionalFields: 1,
           
+          // 🚀 EXACT SAME LOGIC AS BRIEF POPUP
           liveStats: {
             total: { $ifNull: ["$totalMessages", 0] },
             replied: {
@@ -56,8 +57,22 @@ export async function GET() {
                   as: "r",
                   cond: {
                     $or: [
-                      { $ne: ["$$r.reply", null] },
-                      { $gt: [{ $size: { $ifNull: ["$$r.replies", []] } }, 0] }
+                      // ✅ FIX: Use $ifNull to prevent missing fields from counting as "replied"
+                      { $ne: [ { $ifNull: ["$$r.reply", ""] }, "" ] },
+                      { 
+                        $gt: [
+                          {
+                            $size: {
+                              $filter: {
+                                input: { $ifNull: ["$$r.replies", []] },
+                                as: "rep",
+                                cond: { $ne: ["$$rep", ""] }
+                              }
+                            }
+                          },
+                          0
+                        ]
+                      }
                     ]
                   }
                 }
@@ -72,7 +87,6 @@ export async function GET() {
                 }
               }
             },
-            // ✅ STRICTLY counts only status === "delivered"
             delivered: {
               $size: {
                 $filter: {
@@ -146,7 +160,7 @@ export async function GET() {
         liveStats: {
           ...ls,
           pending,
-          // Keep aggregated fields for UI progress bars
+          // Aggregated fields for the List Card UI
           deliveredRead: delivered + read + replied,
           failedInvalid: failed + invalid,
           progress: total > 0 ? Math.round(((delivered + read + replied + sent) / total) * 100) : 0
