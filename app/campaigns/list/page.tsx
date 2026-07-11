@@ -71,6 +71,7 @@ const getCategoryColor = (category: string) => {
   }
 };
 
+// ✅ FAST: Reads directly from the liveStats object provided by the backend
 const getCampaignStats = (c: Campaign): LiveStats => {
   return c.liveStats || { total: c.totalMessages, replied: 0, read: 0, delivered: 0, sent: 0, failed: 0, invalid: 0, duplicate: 0, pending: 0, deliveredRead: 0, failedInvalid: 0, progress: 0 };
 };
@@ -452,7 +453,10 @@ export default function CampaignList() {
                 </div>
                 <div className="bg-emerald-50 p-2 sm:p-3 rounded-xl text-center border border-emerald-100">
                   <CheckCheck className="w-4 h-4 sm:w-5 sm:h-5 mx-auto text-emerald-500 mb-1" />
-                  <p className="text-lg sm:text-xl font-bold text-emerald-600">{getCampaignStats(viewCampaign).delivered}</p>
+                  {/* ✅ STRICT MATH: Only Delivered + Read + Replied */}
+                  <p className="text-lg sm:text-xl font-bold text-emerald-600">
+                    {Number(getCampaignStats(viewCampaign).delivered || 0) + Number(getCampaignStats(viewCampaign).read || 0) + Number(getCampaignStats(viewCampaign).replied || 0)}
+                  </p>
                   <p className="text-[9px] sm:text-[10px] text-emerald-600 font-medium">Delivered</p>
                 </div>
                 <div className="bg-red-50 p-2 sm:p-3 rounded-xl text-center border border-red-100">
@@ -610,8 +614,9 @@ export default function CampaignList() {
                 const cfg = statusConfig[c.status] || statusConfig.saved;
                 const liveStats = getCampaignStats(c);
                 
-                // ✅ Calculate progress based STRICTLY on Delivered count only
-                const progressPercent = liveStats.total > 0 ? Math.round((liveStats.delivered / liveStats.total) * 100) : 0;
+                // ✅ STRICT MATH: Delivered + Read + Replied ONLY
+                const trueDeliveredCount = Number(liveStats.delivered || 0) + Number(liveStats.read || 0) + Number(liveStats.replied || 0);
+                const progressPercent = liveStats.total > 0 ? Math.round((trueDeliveredCount / liveStats.total) * 100) : 0;
                 
                 const isCompleted = c.status === "completed" || c.status === "failed";
                 const amountSpent = c.totalDeducted || 0;
@@ -688,7 +693,8 @@ export default function CampaignList() {
                       </div>
                       <div className="bg-cyan-50 p-2 rounded-xl border border-cyan-100">
                         <p className="text-[9px] text-cyan-600 font-bold uppercase tracking-wider">Delivered</p>
-                        <p className="font-bold text-cyan-700 text-sm mt-0.5">{liveStats.delivered}</p>
+                        {/* ✅ STRICT MATH */}
+                        <p className="font-bold text-cyan-700 text-sm mt-0.5">{trueDeliveredCount}</p>
                       </div>
                       <div className="bg-emerald-50 p-2 rounded-xl border border-emerald-100">
                         <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-wider">Sent</p>
@@ -709,13 +715,11 @@ export default function CampaignList() {
                       <div className="bg-slate-50 p-2 rounded-xl border border-slate-100 flex flex-col items-center justify-center col-span-2 sm:col-span-1">
                         <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider mb-1">Progress</p>
                         <div className="w-full bg-slate-200 rounded-full h-2">
-                          {/* ✅ Uses strict delivered-only progress */}
                           <div className="bg-emerald-500 h-2 rounded-full transition-all duration-500" style={{ width: `${progressPercent}%` }}></div>
                         </div>
                       </div>
                     </div>
 
-                    {/* ✅ YES, this bottom progress bar appears ONLY when the campaign is running */}
                     {c.status === "running" && (
                       <div className="mt-3 w-full bg-slate-100 rounded-full h-2">
                         <div className="bg-gradient-to-r from-amber-400 to-amber-500 h-2 rounded-full animate-pulse" style={{ width: `${progressPercent || 10}%` }}></div>
@@ -727,14 +731,16 @@ export default function CampaignList() {
                         <Wallet size={12} className="text-blue-500" />
                         <span className="text-slate-500">Amount spent (Dynamic):</span>
                         <span className="font-bold text-blue-700">{formatINR(amountSpent)}</span>
-                        <span className="text-slate-400">({liveStats.delivered} delivered)</span>
+                        {/* ✅ STRICT MATH */}
+                        <span className="text-slate-400">({trueDeliveredCount} delivered)</span>
                       </div>
                     )}
 
-                    {isCompleted && amountSpent === 0 && liveStats.delivered > 0 && (
+                    {isCompleted && amountSpent === 0 && trueDeliveredCount > 0 && (
                       <div className="mt-3 flex items-center gap-2 text-xs">
                         <CheckCircle size={12} className="text-emerald-500" />
-                        <span className="text-slate-500">Completed — {liveStats.delivered} messages delivered (Free)</span>
+                        {/* ✅ STRICT MATH */}
+                        <span className="text-slate-500">Completed — {trueDeliveredCount} messages delivered (Free)</span>
                       </div>
                     )}
                   </div>
