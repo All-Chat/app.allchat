@@ -13,6 +13,8 @@ import { getPriceForCategory } from "@/lib/billing";
 import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
 
 export const runtime = "nodejs";
+// ✅ CRITICAL: Prevents Vercel/Next.js from killing the route after 10 seconds (which is why it stuck at 200)
+export const maxDuration = 300; 
 
 // ✅ Inline Transaction model
 const TransactionSchema = new mongoose.Schema({
@@ -133,17 +135,24 @@ function extractWamid(data: any): string | null {
    2. ISOLATED BACKGROUND WORKERS
    ============================================================================ */
 
-// 🚀 WORKER 1: Meta API Sender
+// 🚀 WORKER 1: Meta API Sender (With 15s timeout to prevent hanging)
 async function metaSenderWorker(phone: string, variables: string[], tc: any, token: string, pnId: string, thf: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
   try {
     let cv = variables; 
     let comps = buildCampaignComponents(thf, cv, tc.mediaUrl || "");
     
+    // ✅ FIX: Abort Meta API call if it takes more than 15 seconds to prevent hanging
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
     let sendRes = await fetch(`https://graph.facebook.com/v21.0/${pnId}/messages`, { 
       method: "POST", 
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, 
-      body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } }) 
+      body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } }),
+      signal: controller.signal
     });
+    
+    clearTimeout(timeoutId);
     
     if (sendRes.ok) { 
       let wamid = null; 
@@ -202,6 +211,7 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
     
     return { status: "failed", error: translateMetaError(sendData.error) };
   } catch (err: any) { 
+    if (err.name === 'AbortError') return { status: "failed", error: "Meta API Timeout (15s)" };
     return { status: "failed", error: err.message || "System error" }; 
   }
 }
@@ -247,19 +257,7 @@ async function logCampaignTransaction(payerId: any, campaignId: string, campaign
 }
 
 /* ============================================================================
-   3. SELF-CLEANING PROMISE POOL (Prevents Deadlocks)
-   ============================================================================ */
-const backgroundTasks: Promise<void>[] = [];
-function addBackgroundTask(promise: Promise<any>) {
-  const p = promise.catch(console.error).then(() => {
-    const index = backgroundTasks.indexOf(p);
-    if (index > -1) backgroundTasks.splice(index, 1);
-  });
-  backgroundTasks.push(p);
-}
-
-/* ============================================================================
-   4. MAIN POST ROUTE - ORCHESTRATOR
+   3. MAIN POST ROUTE - ORCHESTRATOR
    ============================================================================ */
 
 export async function POST(req: Request) {
@@ -328,6 +326,7 @@ export async function POST(req: Request) {
     const BS = 50; // Send 50 messages concurrently
     let idx = 0;
     let batchCounter = 0;
+    const backgroundTasks: Promise<void>[] = [];
 
     while (idx < campaign.phoneNumbers.length) {
       batchCounter++;
@@ -337,8 +336,8 @@ export async function POST(req: Request) {
         if (["paused", "completed", "stopped"].includes(live.status)) {
           campaign.status = live.status === "paused" ? "paused" : "completed";
           
-          addBackgroundTask(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }));
-          addBackgroundTask(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: campaign.status } }));
+          backgroundTasks.push(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }).catch(console.error).then(() => {}));
+          backgroundTasks.push(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: campaign.status } }).catch(console.error).then(() => {}));
           
           await Promise.all(backgroundTasks);
           await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
@@ -348,8 +347,8 @@ export async function POST(req: Request) {
       
       if (bPrice > 0 && payerBalance < bPrice) {
         campaign.status = "paused"; campaign.pausedReason = "Insufficient balance";
-        addBackgroundTask(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }));
-        addBackgroundTask(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: "paused", pausedReason: "Insufficient balance" } }));
+        backgroundTasks.push(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }).catch(console.error).then(() => {}));
+        backgroundTasks.push(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: "paused", pausedReason: "Insufficient balance" } }).catch(console.error).then(() => {}));
         
         await Promise.all(backgroundTasks);
         await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
@@ -453,12 +452,18 @@ export async function POST(req: Request) {
         dedThisRun = Math.round((dedThisRun + bd) * 100) / 100;
       }
       
-      // 🚀 FIRE BACKGROUND WORKERS (100% Non-Blocking & Self-Cleaning)
-      addBackgroundTask(campaignDbWorker(campaignId, campaignBulkOps));
-      addBackgroundTask(messageDbWorker(messagesToCreate));
+      // 🚀 FIRE BACKGROUND WORKERS
+      backgroundTasks.push(campaignDbWorker(campaignId, campaignBulkOps).catch(console.error).then(() => {}));
+      backgroundTasks.push(messageDbWorker(messagesToCreate).catch(console.error).then(() => {}));
 
       if (batchCounter % 5 === 0) {
-        addBackgroundTask(walletDbWorker(payer._id, campaignId, payerBalance, sent, failed, skipped, ded));
+        backgroundTasks.push(walletDbWorker(payer._id, campaignId, payerBalance, sent, failed, skipped, ded).catch(console.error).then(() => {}));
+      }
+
+      // ✅ BACKPRESSURE HANDLING: Prevent memory exhaustion if DB is slower than API
+      if (backgroundTasks.length > 50) {
+        await Promise.all(backgroundTasks);
+        backgroundTasks.length = 0; // Clear array to free memory
       }
     }
 
@@ -470,7 +475,7 @@ export async function POST(req: Request) {
     campaign.completedAt = new Date();
     campaign.status = (sent > 0 || skipped > 0) ? "completed" : "failed";
     
-    await Promise.all(backgroundTasks); // Wait for remaining background tasks
+    await Promise.all(backgroundTasks);
 
     await User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } });
     await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status, sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, completedAt: new Date() } });
