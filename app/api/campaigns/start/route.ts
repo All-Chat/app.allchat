@@ -14,7 +14,7 @@ import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
 
 export const runtime = "nodejs";
 
-// ✅ Same inline Transaction model used by billing / test-message routes.
+// ✅ Inline Transaction model
 const TransactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   type: String,
@@ -130,7 +130,7 @@ function extractWamid(data: any): string | null {
 }
 
 /* ============================================================================
-   2. ISOLATED WORKERS (META SENDER & DATABASE SYNCERS)
+   2. ISOLATED BACKGROUND WORKERS
    ============================================================================ */
 
 // 🚀 WORKER 1: Meta API Sender
@@ -206,42 +206,60 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
   }
 }
 
-// 🚀 WORKER 2: Campaign DB Syncer (Updates reportData array using O(1) index)
+// 🚀 WORKER 2: Campaign DB Syncer
 async function campaignDbWorker(campaignId: string, campaignBulkOps: any[]) {
   if (campaignBulkOps.length === 0) return;
-  try { 
-    await Campaign.bulkWrite(campaignBulkOps); 
-  } catch (e) { 
-    console.error("Campaign bulk write error:", e); 
-  }
+  try { await Campaign.bulkWrite(campaignBulkOps); } catch (e) { console.error("Campaign bulk write error:", e); }
 }
 
-// 🚀 WORKER 3: Message DB Syncer (Logs outbound messages)
+// 🚀 WORKER 3: Message DB Syncer
 async function messageDbWorker(messagesToCreate: any[]) {
   if (messagesToCreate.length === 0) return;
-  try { 
-    await Message.insertMany(messagesToCreate, { ordered: false }); 
-  } catch (e) { 
-    console.error("Message bulk insert error:", e); 
-  }
+  try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) { console.error("Message bulk insert error:", e); }
 }
 
-// 🚀 WORKER 4: Wallet Syncer (Updates user balance & campaign scalars)
+// 🚀 WORKER 4: Wallet Syncer
 async function walletDbWorker(payerId: any, campaignId: string, balance: number, sentCount: number, failedCount: number, skippedCount: number, totalDeducted: number) {
   try {
     await Promise.all([
       User.updateOne({ _id: payerId }, { $set: { balance } }),
-      Campaign.updateOne({ _id: campaignId }, { 
-        $set: { sentCount, failedCount, skippedCount, totalDeducted } 
-      })
+      Campaign.updateOne({ _id: campaignId }, { $set: { sentCount, failedCount, skippedCount, totalDeducted } })
     ]);
-  } catch (e) {
-    console.error("Wallet/Scalar update error:", e);
+  } catch (e) { console.error("Wallet/Scalar update error:", e); }
+}
+
+// 🚀 WORKER 5: Transaction Logger
+async function logCampaignTransaction(payerId: any, campaignId: string, campaignName: string, amount: number, sentThisRun: number, failedThisRun: number) {
+  if (!amount || amount <= 0) return;
+  try {
+    await Transaction.create({
+      userId: payerId,
+      type: "campaign",
+      amount,
+      description: `Campaign Sent: ${campaignName}`,
+      status: "success",
+      createdAt: new Date(),
+      metadata: { campaignId: String(campaignId), campaignName, sentCount: sentThisRun, failedCount: failedThisRun },
+    });
+  } catch (txErr) {
+    console.error("⚠️ Failed to log campaign transaction:", txErr);
   }
 }
 
 /* ============================================================================
-   3. MAIN POST ROUTE - ORCHESTRATOR (Non-Blocking Pipeline)
+   3. SELF-CLEANING PROMISE POOL (Prevents Deadlocks)
+   ============================================================================ */
+const backgroundTasks: Promise<void>[] = [];
+function addBackgroundTask(promise: Promise<any>) {
+  const p = promise.catch(console.error).then(() => {
+    const index = backgroundTasks.indexOf(p);
+    if (index > -1) backgroundTasks.splice(index, 1);
+  });
+  backgroundTasks.push(p);
+}
+
+/* ============================================================================
+   4. MAIN POST ROUTE - ORCHESTRATOR
    ============================================================================ */
 
 export async function POST(req: Request) {
@@ -311,37 +329,27 @@ export async function POST(req: Request) {
     let idx = 0;
     let batchCounter = 0;
 
-    // Non-blocking background task pool
-    const backgroundTasks: Promise<void>[] = [];
-    const addBackgroundTask = (promise: Promise<any>, errorMsg: string) => {
-      backgroundTasks.push(promise.catch(err => console.error(errorMsg, err)).then(() => {}));
-    };
-
-    // Main sending loop (Producer)
     while (idx < campaign.phoneNumbers.length) {
       batchCounter++;
       
-      // 1. Pause Check every 5 batches
       if (batchCounter % 5 === 0) {
         const live = await Campaign.findById(campaignId).select("status").lean();
         if (["paused", "completed", "stopped"].includes(live.status)) {
           campaign.status = live.status === "paused" ? "paused" : "completed";
-          campaign.sentCount = sent; campaign.failedCount = failed; campaign.skippedCount = skipped; campaign.totalDeducted = ded;
           
-          addBackgroundTask(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }), "Balance update error:");
-          addBackgroundTask(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: campaign.status } }), "Campaign final update error:");
+          addBackgroundTask(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }));
+          addBackgroundTask(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: campaign.status } }));
           
-          await Promise.all(backgroundTasks); // Wait for background tasks before returning
+          await Promise.all(backgroundTasks);
           await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
           return NextResponse.json({ success: true, message: `Campaign ${live.status}`, sent, failed, skipped });
         }
       }
       
-      // 2. Balance Check
       if (bPrice > 0 && payerBalance < bPrice) {
         campaign.status = "paused"; campaign.pausedReason = "Insufficient balance";
-        addBackgroundTask(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }), "Balance update error:");
-        addBackgroundTask(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: "paused", pausedReason: "Insufficient balance" } }), "Campaign pause update error:");
+        addBackgroundTask(User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } }));
+        addBackgroundTask(Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, status: "paused", pausedReason: "Insufficient balance" } }));
         
         await Promise.all(backgroundTasks);
         await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
@@ -353,7 +361,6 @@ export async function POST(req: Request) {
       const batchPhones: string[] = [];
       const claimOps: any[] = [];
       
-      // 3. Prepare batch
       for (let w = 0; w < BS; w++) {
         if (idx < campaign.phoneNumbers.length) {
           const ci = idx; 
@@ -386,19 +393,16 @@ export async function POST(req: Request) {
         }
       }
 
-      // 4. Claim items as 'queued' in DB (Fast O(1) bulk write)
       if (claimOps.length > 0) {
         try { await Campaign.bulkWrite(claimOps); } catch (e) {}
       }
 
-      // 5. Fire Meta API calls concurrently
       const metaResults = await Promise.all(metaPromises); 
       let bd = 0;
       
       const campaignBulkOps: any[] = [];
       const messagesToCreate: any[] = [];
       
-      // 6. Process Meta Results in Memory
       for (let i = 0; i < metaResults.length; i++) {
         const r = metaResults[i]; 
         const ci = batchIndices[i]; 
@@ -442,7 +446,6 @@ export async function POST(req: Request) {
         }
       }
 
-      // 7. Update Wallet Memory
       if (bd > 0) { 
         payerBalance = Math.round((payerBalance - bd) * 100) / 100; 
         if (payerBalance < 0) payerBalance = 0; 
@@ -450,24 +453,12 @@ export async function POST(req: Request) {
         dedThisRun = Math.round((dedThisRun + bd) * 100) / 100;
       }
       
-      // 8. 🚀 FIRE BACKGROUND WORKERS (Non-Blocking DB Writes)
-      // The loop instantly moves to the next batch without waiting for these DB operations to finish!
-      addBackgroundTask(campaignDbWorker(campaignId, campaignBulkOps), "Campaign DB Sync Error:");
-      addBackgroundTask(messageDbWorker(messagesToCreate), "Message DB Sync Error:");
+      // 🚀 FIRE BACKGROUND WORKERS (100% Non-Blocking & Self-Cleaning)
+      addBackgroundTask(campaignDbWorker(campaignId, campaignBulkOps));
+      addBackgroundTask(messageDbWorker(messagesToCreate));
 
-      // Sync Wallet & Campaign Scalars every 5 batches to save DB hits
       if (batchCounter % 5 === 0) {
-        addBackgroundTask(walletDbWorker(payer._id, campaignId, payerBalance, sent, failed, skipped, ded), "Wallet Sync Error:");
-      }
-      
-      // Prevent background task array from growing infinitely (Backpressure handling)
-      if (backgroundTasks.length > 20) {
-        await Promise.race(backgroundTasks);
-        // Clean up resolved tasks
-        for (let i = backgroundTasks.length - 1; i >= 0; i--) {
-          // Crude but effective way to remove settled promises from the race array
-          // It doesn't perfectly clean up, but keeps memory bounded.
-        }
+        addBackgroundTask(walletDbWorker(payer._id, campaignId, payerBalance, sent, failed, skipped, ded));
       }
     }
 
@@ -479,15 +470,12 @@ export async function POST(req: Request) {
     campaign.completedAt = new Date();
     campaign.status = (sent > 0 || skipped > 0) ? "completed" : "failed";
     
-    // Wait for all remaining background DB tasks to finish before returning success
-    await Promise.all(backgroundTasks);
+    await Promise.all(backgroundTasks); // Wait for remaining background tasks
 
-    // Final DB Sync
     await User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } });
     await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status, sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded, completedAt: new Date() } });
     await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
     
-    // Google Sheet Sync
     try {
       const plainReportData = campaign.reportData.map((r: any) => {
         const obj = r.toObject ? r.toObject() : { ...r };
@@ -516,8 +504,4 @@ export async function POST(req: Request) {
     console.error("❌ Start Campaign Error:", error);
     return NextResponse.json({ success: false, message: error.message }, { status: 500 });
   }
-}
-
-function logCampaignTransaction(_id: mongoose.Types.ObjectId, campaignId: any, name: any, dedThisRun: number, sentThisRun: number, failedThisRun: number) {
-  throw new Error("Function not implemented.");
 }
