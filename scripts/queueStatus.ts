@@ -2,15 +2,16 @@
  * Queue diagnostics script.
  *
  * Usage:
- *   npx ts-node scripts/queueStatus.ts
- *   npx ts-node scripts/queueStatus.ts <campaignId>   (to filter for one campaign)
- *
- * Shows job counts for the campaign-processing queue, and — if a
- * campaignId is passed — lists any failed/stuck chunks for that campaign
- * specifically, with their error reasons.
+ *   npx tsx scripts/queueStatus.ts
+ *   npx tsx scripts/queueStatus.ts <campaignId>
  */
 
 import { Queue } from "bullmq";
+import * as dotenv from "dotenv";
+import * as path from "path";
+
+// ✅ Load environment variables from .env.local
+dotenv.config({ path: path.resolve(process.cwd(), ".env.local") });
 
 const connection = {
   host: process.env.REDIS_HOST || "127.0.0.1",
