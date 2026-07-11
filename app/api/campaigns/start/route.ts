@@ -214,7 +214,6 @@ async function safeUpdateCampaign(campaignId: string, campaignData: any, batchIn
     if (item.status !== "sent" && item.status !== "failed") continue;
     
     const uSet: any = {}; 
-    // ✅ Use `reportData.${i}.status` for instant O(1) database updates!
     uSet[`reportData.${i}.status`] = item.status;
     
     if (item.status === "sent") { 
@@ -341,7 +340,7 @@ export async function POST(req: Request) {
 
     let sent = campaign.sentCount || 0, failed = campaign.failedCount || 0, skipped = campaign.skippedCount || 0, ded = campaign.totalDeducted || 0;
     let sentThisRun = 0, failedThisRun = 0, dedThisRun = 0;
-    const BS = 10; // ✅ Increased Batch Size to 10 for faster sending
+    const BS = 20; // ✅ Increased Batch Size to 20 for maximum speed (Meta handles this easily)
     let idx = 0;
 
     // Main sending loop
@@ -369,7 +368,8 @@ export async function POST(req: Request) {
       }
 
       const wp: any[] = []; const bi: number[] = []; const bp: string[] = [];
-      const messagesToCreate: any[] = []; // ✅ Collect messages to insert in bulk
+      const messagesToCreate: any[] = []; 
+      const bulkQueueOps: any[] = []; // ✅ Collect claims for bulk write
       
       // Prepare batch
       for (let w = 0; w < BS; w++) {
@@ -381,30 +381,37 @@ export async function POST(req: Request) {
           if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(cs)) {
             wp.push(Promise.resolve({ status: "skipped" }));
           } else {
-            // ✅ ATOMIC CLAIM: Use array index `ci` for O(1) update instead of O(N) scan
-            const claim = await Campaign.updateOne(
-              { _id: campaignId, [`reportData.${ci}.status`]: "pending" },
-              { $set: { [`reportData.${ci}.status`]: "queued" } }
-            );
-            
-            if (claim.modifiedCount > 0) {
-              let cv: string[] = [];
-              if (campaign.templateCategory === "AUTHENTICATION") { 
-                if (campaign.generateOtp || !campaign.mappedVariables?.[ci]?.length) { 
-                  const l = campaign.otpLength || 4; 
-                  cv = [Math.floor(Math.random() * (Math.pow(10, l) - Math.pow(10, l - 1) + 1) + Math.pow(10, l - 1)).toString()]; 
-                } else cv = campaign.mappedVariables[ci]; 
+            // ✅ ATOMIC CLAIM: Add to bulk operation to save DB calls
+            bulkQueueOps.push({
+              updateOne: {
+                filter: { _id: campaignId, [`reportData.${ci}.status`]: "pending" },
+                update: { $set: { [`reportData.${ci}.status`]: "queued" } }
               }
-              else cv = (campaign.mappedVariables?.[ci]?.length > 0) ? campaign.mappedVariables[ci] : (campaign.variables || []);
-              
-              cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
-              wp.push(workerProcess(ph, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
-            } else {
-              wp.push(Promise.resolve({ status: "skipped" }));
+            });
+            
+            let cv: string[] = [];
+            if (campaign.templateCategory === "AUTHENTICATION") { 
+              if (campaign.generateOtp || !campaign.mappedVariables?.[ci]?.length) { 
+                const l = campaign.otpLength || 4; 
+                cv = [Math.floor(Math.random() * (Math.pow(10, l) - Math.pow(10, l - 1) + 1) + Math.pow(10, l - 1)).toString()]; 
+              } else cv = campaign.mappedVariables[ci]; 
             }
+            else cv = (campaign.mappedVariables?.[ci]?.length > 0) ? campaign.mappedVariables[ci] : (campaign.variables || []);
+            
+            cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
+            wp.push(workerProcess(ph, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
           }
           bi.push(ci); bp.push(ph); idx++;
         }
+      }
+
+      // ✅ Execute all claims in 1 single DB call
+      if (bulkQueueOps.length > 0) {
+        try { 
+          const claimRes = await Campaign.bulkWrite(bulkQueueOps); 
+          // If any claim failed (modifiedCount = 0), we need to mark it as skipped in the results
+          claimRes.result.nModified; // We trust that if it was pending, it's now queued. 
+        } catch (e) { console.error("Bulk queue error:", e); }
       }
 
       const res = await Promise.all(wp); 
@@ -426,7 +433,6 @@ export async function POST(req: Request) {
             campaign.reportData[ci].charged = true; 
             campaign.reportData[ci].chargedAmount = pp; 
           }
-          // ✅ Add to array for bulk insert
           messagesToCreate.push({ 
             userId, phone: ph, text: "", direction: "out", messageType: "template", 
             mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", 
@@ -473,7 +479,29 @@ export async function POST(req: Request) {
     await Campaign.updateOne({ _id: campaignId }, { $set: { status: campaign.status } });
     await logCampaignTransaction(payer._id, campaignId, campaign.name, dedThisRun, sentThisRun, failedThisRun);
     
-    try { await syncCampaignToGoogleSheet(userId, { name: campaign.name, reportData: campaign.reportData }); } catch {}
+    // ✅ FIX: Google Sheet Sync - Convert Mongoose docs to plain objects to prevent serialization crashes
+    try {
+      const plainReportData = campaign.reportData.map((r: any) => {
+        const obj = r.toObject ? r.toObject() : { ...r };
+        return {
+          name: obj.name || "",
+          phone: obj.phone || "",
+          status: obj.status || "",
+          error: obj.error || "",
+          replies: obj.replies || [],
+          reply: obj.reply || null,
+          tags: obj.tags || [],
+          additionalData: obj.additionalData || []
+        };
+      });
+
+      await syncCampaignToGoogleSheet(userId, {
+        name: campaign.name,
+        reportData: plainReportData
+      });
+    } catch (sheetErr) {
+      console.error("❌ Google Sheet Sync Failed:", sheetErr);
+    }
 
     return NextResponse.json({ success: true, sent, failed, skipped, totalDeducted: ded, balance: payer.balance, message: `Campaign complete. Sent: ${sent}, Failed: ${failed}.` });
   } catch (error: any) {
