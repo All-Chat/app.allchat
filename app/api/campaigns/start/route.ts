@@ -116,17 +116,23 @@ function extractWamid(data: any): string | null {
   return null;
 }
 
-// 🚀 WORKER: Meta API Sender (NO TIMEOUT - let it take its time)
+// 🚀 WORKER: Meta API Sender (30s timeout to prevent hanging)
 async function metaSenderWorker(phone: string, variables: string[], tc: any, token: string, pnId: string, thf: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
   try {
     let cv = variables; 
     let comps = buildCampaignComponents(thf, cv, tc.mediaUrl || "");
     
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
     let sendRes = await fetch(`https://graph.facebook.com/v21.0/${pnId}/messages`, { 
       method: "POST", 
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, 
-      body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } }) 
+      body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } }),
+      signal: controller.signal
     });
+    
+    clearTimeout(timeoutId);
     
     if (sendRes.ok) { let wamid = null; try { const d = await sendRes.json(); wamid = extractWamid(d); } catch {} return { status: "sent", wamid }; }
     
@@ -162,6 +168,7 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
     }
     return { status: "failed", error: translateMetaError(sendData.error) };
   } catch (err: any) { 
+    if (err.name === 'AbortError') return { status: "failed", error: "Meta API Timeout (30s)" };
     return { status: "failed", error: err.message || "System error" }; 
   }
 }
@@ -179,7 +186,6 @@ export async function POST(req: Request) {
     const campaign = await Campaign.findById(campaignId);
     if (!campaign || campaign.userId.toString() !== userId) return NextResponse.json({ success: false, message: "Not found" }, { status: 404 });
     
-    // ✅ If paused or stopped, stop immediately.
     if (["paused", "stopped", "completed"].includes(campaign.status)) {
       return NextResponse.json({ success: true, hasMore: false, message: "Campaign stopped or already completed." });
     }
@@ -199,17 +205,15 @@ export async function POST(req: Request) {
     const cLang = cleanStr(campaign.languageCode || "en"); 
     const cMedia = cleanStr(campaign.mediaType || "none");
 
-    // Fetch template header format only if not already cached on the campaign
     let thf = campaign.templateHeaderFormat || "";
     if (!thf) {
       thf = await fetchTemplateHeaderFormat(PHONE_NUMBER_ID, ACCESS_TOKEN, cTName, cLang, cMedia);
-      campaign.templateHeaderFormat = thf; // Cache for next chunk
+      campaign.templateHeaderFormat = thf; 
     }
 
     const cat = (campaign.templateCategory || "MARKETING").toUpperCase().trim(); 
     const bPrice = getPriceForCategory(payer, cat);
     
-    // Balance check
     if (bPrice > 0 && (payer.balance || 0) < bPrice) {
       await Campaign.updateOne({ _id: campaignId }, { $set: { status: "paused", pausedReason: "Insufficient balance" } });
       return NextResponse.json({ success: false, hasMore: false, message: `Paused. Insufficient balance.` });
@@ -217,29 +221,26 @@ export async function POST(req: Request) {
 
     const tc = { templateName: cTName, languageCode: cLang, templateCategory: campaign.templateCategory, generateOtp: campaign.generateOtp, otpLength: campaign.otpLength || 4, mediaUrl: campaign.mediaUrl };
 
-    // Set to running if it was saved
     if (campaign.status !== "running") {
       campaign.status = "running";
       await Campaign.updateOne({ _id: campaignId }, { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID, templateName: cTName, languageCode: cLang, templateHeaderFormat: thf } });
     }
 
-    // Recover crashed items
     await Campaign.updateMany({ _id: campaignId, "reportData.status": "queued" }, { $set: { "reportData.$.status": "pending" } });
 
     let sent = campaign.sentCount || 0, failed = campaign.failedCount || 0, skipped = campaign.skippedCount || 0, ded = campaign.totalDeducted || 0;
     let payerBalance = payer.balance || 0;
 
-    const BS = 50; // Process 50 per chunk
+    const BS = 20; // ✅ Reduced to 20 to guarantee it finishes in < 2 seconds (prevents server timeouts)
     const metaPromises: Promise<any>[] = []; 
     const batchIndices: number[] = []; 
     const batchPhones: string[] = [];
     const claimOps: any[] = [];
     let hasMore = false;
 
-    // Gather 50 pending items
     for (let ci = 0; ci < campaign.phoneNumbers.length; ci++) {
       if (metaPromises.length >= BS) {
-        hasMore = true; // There are more to process after this batch
+        hasMore = true; 
         break;
       }
       
@@ -247,7 +248,7 @@ export async function POST(req: Request) {
       const cs = campaign.reportData[ci]?.status;
       
       if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(cs)) {
-        continue; // Skip already processed
+        continue; 
       } else {
         claimOps.push({ updateOne: { filter: { _id: campaignId, [`reportData.${ci}.status`]: "pending" }, update: { $set: { [`reportData.${ci}.status`]: "queued" } } } });
         
@@ -266,12 +267,8 @@ export async function POST(req: Request) {
       }
     }
 
-    // Claim items in DB
-    if (claimOps.length > 0) {
-      try { await Campaign.bulkWrite(claimOps); } catch (e) {}
-    }
+    if (claimOps.length > 0) try { await Campaign.bulkWrite(claimOps); } catch (e) {}
 
-    // Fire Meta API calls for this chunk
     const metaResults = await Promise.all(metaPromises); 
     let bd = 0;
     const campaignBulkOps: any[] = [];
@@ -287,7 +284,6 @@ export async function POST(req: Request) {
         const pp = getPriceForPhone(payer, ph, cat); 
         bd += pp;
         
-        // ✅ CRITICAL: Only update if status is 'queued' to prevent overwriting 'delivered'/'read' from Webhook!
         campaignBulkOps.push({
           updateOne: { 
             filter: { _id: campaignId, [`reportData.${ci}.status`]: "queued" }, 
@@ -321,19 +317,16 @@ export async function POST(req: Request) {
       ded = Math.round((ded + bd) * 100) / 100;
     }
 
-    // Execute DB writes for this chunk
     if (campaignBulkOps.length > 0) try { await Campaign.bulkWrite(campaignBulkOps); } catch (e) {}
     if (messagesToCreate.length > 0) try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) {}
 
     await User.updateOne({ _id: payer._id }, { $set: { balance: payerBalance } });
     await Campaign.updateOne({ _id: campaignId }, { $set: { sentCount: sent, failedCount: failed, skippedCount: skipped, totalDeducted: ded } });
 
-    // If no more pending items, mark as completed
     if (!hasMore && metaPromises.length === 0) {
       const finalStatus = (sent > 0 || skipped > 0) ? "completed" : "failed";
       await Campaign.updateOne({ _id: campaignId }, { $set: { status: finalStatus, completedAt: new Date() } });
       
-      // Sync to Google Sheet at the very end
       try {
         const freshCampaign = await Campaign.findById(campaignId).lean();
         const plainReportData = (freshCampaign?.reportData || []).map((r: any) => ({
@@ -346,7 +339,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, hasMore: false, message: "Campaign complete." });
     }
 
-    // Return hasMore: true so the frontend calls the route again for the next 50 items
     return NextResponse.json({ success: true, hasMore });
 
   } catch (error: any) {
