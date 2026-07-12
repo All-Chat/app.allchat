@@ -354,15 +354,48 @@ async function processCampaignChunk(data: any) {
   }
 
   try {
-    const completedCampaign = await Campaign.findOneAndUpdate(
-      { 
-        _id: campaignId, 
-        status: { $ne: "completed" }, 
-        $expr: { $gte: [ { $add: ["$sentCount", "$failedCount", { $ifNull: ["$skippedCount", 0] } ] }, "$totalMessages" ] }
+    // 🐛 FIX: the old check relied on `skippedCount`, which is never
+    // incremented anywhere in this codebase — invalid/duplicate items are
+    // skipped in the loop above without ever bumping any counter. That
+    // permanently understated the "processed" total whenever a campaign
+    // had ANY invalid/duplicate numbers, so completion was never reached.
+    //
+    // Fix: count directly from reportData (server-side $filter, doesn't
+    // pull the array over the wire) — this always reflects reality,
+    // regardless of which counters did or didn't get incremented.
+    const [statResult] = await Campaign.aggregate([
+      { $match: { _id: new mongoose.Types.ObjectId(campaignId) } },
+      {
+        $project: {
+          status: 1,
+          totalMessages: 1,
+          processedCount: {
+            $size: {
+              $filter: {
+                input: { $ifNull: ["$reportData", []] },
+                as: "r",
+                cond: {
+                  $in: ["$$r.status", ["sent", "delivered", "read", "failed", "invalid", "duplicate"]],
+                },
+              },
+            },
+          },
+        },
       },
-      { $set: { status: "completed", completedAt: new Date() } },
-      { new: true, fields: "status" }
-    );
+    ]);
+
+    let completedCampaign: any = null;
+    if (
+      statResult &&
+      statResult.status !== "completed" &&
+      statResult.processedCount >= (statResult.totalMessages || 0)
+    ) {
+      completedCampaign = await Campaign.findOneAndUpdate(
+        { _id: campaignId, status: { $ne: "completed" } },
+        { $set: { status: "completed", completedAt: new Date() } },
+        { new: true, fields: "status" }
+      );
+    }
 
     if (completedCampaign && completedCampaign.status === "completed") {
       try {
