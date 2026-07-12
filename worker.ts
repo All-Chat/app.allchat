@@ -1,13 +1,17 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // worker.ts (Root of your project)
+
+// MUST BE AT THE VERY TOP: Load .env.local before anything else
+import { config } from 'dotenv';
+config({ path: '.env.local' });
+
 import { Worker } from 'bullmq';
 import { connectDB } from './lib/mongodb';
 import Campaign from './models/Campaign';
 import User from './models/User';
 import Message from './models/Message';
 import mongoose from 'mongoose';
-import 'dotenv/config'; // <--- ADD THIS LINE AT THE VERY TOP
 import { getPriceForCategory } from './lib/billing';
 import { syncCampaignToGoogleSheet } from './lib/googleSheetSync';
 
