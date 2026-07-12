@@ -33,12 +33,15 @@ import {
   Users,
   UserCog,
   MessagesSquare,
+  FileSpreadsheet, 
+  Database,
+  // ✅ NEW UNIQUE ICONS ADDED BELOW
+  SlidersHorizontal, 
+  FilePlus2,        
+  ListTree,         
 } from "lucide-react";
 import { useSession } from "next-auth/react";
 
-// ==========================================
-// 📐 TYPES & DATA STRUCTURES
-// ==========================================
 type IconType = React.ComponentType<{ className?: string }>;
 
 interface NavLink {
@@ -95,6 +98,16 @@ const categories: NavCategory[] = [
     ],
   },
   {
+    title: "Sheets",
+    icon: FileSpreadsheet,
+    items: [
+      { name: "Sheet Sync Manager", icon: Database, href: "/dashboard/google-sheet-manager" },
+      { name: "Sheet Configurations", icon: SlidersHorizontal, href: "/dashboard/sheet-sync-list" }, // ✅ Unique Icon
+      { name: "Create Campaign", icon: FilePlus2, href: "/dashboard/sheet-sync-campaign" }, // ✅ Unique Icon
+      { name: "Campaign List", icon: ListTree, href: "/dashboard/sheet-sync-campaign/list" }, // ✅ Unique Icon
+    ],
+  },
+  {
     title: "Team",
     icon: Users,
     items: [
@@ -109,9 +122,6 @@ const bottomLinks: NavLink[] = [
   { name: "Settings", icon: Cog, href: "/settings" },
 ];
 
-// ==========================================
-// 🧩 SIDEBAR COMPONENT
-// ==========================================
 export default function Sidebar() {
   const pathname = usePathname();
   const { data: session } = useSession();
@@ -120,17 +130,11 @@ export default function Sidebar() {
   const [isOpen, setIsOpen] = useState(false);
   const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({});
   
+  const [hiddenLinks, setHiddenLinks] = useState<string[]>([]);
+  
   const navRef = useRef<HTMLElement>(null);
 
-  // ==========================================
-  // 🔴 TENANT & WHITE LABEL LOGIC
-  // ==========================================
   const isTenant = (session?.user as any)?.isTenant === true;
-
-  // ✅ A "sub-user" is someone who belongs to a tenant's team but is not the
-  // tenant owner themselves (e.g. an agent/team member added under a tenant).
-  // We detect this by the presence of a parent tenant reference on the user
-  // while the user is NOT itself flagged as the tenant.
   const sessionUserAny = session?.user as any;
   const parentTenantRef =
     sessionUserAny?.parentTenantId ||
@@ -138,36 +142,46 @@ export default function Sidebar() {
     sessionUserAny?.parentId ||
     null;
   const isSubUser = !isTenant && !!parentTenantRef;
-
-  // True for both the tenant owner and any team member working under a tenant.
   const hasTeamAccess = isTenant || isSubUser;
   
-  // ✅ White Label Name Logic (Only name, no logo in sidebar)
   const wl = (session?.user as any)?.whiteLabel;
   const isWhiteLabel = wl?.enabled;
   const sidebarAppName = isWhiteLabel && wl?.appName ? `${wl.appName} CRM` : "All Chat CRM";
 
-  // ✅ Build the visible categories. The "Team" category now shows for both
-  // tenants and sub-users — but only the tenant owner sees "Users" (team
-  // management), while "Team Inbox" is visible to both.
+  // Fetch Hidden Links from User Settings
+  useEffect(() => {
+    fetch("/api/settings")
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.settings?.hiddenSidebarLinks) {
+          setHiddenLinks(data.settings.hiddenSidebarLinks);
+        }
+      })
+      .catch(console.error);
+  }, [pathname]);
+
+  // We no longer filter out categories entirely. We map them to check for disabled status.
   const visibleCategories = categories
     .map((cat) => {
+      // Still completely hide Team category if user has no team access at all
+      if (cat.title === "Team" && !hasTeamAccess) return null;
+
+      // If it's the team category, respect tenant/sub-user logic for specific links
       if (cat.title === "Team") {
-        if (!hasTeamAccess) return null;
         const items = cat.items.filter((item) => {
           if (item.name === "Users") return isTenant;
           if (item.name === "Team Inbox") return hasTeamAccess;
-          return true;
+          return true; // Keep it so we can disable it if needed
         });
-        return items.length > 0 ? { ...cat, items } : null;
+        return { ...cat, items };
       }
+      
       return cat;
     })
     .filter((cat): cat is NavCategory => cat !== null);
 
   useEffect(() => setMounted(true), []);
 
-  // Load saved dropdown states from local storage on mount
   useEffect(() => {
     try {
       const saved = localStorage.getItem("sidebarOpenCategories");
@@ -179,12 +193,10 @@ export default function Sidebar() {
     }
   }, []);
 
-  // Close mobile sidebar automatically when navigating
   useEffect(() => {
     setIsOpen(false);
   }, [pathname]);
 
-  // Ensure the active category stays open even on refresh
   useEffect(() => {
     const activeCat = visibleCategories.find((cat) =>
       cat.items.some((item) => item.href === pathname)
@@ -197,9 +209,8 @@ export default function Sidebar() {
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathname, isTenant, isSubUser]);
+  }, [pathname, isTenant, isSubUser, hiddenLinks]);
 
-  // Restore scroll position on mount and route change
   useEffect(() => {
     if (navRef.current) {
       const savedScroll = localStorage.getItem("sidebarScrollTop");
@@ -230,16 +241,35 @@ export default function Sidebar() {
     });
   };
 
-  // ==========================================
-  // 🔴 ADMIN CHECK LOGIC
-  // ==========================================
   const isTRLAdmin = session?.user?.email === "TRL" || session?.user?.name === "TRL";
 
   if (!mounted) return null;
 
-  // Helper function to render standard links
-  const renderLink = (item: NavLink) => {
+  // ✅ Helper to check if a link is disabled
+  const isLinkDisabled = (href: string, catTitle?: string) => {
+    if (catTitle && hiddenLinks.includes(`category:${catTitle}`)) return true;
+    return hiddenLinks.includes(href);
+  };
+
+  const renderLink = (item: NavLink, catTitle?: string) => {
     const isActive = pathname === item.href;
+    const disabled = isLinkDisabled(item.href, catTitle);
+
+    // ✅ If disabled, render a greyed-out non-clickable div
+    if (disabled) {
+      return (
+        <div
+          className={`relative flex items-center gap-3 py-2.5 px-4 rounded-lg whitespace-nowrap cursor-not-allowed transition-all duration-200 ${
+            isActive ? "bg-gray-50" : ""
+          }`}
+        >
+          <item.icon className="w-[18px] h-[18px] flex-shrink-0 transition-colors text-gray-300" />
+          <span className="text-sm font-medium text-gray-400">{item.name}</span>
+        </div>
+      );
+    }
+
+    // ✅ Normal clickable link
     return (
       <Link
         href={item.href}
@@ -265,7 +295,6 @@ export default function Sidebar() {
 
   return (
     <>
-      {/* 1. MOBILE SUB-NAVBAR */}
       <div className="md:hidden sticky top-[70px] z-40 bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between shadow-sm">
         <span className="font-bold text-lg text-gray-900">Dashboard</span>
         <button
@@ -277,7 +306,6 @@ export default function Sidebar() {
         </button>
       </div>
 
-      {/* 2. MOBILE BACKDROP OVERLAY */}
       {isOpen && (
         <div
           className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm md:hidden transition-opacity"
@@ -285,7 +313,6 @@ export default function Sidebar() {
         />
       )}
 
-      {/* 3. SIDEBAR DRAWER */}
       <aside
         className={`
           fixed left-0 bottom-0 z-50 w-64 bg-white border-r border-gray-200 flex flex-col
@@ -296,7 +323,6 @@ export default function Sidebar() {
           md:translate-x-0 md:top-[81px] md:h-[calc(100vh-64px)]
         `}
       >
-        {/* ✅ NAME ONLY (No Logo) */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
           <Link href="/dashboard" className="flex items-center group">
             <span className="text-xl font-bold text-gray-900 tracking-tight">
@@ -313,23 +339,21 @@ export default function Sidebar() {
           </button>
         </div>
 
-        {/* Navigation Links */}
         <nav
           ref={navRef}
           onScroll={handleScroll}
           className="flex-1 p-4 space-y-2 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
-          {/* Top Single Links */}
           <div className="space-y-1 mb-2">
             {topLinks.map((item, i) => (
               <div key={i}>{renderLink(item)}</div>
             ))}
           </div>
 
-          {/* Categorized Dropdowns */}
           {visibleCategories.map((cat) => {
             const isCatOpen = openCategories[cat.title];
             const isCatActive = cat.items.some((item) => pathname === item.href);
+            const isCatDisabled = hiddenLinks.includes(`category:${cat.title}`);
 
             return (
               <div key={cat.title} className="mt-3">
@@ -338,17 +362,17 @@ export default function Sidebar() {
                   aria-expanded={isCatOpen}
                   className={`w-full flex items-center justify-between px-4 py-2.5 rounded-lg transition-colors group focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500 ${
                     isCatActive ? "bg-gray-50" : "hover:bg-gray-50"
-                  }`}
+                  } ${isCatDisabled ? "opacity-60" : ""}`}
                 >
                   <span className="flex items-center gap-3">
                     <cat.icon 
                       className={`w-5 h-5 flex-shrink-0 transition-colors ${
                         isCatActive ? "text-green-600" : "text-gray-400 group-hover:text-gray-600"
-                      }`} 
+                      } ${isCatDisabled ? "!text-gray-300" : ""}`} 
                     />
                     <span className={`text-base font-semibold tracking-wide ${
                       isCatActive ? "text-gray-900" : "text-gray-700"
-                    }`}>
+                    } ${isCatDisabled ? "!text-gray-400" : ""}`}>
                       {cat.title}
                     </span>
                   </span>
@@ -367,7 +391,7 @@ export default function Sidebar() {
                   <div className="overflow-hidden">
                     <div className="space-y-1 pl-4 border-l border-gray-100 ml-4 mt-1">
                       {cat.items.map((item, i) => (
-                        <div key={i}>{renderLink(item)}</div>
+                        <div key={i}>{renderLink(item, cat.title)}</div>
                       ))}
                     </div>
                   </div>
@@ -376,7 +400,6 @@ export default function Sidebar() {
             );
           })}
 
-          {/* Bottom Single Links */}
           <div className="space-y-1 mt-4 pt-4 border-t border-gray-100">
             {bottomLinks.map((item, i) => (
               <div key={i}>{renderLink(item)}</div>
@@ -384,7 +407,6 @@ export default function Sidebar() {
           </div>
         </nav>
 
-        {/* Admin Panel Footer */}
         {isTRLAdmin && (
           <div className="p-4 border-t border-gray-200">
             <Link
