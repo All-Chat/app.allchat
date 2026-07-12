@@ -1,11 +1,13 @@
+// worker.ts (Root of your project)
+// Force load environment variables synchronously BEFORE any other imports
 /* eslint-disable @typescript-eslint/no-require-imports */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // worker.ts (Root of your project)
 
-// MUST BE AT THE VERY TOP: Load .env.local before anything else
-import { config } from 'dotenv';
-config({ path: '.env.local' });
+// 1. Force load environment variables synchronously BEFORE any other imports
+require('dotenv').config({ path: '.env.local' });
 
+// 2. Now load your modules
 import { Worker } from 'bullmq';
 import { connectDB } from './lib/mongodb';
 import Campaign from './models/Campaign';
@@ -14,6 +16,8 @@ import Message from './models/Message';
 import mongoose from 'mongoose';
 import { getPriceForCategory } from './lib/billing';
 import { syncCampaignToGoogleSheet } from './lib/googleSheetSync';
+
+// ... rest of your worker.ts code
 
 // ==========================================
 // 1. DATABASE CONNECTION
