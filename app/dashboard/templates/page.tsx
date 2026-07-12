@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
@@ -43,6 +44,9 @@ export default function TemplatesPage() {
 
   const [mediaPermissionWarning, setMediaPermissionWarning] = useState(false);
 
+  // ✅ NEW: State to track if the media URL fails to load in preview
+  const [mediaPreviewError, setMediaPreviewError] = useState(false);
+
   // ✅ LIMIT ADDED: Limit State
   const [templateLimit, setTemplateLimit] = useState<any>(null);
   const isLimitActive = templateLimit && templateLimit.limit.period !== "unlimited" && templateLimit.limit.max !== -1;
@@ -60,6 +64,11 @@ export default function TemplatesPage() {
   }, [bodyText, isAuthTemplate]);
 
   const [bodyExamples, setBodyExamples] = useState<Record<number, string>>({});
+
+  // Reset media error when URL or source changes
+  useEffect(() => {
+    setMediaPreviewError(false);
+  }, [sampleUrl, sampleFile, headerType, sampleSource]);
 
   useEffect(() => {
     if (status === "unauthenticated") {
@@ -548,7 +557,7 @@ export default function TemplatesPage() {
                       {sampleSource === "url" && (
                         <div>
                           <input className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition text-sm" placeholder="https://example.com/sample-image.jpg" value={sampleUrl} onChange={(e) => setSampleUrl(e.target.value)} />
-                          <p className="text-[10px] text-gray-400 mt-1.5">Paste a publicly accessible URL.</p>
+                          <p className="text-[10px] text-gray-400 mt-1.5">Paste a publicly accessible direct link (e.g. https://example.com/video.mp4). Social media links (Instagram, YouTube) will not work.</p>
                         </div>
                       )}
                     </div>
@@ -670,14 +679,40 @@ export default function TemplatesPage() {
                   
                   {!isAuthTemplate && headerType === "image" && (
                     <div className="w-full h-40 bg-gray-200 flex flex-col items-center justify-center gap-2 overflow-hidden">
-                      {sampleFile ? <img src={URL.createObjectURL(sampleFile)} alt="Preview" className="w-full h-full object-cover" /> : sampleUrl ? <img src={sampleUrl} alt="Preview" className="w-full h-full object-cover" /> : <><Image size={32} className="text-gray-400" /><span className="text-[10px] text-gray-500 font-medium">Image Header</span></>}
+                      {sampleFile ? (
+                        <img src={URL.createObjectURL(sampleFile)} alt="Preview" className="w-full h-full object-cover" />
+                      ) : sampleUrl && !mediaPreviewError ? (
+                        <img src={sampleUrl} alt="Preview" className="w-full h-full object-cover" onError={() => setMediaPreviewError(true)} />
+                      ) : mediaPreviewError ? (
+                        <div className="text-center px-2">
+                          <AlertTriangle size={24} className="text-red-500 mx-auto mb-1" />
+                          <span className="text-[10px] text-red-600 font-medium">Invalid URL or link not supported.</span>
+                          <span className="text-[9px] text-gray-500 block">Please use a direct image link.</span>
+                        </div>
+                      ) : (
+                        <><Image size={32} className="text-gray-400" /><span className="text-[10px] text-gray-500 font-medium">Image Header</span></>
+                      )}
                     </div>
                   )}
+                  
                   {!isAuthTemplate && headerType === "video" && (
                     <div className="relative w-full h-40 bg-gray-200 flex flex-col items-center justify-center gap-2 overflow-hidden">
-                      {sampleFile ? <video src={URL.createObjectURL(sampleFile)} className="w-full h-full object-cover" /> : <><Video size={32} className="text-gray-400" /><span className="text-[10px] text-gray-500 font-medium">Video Header</span></>}
+                      {sampleFile ? (
+                        <video src={URL.createObjectURL(sampleFile)} className="w-full h-full object-cover" controls />
+                      ) : sampleUrl && !mediaPreviewError ? (
+                        <video src={sampleUrl} className="w-full h-full object-cover" controls onError={() => setMediaPreviewError(true)} />
+                      ) : mediaPreviewError ? (
+                        <div className="text-center px-2">
+                          <AlertTriangle size={24} className="text-red-500 mx-auto mb-1" />
+                          <span className="text-[10px] text-red-600 font-medium">Invalid URL or link not supported.</span>
+                          <span className="text-[9px] text-gray-500 block">Please use a direct video link (e.g., .mp4).</span>
+                        </div>
+                      ) : (
+                        <><Video size={32} className="text-gray-400" /><span className="text-[10px] text-gray-500 font-medium">Video Header</span></>
+                      )}
                     </div>
                   )}
+                  
                   {!isAuthTemplate && headerType === "document" && (
                     <div className="w-full h-24 bg-gray-200 flex flex-col items-center justify-center gap-2">
                       <FileText size={32} className="text-gray-400" /><span className="text-[10px] text-gray-500 font-medium">PDF Document</span>
