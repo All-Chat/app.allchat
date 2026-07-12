@@ -7,6 +7,7 @@ import Campaign from './models/Campaign';
 import User from './models/User';
 import Message from './models/Message';
 import mongoose from 'mongoose';
+import 'dotenv/config'; // <--- ADD THIS LINE AT THE VERY TOP
 import { getPriceForCategory } from './lib/billing';
 import { syncCampaignToGoogleSheet } from './lib/googleSheetSync';
 
