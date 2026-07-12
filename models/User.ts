@@ -42,9 +42,6 @@ const UserSchema = new mongoose.Schema({
   priceUtility: { type: Number, default: 0.50 },
   priceAuthentication: { type: Number, default: 0.30 },
   
-  // ==========================================
-  // ✅ COUNTRY PRICING & LIMITS
-  // ==========================================
   maxEnabledCountries: { type: Number, default: 0 },
   enabledCountries: [{
     name: { type: String, default: "" },
@@ -82,6 +79,9 @@ const UserSchema = new mongoose.Schema({
     expiry_date: { type: Number, default: null }
   },
   hideIntegrations: { type: Boolean, default: false },
+  
+  // ✅ NEW FIELD: Hidden Sidebar Links
+  hiddenSidebarLinks: { type: [String], default: [] },
   
   limits: {
     tags: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
