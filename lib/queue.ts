@@ -93,17 +93,13 @@ if (!global.campaignWorker) {
     }
   }, { 
     connection,
-    // 🚀 FIX: old limiter (max:2/1000ms = 100 msgs/sec) was a GLOBAL cap
-    // shared across every user/campaign on the platform, way below what
-    // Meta actually allows (≈80 msgs/sec PER phone number). The real
-    // per-number throttle already happens via the 429 retry/backoff logic
-    // in metaSenderWorker below — so raise this ceiling and let Meta's
-    // actual per-number rate limits (via 429s) be the real constraint.
-    // Tune `max` based on your VPS's CPU/network headroom — start here
-    // and watch server load; lower it back down if the box struggles.
-    concurrency: 20,
+    // Only 1 chunk in flight at a time — each chunk = 50 messages
+    // sent in parallel via Promise.allSettled. Combined with the
+    // limiter below, this gives exactly 50 msgs/sec.
+    concurrency: 1,
     limiter: {
-      max: 20,
+      // 1 chunk per 1000ms = 1 batch of 50 messages per second
+      max: 1,
       duration: 1000
     },
     stalledInterval: 300000, 
