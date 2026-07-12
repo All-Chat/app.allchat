@@ -1,8 +1,8 @@
-/* eslint-disable @typescript-eslint/no-require-imports */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // workers/mainWorker.ts
 
 // Force load environment variables BEFORE any other imports
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 require('dotenv').config({ path: '.env.local' });
 
 import { Worker, Queue } from 'bullmq';
