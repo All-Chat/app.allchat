@@ -4,8 +4,9 @@ module.exports = {
       name: "whatsapp-web",
       cwd: __dirname,
       script: "node_modules/next/dist/bin/next",
-      args: "start -p 3999", // Change 3000 to whatever port your website uses
+      args: "start -p 3999", 
       instances: 1,
+      exec_mode: "fork", // <--- ADD THIS
       autorestart: true,
       max_memory_restart: "1G",
       env: {
@@ -18,6 +19,7 @@ module.exports = {
       script: "npx",
       args: "tsx worker.ts",
       instances: 1,
+      exec_mode: "fork", // <--- ADD THIS
       autorestart: true,
       max_memory_restart: "1G",
       env: {
