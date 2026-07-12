@@ -68,34 +68,37 @@ async function boldHeaderRow(
   });
 }
 
+// ✅ Helper to sanitize sheet names (Google doesn't allow special chars or >31 chars)
+function sanitizeSheetName(name: string): string {
+  let n = name.replace(/[\[\]\?\/\\\*\:]/g, " ").trim();
+  if (n.length > 31) n = n.substring(0, 31);
+  return n || "Campaign Report";
+}
+
 // ─── MAIN: Sync campaign report to Google Sheet ──────────────────────────────
-// ✅ FIX: Headers now include "Reply 1"–"Reply 5" columns.
-//    Rows read d["Reply 1"] … d["Reply 5"] instead of the old d.replies array
-//    (which never existed on the data coming from the campaign route).
-// ─── MAIN: Sync campaign report to Google Sheet ──────────────────────────────
-// ✅ FIX: Dynamically includes additional fields passed from the route
 export async function syncCampaignToGoogleSheet(userId: string, campaign: any) {
   await connectDB();
 
   const user = await User.findById(userId);
-  if (!user?.googleSheetId || !user?.googleTokens?.refresh_token) return;
+  
+  // ✅ FIX: Throw explicit errors instead of silently returning
+  if (!user?.googleSheetId) throw new Error("Google Sheet ID not found in user settings.");
+  if (!user?.googleTokens?.refresh_token) throw new Error("Google refresh token not found. Please reconnect your Google Account.");
 
   const oauth2Client = buildOAuthClient(user);
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
   const spreadsheetId = user.googleSheetId;
 
-  // Tab name = campaign name, capped at 100 chars (Google Sheets limit)
-  const sheetName = (campaign.name || "Campaign").substring(0, 100);
+  // ✅ Sanitize tab name to prevent Google API crashes
+  const sheetName = sanitizeSheetName(campaign.name || "Campaign");
   const sheetId = await ensureSheetTab(sheets, spreadsheetId, sheetName);
 
-  // ✅ Get additional fields array
   const additionalFields: string[] = campaign.additionalFields || [];
 
-  // ✅ Build headers dynamically
   const HEADERS = [
     "Name",
     "Phone",
-    ...additionalFields, // Spread extra columns here
+    ...additionalFields,
     "Status",
     "Error",
     "Tags",
@@ -106,19 +109,16 @@ export async function syncCampaignToGoogleSheet(userId: string, campaign: any) {
     "Reply 5",
   ];
 
-  // ✅ Build rows dynamically
   const rows = (campaign.reportData || []).map((d: any) => {
     const row = [
       String(d.name || "N/A").trim(),
       String(d.phone || "N/A").trim(),
     ];
 
-    // Push values for additional fields
     additionalFields.forEach((field) => {
       row.push(String(d[field] || "").trim());
     });
 
-    // Push the remaining standard fields
     row.push(String(d.status || "Unknown").trim());
     row.push(String(d.error || "").trim());
     row.push(Array.isArray(d.tags) ? d.tags.filter(Boolean).join(", ") : String(d.tags || "").trim());
@@ -136,7 +136,7 @@ export async function syncCampaignToGoogleSheet(userId: string, campaign: any) {
   // Clear → write → bold
   await sheets.spreadsheets.values.clear({
     spreadsheetId,
-    range: `${sheetName}!A1:Z10000`,
+    range: `${sheetName}`,
   });
 
   await sheets.spreadsheets.values.update({
@@ -147,6 +147,9 @@ export async function syncCampaignToGoogleSheet(userId: string, campaign: any) {
   });
 
   await boldHeaderRow(sheets, spreadsheetId, sheetId, HEADERS.length);
+
+  // ✅ Return the direct URL to the specific tab so the frontend can open it
+  return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${sheetId}`;
 }
 
 // ─── Sync Test Messages to Google Sheets ────────────────────────────────────
@@ -173,7 +176,6 @@ export async function syncTestMessageToGoogleSheet(
 
   const sheetId = await ensureSheetTab(sheets, spreadsheetId, sheetName);
 
-  // Write headers if the tab was just created (no data yet)
   const checkRes = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `${sheetName}!A1:E1`,
@@ -190,7 +192,6 @@ export async function syncTestMessageToGoogleSheet(
     await boldHeaderRow(sheets, spreadsheetId, sheetId, 5);
   }
 
-  // Read existing rows to check for this phone number
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `${sheetName}!A2:E1000`,
@@ -208,7 +209,6 @@ export async function syncTestMessageToGoogleSheet(
   if (rowIndexToUpdate !== -1) {
     const currentRow = rows[rowIndexToUpdate] || [];
 
-    // Append reply with " | " separator, keep max 5
     let finalReply = currentRow[3] || "No Reply";
     if (data.reply) {
       const existingStr =
