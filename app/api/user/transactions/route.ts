@@ -5,9 +5,6 @@ import mongoose from "mongoose";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 
-// ✅ Same inline Transaction model used by billing, send-test-message, and
-// campaign-start routes. This route now reads ONLY from here for usage data
-// (no live Campaign lookups), so deleting a campaign never changes history.
 const TransactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   type: String, // 'recharge' | 'test_message' | 'campaign'
@@ -21,6 +18,7 @@ const Transaction = mongoose.models.Transaction || mongoose.model('Transaction',
 
 const UserSchema = new mongoose.Schema({
   balance: Number,
+  parentTenantId: String,
 }, { strict: false });
 const User = mongoose.models.User || mongoose.model('User', UserSchema);
 
@@ -32,6 +30,16 @@ export async function GET(req: Request) {
 
     if (!userId) {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
+    }
+
+    // ✅ Check if user is a sub-user to fetch parent's transactions too
+    const userDoc = await User.findById(userId).select("parentTenantId").lean();
+    const parentTenantId = (userDoc as any)?.parentTenantId;
+    
+    // Create an array of user IDs to query (own ID + parent ID if exists)
+    const userIdsToQuery = [new mongoose.Types.ObjectId(userId)];
+    if (parentTenantId) {
+      userIdsToQuery.push(new mongoose.Types.ObjectId(parentTenantId));
     }
 
     const { searchParams } = new URL(req.url);
@@ -46,12 +54,12 @@ export async function GET(req: Request) {
 
     // ==========================================
     // 1. CAMPAIGN + TEST MESSAGE USAGE HISTORY
-    //    (Both read from Transaction now — permanent snapshots that
-    //    survive campaign deletion, since they don't reference live
-    //    Campaign documents at all.)
     // ==========================================
     if (type === "usage") {
-      const query: any = { userId, type: { $in: ["campaign", "test_message"] } };
+      const query: any = { 
+        userId: { $in: userIdsToQuery }, // ✅ Query both user and parent
+        type: { $in: ["campaign", "test_message"] } 
+      };
 
       if (search) {
         const searchNum = parseFloat(search);
@@ -92,7 +100,10 @@ export async function GET(req: Request) {
     // 2. RECHARGE HISTORY (From Transaction Model)
     // ==========================================
     else {
-      const query: any = { userId, type: "recharge" };
+      const query: any = { 
+        userId: { $in: userIdsToQuery }, // ✅ Query both user and parent
+        type: "recharge" 
+      };
 
       if (search) {
         const searchNum = parseFloat(search);
@@ -115,20 +126,17 @@ export async function GET(req: Request) {
 
     // ==========================================
     // 3. SUMMARY STATS (Total Recharged / Total Spent / Current Balance)
-    //    All computed from Transaction only — fully delete-proof.
     // ==========================================
     let totalRecharged = 0;
     let totalSpent = 0;
     let currentBalance = 0;
 
     try {
-      const userObjectId = new mongoose.Types.ObjectId(userId);
-
-      const [rechargeAgg, spendAgg, userDoc] = await Promise.all([
+      const [rechargeAgg, spendAgg, currentUserDoc] = await Promise.all([
         Transaction.aggregate([
           {
             $match: {
-              userId: userObjectId,
+              userId: { $in: userIdsToQuery },
               type: "recharge",
               status: { $in: ["success", "completed"] }
             }
@@ -138,7 +146,7 @@ export async function GET(req: Request) {
         Transaction.aggregate([
           {
             $match: {
-              userId: userObjectId,
+              userId: { $in: userIdsToQuery },
               type: { $in: ["campaign", "test_message"] },
               status: { $in: ["success", "completed"] }
             }
@@ -151,7 +159,7 @@ export async function GET(req: Request) {
       totalRecharged = rechargeAgg[0]?.total || 0;
       totalSpent = spendAgg[0]?.total || 0;
 
-      const liveBalance = (userDoc as any)?.balance;
+      const liveBalance = (currentUserDoc as any)?.balance;
       currentBalance = typeof liveBalance === "number" ? liveBalance : (totalRecharged - totalSpent);
     } catch (summaryErr) {
       console.error("Error computing transaction summary:", summaryErr);
