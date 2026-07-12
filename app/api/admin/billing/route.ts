@@ -168,6 +168,7 @@ export async function GET(req: Request) {
         hideIntegrations: (u as any).hideIntegrations || false,
         maxEnabledCountries: (u as any).maxEnabledCountries || 0,
         enabledCountries: (u as any).enabledCountries || [],
+        hiddenSidebarLinks: (u as any).hiddenSidebarLinks || [], // ✅ RETURN NEW FIELD
       });
     }
 
@@ -193,10 +194,15 @@ export async function PUT(req: Request) {
     if (!user) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
     // ==========================================
-    // HANDLE INTEGRATIONS & DISCONNECT
+    // HANDLE INTEGRATIONS & SIDEBAR VISIBILITY
     // ==========================================
     if (action === "integrations" || body.hideIntegrations !== undefined) {
       user.hideIntegrations = body.hideIntegrations;
+    }
+
+    // ✅ HANDLE SIDEBAR VISIBILITY
+    if (action === "sidebar" || body.hiddenSidebarLinks !== undefined) {
+      user.hiddenSidebarLinks = body.hiddenSidebarLinks;
     }
 
     if (action === "disconnectGoogle" || body.disconnectGoogle === true) {
@@ -337,8 +343,6 @@ export async function PUT(req: Request) {
 
     // ==========================================
     // ✅ LOG THE RECHARGE AS A TRANSACTION
-    // (This is the part that was missing — without this, the recharge
-    // history tab on the user's billing page has nothing to show.)
     // ==========================================
     if (rechargeAppliedAmount > 0) {
       try {
@@ -355,8 +359,6 @@ export async function PUT(req: Request) {
           },
         });
       } catch (txErr) {
-        // Don't fail the whole request if logging fails — the balance update
-        // already succeeded — but make sure it's visible in the server logs.
         console.error("Failed to log recharge transaction:", txErr);
       }
     }
