@@ -3,16 +3,14 @@ module.exports = {
     {
       name: "whatsapp-web",
       cwd: __dirname,
-      script: "npm",
-      args: "run start",
+      script: "node_modules/next/dist/bin/next",
+      args: "start -p 3999",
       instances: 1,
       autorestart: true,
       max_memory_restart: "1G",
       env: {
-        NODE_ENV: "production"
-        // If you need a specific port, set it here. 
-        // Otherwise, it will automatically use the PORT from your .env file or Next.js default.
-        // PORT: 3001 
+        NODE_ENV: "production",
+        PORT: 3999
       }
     },
     {
