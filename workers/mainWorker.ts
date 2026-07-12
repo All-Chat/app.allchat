@@ -1,8 +1,8 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // workers/mainWorker.ts
 
 // Force load environment variables BEFORE any other imports
-// eslint-disable-next-line @typescript-eslint/no-require-imports
 require('dotenv').config({ path: '.env.local' });
 
 import { Worker, Queue } from 'bullmq';
@@ -387,26 +387,30 @@ async function generateCountsData(userId: string, page: number, limit: number, c
                     input: { $ifNull: ["$reportData", []] },
                     initialValue: { replied: 0, read: 0, delivered: 0, sent: 0, failed: 0, invalid: 0, duplicate: 0 },
                     in: {
-                      $let: {
-                        vars: {
-                          status: { $toLower: { $ifNull: ["$$this.status", ""] } },
-                          hasReply: {
-                            $or: [
-                              { $ne: [{ $ifNull: ["$$this.reply", ""] }, ""] },
-                              { $gt: [{ $size: { $filter: { input: { $ifNull: ["$$this.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0] }
+                      // FIX: Flattened the $let to avoid MongoDB $size field path parser bug
+                      replied: { 
+                        $add: [
+                          "$$value.replied", 
+                          { 
+                            $cond: [
+                              {
+                                $or: [
+                                  { $ne: [{ $ifNull: ["$$this.reply", ""] }, ""] },
+                                  { $gt: [{ $size: { $filter: { input: { $ifNull: ["$$this.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0] }
+                                ]
+                              }, 
+                              1, 
+                              0
                             ]
                           }
-                        },
-                        in: {
-                          replied: { $add: ["$$value.replied", { $cond: ["$$hasReply", 1, 0] }] },
-                          read: { $add: ["$$value.read", { $cond: [{ $eq: ["$$status", "read"] }, 1, 0] }] },
-                          delivered: { $add: ["$$value.delivered", { $cond: [{ $eq: ["$$status", "delivered"] }, 1, 0] }] },
-                          sent: { $add: ["$$value.sent", { $cond: [{ $eq: ["$$status", "sent"] }, 1, 0] }] },
-                          failed: { $add: ["$$value.failed", { $cond: [{ $eq: ["$$status", "failed"] }, 1, 0] }] },
-                          invalid: { $add: ["$$value.invalid", { $cond: [{ $eq: ["$$status", "invalid"] }, 1, 0] }] },
-                          duplicate: { $add: ["$$value.duplicate", { $cond: [{ $eq: ["$$status", "duplicate"] }, 1, 0] }] }
-                        }
-                      }
+                        ]
+                      },
+                      read: { $add: ["$$value.read", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "read"] }, 1, 0] }] },
+                      delivered: { $add: ["$$value.delivered", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "delivered"] }, 1, 0] }] },
+                      sent: { $add: ["$$value.sent", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "sent"] }, 1, 0] }] },
+                      failed: { $add: ["$$value.failed", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "failed"] }, 1, 0] }] },
+                      invalid: { $add: ["$$value.invalid", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "invalid"] }, 1, 0] }] },
+                      duplicate: { $add: ["$$value.duplicate", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "duplicate"] }, 1, 0] }] }
                     }
                   }
                 }
@@ -422,15 +426,15 @@ async function generateCountsData(userId: string, page: number, limit: number, c
       }
     ]).allowDiskUse(false);
 
-    const fixedCampaigns = campaigns.map((c: any) => {
-      const ls = c.liveStats || {};
-      const total = ls.total || 0;
-      const read = ls.read || 0;
-      const delivered = ls.delivered || 0;
-      const sent = c.sentCount || 0;
-      const failed = c.failedCount || 0;
-      const invalid = ls.invalid || 0;
-      const duplicate = ls.duplicate || 0;
+const fixedCampaigns = campaigns.map((c: any) => {
+  const ls = c.liveStats || {};
+  const total = ls.total || 0;
+  const read = ls.read || 0;
+  const delivered = ls.delivered || 0;
+  const sent = ls.sent || 0;       // ✅ was c.sentCount || 0
+  const failed = ls.failed || 0;   // ✅ was c.failedCount || 0
+  const invalid = ls.invalid || 0;
+  const duplicate = ls.duplicate || 0;
 
       const processed = read + delivered + sent + failed + invalid + duplicate;
       const pending = Math.max(0, total - processed);
