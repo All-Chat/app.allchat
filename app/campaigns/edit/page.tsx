@@ -91,9 +91,16 @@ function EditCampaignContent() {
       );
       if (tmpl) {
         handleTemplateSelect(tmpl.name, tmpl.language, initialCampaignData.variables);
+        
+        // Restore specific data that handleTemplateSelect might reset
         setUseRandomOtp(initialCampaignData.generateOtp || false);
         setOtpLength(initialCampaignData.otpLength || 4);
         setRawVariables(initialCampaignData.mappedVariables || []);
+        
+        // Restore media
+        setMediaType(initialCampaignData.mediaType || "");
+        setMediaUrl(initialCampaignData.mediaUrl || "");
+        if (initialCampaignData.mediaUrl) setMediaInputType("url");
       } else {
         const fallback = templates.find((t: any) => t.name === initialCampaignData.templateName);
         if (fallback) handleTemplateSelect(fallback.name, fallback.language, initialCampaignData.variables);
@@ -133,7 +140,6 @@ function EditCampaignContent() {
     } catch (err) { console.error("Failed to fetch opt-out numbers", err); }
   };
 
-  // ✅ LIVE DEBOUNCED NAME CHECK (Excludes current campaign ID)
   const handleCampaignNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setCampaignName(value);
@@ -145,7 +151,6 @@ function EditCampaignContent() {
       return;
     }
 
-    // If reverting to the original name, don't need to check
     if (initialCampaignData && value.toLowerCase() === (initialCampaignData.name || "").toLowerCase()) {
       setNameStatus("available");
       return;
@@ -210,12 +215,15 @@ function EditCampaignContent() {
         const campaign = data.campaigns.find((c: any) => c._id === campaignId);
         if (campaign) {
           setCampaignName(campaign.name);
-          setNameStatus("available"); // It's available because it's the current campaign
+          setNameStatus("available"); 
           setRawNumbers(campaign.phoneNumbers || []);
           setRawNames(campaign.names || []);
           setVariables(campaign.variables || []);
+          
+          // ✅ Explicitly set media state on load to guarantee the box renders
           setMediaUrl(campaign.mediaUrl || "");
           setMediaType(campaign.mediaType || "");
+          
           setLanguageCode(campaign.languageCode || "en");
           setStats({ valid: campaign.phoneNumbers.length, invalid: 0, duplicates: 0, optedOut: 0 });
           
@@ -231,10 +239,14 @@ function EditCampaignContent() {
           setInitialCampaignData(campaign);
         } else { toast.error("Campaign not found"); }
       }
-    } catch (err) { toast.error("Failed to load campaign data"); } finally { setLoadingData(false); }
+    } catch (err) { 
+      toast.error("Failed to load campaign data"); 
+    } finally { 
+      setLoadingData(false); 
+    }
   };
 
-     const handleTemplateSelect = (name: string, language?: string, preservedVars?: string[]) => {
+  const handleTemplateSelect = (name: string, language?: string, preservedVars?: string[]) => {
     let tmpl: any;
     if (language) tmpl = templates.find((t: any) => t.name === name && t.language === language);
     else tmpl = templates.find((t: any) => t.name === name && t.language === languageCode) || templates.find((t: any) => t.name === name);
@@ -250,8 +262,34 @@ function EditCampaignContent() {
     if (tmpl.language) setLanguageCode(tmpl.language);
     else setLanguageCode("en");
 
-    if (["IMAGE", "VIDEO", "DOCUMENT"].includes(hFormat)) setMediaType(hFormat.toLowerCase());
-    else { setMediaType(""); setMediaUrl(""); clearMediaFile(); }
+    // ✅ Check if this is the template originally saved with the campaign
+    const isInitialTemplate = initialCampaignData && 
+                              tmpl.name === initialCampaignData.templateName && 
+                              tmpl.language === initialCampaignData.languageCode;
+
+    // Determine the correct media type to use
+    let finalMediaType = "";
+    if (["IMAGE", "VIDEO", "DOCUMENT"].includes(hFormat)) {
+      finalMediaType = hFormat.toLowerCase();
+    }
+    
+    // ✅ If switching back to the initial template, force restore the saved media type
+    if (isInitialTemplate && initialCampaignData.mediaType) {
+      finalMediaType = initialCampaignData.mediaType;
+    }
+
+    if (finalMediaType) {
+      setMediaType(finalMediaType);
+      // ✅ Restore original media if we switched back to the initial template and haven't uploaded a new file
+      if (isInitialTemplate && !mediaFile && !preservedVars) {
+        setMediaUrl(initialCampaignData.mediaUrl || "");
+        if (initialCampaignData.mediaUrl) setMediaInputType("url");
+      }
+    } else { 
+      setMediaType(""); 
+      setMediaUrl(""); 
+      clearMediaFile(); 
+    }
 
     const bodyComp = tmpl.components?.find((c: any) => c.type === "BODY");
     const text = bodyComp?.text || "";
@@ -263,10 +301,18 @@ function EditCampaignContent() {
     if (preservedVars) {
       setVariables(preservedVars);
     } else {
-      setUseRandomOtp(false);
-      setOtpLength(4);
-      setSelectedVarCols(Array(varCount).fill("skip"));
-      setRawVariables([]);
+      // ✅ Restore original variables if we switched back to the initial template
+      if (isInitialTemplate) {
+        setVariables(initialCampaignData.variables || Array(varCount).fill(""));
+        setRawVariables(initialCampaignData.mappedVariables || []);
+        setUseRandomOtp(initialCampaignData.generateOtp || false);
+        setOtpLength(initialCampaignData.otpLength || 4);
+      } else {
+        setUseRandomOtp(false);
+        setOtpLength(4);
+        setSelectedVarCols(Array(varCount).fill("skip"));
+        setRawVariables([]);
+      }
     }
 
     const footerComp = tmpl.components?.find((c: any) => c.type === "FOOTER");
@@ -287,7 +333,7 @@ function EditCampaignContent() {
     return preview;
   };
 
-    const cleanAndValidateNumbers = (
+  const cleanAndValidateNumbers = (
     nums: string[], 
     names: string[], 
     rows: string[][] = [], 
@@ -363,7 +409,7 @@ function EditCampaignContent() {
     else toast.error("No valid numbers found");
   };
 
-   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setFileName(file.name);
@@ -478,7 +524,12 @@ function EditCampaignContent() {
   const clearMediaFile = () => { if (mediaPreview) URL.revokeObjectURL(mediaPreview); setMediaFile(null); setMediaPreview(null); };
 
   const renderMediaInput = () => {
-    if (!mediaType) return null;
+    // ✅ BULLETPROOF: Show if mediaType is set, OR if we already have a mediaUrl saved
+    if (!mediaType && !mediaUrl) return null;
+    
+    // Use mediaType, or fallback to 'image' if URL exists but type is missing
+    const currentType = mediaType || "image";
+    
     return (
       <div className="space-y-3">
         <div className="flex gap-2 bg-slate-100 p-1 rounded-lg">
@@ -487,10 +538,10 @@ function EditCampaignContent() {
         </div>
         {mediaInputType === "url" ? (
           <div className="relative">
-            {mediaType === "image" && <ImageIcon className="absolute left-4 top-3.5 w-4 h-4 text-slate-400" />}
-            {mediaType === "video" && <Film className="absolute left-4 top-3.5 w-4 h-4 text-slate-400" />}
-            {mediaType === "document" && <FileText className="absolute left-4 top-3.5 w-4 h-4 text-slate-400" />}
-            <input type="url" value={mediaUrl} onChange={(e) => setMediaUrl(e.target.value)} placeholder={`Direct ${mediaType.charAt(0).toUpperCase() + mediaType.slice(1)} URL`} className="w-full pl-10 pr-5 py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]" />
+            {currentType === "image" && <ImageIcon className="absolute left-4 top-3.5 w-4 h-4 text-slate-400" />}
+            {currentType === "video" && <Film className="absolute left-4 top-3.5 w-4 h-4 text-slate-400" />}
+            {currentType === "document" && <FileText className="absolute left-4 top-3.5 w-4 h-4 text-slate-400" />}
+            <input type="url" value={mediaUrl} onChange={(e) => setMediaUrl(e.target.value)} placeholder={`Direct ${currentType.charAt(0).toUpperCase() + currentType.slice(1)} URL`} className="w-full pl-10 pr-5 py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]" />
           </div>
         ) : (
           <div>
@@ -498,17 +549,17 @@ function EditCampaignContent() {
               <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-slate-200 rounded-xl cursor-pointer bg-slate-50 hover:bg-indigo-50/30 hover:border-indigo-300 transition-all">
                 <div className="flex flex-col items-center justify-center pt-5 pb-6">
                   <Upload className="w-8 h-8 text-slate-400 mb-2" />
-                  <p className="mb-1 text-sm text-slate-500 font-medium">Click to upload {mediaType.toLowerCase()}</p>
-                  <p className="text-xs text-gray-400">{mediaType === "image" && "PNG, JPG, WEBP up to 5MB"}{mediaType === "video" && "MP4, 3GP up to 5MB"}{mediaType === "document" && "PDF up to 5MB"}</p>
+                  <p className="mb-1 text-sm text-slate-500 font-medium">Click to upload {currentType.toLowerCase()}</p>
+                  <p className="text-xs text-gray-400">{currentType === "image" && "PNG, JPG, WEBP up to 5MB"}{currentType === "video" && "MP4, 3GP up to 5MB"}{currentType === "document" && "PDF up to 5MB"}</p>
                 </div>
-                <input type="file" className="hidden" accept={mediaType === "image" ? "image/*" : mediaType === "video" ? "video/*" : ".pdf"} onChange={handleMediaFileChange} />
+                <input type="file" className="hidden" accept={currentType === "image" ? "image/*" : currentType === "video" ? "video/*" : ".pdf"} onChange={handleMediaFileChange} />
               </label>
             ) : (
               <div className="relative border border-slate-200 rounded-xl overflow-hidden bg-slate-50 p-4">
                 <button onClick={clearMediaFile} className="absolute top-2 right-2 z-10 p-1 bg-white/80 backdrop-blur-sm rounded-full shadow-md hover:bg-red-50 text-slate-600 hover:text-red-600 transition"><X className="w-4 h-4" /></button>
-                {mediaType === "image" && mediaPreview && <img src={mediaPreview} alt="Preview" className="w-full h-40 object-contain mx-auto rounded-lg" />}
-                {mediaType === "video" && mediaPreview && <video src={mediaPreview} controls className="w-full h-40 object-contain mx-auto bg-black rounded-lg" />}
-                {mediaType === "document" && (
+                {currentType === "image" && mediaPreview && <img src={mediaPreview} alt="Preview" className="w-full h-40 object-contain mx-auto rounded-lg" />}
+                {currentType === "video" && mediaPreview && <video src={mediaPreview} controls className="w-full h-40 object-contain mx-auto bg-black rounded-lg" />}
+                {currentType === "document" && (
                   <div className="flex items-center gap-3"><div className="p-2 bg-red-100 rounded-lg"><FileText className="w-6 h-6 text-red-500" /></div><div className="flex-1 min-w-0"><p className="text-sm font-medium text-slate-900 truncate">{mediaFile.name}</p><p className="text-xs text-slate-500">{(mediaFile.size / 1024 / 1024).toFixed(2)} MB</p></div></div>
                 )}
               </div>
@@ -518,7 +569,8 @@ function EditCampaignContent() {
       </div>
     );
   };
-const handleSave = async (isSchedule: boolean) => {
+
+  const handleSave = async (isSchedule: boolean) => {
     if (!campaignName || !selectedTemplate || rawNumbers.length === 0) { toast.error("Name, Template, and valid Numbers are required"); return; }
     if (nameStatus === "taken") {
       toast.error("Campaign name already exists. Please use another name.");
@@ -579,7 +631,10 @@ const handleSave = async (isSchedule: boolean) => {
 
   if (loadingData) return <div className="flex min-h-screen bg-slate-50 items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-emerald-600" /></div>;
 
-  const previewMediaSrc = mediaInputType === "upload" && mediaPreview ? mediaPreview : mediaUrl;
+  // ✅ Check media state for preview
+  const hasLocalPreview = mediaInputType === "upload" && mediaPreview;
+  const hasDirectUrl = mediaUrl && mediaUrl.startsWith("http");
+  const hasMetaId = mediaUrl && /^\d+$/.test(mediaUrl);
 
   return (
     <div className="min-h-screen bg-slate-50 text-gray-900">
@@ -706,16 +761,62 @@ const handleSave = async (isSchedule: boolean) => {
                   </div>
                 )}
               </div>
- {selectedTemplate && (
+
+              {selectedTemplate && (
                 <div className="bg-white p-5 sm:p-6 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow">
                   <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest mb-5 block">Live Preview</label>
                   <div className="bg-[#efeae2] p-4 rounded-2xl w-full max-w-xs sm:max-w-sm mx-auto shadow-inner border border-slate-200 relative overflow-hidden">
                     <div className="absolute inset-0 opacity-[0.04]" style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23000000' fill-opacity='1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E\")" }}></div>
                     <div className="relative flex justify-end">
                       <div className="bg-white rounded-xl rounded-tr-sm shadow-sm text-sm text-gray-800 leading-relaxed max-w-[95%] overflow-hidden">
-                        {mediaType === "image" && (<div className="w-full bg-slate-100">{previewMediaSrc ? <img src={previewMediaSrc} alt="Preview" className="w-full h-48 object-cover" /> : <div className="w-full h-48 flex items-center justify-center text-slate-400"><ImageIcon size={32} /></div>}</div>)}
-                        {mediaType === "video" && (<div className="w-full bg-slate-900 h-48 flex items-center justify-center relative">{previewMediaSrc ? <video src={previewMediaSrc} className="w-full h-48 object-cover" muted /> : <Film className="text-white/50" size={32} />}<div className="absolute inset-0 flex items-center justify-center"><div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center"><div className="w-0 h-0 border-t-[8px] border-t-transparent border-b-[8px] border-b-transparent border-l-[14px] border-l-white ml-1"></div></div></div></div>)}
-                        {mediaType === "document" && (<div className="w-full bg-slate-100 p-4 flex items-center gap-3"><FileText className="text-red-500" size={28} /><div className="flex-1 min-w-0"><p className="text-xs font-bold text-slate-800 truncate">{mediaFile ? mediaFile.name : previewMediaSrc ? previewMediaSrc.split("/").pop() : "Document.pdf"}</p><p className="text-[10px] text-slate-500">PDF Document</p></div></div>)}
+                        {mediaType === "image" && (
+                          <div className="w-full bg-slate-100">
+                            {hasLocalPreview ? (
+                              <img src={mediaPreview} alt="Preview" className="w-full h-48 object-cover" />
+                            ) : hasDirectUrl ? (
+                              <img src={mediaUrl} alt="Preview" className="w-full h-48 object-cover" />
+                            ) : hasMetaId ? (
+                              <div className="w-full h-48 flex flex-col items-center justify-center text-slate-400 p-4 bg-slate-50">
+                                <ImageIcon size={32} />
+                                <p className="text-xs mt-2 font-medium text-center text-emerald-600">Image Uploaded</p>
+                                <p className="text-[10px] text-slate-400 text-center">Save changes to keep this media.</p>
+                              </div>
+                            ) : (
+                              <div className="w-full h-48 flex items-center justify-center text-slate-400"><ImageIcon size={32} /></div>
+                            )}
+                          </div>
+                        )}
+                        {mediaType === "video" && (
+                          <div className="w-full bg-slate-900 h-48 flex items-center justify-center relative">
+                            {hasLocalPreview ? (
+                              <video src={mediaPreview} className="w-full h-48 object-cover" controls muted />
+                            ) : hasDirectUrl ? (
+                              <video src={mediaUrl} className="w-full h-48 object-cover" controls muted />
+                            ) : hasMetaId ? (
+                              <div className="flex flex-col items-center text-white/50">
+                                <Film size={32} />
+                                <p className="text-xs mt-2 font-medium text-center text-emerald-400">Video Uploaded</p>
+                                <p className="text-[10px] text-white/40 text-center">Save changes to keep this media.</p>
+                              </div>
+                            ) : (
+                              <Film className="text-white/50" size={32} />
+                            )}
+                            {!hasLocalPreview && !hasDirectUrl && !hasMetaId && (
+                              <div className="absolute inset-0 flex items-center justify-center"><div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center"><div className="w-0 h-0 border-t-[8px] border-t-transparent border-b-[8px] border-b-transparent border-l-[14px] border-l-white ml-1"></div></div></div>
+                            )}
+                          </div>
+                        )}
+                        {mediaType === "document" && (
+                          <div className="w-full bg-slate-100 p-4 flex items-center gap-3">
+                            <FileText className="text-red-500" size={28} />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-bold text-slate-800 truncate">
+                                {mediaFile ? mediaFile.name : hasMetaId || hasDirectUrl ? "Uploaded Document" : "Document.pdf"}
+                              </p>
+                              <p className="text-[10px] text-slate-500">PDF Document</p>
+                            </div>
+                          </div>
+                        )}
                         <div className="p-3">
                           {headerFormat === "TEXT" && headerText && (<p className="font-bold text-emerald-900 whitespace-pre-wrap mb-1 text-xs sm:text-sm">{replaceVars(headerText)}</p>)}
                           <p className="whitespace-pre-wrap text-[12px] sm:text-[13px]">{replaceVars(bodyText)}</p>
