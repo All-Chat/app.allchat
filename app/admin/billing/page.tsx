@@ -13,7 +13,7 @@ import {
   Timer, Infinity as InfinityIcon, AlertTriangle, BadgeCheck,
   User, Lock, Megaphone, Wrench, ShieldCheck,
   Tag, GitBranch, FileText, Send, UserPlus, ClipboardList,
-  RotateCcw, Gauge, Package, Trash2, Check, Globe
+  RotateCcw, Gauge, Package, Trash2, Check, Globe, LayoutGrid
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -53,6 +53,66 @@ const DEFAULT_LIMITS: Record<string, { max: number; period: string }> = {
   forms: { max: -1, period: "unlimited" }, whatsappNumbers: { max: -1, period: "unlimited" },
 };
 
+// ✅ NEW: Sidebar structure config for Admin UI
+const SIDEBAR_SECTIONS = [
+  { title: "Top Links", links: [{ name: "Overview", href: "/dashboard" }] },
+  {
+    title: "Messaging",
+    links: [
+      { name: "Live Chat", href: "/chat" },
+      { name: "Create Templates", href: "/dashboard/templates" },
+      { name: "View Templates", href: "/dashboard/view-templates" },
+      { name: "Send Test Message", href: "/send-message" },
+    ],
+  },
+  {
+    title: "Campaigns",
+    links: [
+      { name: "Create Campaign", href: "/campaigns/create" },
+      { name: "Campaign Lists", href: "/campaigns/list" },
+      { name: "Reports & Analytics", href: "/campaigns/reports" },
+    ],
+  },
+  {
+    title: "Automation",
+    links: [
+      { name: "Workflows", href: "/workflows" },
+      { name: "Tags", href: "/tags" },
+    ],
+  },
+  {
+    title: "Contacts",
+    links: [
+      { name: "Opted-Out Numbers", href: "/opt-numbers" },
+      { name: "Create Form", href: "/forms" },
+      { name: "Form Responses", href: "/forms/responses" },
+    ],
+  },
+  {
+    title: "Sheets",
+    links: [
+      { name: "Sheet Sync Manager", href: "/dashboard/google-sheet-manager" },
+      { name: "Sheet Configurations", href: "/dashboard/sheet-sync-list" },
+      { name: "Create Campaign", href: "/dashboard/sheet-sync-campaign" },
+      { name: "Campaign List", href: "/dashboard/sheet-sync-campaign/list" },
+    ],
+  },
+  {
+    title: "Team",
+    links: [
+      { name: "Users", href: "/tenant/users" },
+      { name: "Team Inbox", href: "/tenant/inbox" },
+    ],
+  },
+  {
+    title: "Bottom Links",
+    links: [
+      { name: "Transactions", href: "/billing/history" },
+      { name: "Settings", href: "/settings" },
+    ],
+  },
+];
+
 type LimitValue = { max: number; period: string };
 
 function getLimitColor(color: string) {
@@ -80,7 +140,7 @@ export default function AdminBillingPage() {
   const [statusFilter, setStatusFilter] = useState("all");
 
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
-  const [editTab, setEditTab] = useState<"billing" | "plan" | "account" | "credentials" | "limits" | "tenancy" | "integrations">("billing");
+  const [editTab, setEditTab] = useState<"billing" | "plan" | "account" | "credentials" | "limits" | "tenancy" | "integrations" | "sidebar">("billing");
   const [editRecharge, setEditRecharge] = useState("");
   const [editPlanDuration, setEditPlanDuration] = useState("1mo");
   const [editCustomDuration, setEditCustomDuration] = useState("");
@@ -90,7 +150,6 @@ export default function AdminBillingPage() {
   const [editPriceUtility, setEditPriceUtility] = useState("0.50");
   const [editPriceAuthentication, setEditPriceAuthentication] = useState("0.30");
 
-  // ✅ Country Pricing State
   const [editMaxCountries, setEditMaxCountries] = useState("0");
   const [editEnabledCountries, setEditEnabledCountries] = useState<any[]>([]);
 
@@ -109,6 +168,9 @@ export default function AdminBillingPage() {
   const [editMaxSubUsers, setEditMaxSubUsers] = useState("0");
 
   const [editHideIntegrations, setEditHideIntegrations] = useState(false);
+  
+  // ✅ NEW: State for hidden sidebar links
+  const [editHiddenLinks, setEditHiddenLinks] = useState<string[]>([]);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newUser, setNewUser] = useState({ name: "", password: "" });
@@ -212,14 +274,13 @@ export default function AdminBillingPage() {
     } catch { toast.error("Error processing request"); } finally { setProcessingReqId(null); }
   };
 
-  const startEdit = (user: any, tab: "billing" | "plan" | "account" | "credentials" | "limits" | "tenancy" | "integrations" = "billing") => {
+  const startEdit = (user: any, tab: "billing" | "plan" | "account" | "credentials" | "limits" | "tenancy" | "integrations" | "sidebar" = "billing") => {
     setEditingUserId(user._id);
     setEditTab(tab);
     setEditPriceMarketing(user.priceMarketing?.toString() || "0.90");
     setEditPriceUtility(user.priceUtility?.toString() || "0.50");
     setEditPriceAuthentication(user.priceAuthentication?.toString() || "0.30");
     
-    // ✅ Set Country State
     setEditMaxCountries(user.maxEnabledCountries?.toString() || "0");
     setEditEnabledCountries(user.enabledCountries || []);
 
@@ -229,6 +290,7 @@ export default function AdminBillingPage() {
     setShowPassword(false); setShowAccessToken(false);
     setEditIsTenant(user.isTenant || false); setEditMaxSubUsers(user.maxSubUsers?.toString() || "0");
     setEditHideIntegrations(user.hideIntegrations || false);
+    setEditHiddenLinks(user.hiddenSidebarLinks || []); // ✅ SET HIDDEN LINKS
 
     const userLimits: Record<string, LimitValue> = {};
     for (const res of LIMIT_RESOURCES_CONFIG) userLimits[res.key] = user.limits?.[res.key] || DEFAULT_LIMITS[res.key];
@@ -255,7 +317,6 @@ export default function AdminBillingPage() {
   const saveUser = async (userId: string, action: string, extraData?: any) => {
     setSaving(userId + action);
     try {
-      // ✅ FIX: Added 'action' to the body object so the backend knows what to save!
       const body: any = { userId, action, ...extraData };
       
       if (action === "billing") {
@@ -288,6 +349,9 @@ export default function AdminBillingPage() {
       if (action === "integrations") { body.hideIntegrations = extraData?.hideIntegrations !== undefined ? extraData.hideIntegrations : editHideIntegrations; }
       if (action === "disconnectGoogle") { body.disconnectGoogle = true; }
 
+      // ✅ HANDLE SIDEBAR SAVE
+      if (action === "sidebar") { body.hiddenSidebarLinks = editHiddenLinks; }
+
       if (action === "resetUsage") { body.resetUsage = extraData?.resetUsage || {}; body.limits = editLimits; }
       if (action === "resetAllUsage") { body.resetAllUsage = true; body.limits = editLimits; }
 
@@ -297,7 +361,7 @@ export default function AdminBillingPage() {
         toast.success(`Updated ${data.user.name}`); fetchUsers();
         if (action === "disconnectGoogle") {
           toast.success("Google account disconnected for this user.");
-        } else if (action !== "integrations") {
+        } else if (action !== "integrations" && action !== "sidebar") {
           cancelEdit();
         }
       } else { toast.error(data.message || "Failed to update"); }
@@ -455,6 +519,7 @@ export default function AdminBillingPage() {
                             {user.isTenant && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1 shrink-0"><Building2 size={9} /> Tenant</span>}
                             {activeLimits > 0 && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200 flex items-center gap-1 shrink-0"><Gauge size={9} /> {activeLimits} limit{activeLimits > 1 ? "s" : ""}</span>}
                             {user.hideIntegrations && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 flex items-center gap-1 shrink-0"><EyeOff size={9} /> Integrations Hidden</span>}
+                            {user.hiddenSidebarLinks?.length > 0 && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 flex items-center gap-1 shrink-0"><LayoutGrid size={9} /> {user.hiddenSidebarLinks.length} Links Hidden</span>}
                           </div>
                           <div className="flex flex-wrap items-center gap-x-3 sm:gap-x-4 gap-y-1 text-[11px] sm:text-xs text-gray-400">
                             {user.whatsappPhoneNumberId && <span className="font-mono truncate">{user.whatsappPhoneNumberId}</span>}
@@ -523,7 +588,7 @@ export default function AdminBillingPage() {
                   {isEditing && (
                     <div className="border-t border-slate-100 bg-slate-50/50">
                       <div className="flex overflow-x-auto border-b border-slate-200 px-4 sm:px-6">
-                        {[{ id: "billing", label: "Billing", icon: Wallet }, { id: "plan", label: "Plan", icon: CalendarDays }, { id: "account", label: "Account", icon: UserCog }, { id: "credentials", label: "Credentials", icon: KeyRound }, { id: "limits", label: "Limits", icon: Gauge }, { id: "tenancy", label: "Tenancy", icon: Building2 }, { id: "integrations", label: "Integrations", icon: FileText }].map(tab => (
+                        {[{ id: "billing", label: "Billing", icon: Wallet }, { id: "plan", label: "Plan", icon: CalendarDays }, { id: "account", label: "Account", icon: UserCog }, { id: "credentials", label: "Credentials", icon: KeyRound }, { id: "limits", label: "Limits", icon: Gauge }, { id: "tenancy", label: "Tenancy", icon: Building2 }, { id: "integrations", label: "Integrations", icon: FileText }, { id: "sidebar", label: "Sidebar", icon: LayoutGrid }].map(tab => (
                           <button key={tab.id} onClick={() => setEditTab(tab.id as any)} className={`flex items-center gap-2 px-4 sm:px-5 py-3 text-xs font-bold border-b-2 transition-all whitespace-nowrap ${editTab === tab.id ? "border-amber-500 text-amber-700" : "border-transparent text-slate-400 hover:text-slate-600"}`}><tab.icon size={14} /> {tab.label}</button>
                         ))}
                       </div>
@@ -539,7 +604,6 @@ export default function AdminBillingPage() {
                               </div>
                             </div>
 
-                            {/* ✅ COUNTRY PRICING SECTION INSIDE BILLING TAB */}
                             <div className="border-t border-slate-200 pt-5">
                               <p className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Globe size={12} /> Country-Specific Pricing</p>
                               <div className="mb-4">
@@ -725,6 +789,69 @@ export default function AdminBillingPage() {
                               ) : (
                                 <p className="text-xs text-slate-400 mt-2">User has not connected a Google Account.</p>
                               )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* ✅ NEW SIDEBAR VISIBILITY TAB */}
+                        {editTab === "sidebar" && (
+                          <div className="space-y-5 max-w-2xl">
+                            <p className="text-sm font-bold text-gray-900">Sidebar Visibility</p>
+                            <p className="text-xs text-slate-400">Hide or show specific sidebar sections or links for this user. If a section has all links hidden or is hidden entirely, it will automatically disappear from the sidebar.</p>
+                            
+                            <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+                              {SIDEBAR_SECTIONS.map(section => (
+                                <div key={section.title} className="border border-slate-200 rounded-xl p-3 bg-white">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <p className="text-xs font-bold text-slate-700 uppercase tracking-wider">{section.title}</p>
+                                    <button 
+                                      onClick={() => {
+                                        const isCategoryHidden = editHiddenLinks.includes(`category:${section.title}`);
+                                        if (isCategoryHidden) {
+                                          setEditHiddenLinks(editHiddenLinks.filter(l => l !== `category:${section.title}`));
+                                        } else {
+                                          setEditHiddenLinks([...editHiddenLinks, `category:${section.title}`]);
+                                        }
+                                      }}
+                                      className={`text-[10px] font-bold px-2 py-1 rounded-md border ${
+                                        editHiddenLinks.includes(`category:${section.title}`)
+                                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                          : "bg-red-50 text-red-600 border-red-200"
+                                      }`}
+                                    >
+                                      {editHiddenLinks.includes(`category:${section.title}`) ? "Show Category" : "Hide Category"}
+                                    </button>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-2 pl-2 border-l-2 border-slate-100">
+                                    {section.links.map(link => (
+                                      <div key={link.href} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg">
+                                        <span className="text-xs text-slate-600">{link.name}</span>
+                                        <button 
+                                          onClick={() => {
+                                            if (editHiddenLinks.includes(link.href)) {
+                                              setEditHiddenLinks(editHiddenLinks.filter(l => l !== link.href));
+                                            } else {
+                                              setEditHiddenLinks([...editHiddenLinks, link.href]);
+                                            }
+                                          }}
+                                          className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors ${
+                                            editHiddenLinks.includes(link.href) ? "bg-gray-300" : "bg-emerald-500"
+                                          }`}
+                                        >
+                                          <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${editHiddenLinks.includes(link.href) ? "translate-x-1" : "translate-x-5"}`} />
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+
+                            <div className="flex justify-end gap-3 pt-3 border-t border-slate-200">
+                              <button onClick={cancelEdit} className="px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-all">Cancel</button>
+                              <button onClick={() => saveUser(user._id, "sidebar")} disabled={saving === user._id + "sidebar"} className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-indigo-500 to-blue-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm">
+                                {saving === user._id + "sidebar" ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Sidebar
+                              </button>
                             </div>
                           </div>
                         )}
