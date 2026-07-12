@@ -5,14 +5,20 @@ import Tag from "@/models/Tag";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
   try {
+    // Next.js 15+: Await params
+    const { id } = await params;
+    
     await connectDB();
     const session = await getServerSession(authOptions);
     if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     // ✅ PERFORMANCE: Use lean() for fast read
-    const tag = await Tag.findById(params.id).lean();
+    const tag = await Tag.findById(id).lean();
     if (!tag) return NextResponse.json({ error: "Tag not found" }, { status: 404 });
 
     return NextResponse.json({ tag });
@@ -21,8 +27,14 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   }
 }
 
-export async function PUT(req: Request, { params }: { params: { id: string } }) {
+export async function PUT(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
   try {
+    // Next.js 15+: Await params
+    const { id } = await params;
+    
     await connectDB();
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
@@ -31,7 +43,7 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
     const { name, isCampaignSpecific, campaignId, campaignName } = await req.json();
 
     const updatedTag = await Tag.findOneAndUpdate(
-      { _id: params.id, userId },
+      { _id: id, userId },
       { 
         name: name?.trim(), 
         isCampaignSpecific: isCampaignSpecific || false,
@@ -49,14 +61,20 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   }
 }
 
-export async function DELETE(req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
   try {
+    // Next.js 15+: Await params
+    const { id } = await params;
+    
     await connectDB();
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const deletedTag = await Tag.findOneAndDelete({ _id: params.id, userId });
+    const deletedTag = await Tag.findOneAndDelete({ _id: id, userId });
     if (!deletedTag) return NextResponse.json({ error: "Tag not found" }, { status: 404 });
 
     return NextResponse.json({ success: true });
