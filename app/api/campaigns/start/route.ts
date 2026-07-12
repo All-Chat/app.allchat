@@ -88,8 +88,8 @@ export async function POST(req: Request) {
     );
     await Campaign.updateOne({ _id: campaignId }, { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID } });
 
-    // Divide numbers into chunks of 50
-    const CHUNK_SIZE = 50;
+       // Divide numbers into chunks of 10
+    const CHUNK_SIZE = 10;
     const totalNumbers = campaign.phoneNumbers.length;
     const jobs = [];
 
