@@ -13,17 +13,17 @@ import path from "path";
 
 export const runtime = "nodejs";
 
-/**
- * ⚠️ REQUIRED index — run this once on your MongoDB, otherwise the
- * "fast path" campaign status update below will do a collection scan
- * once you have more than a handful of campaigns:
- *
- *   db.campaigns.createIndex({ userId: 1, "reportData.phone": 1 })
- */
-
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "watiX_webhook_verify_2024";
 const workflowTimers = new Map<string, NodeJS.Timeout>();
 const formTimers = new Map<string, NodeJS.Timeout>();
+
+/**
+ * ⚠️ REQUIRED index — run once on MongoDB. This is a multikey index on the
+ * array subfield, and is what makes the sentWamid lookup below O(1) instead
+ * of a full collection scan on every single status webhook event:
+ *
+ *   db.campaigns.createIndex({ "reportData.sentWamid": 1 })
+ */
 
 // ✅ STATUS PRIORITY HELPER FUNCTION
 const statusPriority: Record<string, number> = {
@@ -40,34 +40,15 @@ function shouldUpdateStatus(currentStatus: string, newStatus: string): boolean {
   return newPriority > currentPriority;
 }
 
-// ✅ Same last-10-digit normalization approach used in the campaign
-// report/list route (normalizePhoneExpr in the aggregation pipeline),
-// re-implemented in plain JS for use here. Keeping this consistent
-// across both places means "the report page" and "the webhook" always
-// agree on whether two phone numbers are the same number.
-function normalizePhoneJS(phone: string | number | null | undefined): string {
-  const digits = (phone ?? "").toString().replace(/\D/g, "");
+// Normalize a phone string to its last 10 digits — used only as a FALLBACK
+// for old reportData rows that predate the sentWamid field being saved.
+function normalizePhone(val: any): string {
+  const digits = String(val || "").replace(/\D/g, "");
   return digits.slice(-10);
 }
 
-// ✅ Maps a new status -> which prior statuses it's allowed to overwrite.
-// Mirrors shouldUpdateStatus's priority logic, but expressed as a list so
-// it can be pushed down into a MongoDB arrayFilter (avoids a doc read
-// before every fast-path update).
-function allowedPriorFor(status: string): string[] {
-  switch (status) {
-    case "sent": return ["pending", "queued"];
-    case "delivered": return ["pending", "queued", "sent"];
-    case "read": return ["pending", "queued", "sent", "delivered"];
-    case "failed":
-    case "invalid":
-      return ["pending", "queued", "sent"];
-    default: return [];
-  }
-}
-
 // ============================================================================
-// ✅ Build the "outgoing message" representation (text, media, buttons)
+// ✅ NEW: Build the "outgoing message" representation (text, media, buttons)
 // for ANY step we send via the workflow engine, so it can be saved to the
 // Message collection and rendered correctly in the live chat UI.
 // ============================================================================
@@ -143,9 +124,6 @@ async function saveOutgoingWorkflowMessage(
     direction: "out",
     messageType,
     mediaUrl,
-    // Re-using the templateButtons field as a generic "buttons" carrier so the
-    // live chat UI (which already knows how to parse/render this field) can
-    // show the same buttons/CTAs that were actually sent on WhatsApp.
     templateButtons: buttons.length > 0 ? JSON.stringify(buttons) : undefined,
     status: "sent",
     whatsappPhoneNumberId: phoneNumberId,
@@ -188,7 +166,6 @@ const startWorkflowInactivityTimer = (
         try {
           const session = await Session.findOne({ phone, userId });
 
-          // ✅ Only cancel if user is in a form; do NOT cancel if session simply doesn't exist yet
           if (session && session.formId) {
             clearWorkflowTimer(phone);
             return;
@@ -203,7 +180,6 @@ const startWorkflowInactivityTimer = (
               baseUrl
             );
 
-            // ✅ Save the inactivity message to DB so it shows in chat history
             await Message.create({
               userId,
               phone,
@@ -244,10 +220,10 @@ const startFormInactivityTimer = (phone: string, userId: string, formId: string,
       try {
         await connectDB();
         const checkSession = await Session.findOne({ phone, userId });
-        if (!checkSession || !checkSession.formId || checkSession.formFieldIndex !== fieldIndex) {
-          clearInterval(intervalId);
+        if (!checkSession || !checkSession.formId || checkSession.formFieldIndex !== fieldIndex) { 
+          clearInterval(intervalId); 
           formTimers.delete(phone);
-          return;
+          return; 
         }
         if (remindersSent < field.repeatCount) {
           await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, { message: field.delayMessage, stepType: "text" }, baseUrl);
@@ -262,7 +238,7 @@ const startFormInactivityTimer = (phone: string, userId: string, formId: string,
         }
       } catch (err) { console.error("Form timer error:", err); clearInterval(intervalId); formTimers.delete(phone); }
     }, field.delaySeconds * 1000);
-
+    
     formTimers.set(phone, intervalId);
   }
 };
@@ -287,13 +263,13 @@ async function findUserByPhoneNumberId(phoneNumberId: string) {
     matchedNumber = { whatsappPhoneNumberId: user.whatsappPhoneNumberId, whatsappAccessToken: user.whatsappAccessToken, wabaId: user.wabaId, name: "Default Number" };
   }
   if (!matchedNumber) return null;
-  return {
-    userId: user._id,
-    tenantId: (user as any).tenantId || (user as any).parentTenantId || null,
-    name: (matchedNumber as any).name || user.name || "Unknown",
-    phoneNumberId: (matchedNumber as any).whatsappPhoneNumberId,
-    accessToken: (matchedNumber as any).whatsappAccessToken,
-    wabaId: (matchedNumber as any).wabaId || user.wabaId
+  return { 
+    userId: user._id, 
+    tenantId: (user as any).tenantId || (user as any).parentTenantId || null, 
+    name: (matchedNumber as any).name || user.name || "Unknown", 
+    phoneNumberId: (matchedNumber as any).whatsappPhoneNumberId, 
+    accessToken: (matchedNumber as any).whatsappAccessToken, 
+    wabaId: (matchedNumber as any).wabaId || user.wabaId 
   };
 }
 
@@ -383,11 +359,10 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
     const buttonPayload = extractButtonPayload(msg);
     if (!incomingText && !buttonPayload) return;
 
-    // ✅ Clear inactivity timer on ANY new message from user
     clearWorkflowTimer(msg.from);
 
     const activeSession = await Session.findOne({ phone: msg.from, userId: num.userId });
-
+    
     if (activeSession && activeSession.formId) {
       if (buttonPayload && buttonPayload.startsWith("restart_form_")) {
         // Fall through
@@ -456,15 +431,15 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
           return;
         }
       }
-
+      
       if (activeSession && activeSession.workflowId && !activeSession.formId) {
         const wf = await Workflow.findById(activeSession.workflowId);
         if (wf && wf.active && wf.steps) {
           let clickedBtn = null;
-          for (const id of Object.keys(wf.steps)) {
-            const step = wf.steps[id];
-            const btn = step.buttons?.find((b: any) => b.id === buttonPayload) || step.buttons?.find((b: any) => b.label?.toLowerCase() === incomingText.toLowerCase());
-            if (btn) { clickedBtn = btn; break; }
+          for (const id of Object.keys(wf.steps)) { 
+            const step = wf.steps[id]; 
+            const btn = step.buttons?.find((b: any) => b.id === buttonPayload) || step.buttons?.find((b: any) => b.label?.toLowerCase() === incomingText.toLowerCase()); 
+            if (btn) { clickedBtn = btn; break; } 
           }
           if (clickedBtn) {
             if (clickedBtn.applyTagId) await applyTagToContact(msg.from, clickedBtn.applyTagId, num.userId.toString());
@@ -473,9 +448,9 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
               let nextStep = wf.steps[clickedBtn.nextStepId];
               while (nextStep && nextStep.stepType === "delay_node") { if (nextStep.delaySeconds > 0) await new Promise(r => setTimeout(r, nextStep.delaySeconds * 1000)); nextStep = nextStep.nextStepId ? wf.steps[nextStep.nextStepId] : null; }
               if (nextStep) {
-                if (nextStep.stepType === "opt_in_node") { await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId); return; }
+                if (nextStep.stepType === "opt_in_node") { await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId); return; } 
                 else if (nextStep.stepType === "tag_node") { if (nextStep.selectedTag) await applyTagToContact(msg.from, nextStep.selectedTag, num.userId.toString()); return; }
-
+                
                 if (nextStep.stepType === "form_node" && nextStep.selectedForm) {
                   const formData = await Form.findById(nextStep.selectedForm);
                   if (formData && formData.fields.length > 0) {
@@ -486,25 +461,23 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
                     return;
                   }
                 }
-                activeSession.currentStepId = nextStep.id;
-                await activeSession.save();
+        activeSession.currentStepId = nextStep.id;
+        await activeSession.save();
 
-                await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, nextStep, baseUrl);
+        await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, nextStep, baseUrl);
 
-                // ✅ Save the outgoing message (with media/buttons) so it shows in live chat
-                await saveOutgoingWorkflowMessage(num.userId.toString(), msg.from, num.phoneNumberId, nextStep);
+        await saveOutgoingWorkflowMessage(num.userId.toString(), msg.from, num.phoneNumberId, nextStep);
 
-                // ✅ Start inactivity timer after button-click navigation
-                startWorkflowInactivityTimer(
-                  msg.from,
-                  num.userId.toString(),
-                  wf._id.toString(),
-                  num.accessToken,
-                  num.phoneNumberId,
-                  baseUrl
-                );
+        startWorkflowInactivityTimer(
+          msg.from,
+          num.userId.toString(),
+          wf._id.toString(),
+          num.accessToken,
+          num.phoneNumberId,
+          baseUrl
+        );
 
-                return;
+        return;
               } else { await Session.deleteOne({ _id: activeSession._id }); return; }
             } else { await Session.deleteOne({ _id: activeSession._id }); return; }
           } else { await Session.deleteOne({ _id: activeSession._id }); }
@@ -515,37 +488,37 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
 
     if (!matchedWorkflow) {
       for (const wf of workflows) {
-        const isMatch = wf.triggers.some((t: any) => {
-          const k = (t.keyword || "").trim();
-          const m = (t.matchMode || "contains").toLowerCase();
-          if (m === "exists") return true;
-          if (k === "*" || k === "") return true;
-          if (m === "exact") return incomingText.trim() === k;
-          return incomingText.toLowerCase().trim().includes(k.toLowerCase());
+        const isMatch = wf.triggers.some((t: any) => { 
+          const k = (t.keyword || "").trim(); 
+          const m = (t.matchMode || "contains").toLowerCase(); 
+          if (m === "exists") return true; 
+          if (k === "*" || k === "") return true; 
+          if (m === "exact") return incomingText.trim() === k; 
+          return incomingText.toLowerCase().trim().includes(k.toLowerCase()); 
         });
         if (isMatch) { matchedWorkflow = wf; break; }
       }
     }
     if (!matchedWorkflow) return;
 
-    const steps = matchedWorkflow.steps;
+    const steps = matchedWorkflow.steps; 
     let currentStepId: string | null = null;
-
+    
     if (matchedByButton && buttonPayload) {
-      for (const id of Object.keys(steps)) {
-        const step = steps[id];
-        const btn = step.buttons?.find((b: any) => b.id === buttonPayload || b.label?.toLowerCase() === incomingText.toLowerCase());
-        if (btn?.nextStepId) {
-          currentStepId = btn.nextStepId;
+      for (const id of Object.keys(steps)) { 
+        const step = steps[id]; 
+        const btn = step.buttons?.find((b: any) => b.id === buttonPayload || b.label?.toLowerCase() === incomingText.toLowerCase()); 
+        if (btn?.nextStepId) { 
+          currentStepId = btn.nextStepId; 
           if (btn.applyTagId) await applyTagToContact(msg.from, btn.applyTagId, num.userId.toString());
-          if (btn.optInNodeId) await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
-          break;
-        }
+          if (btn.optInNodeId) await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId); 
+          break; 
+        } 
       }
     } else { currentStepId = matchedWorkflow.rootStepId; }
 
     if (!currentStepId || !steps[currentStepId]) return;
-
+    
     const rootStep = steps[currentStepId];
 
     if (rootStep?.triggerActions && rootStep.triggerActions.length > 0) {
@@ -558,7 +531,7 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
       }
     }
 
-    if (rootStep.stepType === "opt_in_node") { await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId); return; }
+    if (rootStep.stepType === "opt_in_node") { await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId); return; } 
     else if (rootStep.stepType === "tag_node") { if (rootStep.selectedTag) await applyTagToContact(msg.from, rootStep.selectedTag, num.userId.toString()); return; }
 
     await processWorkflowStep(currentStepId, steps, matchedWorkflow, num.accessToken, num.phoneNumberId, msg.from, num.userId.toString(), num.tenantId, baseUrl);
@@ -579,9 +552,6 @@ async function processWorkflowStep(
   const step = steps[stepId];
   if (!step) return;
 
-  // =========================
-  // DELAY NODE
-  // =========================
   if (step.stepType === "delay_node") {
     if (step.delaySeconds > 0) {
       await new Promise((r) => setTimeout(r, step.delaySeconds * 1000));
@@ -603,9 +573,6 @@ async function processWorkflowStep(
     return;
   }
 
-  // =========================
-  // OPT / TAG NODE
-  // =========================
   if (step.stepType === "opt_in_node") {
     await addOptOutNumber(customerNumber, userId, tenantId);
     return;
@@ -618,9 +585,6 @@ async function processWorkflowStep(
     return;
   }
 
-  // =========================
-  // FORM NODE
-  // =========================
   if (step.stepType === "form_node" && step.selectedForm) {
     const formData = await Form.findById(step.selectedForm);
 
@@ -658,9 +622,6 @@ async function processWorkflowStep(
     return;
   }
 
-  // =========================
-  // MESSAGE NODE
-  // =========================
   if (step.stepType === "message") {
     await sendWorkflowWhatsAppMessage(
       accessToken,
@@ -670,11 +631,8 @@ async function processWorkflowStep(
       baseUrl
     );
 
-    // ✅ Save the outgoing message INCLUDING media + buttons so it renders
-    // correctly in the live chat UI (previously only plain text was saved).
     await saveOutgoingWorkflowMessage(userId, customerNumber, phoneNumberId, step);
 
-    // ✅ Create / update session so the inactivity timer can find it
     await Session.findOneAndUpdate(
       { phone: customerNumber, userId },
       {
@@ -687,7 +645,6 @@ async function processWorkflowStep(
       { upsert: true, new: true }
     );
 
-    // ✅ Start inactivity timer
     startWorkflowInactivityTimer(
       customerNumber,
       userId,
@@ -700,9 +657,6 @@ async function processWorkflowStep(
     return;
   }
 
-  // =========================
-  // CTA / CALL / URL NODE
-  // =========================
   if (step.stepType === "call_action" || step.stepType === "url_action") {
     await sendWorkflowWhatsAppMessage(
       accessToken,
@@ -712,10 +666,8 @@ async function processWorkflowStep(
       baseUrl
     );
 
-    // ✅ Save with the CTA button info (phone/url) attached
     await saveOutgoingWorkflowMessage(userId, customerNumber, phoneNumberId, step);
 
-    // ✅ Create / update session
     await Session.findOneAndUpdate(
       { phone: customerNumber, userId },
       {
@@ -728,7 +680,6 @@ async function processWorkflowStep(
       { upsert: true, new: true }
     );
 
-    // ✅ Start inactivity timer
     startWorkflowInactivityTimer(
       customerNumber,
       userId,
@@ -741,9 +692,6 @@ async function processWorkflowStep(
     return;
   }
 
-  // =========================
-  // DEFAULT STEP
-  // =========================
   await sendWorkflowWhatsAppMessage(
     accessToken,
     phoneNumberId,
@@ -752,7 +700,6 @@ async function processWorkflowStep(
     baseUrl
   );
 
-  // ✅ Save with media/buttons too (previously plain text only)
   await saveOutgoingWorkflowMessage(userId, customerNumber, phoneNumberId, step);
 
   await Session.findOneAndUpdate(
@@ -765,11 +712,9 @@ async function processWorkflowStep(
     { upsert: true, new: true }
   );
 
-  // ✅ Start inactivity timer if this workflow has an inactivity node
   startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
 }
 
-// ✅ WHATSAPP API SENDER (Fixed parameters array)
 async function sendWorkflowWhatsAppMessage(
   accessToken: string,
   phoneNumberId: string,
@@ -812,14 +757,10 @@ async function sendWorkflowWhatsAppMessage(
       "wa.me",
     ].some((d) => url.includes(d));
 
-  // ===============================
-  // 1. CALL ACTION (FIXED)
-  // ===============================
   if (step.stepType === "call_action" && step.phoneNumber) {
     let number = step.phoneNumber.replace(/[^\d+]/g, "");
     if (!number.startsWith("+")) number = "+" + number;
 
-    // ✅ WhatsApp blocks 'tel:' links. We route it through your site to trigger the dialer.
     const redirectUrl = `${baseUrl}/api/redirect-call?number=${encodeURIComponent(number)}`;
 
     const payload = {
@@ -839,7 +780,7 @@ async function sendWorkflowWhatsAppMessage(
           name: "cta_url",
           parameters: {
             display_text: step.urlLabel || "Call",
-            url: redirectUrl, // ✅ Uses the safe HTTPS link
+            url: redirectUrl,
           },
         },
       },
@@ -848,9 +789,6 @@ async function sendWorkflowWhatsAppMessage(
     return sendMessage(payload);
   }
 
-  // ===============================
-  // 2. URL ACTION (FIXED)
-  // ===============================
   if (step.stepType === "url_action" && step.url) {
     let url = step.url.trim();
     if (!url.startsWith("http")) url = "https://" + url;
@@ -881,17 +819,13 @@ async function sendWorkflowWhatsAppMessage(
     return sendMessage(payload);
   }
 
-  // ===============================
-  // 3. SOCIAL LINKS (TEXT ONLY FIX)
-  // ===============================
   if (step.mediaType === "link" || isSocialLink(step.mediaUrl)) {
     const url = step.mediaUrl?.startsWith("http")
       ? step.mediaUrl
       : `https://${step.mediaUrl}`;
-
+      
     let bodyText = step.message || "";
 
-    // ✅ Only add URL automatically if the user didn't already type it in the message
     if (bodyText && !bodyText.includes(url)) {
       bodyText = `${bodyText}\n\n${url}`;
     } else if (!bodyText) {
@@ -909,9 +843,6 @@ async function sendWorkflowWhatsAppMessage(
     });
   }
 
-  // ===============================
-  // 3b. MEDIA (IMAGE / VIDEO / DOCUMENT) MESSAGE NODE
-  // ===============================
   if (step.mediaUrl && ["image", "video", "document"].includes(step.mediaType)) {
     const mediaId = await uploadMediaToMetaFromUrl(phoneNumberId, accessToken, step.mediaUrl);
     if (mediaId) {
@@ -928,8 +859,6 @@ async function sendWorkflowWhatsAppMessage(
         mediaPayload.document = { id: mediaId, caption: step.message || undefined, filename: step.mediaFilename || "Document" };
       }
 
-      // If there are also quick-reply buttons, WhatsApp media messages don't support
-      // inline buttons directly, so send the media first, then the buttons as a follow-up.
       await sendMessage(mediaPayload);
 
       if (step.buttons?.length > 0) {
@@ -966,12 +895,8 @@ async function sendWorkflowWhatsAppMessage(
       }
       return;
     }
-    // Media upload failed — fall through to send as plain text below
   }
 
-  // ===============================
-  // 4. BUTTON / LIST (UNCHANGED BUT SAFE)
-  // ===============================
   if (step.buttons?.length > 0) {
     const valid = step.buttons.filter((b: any) => b.label?.trim());
 
@@ -1019,9 +944,6 @@ async function sendWorkflowWhatsAppMessage(
     });
   }
 
-  // ===============================
-  // 5. DEFAULT TEXT
-  // ===============================
   return sendMessage({
     messaging_product: "whatsapp",
     to,
@@ -1032,7 +954,6 @@ async function sendWorkflowWhatsAppMessage(
     },
   });
 }
-
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try {
     const { default: Contact } = await import("@/models/Contact");
@@ -1051,96 +972,14 @@ async function addOptOutNumber(phoneNumber: string, userId: string, tenantId: st
   } catch (err) { console.error("Failed to add opt-out number:", err); }
 }
 
-// ============================================================================
-// ✅ CAMPAIGN STATUS UPDATE — fast path (exact string match) + fallback
-// (last-10-digit normalized match), consistent with the report/list route's
-// normalizePhoneExpr logic. This is the fix for "sent shows but delivered
-// never updates" — it was previously caused by phone-format mismatches
-// between how the number is stored in reportData.phone vs. what Meta sends
-// back as recipient_id, which silently matched zero documents.
-// ============================================================================
-async function updateCampaignStatusFromWebhook(
-  userId: string,
-  recipientId: string,
-  status: string,
-  errors: any
-) {
-  const allowedPrior = allowedPriorFor(status);
-  if (allowedPrior.length === 0) return; // unknown/no-op status
-
-  let errorText: string | null = null;
-  if (status === "failed" || status === "invalid") {
-    const raw = errors?.[0]?.message || "Failed to send";
-    errorText = (raw.toLowerCase().includes("undeliverable") || raw.toLowerCase().includes("unsupported"))
-      ? "Message not delivered to maintain a healthy ecosystem."
-      : raw;
-  }
-
-  try {
-    // ---------- FAST PATH: exact string match (uses index if present) ----------
-    const fastResult = await Campaign.updateOne(
-      {
-        userId,
-        "reportData.phone": { $in: [recipientId, `+${recipientId}`] },
-      },
-      { $set: { "reportData.$[elem].status": status, "reportData.$[elem].error": errorText } },
-      { arrayFilters: [{ "elem.phone": { $in: [recipientId, `+${recipientId}`] }, "elem.status": { $in: allowedPrior } }] }
-    );
-
-    if (fastResult.modifiedCount > 0) return; // matched + updated, done
-
-    // If fast path matched a document but didn't modify it (status priority
-    // blocked the write, e.g. already "read"), that's a legit no-op — check
-    // separately so we don't waste time on the fallback for a false alarm.
-    if (fastResult.matchedCount > 0) return;
-
-    // ---------- FALLBACK: last-10-digit normalized match ----------
-    // Handles cases where the stored phone has different formatting
-    // (leading 0, dashes, spaces, country code variations, etc).
-    const normalizedRecipient = normalizePhoneJS(recipientId);
-    if (!normalizedRecipient) return;
-
-    const candidates = await Campaign.find(
-      {
-        userId,
-        "reportData.phone": { $regex: normalizedRecipient + "$" }, // ends with same 10 digits
-      },
-      { reportData: 1 }
-    ).lean();
-
-    if (candidates.length === 0) {
-      console.warn("⚠️ [WEBHOOK] No campaign matched for status update.", { recipientId, status });
-      return;
-    }
-
-    for (const camp of candidates as any[]) {
-      let idx = -1;
-      for (let i = 0; i < camp.reportData.length; i++) {
-        if (normalizePhoneJS(camp.reportData[i].phone) === normalizedRecipient) { idx = i; break; }
-      }
-      if (idx === -1) continue;
-
-      const currentStatus = camp.reportData[idx].status;
-      if (!shouldUpdateStatus(currentStatus, status)) continue;
-
-      await Campaign.updateOne(
-        { _id: camp._id },
-        { $set: { [`reportData.${idx}.status`]: status, [`reportData.${idx}.error`]: errorText } }
-      );
-    }
-  } catch (campErr) {
-    console.error("❌ [WEBHOOK] Failed to update campaign status:", campErr);
-  }
-}
-
 export async function POST(req: NextRequest) {
   try {
     await connectDB();
-
+    
     const forwardedProto = req.headers.get('x-forwarded-proto') || (req.headers.get('host')?.includes('localhost') ? 'http' : 'https');
     const forwardedHost = req.headers.get('x-forwarded-host') || req.headers.get('host');
     const baseUrl = `${forwardedProto}://${forwardedHost}`;
-
+    
     const contentType = req.headers.get("content-type") || "";
     if (!contentType.includes("application/json")) {
       const allNumbers = await getAllWhatsappNumbersFromDB();
@@ -1157,14 +996,14 @@ export async function POST(req: NextRequest) {
         if (change.field !== "messages") continue;
         const value = change.value; if (!value) continue;
         const phoneNumberId = value.metadata?.phone_number_id; if (!phoneNumberId) continue;
-
+        
         const num = await findUserByPhoneNumberId(phoneNumberId); if (!num) continue;
 
         const contactInfo = value.contacts?.[0];
         if (contactInfo?.profile?.name && contactInfo?.wa_id) {
-          try {
-            const { default: Contact } = await import("@/models/Contact");
-            await Contact.findOneAndUpdate({ phone: contactInfo.wa_id, userId: num.userId }, { name: contactInfo.profile.name, phone: contactInfo.wa_id }, { upsert: true });
+          try { 
+            const { default: Contact } = await import("@/models/Contact"); 
+            await Contact.findOneAndUpdate({ phone: contactInfo.wa_id, userId: num.userId }, { name: contactInfo.profile.name, phone: contactInfo.wa_id }, { upsert: true }); 
           } catch {}
         }
 
@@ -1174,18 +1013,69 @@ export async function POST(req: NextRequest) {
           await executeWorkflowsForMessage(msg, num, baseUrl);
         }
 
+        // ==========================================================
+        // ✅ STATUS UPDATES (delivered / read / sent / failed)
+        // ==========================================================
         for (const statusObj of value.statuses || []) {
           const { id, status, recipient_id, errors } = statusObj;
 
-          // --- 1) Update the individual Message doc ---
-          if (status === "delivered" || status === "read") {
-            await Message.updateOne({ whatsappMessageId: id }, { $set: { status, error: null } });
-          } else if (status === "failed") {
-            await Message.updateOne({ whatsappMessageId: id }, { $set: { status, error: errors?.[0]?.message || "Failed" } });
-          }
+          // 🔍 Temporary diagnostic log — remove once you've confirmed
+          // these are landing correctly. If you NEVER see this line in
+          // your PM2 logs for a campaign, Meta isn't calling your webhook
+          // at all (check App Dashboard > Webhooks subscription/health).
+          console.log(`[WEBHOOK STATUS] id=${id} status=${status} recipient=${recipient_id}`);
 
-          // --- 2) Update the matching Campaign.reportData entry (fixed matching) ---
-          await updateCampaignStatusFromWebhook(num.userId.toString(), recipient_id, status, errors);
+          if (status === "delivered" || status === "read") await Message.updateOne({ whatsappMessageId: id }, { $set: { status, error: null } });
+          else if (status === "failed") await Message.updateOne({ whatsappMessageId: id }, { $set: { status, error: errors?.[0]?.message || "Failed" } });
+
+          try {
+            let errorText = null;
+            if (status === "failed" || status === "invalid") {
+              const raw = errors?.[0]?.message || "Failed to send";
+              errorText = (raw.toLowerCase().includes("undeliverable") || raw.toLowerCase().includes("unsupported")) ? "Message not delivered to maintain a healthy ecosystem." : raw;
+            }
+
+            // 🚀 FIX (primary path): match by the exact WhatsApp message ID
+            // that was saved on send (`sentWamid`). This is unambiguous —
+            // no phone-format guessing, and can't accidentally touch a
+            // different campaign that happens to share the same number.
+            const campByWamid = await Campaign.findOne({ "reportData.sentWamid": id });
+
+            if (campByWamid) {
+              const idx = campByWamid.reportData.findIndex((item: any) => item.sentWamid === id);
+              if (idx !== -1 && shouldUpdateStatus(campByWamid.reportData[idx].status, status)) {
+                await Campaign.updateOne(
+                  { _id: campByWamid._id, "reportData.sentWamid": id },
+                  { $set: { "reportData.$.status": status, "reportData.$.error": errorText } }
+                );
+              }
+            } else {
+              // 🔙 FALLBACK: only for rows that predate sentWamid being
+              // saved. Uses normalized (last-10-digit) phone matching
+              // instead of brittle exact-string matching, so format
+              // differences (+91, leading 0, spaces, etc.) still match.
+              const normRecipient = normalizePhone(recipient_id);
+              if (normRecipient) {
+                const camps = await Campaign.find({ userId: num.userId, "reportData.sentWamid": { $exists: false } });
+                for (const camp of camps) {
+                  let touchedIdx = -1;
+                  for (let i = 0; i < camp.reportData.length; i++) {
+                    const item = camp.reportData[i];
+                    if (normalizePhone(item.phone) === normRecipient && shouldUpdateStatus(item.status, status)) {
+                      touchedIdx = i;
+                      break;
+                    }
+                  }
+                  if (touchedIdx !== -1) {
+                    await Campaign.updateOne(
+                      { _id: camp._id },
+                      { $set: { [`reportData.${touchedIdx}.status`]: status, [`reportData.${touchedIdx}.error`]: errorText } }
+                    );
+                  }
+                }
+              }
+            }
+          } catch (campErr) { console.error("Failed to update campaign status:", campErr); }
         }
       }
     }
