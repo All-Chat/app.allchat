@@ -220,9 +220,9 @@ export default function CampaignList() {
     }
     if (!confirm("Start this campaign now?")) return;
 
-    // Instant UI update
+    // Instant UI update to running
     setCampaigns((prev) => prev.map((c) => (c._id === id ? { ...c, status: "running" } : c)));
-    setStartingId(id);
+    setStartingId(id); // This keeps the button disabled and shows "Starting..."
 
     try {
       const res = await fetch("/api/campaigns/start", {
@@ -251,7 +251,7 @@ export default function CampaignList() {
       toast.error("Failed to start");
       loadCampaigns();
     } finally {
-      setStartingId(null);
+      setStartingId(null); // Re-enable buttons once API responds
     }
   };
 
@@ -791,10 +791,11 @@ export default function CampaignList() {
                         {c.status === "running" && (
                           <button
                             onClick={() => handleCampaignAction(c._id, "pause")}
-                            disabled={actionId === c._id}
-                            className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-blue-500 text-white hover:bg-blue-600 transition-all shadow-sm"
+                            disabled={actionId === c._id || startingId === c._id}
+                            className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-blue-500 text-white hover:bg-blue-600 transition-all shadow-sm disabled:opacity-70 disabled:cursor-not-allowed"
                           >
-                            {actionId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Pause size={12} />} Pause
+                            {startingId === c._id || actionId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Pause size={12} />} 
+                            {startingId === c._id ? "Starting..." : "Pause"}
                           </button>
                         )}
 
@@ -828,7 +829,7 @@ export default function CampaignList() {
                             }`}
                             title={!canSendMessage ? "Insufficient balance" : "Rerun"}
                           >
-                            {startingId === c._id ? <Loader2 size={16} className="animate-spin" /> : <RotateCcw size={16} />}
+                            {startingId === c._id ? <Loader2 size={16} className="animate-spin text-purple-600" /> : <RotateCcw size={16} />}
                           </button>
                         )}
 
@@ -843,7 +844,7 @@ export default function CampaignList() {
                             }`}
                           >
                             {startingId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-                            {!canSendMessage ? "No Balance" : "Start"}
+                            {startingId === c._id ? "Starting..." : (!canSendMessage ? "No Balance" : "Start")}
                           </button>
                         )}
 
@@ -899,15 +900,19 @@ export default function CampaignList() {
                       </div>
                     </div>
 
-                    {/* Running Progress Bar */}
-                    {c.status === "running" && (
+                    {/* Starting / Running Progress Bar */}
+                    {startingId === c._id ? (
+                      <div className="mt-3 w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+                        <div className="bg-emerald-500 h-2 w-full rounded-full animate-pulse"></div>
+                      </div>
+                    ) : c.status === "running" ? (
                       <div className="mt-3 w-full bg-slate-100 rounded-full h-2">
                         <div
                           className="bg-gradient-to-r from-amber-400 to-amber-500 h-2 rounded-full animate-pulse"
                           style={{ width: `${progressPercent || 10}%` }}
                         ></div>
                       </div>
-                    )}
+                    ) : null}
 
                     {/* Amount Spent Text */}
                     {amountSpent > 0 && (
