@@ -4,13 +4,12 @@ module.exports = {
       name: "whatsapp-web",
       cwd: __dirname,
       script: "node_modules/next/dist/bin/next",
-      args: "start -p 3999",
+      args: "start -p 3999", // Change 3000 to whatever port your website uses
       instances: 1,
       autorestart: true,
       max_memory_restart: "1G",
       env: {
-        NODE_ENV: "production",
-        PORT: 3999
+        NODE_ENV: "production"
       }
     },
     {
