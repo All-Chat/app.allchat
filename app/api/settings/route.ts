@@ -38,7 +38,8 @@ export async function GET() {
         pendingRequest: latestRequest ? { status: latestRequest.status, createdAt: latestRequest.createdAt } : null,
         googleSheetId: user.googleSheetId || null,
         hideIntegrations: user.hideIntegrations || false,
-        enabledCountries: user.enabledCountries || [], // ✅ RETURN COUNTRIES
+        enabledCountries: user.enabledCountries || [], 
+        hiddenSidebarLinks: user.hiddenSidebarLinks || [], // ✅ ADDED THIS LINE
       },
     });
   } catch (error) {
