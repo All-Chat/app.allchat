@@ -93,12 +93,12 @@ if (!global.campaignWorker) {
     }
   }, { 
     connection,
-    // Only 1 chunk in flight at a time — each chunk = 50 messages
+    // Only 1 chunk in flight at a time — each chunk = 10 messages
     // sent in parallel via Promise.allSettled. Combined with the
-    // limiter below, this gives exactly 50 msgs/sec.
+    // limiter below, this gives exactly 10 msgs/sec.
     concurrency: 1,
     limiter: {
-      // 1 chunk per 1000ms = 1 batch of 50 messages per second
+      // 1 chunk per 1000ms = 1 batch of 10 messages per second
       max: 1,
       duration: 1000
     },
