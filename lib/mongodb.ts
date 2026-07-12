@@ -1,4 +1,10 @@
 import mongoose from "mongoose";
+import { config } from 'dotenv';
+
+// If the variable is missing, force load .env.local right here
+if (!process.env.MONGODB_URI) {
+  config({ path: '.env.local' });
+}
 
 const MONGODB_URI = process.env.MONGODB_URI as string;
 
