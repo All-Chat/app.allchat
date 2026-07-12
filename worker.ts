@@ -2,13 +2,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // worker.ts (Root of your project)
 import { Worker } from 'bullmq';
-import { connectDB } from '@/lib/mongodb';
-import Campaign from '@/models/Campaign';
-import User from '@/models/User';
-import Message from '@/models/Message';
+import { connectDB } from './lib/mongodb';
+import Campaign from './models/Campaign';
+import User from './models/User';
+import Message from './models/Message';
 import mongoose from 'mongoose';
-import { getPriceForCategory } from '@/lib/billing';
-import { syncCampaignToGoogleSheet } from '@/lib/googleSheetSync';
+import { getPriceForCategory } from './lib/billing';
+import { syncCampaignToGoogleSheet } from './lib/googleSheetSync';
 
 // ==========================================
 // 1. DATABASE CONNECTION
