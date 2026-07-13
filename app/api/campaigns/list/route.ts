@@ -57,6 +57,7 @@ export async function GET(req: Request) {
     const checkName = searchParams.get("check");
     const excludeId = searchParams.get("excludeId");
     const campaignId = searchParams.get("id");
+    const isDownload = searchParams.get("download") === "true"; 
 
     // ==========================================
     // 1. LIVE CHECK MODE
@@ -111,7 +112,6 @@ export async function GET(req: Request) {
             userId: new mongoose.Types.ObjectId(userId),
           },
         },
-        // 🚀 FIX: Always run the lookup so we accurately know if it's replied or not
         {
           $addFields: {
             campPhonesNormalized: {
@@ -282,7 +282,7 @@ export async function GET(req: Request) {
             languageCode: 1,
             totalDeducted: 1,
             campaignStats: 1,
-            reportData: { $slice: ["$filteredData", skip, limit] },
+            reportData: isDownload ? "$filteredData" : { $slice: ["$filteredData", skip, limit] },
             totalFiltered: { $size: "$filteredData" },
           },
         },
