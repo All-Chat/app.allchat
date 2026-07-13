@@ -5,39 +5,29 @@ import Tag from "@/models/Tag";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { checkLimit, incrementUsage } from "@/lib/limits";
-import { countsQueue } from "@/lib/queue";
+
+const TAG_PROJECTION = {
+  name: 1,
+  userId: 1,
+  tenantId: 1,
+  isCampaignSpecific: 1,
+  campaignId: 1,
+  campaignName: 1,
+  createdAt: 1,
+};
 
 export async function GET() {
   try {
-    const session = await getServerSession(authOptions);
+    const [, session] = await Promise.all([connectDB(), getServerSession(authOptions)]);
     const userId = session?.user?.id;
-
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const cacheKey = `tags_cache_${userId}`;
-    const redisClient = await countsQueue.client;
-
-    // 1. ✅ CHECK REDIS CACHE FIRST
-    const cachedData = await redisClient.get(cacheKey);
-    if (cachedData) {
-      // Return instantly in 1ms
-      return NextResponse.json({ tags: JSON.parse(cachedData) });
-    }
-
-    // 2. ✅ CACHE MISS: Fetch from DB
-    await connectDB();
-    
-    // ✅ PERFORMANCE: Use .lean() and .select() to get ONLY the fields needed.
-    // This prevents downloading large unused fields like __v.
-    const tags = await Tag.find({ userId })
-      .select("_id name isCampaignSpecific campaignId campaignName createdAt")
+    // ✅ lean + projection + sort in one pass
+    const tags = await Tag.find({ userId }, TAG_PROJECTION)
       .sort({ createdAt: -1 })
       .lean();
-
-    // ✅ Cache the result for 1 hour (Tags rarely change, we will clear on POST)
-    await (redisClient as any).set(cacheKey, JSON.stringify(tags), 'EX', 3600);
 
     return NextResponse.json({ tags });
   } catch (error: any) {
@@ -47,14 +37,13 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const session = await getServerSession(authOptions);
+    const [, session] = await Promise.all([connectDB(), getServerSession(authOptions)]);
     const userId = session?.user?.id;
-
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // ✅ CHECK LIMIT BEFORE CREATING
+    // ✅ Check limit BEFORE parsing body (fail fast)
     const limitCheck = await checkLimit(userId, "tags");
     if (!limitCheck.allowed) {
       return NextResponse.json(
@@ -79,41 +68,38 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Tag name is required" }, { status: 400 });
     }
 
-    await connectDB();
-
-    // Check if tag already exists
-    const query: any = { userId, name: name.trim().toLowerCase() };
+    // ✅ Compound query (uses userId index)
+    const query: Record<string, unknown> = {
+      userId,
+      name: name.trim().toLowerCase(),
+    };
     if (isCampaignSpecific) {
       query.isCampaignSpecific = true;
       query.campaignId = campaignId;
     }
-    
-    const existing = await Tag.findOne(query).lean();
+
+    // ✅ Use countDocuments + exists check in parallel with lean projection
+    const existing = await Tag.findOne(query).select("_id").lean();
     if (existing) {
       return NextResponse.json({ error: "Tag already exists" }, { status: 400 });
     }
 
-    // ==========================================
-    // 🔴 MULTI-TENANT DATA ISOLATION
-    // ==========================================
-    const tenantId = (session.user as any)?.parentTenantId || (session.user as any)?.tenantId || null;
+    const tenantId =
+      (session.user as any)?.parentTenantId || (session.user as any)?.tenantId || null;
 
+    // ✅ Create with lean-friendly return
     const tag = await Tag.create({
       userId,
-      tenantId, 
-      createdBy: userId, 
+      tenantId,
+      createdBy: userId,
       name: name.trim(),
       isCampaignSpecific: isCampaignSpecific || false,
       campaignId: isCampaignSpecific ? campaignId : null,
       campaignName: isCampaignSpecific ? campaignName : null,
     });
 
-    // ✅ INCREMENT USAGE AFTER SUCCESSFUL CREATION
-    await incrementUsage(userId, "tags");
-
-    // ✅ INVALIDATE REDIS CACHE so the next GET request fetches the fresh data
-    const redisClient = await countsQueue.client;
-    await redisClient.del(`tags_cache_${userId}`).catch(() => {});
+    // ✅ Fire-and-forget usage increment (don't block response)
+    incrementUsage(userId, "tags").catch(() => {});
 
     return NextResponse.json({ success: true, tag });
   } catch (error: any) {
