@@ -6,19 +6,16 @@ import Message from "@/models/Message";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 
-// ✅ FIXED: Count media/button replies even if text is empty
 function isValidReply(msg: any): boolean {
   const text = (msg.text || "").trim();
-  // If it's an image, video, audio, document, sticker, or location, it's a reply!
   if (msg.messageType && ["image", "video", "audio", "document", "sticker", "location", "contacts", "interactive", "button"].includes(msg.messageType)) {
     return true;
   }
   if (!text) return false;
-  if (/^\[.*\]$/.test(text)) return false; // Filter old junk like "[button]"
+  if (/^\[.*\]$/.test(text)) return false;
   return true;
 }
 
-// ✅ Helper to normalize phone numbers
 const normalizePhone = (p: string) => String(p || "").replace(/\D/g, "");
 
 export async function GET(req: NextRequest) {
@@ -44,6 +41,9 @@ export async function GET(req: NextRequest) {
 
     if (campaignPhonesList.length === 0) return NextResponse.json({ success: true, replies: {} });
 
+    // 🚀 PERFORMANCE FIX: Use a Set for O(1) lookups instead of Array.includes
+    const campaignPhonesSet = new Set(campaignPhonesList);
+
     const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const campaignCreated = new Date(campaign.createdAt);
     const since = campaignCreated > twentyFourHoursAgo ? campaignCreated : twentyFourHoursAgo;
@@ -58,16 +58,15 @@ export async function GET(req: NextRequest) {
 
     for (const msg of messages) {
       const msgPhoneLast10 = normalizePhone(msg.phone).slice(-10);
-      if (msgPhoneLast10 && campaignPhonesList.includes(msgPhoneLast10)) {
+      if (msgPhoneLast10 && campaignPhonesSet.has(msgPhoneLast10)) { // Instant check
         if (!isValidReply(msg)) continue;
 
         if (!tempRepliesMap[msgPhoneLast10]) tempRepliesMap[msgPhoneLast10] = [];
         
-        // ✅ Allow up to 5 replies
         if (tempRepliesMap[msgPhoneLast10].length < 5) {
           let displayText = (msg.text || "").trim();
           if (!displayText && msg.messageType && msg.messageType !== "text") {
-            displayText = `[${msg.messageType}]`; // Show placeholder for media
+            displayText = `[${msg.messageType}]`;
           }
           tempRepliesMap[msgPhoneLast10].push(displayText);
         }
