@@ -2,12 +2,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import React, { useEffect, useState, useCallback, memo } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import Sidebar from "@/components/Sidebar";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import {
-  Tag as TagIcon, Plus, Loader2, X, Check, Trash2, Link2,
+  Tag as TagIcon, Plus, Loader2, X, Check, Trash2,
   Sparkles, AlertCircle, ChevronDown, Users, Phone, Pencil, ArrowLeft,
   Gauge, AlertTriangle, Infinity as InfinityIcon,
 } from "lucide-react";
@@ -19,151 +19,6 @@ interface LimitInfo {
   allowed: boolean;
 }
 
-// ✅ PERFORMANCE: Memoized Tag Item to prevent entire list re-renders
-const TagItem = memo(function TagItem({
-  tag,
-  isExpanded,
-  contacts,
-  loadingContacts,
-  onTagClick,
-  onEditClick,
-  onDeleteClick,
-  deletingId,
-}: any) {
-  const isSpecificTag = tag.isCampaignSpecific;
-  const isDeleting = deletingId === tag._id;
-
-  return (
-    <div
-      className={`rounded-xl border transition-all overflow-hidden ${
-        isExpanded
-          ? isSpecificTag
-            ? "border-indigo-300 shadow-md"
-            : "border-emerald-300 shadow-md"
-          : "border-slate-200 hover:border-slate-300 hover:shadow-sm"
-      }`}
-    >
-      <div className="flex items-center justify-between w-full gap-2 pl-4 pr-3 py-3">
-        <div
-          className="flex items-center gap-3 flex-1 cursor-pointer min-w-0"
-          onClick={() => onTagClick(tag)}
-        >
-          <span
-            className={`w-2.5 h-2.5 rounded-full ${
-              isSpecificTag ? "bg-indigo-500" : "bg-emerald-500"
-            }`}
-          ></span>
-          <div className="flex flex-col min-w-0">
-            <span className="font-bold text-slate-900 text-sm truncate">
-              {tag.name}
-            </span>
-            <span
-              className={`text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 mt-0.5 ${
-                isSpecificTag ? "text-indigo-600" : "text-emerald-600"
-              }`}
-            >
-              {isSpecificTag ? (
-                <>
-                  <Link2 size={9} /> Campaign Specific{" "}
-                  {tag.campaignName ? `(${tag.campaignName})` : ""}
-                </>
-              ) : (
-                "Global Tag"
-              )}
-            </span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          {!isDeleting ? (
-            <>
-              <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-md items-center gap-1 hidden sm:flex">
-                <Users size={10} /> {contacts?.length || 0}
-              </span>
-              <button
-                onClick={() => onEditClick(tag)}
-                className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
-                title="Edit Tag"
-              >
-                <Pencil size={14} />
-              </button>
-              <button
-                onClick={() => onDeleteClick(tag._id)}
-                className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                title="Delete Tag"
-              >
-                <Trash2 size={14} />
-              </button>
-              <ChevronDown
-                size={16}
-                className={`text-slate-400 transition-transform cursor-pointer ${
-                  isExpanded ? "rotate-180" : ""
-                }`}
-                onClick={() => onTagClick(tag)}
-              />
-            </>
-          ) : (
-            <div className="flex items-center gap-1 bg-red-50 p-1 rounded-md border border-red-100">
-              <span className="text-[10px] font-bold text-red-600 px-1">
-                Delete?
-              </span>
-              <button
-                onClick={() => onDeleteClick(tag._id)}
-                className="p-1 bg-red-500 text-white rounded-md hover:bg-red-600 text-[10px] font-bold px-2"
-              >
-                Yes
-              </button>
-              <button
-                onClick={() => onDeleteClick(null)}
-                className="p-1 text-slate-500 rounded-md hover:bg-slate-200 text-[10px] font-bold px-2"
-              >
-                No
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {isExpanded && (
-        <div className="border-t border-slate-100 bg-slate-50/50 p-4 animate-slide-in max-h-[200px] overflow-y-auto slim-scroll">
-          {loadingContacts && !contacts?.length ? (
-            <div className="flex justify-center items-center py-4">
-              <Loader2 size={16} className="animate-spin text-slate-400" />
-            </div>
-          ) : contacts?.length > 0 ? (
-            <div className="space-y-2">
-              {contacts.map((contact: any, idx: number) => (
-                <div
-                  key={idx}
-                  className="flex items-center gap-3 bg-white border border-slate-200 px-3 py-2 rounded-lg text-xs"
-                >
-                  <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 font-bold">
-                    {contact.name?.charAt(0).toUpperCase() || (
-                      <Phone size={12} />
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-bold text-slate-800 truncate">
-                      {contact.name || "Unknown"}
-                    </p>
-                    <p className="text-slate-500 font-mono">{contact.phone}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center py-4">
-              <p className="text-xs text-slate-400 font-medium">
-                No contacts have been tagged with this yet.
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-});
-
 export default function TagsPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
@@ -173,8 +28,6 @@ export default function TagsPage() {
   // Form State
   const [editingId, setEditingId] = useState<string | null>(null);
   const [tagName, setTagName] = useState("");
-  const [isSpecific, setIsSpecific] = useState(false);
-  const [selectedCampaign, setSelectedCampaign] = useState("");
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -182,40 +35,36 @@ export default function TagsPage() {
 
   // Expand/Collapse State
   const [expandedTagId, setExpandedTagId] = useState<string | null>(null);
-  const [contactsMap, setContactsMap] = useState<{ [key: string]: any[] }>({});
+  const [contactsMap, setContactsMap] = useState<Record<string, any[]>>({});
   const [loadingContacts, setLoadingContacts] = useState(false);
 
   // Delete Confirmation State
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  // ✅ Limit State
+  // Limit State
   const [tagLimit, setTagLimit] = useState<LimitInfo | null>(null);
 
-  const showToast = (message: string, type: "success" | "error" = "success") => {
+  const showToast = useCallback((message: string, type: "success" | "error" = "success") => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
-  };
+  }, []);
 
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      
-      // ✅ FIX: Removed the heavy /api/campaigns/counts fetch. 
-      // We only need tags and limits on this page.
       const [tagsRes, limitsRes] = await Promise.all([
         fetch("/api/tags"),
         fetch("/api/user/limits?resource=tags"),
       ]);
 
       if (tagsRes.status === 401) {
-        router.push("/");
+        router.push("/signin");
         return;
       }
 
       const tagsData = await tagsRes.json();
       setTags(tagsData.tags || []);
 
-      // ✅ Load limit info
       if (limitsRes.ok) {
         const limitsData = await limitsRes.json();
         if (limitsData.success) {
@@ -227,147 +76,143 @@ export default function TagsPage() {
           });
         }
       }
-    } catch (err) {
+    } catch {
       showToast("Failed to load data", "error");
     } finally {
       setLoading(false);
     }
-  }, [router]);
+  }, [router, showToast]);
 
   useEffect(() => {
-    if (status === "authenticated") {
-      loadData();
-    } else if (status === "unauthenticated") {
-      router.push("/");
-    }
+    if (status === "authenticated") loadData();
+    else if (status === "unauthenticated") router.push("/signin");
   }, [status, router, loadData]);
 
-  const resetForm = () => {
+  const resetForm = useCallback(() => {
     setEditingId(null);
     setTagName("");
-    setIsSpecific(false);
-    setSelectedCampaign("");
-  };
+  }, []);
 
-  const handleEditClick = (tag: any) => {
+  const handleEditClick = useCallback((tag: any) => {
     setEditingId(tag._id);
     setTagName(tag.name);
-    setIsSpecific(tag.isCampaignSpecific);
-    setSelectedCampaign(tag.campaignId || "");
     window.scrollTo({ top: 0, behavior: "smooth" });
-  };
+  }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!tagName.trim()) return;
-    if (isSpecific && !selectedCampaign) {
-      showToast("Please select a campaign", "error");
-      return;
-    }
+  const handleSubmit = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!tagName.trim()) return;
 
-    setSubmitting(true);
-    try {
-      // ✅ FIX: Since we don't have the campaigns list loaded, we just pass the ID.
-      // The backend can handle linking the name if needed, or we just pass null for name if not editing.
-      const payload = {
-        name: tagName,
-        isCampaignSpecific: isSpecific,
-        campaignId: isSpecific ? selectedCampaign : null,
-        campaignName: null, 
-      };
+      setSubmitting(true);
+      try {
+        const payload = { name: tagName };
 
-      let res;
-      if (editingId) {
-        res = await fetch(`/api/tags/${editingId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-      } else {
-        res = await fetch("/api/tags", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-      }
+        const res = editingId
+          ? await fetch(`/api/tags/${editingId}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            })
+          : await fetch("/api/tags", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
 
-      const data = await res.json();
+        const data = await res.json();
 
-      // ✅ Handle limit exceeded response
-      if (res.status === 429 && data.limitExceeded) {
-        showToast(data.error, "error");
-        // Update limit state to reflect blocked status
-        if (data.limitInfo) {
-          setTagLimit((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  allowed: false,
-                  usage: { count: data.limitInfo.currentUsage, resetAt: null },
-                  remaining: 0,
-                }
-              : prev
-          );
+        if (res.status === 429 && data.limitExceeded) {
+          showToast(data.error, "error");
+          if (data.limitInfo) {
+            setTagLimit((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    allowed: false,
+                    usage: { count: data.limitInfo.currentUsage, resetAt: null },
+                    remaining: 0,
+                  }
+                : prev
+            );
+          }
+          return;
         }
+
+        if (!res.ok) throw new Error(data.error || "Failed to save tag");
+
+        showToast(editingId ? "Tag updated successfully!" : "Tag created successfully!");
+        resetForm();
+        loadData();
+      } catch (err: any) {
+        showToast(err.message, "error");
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [tagName, editingId, resetForm, loadData, showToast]
+  );
+
+  const handleDeleteTag = useCallback(
+    async (id: string) => {
+      try {
+        const res = await fetch(`/api/tags/${id}`, { method: "DELETE" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to delete tag");
+
+        showToast("Tag deleted successfully!");
+        setDeletingId(null);
+        loadData();
+      } catch (err: any) {
+        showToast(err.message, "error");
+      }
+    },
+    [loadData, showToast]
+  );
+
+  const handleTagClick = useCallback(
+    async (tag: any) => {
+      if (expandedTagId === tag._id) {
+        setExpandedTagId(null);
         return;
       }
 
-      if (!res.ok) throw new Error(data.error || "Failed to save tag");
+      setExpandedTagId(tag._id);
 
-      showToast(editingId ? "Tag updated successfully!" : "Tag created successfully!");
-      resetForm();
-      loadData();
-    } catch (err: any) {
-      showToast(err.message, "error");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleDeleteTag = async (id: string) => {
-    try {
-      const res = await fetch(`/api/tags/${id}`, { method: "DELETE" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to delete tag");
-
-      showToast("Tag deleted successfully!");
-      setDeletingId(null);
-      loadData();
-    } catch (err: any) {
-      showToast(err.message, "error");
-    }
-  };
-
-  const handleTagClick = useCallback(async (tag: any) => {
-    if (expandedTagId === tag._id) {
-      setExpandedTagId(null);
-      return;
-    }
-
-    setExpandedTagId(tag._id);
-
-    if (!contactsMap[tag._id]) {
-      setLoadingContacts(true);
-      try {
-        const res = await fetch(`/api/contacts?tag=${encodeURIComponent(tag.name)}`);
-        const data = await res.json();
-        setContactsMap((prev) => ({ ...prev, [tag._id]: data.contacts || [] }));
-      } catch (err) {
-        console.error("Failed to fetch contacts", err);
-        setContactsMap((prev) => ({ ...prev, [tag._id]: [] }));
-      } finally {
-        setLoadingContacts(false);
+      if (!contactsMap[tag._id]) {
+        setLoadingContacts(true);
+        try {
+          const res = await fetch(`/api/contacts?tag=${encodeURIComponent(tag.name)}`);
+          const data = await res.json();
+          setContactsMap((prev) => ({ ...prev, [tag._id]: data.contacts || [] }));
+        } catch {
+          setContactsMap((prev) => ({ ...prev, [tag._id]: [] }));
+        } finally {
+          setLoadingContacts(false);
+        }
       }
-    }
-  }, [expandedTagId, contactsMap]);
+    },
+    [expandedTagId, contactsMap]
+  );
 
-  // ✅ Helpers for limit display
-  const isLimitActive =
-    !!tagLimit && tagLimit.limit.period !== "unlimited" && tagLimit.limit.max !== -1;
-  const usagePercent = isLimitActive && tagLimit
-    ? Math.min(100, Math.round(((tagLimit.usage.count || 0) / tagLimit.limit.max) * 100))
-    : 0;
-  const isAtLimit = isLimitActive && tagLimit ? !tagLimit.allowed : false;
+  // Memoized derived values
+  const isLimitActive = useMemo(
+    () => !!tagLimit && tagLimit.limit.period !== "unlimited" && tagLimit.limit.max !== -1,
+    [tagLimit]
+  );
+
+  const usagePercent = useMemo(
+    () =>
+      isLimitActive && tagLimit
+        ? Math.min(100, Math.round(((tagLimit.usage.count || 0) / tagLimit.limit.max) * 100))
+        : 0,
+    [isLimitActive, tagLimit]
+  );
+
+  const isAtLimit = useMemo(
+    () => isLimitActive && tagLimit ? !tagLimit.allowed : false,
+    [isLimitActive, tagLimit]
+  );
 
   const formatResetDate = (dateStr: string | null) => {
     if (!dateStr) return null;
@@ -421,7 +266,6 @@ export default function TagsPage() {
 
       <main className="md:ml-64 min-h-screen flex flex-col">
         <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:p-10 space-y-6 sm:space-y-8">
-          
           {/* Header */}
           <div className="relative overflow-hidden bg-gradient-to-br from-[#E8F8EF] to-[#D1F4DE] rounded-2xl sm:rounded-3xl p-6 sm:p-8 border border-emerald-100 shadow-lg shadow-emerald-100/60">
             <div className="absolute -top-12 -right-12 w-56 h-56 bg-[#A5D6A7]/40 rounded-full blur-3xl"></div>
@@ -437,12 +281,11 @@ export default function TagsPage() {
                     WhatsApp Tags
                   </h1>
                   <p className="text-emerald-700/80 text-xs sm:text-sm mt-1 font-medium">
-                    Manage global and campaign-specific tags
+                    Manage your global tags
                   </p>
                 </div>
               </div>
 
-              {/* ✅ Limit Badge in Header */}
               {tagLimit && (
                 <div
                   className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold shrink-0 ${
@@ -458,9 +301,7 @@ export default function TagsPage() {
                   {isLimitActive ? (
                     <>
                       <Gauge size={14} />
-                      <span>
-                        {tagLimit.usage.count}/{tagLimit.limit.max}
-                      </span>
+                      <span>{tagLimit.usage.count}/{tagLimit.limit.max}</span>
                       {tagLimit.limit.period !== "total" && (
                         <span className="opacity-60">/{tagLimit.limit.period}</span>
                       )}
@@ -476,7 +317,7 @@ export default function TagsPage() {
             </div>
           </div>
 
-          {/* ✅ Limit Warning Bar */}
+          {/* Limit warning bar */}
           {isLimitActive && (
             <div
               className={`rounded-xl p-3 flex items-center gap-3 text-sm border animate-slide-in ${
@@ -487,38 +328,23 @@ export default function TagsPage() {
                   : "bg-blue-50 border-blue-200 text-blue-600"
               }`}
             >
-              {isAtLimit ? (
-                <AlertTriangle size={16} className="shrink-0" />
-              ) : (
-                <Gauge size={16} className="shrink-0" />
-              )}
+              {isAtLimit ? <AlertTriangle size={16} className="shrink-0" /> : <Gauge size={16} className="shrink-0" />}
               <div className="flex-1">
                 <span className="font-bold">
-                  {isAtLimit
-                    ? "Tag limit reached!"
-                    : usagePercent >= 80
-                    ? "Approaching tag limit"
-                    : "Tag usage"}
+                  {isAtLimit ? "Tag limit reached!" : usagePercent >= 80 ? "Approaching tag limit" : "Tag usage"}
                 </span>
                 <span className="ml-2 opacity-80">
-                  {tagLimit.usage.count} of {tagLimit.limit.max} tags used
-                  {tagLimit.limit.period !== "total" && ` per ${tagLimit.limit.period}`}
-                  {tagLimit.limit.period !== "total" && tagLimit.usage.resetAt && (
-                    <span className="ml-1">
-                      • Resets {formatResetDate(tagLimit.usage.resetAt)}
-                    </span>
+                  {tagLimit!.usage.count} of {tagLimit!.limit.max} tags used
+                  {tagLimit!.limit.period !== "total" && ` per ${tagLimit!.limit.period}`}
+                  {tagLimit!.limit.period !== "total" && tagLimit!.usage.resetAt && (
+                    <span className="ml-1">• Resets {formatResetDate(tagLimit!.usage.resetAt)}</span>
                   )}
                 </span>
               </div>
-              {/* Progress bar */}
               <div className="w-24 h-2 bg-white/60 rounded-full overflow-hidden shrink-0">
                 <div
                   className={`h-full rounded-full transition-all ${
-                    isAtLimit
-                      ? "bg-red-500"
-                      : usagePercent >= 80
-                      ? "bg-amber-500"
-                      : "bg-emerald-500"
+                    isAtLimit ? "bg-red-500" : usagePercent >= 80 ? "bg-amber-500" : "bg-emerald-500"
                   }`}
                   style={{ width: `${usagePercent}%` }}
                 />
@@ -528,7 +354,6 @@ export default function TagsPage() {
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 lg:gap-8">
-            
             {/* Left Column: Create/Edit Form */}
             <div className="lg:col-span-2">
               <div className="bg-white p-5 sm:p-7 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow sticky top-6">
@@ -538,16 +363,12 @@ export default function TagsPage() {
                     {editingId ? "Edit Tag" : "Create New Tag"}
                   </h2>
                   {editingId && (
-                    <button
-                      onClick={resetForm}
-                      className="text-xs font-bold text-slate-500 hover:text-red-500 flex items-center gap-1"
-                    >
+                    <button onClick={resetForm} className="text-xs font-bold text-slate-500 hover:text-red-500 flex items-center gap-1">
                       <ArrowLeft size={12} /> Cancel
                     </button>
                   )}
                 </div>
 
-                {/* ✅ Limit Reached Warning in Form */}
                 {isAtLimit && !editingId && (
                   <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2">
                     <AlertTriangle size={16} className="text-red-500 shrink-0 mt-0.5" />
@@ -555,8 +376,7 @@ export default function TagsPage() {
                       <p className="text-xs font-bold text-red-700">Tag limit reached</p>
                       <p className="text-[11px] text-red-600 mt-0.5">
                         You have used {tagLimit?.usage.count} of {tagLimit?.limit.max} tags
-                        {tagLimit?.limit.period !== "total" && ` per ${tagLimit?.limit.period}`}.
-                        Delete existing tags or contact admin to increase your limit.
+                        {tagLimit?.limit.period !== "total" && ` per ${tagLimit?.limit.period}`}. Delete existing tags or contact admin.
                       </p>
                     </div>
                   </div>
@@ -570,7 +390,7 @@ export default function TagsPage() {
                       value={tagName}
                       onChange={(e) => setTagName(e.target.value)}
                       placeholder="e.g. Interested, VIP, Follow Up"
-                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:ring-4 focus:ring-emerald-100 focus:border-emerald-500 focus:bg-white transition-all shadow-[inset_0_2px_4px_rgba(0,0,0,0.02)]"
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:ring-4 focus:ring-emerald-100 focus:border-emerald-500 focus:bg-white transition-all"
                       disabled={submitting || (isAtLimit && !editingId)}
                     />
                   </div>
@@ -581,29 +401,19 @@ export default function TagsPage() {
                     className={`w-full text-white px-6 py-3.5 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed ${
                       isAtLimit && !editingId
                         ? "bg-slate-400 cursor-not-allowed"
-                        : editingId
-                        ? "bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600"
                         : "bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600"
                     }`}
                   >
                     {submitting ? (
                       <Loader2 size={16} className="animate-spin" />
                     ) : isAtLimit && !editingId ? (
-                      <>
-                        <AlertTriangle size={16} /> Limit Reached
-                      </>
+                      <><AlertTriangle size={16} /> Limit Reached</>
                     ) : editingId ? (
                       <Check size={16} />
                     ) : (
                       <Plus size={16} />
                     )}
-                    {submitting
-                      ? "Saving..."
-                      : isAtLimit && !editingId
-                      ? "Limit Reached"
-                      : editingId
-                      ? "Update Tag"
-                      : "Save Tag"}
+                    {submitting ? "Saving..." : isAtLimit && !editingId ? "Limit Reached" : editingId ? "Update Tag" : "Save Tag"}
                   </button>
                 </form>
               </div>
@@ -617,17 +427,10 @@ export default function TagsPage() {
                     <TagIcon size={14} className="text-slate-500" />
                     Active Tags
                   </h2>
-                  <div className="flex items-center gap-2">
-                    {/* ✅ Usage badge next to total count */}
-                    <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full">
-                      {tags.length} Total
-                      {isLimitActive && (
-                        <span className="text-slate-400 ml-1">
-                          / {tagLimit?.limit.max}
-                        </span>
-                      )}
-                    </span>
-                  </div>
+                  <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full">
+                    {tags.length} Total
+                    {isLimitActive && <span className="text-slate-400 ml-1">/ {tagLimit?.limit.max}</span>}
+                  </span>
                 </div>
 
                 {tags.length === 0 ? (
@@ -637,30 +440,121 @@ export default function TagsPage() {
                     </div>
                     <h3 className="text-base font-bold text-slate-800 mb-1">No tags yet</h3>
                     <p className="text-sm text-slate-400 max-w-xs">
-                      Create your first tag using the form on the left to start organizing your
-                      audience.
+                      Create your first tag using the form on the left to start organizing your audience.
                     </p>
                   </div>
                 ) : (
                   <div className="flex-1 overflow-y-auto slim-scroll pr-2 space-y-3">
-                    {tags.map((tag) => (
-                      <TagItem
-                        key={tag._id}
-                        tag={tag}
-                        isExpanded={expandedTagId === tag._id}
-                        contacts={contactsMap[tag._id]}
-                        loadingContacts={loadingContacts}
-                        onTagClick={handleTagClick}
-                        onEditClick={handleEditClick}
-                        onDeleteClick={setDeletingId}
-                        deletingId={deletingId}
-                      />
-                    ))}
+                    {tags.map((tag) => {
+                      const isExpanded = expandedTagId === tag._id;
+                      const contacts = contactsMap[tag._id] || [];
+                      const isDeleting = deletingId === tag._id;
+
+                      return (
+                        <div
+                          key={tag._id}
+                          className={`rounded-xl border transition-all overflow-hidden ${
+                            isExpanded
+                              ? "border-emerald-300 shadow-md"
+                              : "border-slate-200 hover:border-slate-300 hover:shadow-sm"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between w-full gap-2 pl-4 pr-3 py-3">
+                            <div
+                              className="flex items-center gap-3 flex-1 cursor-pointer min-w-0"
+                              onClick={() => handleTagClick(tag)}
+                            >
+                              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                              <div className="flex flex-col min-w-0">
+                                <span className="font-bold text-slate-900 text-sm truncate">{tag.name}</span>
+                                <span className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 mt-0.5 text-emerald-600">
+                                  Tag
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              {!isDeleting ? (
+                                <>
+                                  <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-md items-center gap-1 hidden sm:flex">
+                                    <Users size={10} /> {contacts.length || 0}
+                                  </span>
+                                  <button
+                                    onClick={() => handleEditClick(tag)}
+                                    className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
+                                    title="Edit Tag"
+                                  >
+                                    <Pencil size={14} />
+                                  </button>
+                                  <button
+                                    onClick={() => setDeletingId(tag._id)}
+                                    className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                                    title="Delete Tag"
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                  <ChevronDown
+                                    size={16}
+                                    className={`text-slate-400 transition-transform cursor-pointer ${
+                                      isExpanded ? "rotate-180" : ""
+                                    }`}
+                                    onClick={() => handleTagClick(tag)}
+                                  />
+                                </>
+                              ) : (
+                                <div className="flex items-center gap-1 bg-red-50 p-1 rounded-md border border-red-100">
+                                  <span className="text-[10px] font-bold text-red-600 px-1">Delete?</span>
+                                  <button
+                                    onClick={() => handleDeleteTag(tag._id)}
+                                    className="p-1 bg-red-500 text-white rounded-md hover:bg-red-600 text-[10px] font-bold px-2"
+                                  >
+                                    Yes
+                                  </button>
+                                  <button
+                                    onClick={() => setDeletingId(null)}
+                                    className="p-1 text-slate-500 rounded-md hover:bg-slate-200 text-[10px] font-bold px-2"
+                                  >
+                                    No
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {isExpanded && (
+                            <div className="border-t border-slate-100 bg-slate-50/50 p-4 animate-slide-in max-h-[200px] overflow-y-auto slim-scroll">
+                              {loadingContacts && !contacts.length ? (
+                                <div className="flex justify-center items-center py-4">
+                                  <Loader2 size={16} className="animate-spin text-slate-400" />
+                                </div>
+                              ) : contacts.length > 0 ? (
+                                <div className="space-y-2">
+                                  {contacts.map((contact, idx) => (
+                                    <div key={idx} className="flex items-center gap-3 bg-white border border-slate-200 px-3 py-2 rounded-lg text-xs">
+                                      <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 font-bold">
+                                        {contact.name?.charAt(0).toUpperCase() || <Phone size={12} />}
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                        <p className="font-bold text-slate-800 truncate">{contact.name || "Unknown"}</p>
+                                        <p className="text-slate-500 font-mono">{contact.phone}</p>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="text-center py-4">
+                                  <p className="text-xs text-slate-400 font-medium">No contacts have been tagged with this yet.</p>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
             </div>
-            
           </div>
         </div>
       </main>
