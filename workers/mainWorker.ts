@@ -46,6 +46,7 @@ const connection = {
 
 const countsQueue = new Queue('counts-processing', { connection });
 const reportQueue = new Queue('report-processing', { connection });
+const statsQueue = new Queue('stats-processing', { connection }); // 🚀 NEW
 
 // ==========================================
 // 2. HELPER FUNCTIONS
@@ -262,6 +263,11 @@ async function processCampaignChunk(data: any) {
     await Campaign.updateOne({ _id: campaignId }, { $inc: { sentCount: sent, failedCount: failed, totalDeducted: ded } });
   } catch (e) { console.error(`[Worker] Campaign counter increment error:`, e); }
 
+  // 🚀 AUTOMATIC BACKGROUND SYNC: Queue stats update after chunk finishes
+  try {
+    await statsQueue.add('sync-user-stats', { userId }, { removeOnComplete: true, removeOnFail: true });
+  } catch (e) { console.error(`[Worker] Failed to queue stats sync:`, e); }
+
   try {
     const [statResult] = await Campaign.aggregate([
       { $match: { _id: new mongoose.Types.ObjectId(campaignId) } },
@@ -387,7 +393,6 @@ async function generateCountsData(userId: string, page: number, limit: number, c
                     input: { $ifNull: ["$reportData", []] },
                     initialValue: { replied: 0, read: 0, delivered: 0, sent: 0, failed: 0, invalid: 0, duplicate: 0 },
                     in: {
-                      // FIX: Flattened the $let to avoid MongoDB $size field path parser bug
                       replied: { 
                         $add: [
                           "$$value.replied", 
@@ -426,15 +431,15 @@ async function generateCountsData(userId: string, page: number, limit: number, c
       }
     ]).allowDiskUse(false);
 
-const fixedCampaigns = campaigns.map((c: any) => {
-  const ls = c.liveStats || {};
-  const total = ls.total || 0;
-  const read = ls.read || 0;
-  const delivered = ls.delivered || 0;
-  const sent = ls.sent || 0;       // ✅ was c.sentCount || 0
-  const failed = ls.failed || 0;   // ✅ was c.failedCount || 0
-  const invalid = ls.invalid || 0;
-  const duplicate = ls.duplicate || 0;
+    const fixedCampaigns = campaigns.map((c: any) => {
+      const ls = c.liveStats || {};
+      const total = ls.total || 0;
+      const read = ls.read || 0;
+      const delivered = ls.delivered || 0;
+      const sent = ls.sent || 0;       
+      const failed = ls.failed || 0;   
+      const invalid = ls.invalid || 0;
+      const duplicate = ls.duplicate || 0;
 
       const processed = read + delivered + sent + failed + invalid + duplicate;
       const pending = Math.max(0, total - processed);
@@ -501,12 +506,131 @@ async function refreshReportCache(data: any) {
   }
 }
 
-console.log('🚀 Standalone worker process started — campaign / counts / report workers running independently of the web server.');
+// ==========================================
+// 9. STATS WORKER (Background DB Sync) 🚀 NEW
+// ==========================================
+const statsWorker = new Worker('stats-processing', async (job) => {
+  if (job.name === 'sync-user-stats') {
+    return await syncUserStats(job.data.userId);
+  }
+  if (job.name === 'sync-all-stats') {
+    return await syncAllStats();
+  }
+}, { connection, concurrency: 1 });
+
+statsWorker.on('completed', (job: any) => console.log(`✅ Stats sync completed for job: ${job.id}`));
+statsWorker.on('failed', (job: any, err: Error) => console.error(`❌ Stats sync failed:`, err.message));
+
+async function syncUserStats(userId: string) {
+  try {
+    await ensureDbConnected();
+    
+    await Campaign.aggregate([
+      { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+      {
+        $project: {
+          liveStats: {
+            $let: {
+              vars: {
+                counts: {
+                  $reduce: {
+                    input: { $ifNull: ["$reportData", []] },
+                    initialValue: { replied: 0, read: 0, delivered: 0, sent: 0, failed: 0, invalid: 0, duplicate: 0 },
+                    in: {
+                      replied: { 
+                        $add: [
+                          "$$value.replied", 
+                          { 
+                            $cond: [
+                              {
+                                $or: [
+                                  { $ne: [{ $ifNull: ["$$this.reply", ""] }, ""] },
+                                  { $gt: [{ $size: { $filter: { input: { $ifNull: ["$$this.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0] }
+                                ]
+                              }, 
+                              1, 
+                              0
+                            ]
+                          }
+                        ]
+                      },
+                      read: { $add: ["$$value.read", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "read"] }, 1, 0] }] },
+                      delivered: { $add: ["$$value.delivered", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "delivered"] }, 1, 0] }] },
+                      sent: { $add: ["$$value.sent", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "sent"] }, 1, 0] }] },
+                      failed: { $add: ["$$value.failed", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "failed"] }, 1, 0] }] },
+                      invalid: { $add: ["$$value.invalid", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "invalid"] }, 1, 0] }] },
+                      duplicate: { $add: ["$$value.duplicate", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "duplicate"] }, 1, 0] }] }
+                    }
+                  }
+                }
+              },
+              in: {
+                total: { $ifNull: ["$totalMessages", 0] }, replied: "$$counts.replied", read: "$$counts.read",
+                delivered: "$$counts.delivered", sent: "$$counts.sent", failed: "$$counts.failed",
+                invalid: "$$counts.invalid", duplicate: "$$counts.duplicate"
+              }
+            }
+          }
+        }
+      },
+      {
+        $project: {
+          stats: {
+            replied: "$liveStats.replied",
+            read: "$liveStats.read",
+            delivered: "$liveStats.delivered",
+            sent: "$liveStats.sent",
+            failed: "$liveStats.failed",
+            invalid: "$liveStats.invalid",
+            duplicate: "$liveStats.duplicate"
+          }
+        }
+      },
+      {
+        $merge: {
+          into: "campaigns",
+          on: "_id",
+          whenMatched: "merge",
+          whenNotMatched: "discard"
+        }
+      }
+    ]);
+
+    return { success: true };
+  } catch (error) {
+    console.error(`❌ Stats sync error for user ${userId}:`, error);
+    return { success: false };
+  }
+}
+
+async function syncAllStats() {
+  try {
+    await ensureDbConnected();
+    const users = await User.find({}, { _id: 1 }).lean();
+    for (const user of users) {
+      await statsQueue.add('sync-user-stats', { userId: user._id.toString() }, { removeOnComplete: true, removeOnFail: true });
+    }
+    return { success: true, queued: users.length };
+  } catch (error) {
+    console.error("❌ Sync all stats error:", error);
+    return { success: false };
+  }
+}
+
+// Setup repeatable cron job to sync all stats every 10 minutes
+statsQueue.add('sync-all-stats', {}, { 
+  repeat: { pattern: '*/10 * * * *' }, 
+  removeOnComplete: true, 
+  removeOnFail: true 
+}).catch(console.error);
+
+console.log('🚀 Standalone worker process started — campaign / counts / report / stats workers running independently of the web server.');
 
 process.on('SIGTERM', async () => {
   console.log('Worker process shutting down...');
   await campaignWorker.close();
   await countsWorker.close();
   await reportWorker.close();
+  await statsWorker.close(); // 🚀 NEW
   process.exit(0);
 });
