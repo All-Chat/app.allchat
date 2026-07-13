@@ -17,3 +17,7 @@ export const countsQueue = new Queue('counts-processing', { connection });
 export const countsQueueEvents = new QueueEvents('counts-processing', { connection });
 export const reportQueue = new Queue('report-processing', { connection });
 export const reportQueueEvents = new QueueEvents('report-processing', { connection });
+
+// 🚀 NEW QUEUE FOR STATS
+export const statsQueue = new Queue('stats-processing', { connection });
+export const statsQueueEvents = new QueueEvents('stats-processing', { connection });
