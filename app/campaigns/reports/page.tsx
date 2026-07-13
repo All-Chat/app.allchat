@@ -113,11 +113,10 @@ export default function ReportsPage() {
     };
   };
 
+  // 🚀 FIXED: No more combined statuses. Strictly checks single status.
   const getStatusConfig = (status: string, replies: string[], error?: string) => {
-    if (replies.length > 0) {
-      return { color: "bg-indigo-50 text-indigo-700 border-indigo-200", icon: <MessageSquare size={10} className="inline mr-1" />, label: `Replied (${replies.length})`, isWaiting: false, tooltip: "" };
-    }
     switch (status) {
+      case "replied": return { color: "bg-indigo-50 text-indigo-700 border-indigo-200", icon: <MessageSquare size={10} className="inline mr-1" />, label: "Replied", isWaiting: false, tooltip: "" };
       case "read": return { color: "bg-blue-50 text-blue-700 border-blue-200", icon: <Eye size={10} className="inline mr-1" />, label: "Read", isWaiting: false, tooltip: "" };
       case "delivered": return { color: "bg-cyan-50 text-cyan-700 border-cyan-200", icon: <CheckCheck size={10} className="inline mr-1" />, label: "Delivered", isWaiting: false, tooltip: "" };
       case "sent": return { color: "bg-emerald-50 text-emerald-700 border-emerald-200", icon: <CheckCircle size={10} className="inline mr-1" />, label: "Sent", isWaiting: true, tooltip: "Message sent to Meta servers, waiting for delivery confirmation." };
@@ -157,7 +156,6 @@ export default function ReportsPage() {
       if (res.status === 401) { window.location.href = "/"; return; }
       const data = await res.json();
       if (data.success) {
-        // ✅ CRITICAL FIX: Ensure campaigns is an array before filtering
         const allCampaigns = Array.isArray(data.campaigns) ? data.campaigns : [];
         const validCampaigns = allCampaigns.filter((c: Campaign) => c.status !== "saved" && c.status !== "scheduled");
         setCampaigns(validCampaigns);
@@ -242,20 +240,18 @@ export default function ReportsPage() {
       const res = await fetch(`/api/campaigns/list?${params.toString()}`, { signal: controller.signal });
       const data = await res.json();
       
-      // ✅ CRITICAL FIX: Safely check if campaigns array exists and has items
       if (data.success && Array.isArray(data.campaigns) && data.campaigns[0]) {
         setReportData(data.campaigns[0].reportData || []);
         setReportTotalPages(data.totalPages || 1);
         setCampaignStats(data.campaignStats || {});
       } else {
-        // Fallback to empty if API fails or returns unexpected shape
         setReportData([]);
         setReportTotalPages(1);
       }
     } catch (error: any) { 
       if (error.name === 'AbortError') return;
       console.error("Failed to fetch report data", error); 
-      setReportData([]); // Prevent crash on fetch failure
+      setReportData([]); 
     } finally { 
       setLoadingReport(false); 
     }
@@ -614,7 +610,12 @@ export default function ReportsPage() {
                       <tbody className="divide-y divide-slate-100">
                         {reportData.map((d, i) => {
                           const replies = getRepliesList(d);
-                          const statusConfig = getStatusConfig(d.status, replies, d.error);
+                          // 🚀 CRITICAL FIX: Strictly force status to "replied" if replies exist
+                          let currentStatus = d.status;
+                          if (replies.length > 0) {
+                            currentStatus = "replied";
+                          }
+                          const statusConfig = getStatusConfig(currentStatus, replies, d.error);
                           return (
                             <tr key={`${d.phone}-${i}`} className="hover:bg-slate-50 transition-colors">
                               <td className="px-4 py-3 text-xs text-slate-400">{((reportCurrentPage - 1) * 50) + i + 1}</td>
