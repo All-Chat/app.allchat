@@ -159,7 +159,8 @@ export default function ReportsPage() {
         const allCampaigns = Array.isArray(data.campaigns) ? data.campaigns : [];
         const validCampaigns = allCampaigns.filter((c: Campaign) => c.status !== "saved" && c.status !== "scheduled");
         setCampaigns(validCampaigns);
-        if (!selectedId && validCampaigns.length > 0) setSelectedId(validCampaigns[validCampaigns.length - 1]._id || null);
+        // 🚀 FIX: Select the TOP campaign (index 0) instead of the last one
+        if (!selectedId && validCampaigns.length > 0) setSelectedId(validCampaigns[0]._id || null);
       }
     } catch (error) { 
       console.error("Failed to fetch campaigns", error); 
