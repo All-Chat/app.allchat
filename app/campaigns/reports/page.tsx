@@ -2,7 +2,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef } from "react";
+import styled from "styled-components"; // 🚀 Added for scanner loader
 import Sidebar from "@/components/Sidebar";
 import { 
   BarChart3, Download, Loader2, Search, CheckCircle, XCircle, Clock, 
@@ -13,6 +14,65 @@ import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import * as XLSX from "xlsx";
 import { useSession } from "next-auth/react";
+
+// 🚀 YOUR CUSTOM SCANNER LOADER COMPONENT
+const ScannerLoader = () => {
+  return (
+    <ScannerWrapper>
+      <div className="loader">
+        <div className="scanner">
+          <span>Loading...</span>
+        </div>
+      </div>
+    </ScannerWrapper>
+  );
+}
+
+const ScannerWrapper = styled.div`
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  padding: 20px 0;
+
+  .scanner span {
+    color: transparent;
+    font-size: 1.4rem;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .scanner span::before {
+    content: "Loading...";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 100%;
+    border-right: 4px solid #000000; /* ✅ Changed to Black */
+    overflow: hidden;
+    color: #000000; /* ✅ Changed to Black */
+    animation: load91371 2s linear infinite;
+  }
+
+  @keyframes load91371 {
+    0%, 10%, 100% {
+      width: 0;
+    }
+
+    10%,20%,30%,40%,50%,60%,70%,80%,90%,100% {
+      border-right-color: transparent;
+    }
+
+    11%,21%,31%,41%,51%,61%,71%,81%,91% {
+      border-right-color: #000000; /* ✅ Changed to Black */
+    }
+
+    60%, 80% {
+      width: 100%;
+    }
+  }
+`;
 
 type ReportItem = { 
   name: string; 
@@ -66,6 +126,7 @@ export default function ReportsPage() {
   const [loadingReport, setLoadingReport] = useState(false);
   const [campaignStats, setCampaignStats] = useState<any>({});
   const [syncingSheet, setSyncingSheet] = useState(false);
+  const [downloadingExcel, setDownloadingExcel] = useState(false); 
   
   const [showOnly, setShowOnly] = useState<string[]>([]);
   const [filterOut, setFilterOut] = useState<string[]>([]);
@@ -113,7 +174,6 @@ export default function ReportsPage() {
     };
   };
 
-  // 🚀 FIXED: No more combined statuses. Strictly checks single status.
   const getStatusConfig = (status: string, replies: string[], error?: string) => {
     switch (status) {
       case "replied": return { color: "bg-indigo-50 text-indigo-700 border-indigo-200", icon: <MessageSquare size={10} className="inline mr-1" />, label: "Replied", isWaiting: false, tooltip: "" };
@@ -159,7 +219,6 @@ export default function ReportsPage() {
         const allCampaigns = Array.isArray(data.campaigns) ? data.campaigns : [];
         const validCampaigns = allCampaigns.filter((c: Campaign) => c.status !== "saved" && c.status !== "scheduled");
         setCampaigns(validCampaigns);
-        // 🚀 FIX: Select the TOP campaign (index 0) instead of the last one
         if (!selectedId && validCampaigns.length > 0) setSelectedId(validCampaigns[0]._id || null);
       }
     } catch (error) { 
@@ -269,29 +328,59 @@ export default function ReportsPage() {
     return d.tags?.includes(tagFilter);
   });
 
-  const downloadExcel = () => {
-    if (reportData.length === 0) { toast.error("No data to download"); return; }
-    const additionalCols = selectedCamp?.additionalFields || [];
-    const wsData = reportData.map(d => {
-      const replies = getRepliesList(d).slice(0, 5);
-      const statusConfig = getStatusConfig(d.status, replies, d.error);
-      const row: any = { "Name": d.name || "N/A", "Phone Number": d.phone };
-      additionalCols.forEach((field, idx) => { row[field] = d.additionalData?.[idx] || ""; });
-      row["Status"] = statusConfig.label; 
-      row["Error Reason"] = d.error || ""; 
-      row["Tags"] = d.tags?.join(", ") || "None";
-      row["Reply 1"] = replies[0] || ""; 
-      row["Reply 2"] = replies[1] || ""; 
-      row["Reply 3"] = replies[2] || ""; 
-      row["Reply 4"] = replies[3] || ""; 
-      row["Reply 5"] = replies[4] || "";
-      return row;
-    });
-    const ws = XLSX.utils.json_to_sheet(wsData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Report");
-    const campName = campaigns.find(c => c._id === selectedId)?.name || "Campaign";
-    XLSX.writeFile(wb, `${campName}_Report.xlsx`);
+  const downloadExcel = async () => {
+    if (!selectedId) { toast.error("No campaign selected"); return; }
+    
+    setDownloadingExcel(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('id', selectedId);
+      params.set('download', 'true'); 
+      if (showOnly.length > 0) params.set('showOnly', showOnly.join(','));
+      if (filterOut.length > 0) params.set('filterOut', filterOut.join(','));
+      if (search) params.set('search', search);
+
+      const res = await fetch(`/api/campaigns/list?${params.toString()}`);
+      const data = await res.json();
+
+      if (data.success && Array.isArray(data.campaigns) && data.campaigns[0]) {
+        const fullData = data.campaigns[0].reportData || [];
+        if (fullData.length === 0) { toast.error("No data to download"); return; }
+
+        const additionalCols = selectedCamp?.additionalFields || [];
+        const wsData = fullData.map((d: any) => {
+          const replies = getRepliesList(d).slice(0, 5);
+          let currentStatus = d.status;
+          if (replies.length > 0) currentStatus = "replied"; 
+          const statusConfig = getStatusConfig(currentStatus, replies, d.error);
+          
+          const row: any = { "Name": d.name || "N/A", "Phone Number": d.phone };
+          additionalCols.forEach((field, idx) => { row[field] = d.additionalData?.[idx] || ""; });
+          row["Status"] = statusConfig.label; 
+          row["Error Reason"] = d.error || ""; 
+          row["Tags"] = d.tags?.join(", ") || "None";
+          row["Reply 1"] = replies[0] || ""; 
+          row["Reply 2"] = replies[1] || ""; 
+          row["Reply 3"] = replies[2] || ""; 
+          row["Reply 4"] = replies[3] || ""; 
+          row["Reply 5"] = replies[4] || "";
+          return row;
+        });
+
+        const ws = XLSX.utils.json_to_sheet(wsData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Report");
+        const campName = campaigns.find(c => c._id === selectedId)?.name || "Campaign";
+        XLSX.writeFile(wb, `${campName}_Report.xlsx`);
+      } else {
+        toast.error(data.message || "Failed to fetch full report");
+      }
+    } catch (error) { 
+      console.error("Failed to download Excel", error); 
+      toast.error("Error downloading Excel");
+    } finally {
+      setDownloadingExcel(false);
+    }
   };
 
   const handleSyncSheet = async (id: string) => {
@@ -564,9 +653,10 @@ export default function ReportsPage() {
                     </button>
                     <button 
                       onClick={downloadExcel} 
-                      className="px-4 py-2 bg-emerald-500 text-white rounded-lg text-xs font-bold hover:bg-emerald-600 flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0"
+                      disabled={downloadingExcel}
+                      className="px-4 py-2 bg-emerald-500 text-white rounded-lg text-xs font-bold hover:bg-emerald-600 flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-50 disabled:cursor-wait"
                     >
-                      <Download size={12}/> Excel
+                      {downloadingExcel ? <Loader2 size={12} className="animate-spin"/> : <Download size={12}/>} Excel
                     </button>
                   </div>
                 </div>
@@ -592,7 +682,8 @@ export default function ReportsPage() {
                 <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden min-w-[640px]">
                   {loadingReport ? (
                     <div className="flex justify-center items-center h-64">
-                      <Loader2 className="w-8 h-8 animate-spin text-slate-300" />
+                      {/* 🚀 USING YOUR SCANNER LOADER HERE */}
+                      <ScannerLoader />
                     </div>
                   ) : (
                     <table className="w-full text-sm">
@@ -611,7 +702,6 @@ export default function ReportsPage() {
                       <tbody className="divide-y divide-slate-100">
                         {reportData.map((d, i) => {
                           const replies = getRepliesList(d);
-                          // 🚀 CRITICAL FIX: Strictly force status to "replied" if replies exist
                           let currentStatus = d.status;
                           if (replies.length > 0) {
                             currentStatus = "replied";
@@ -663,7 +753,7 @@ export default function ReportsPage() {
                         {reportData.length === 0 && (
                           <tr>
                             <td colSpan={5 + additionalFieldsCount} className="text-center py-8 text-slate-400 text-xs">
-                              No data found for this filter.
+                              <ScannerLoader />
                             </td>
                           </tr>
                         )}
