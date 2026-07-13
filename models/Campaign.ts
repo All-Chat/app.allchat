@@ -40,6 +40,15 @@ const CampaignSchema = new mongoose.Schema({
     ],
     default: []
   },
+  stats: {
+  replied:   { type: Number, default: 0 },
+  read:      { type: Number, default: 0 },
+  delivered: { type: Number, default: 0 },
+  sent:      { type: Number, default: 0 },
+  failed:    { type: Number, default: 0 },
+  invalid:   { type: Number, default: 0 },
+  duplicate: { type: Number, default: 0 },
+},
   
   mediaUrl: { type: String, default: null },
   mediaType: { type: String, default: null },
@@ -48,6 +57,7 @@ const CampaignSchema = new mongoose.Schema({
     enum: ["saved", "scheduled", "running", "paused", "stopped", "completed", "failed"],
     default: "saved",
   },
+  
   scheduledAt: { type: Date, default: null },
   totalMessages: { type: Number, default: 0 },
   sentCount: { type: Number, default: 0 },
