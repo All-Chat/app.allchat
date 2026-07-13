@@ -5,20 +5,31 @@ import Tag from "@/models/Tag";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 
+// ✅ Reuse projection across handlers
+const TAG_PROJECTION = {
+  name: 1,
+  userId: 1,
+  tenantId: 1,
+  isCampaignSpecific: 1,
+  campaignId: 1,
+  campaignName: 1,
+  createdAt: 1,
+};
+
 export async function GET(
-  req: Request,
+  _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    // Next.js 15+: Await params
     const { id } = await params;
-    
-    await connectDB();
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    // ✅ PERFORMANCE: Use lean() for fast read
-    const tag = await Tag.findById(id).lean();
+    // ✅ Parallelize independent async ops
+    const [, session] = await Promise.all([connectDB(), getServerSession(authOptions)]);
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const tag = await Tag.findById(id, TAG_PROJECTION).lean();
     if (!tag) return NextResponse.json({ error: "Tag not found" }, { status: 404 });
 
     return NextResponse.json({ tag });
@@ -32,28 +43,29 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    // Next.js 15+: Await params
     const { id } = await params;
-    
-    await connectDB();
-    const session = await getServerSession(authOptions);
+
+    const [, session] = await Promise.all([connectDB(), getServerSession(authOptions)]);
     const userId = session?.user?.id;
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { name, isCampaignSpecific, campaignId, campaignName } = await req.json();
 
+    // ✅ Single atomic update, returns lean doc
     const updatedTag = await Tag.findOneAndUpdate(
       { _id: id, userId },
-      { 
-        name: name?.trim(), 
+      {
+        ...(name !== undefined && { name: name.trim() }),
         isCampaignSpecific: isCampaignSpecific || false,
         campaignId: isCampaignSpecific ? campaignId : null,
-        campaignName: isCampaignSpecific ? campaignName : null
+        campaignName: isCampaignSpecific ? campaignName : null,
       },
-      { new: true }
-    );
+      { new: true, projection: TAG_PROJECTION, lean: true }
+    ).lean();
 
-    if (!updatedTag) return NextResponse.json({ error: "Tag not found" }, { status: 404 });
+    if (!updatedTag) {
+      return NextResponse.json({ error: "Tag not found" }, { status: 404 });
+    }
 
     return NextResponse.json({ success: true, tag: updatedTag });
   } catch (error: any) {
@@ -62,20 +74,20 @@ export async function PUT(
 }
 
 export async function DELETE(
-  req: Request,
+  _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    // Next.js 15+: Await params
     const { id } = await params;
-    
-    await connectDB();
-    const session = await getServerSession(authOptions);
+
+    const [, session] = await Promise.all([connectDB(), getServerSession(authOptions)]);
     const userId = session?.user?.id;
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const deletedTag = await Tag.findOneAndDelete({ _id: id, userId });
-    if (!deletedTag) return NextResponse.json({ error: "Tag not found" }, { status: 404 });
+    const deletedTag = await Tag.findOneAndDelete({ _id: id, userId }).lean();
+    if (!deletedTag) {
+      return NextResponse.json({ error: "Tag not found" }, { status: 404 });
+    }
 
     return NextResponse.json({ success: true });
   } catch (error: any) {
