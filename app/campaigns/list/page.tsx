@@ -3,7 +3,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
+import styled from "styled-components"; // 🚀 Added for scanner loader
 import Sidebar from "@/components/Sidebar";
 import {
   Play, Clock, CheckCircle, Loader2, XCircle, FileText, Trash2, Eye, X,
@@ -14,6 +15,65 @@ import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
+
+// 🚀 CUSTOM SCANNER LOADER COMPONENT (BLACK COLOR)
+const ScannerLoader = () => {
+  return (
+    <ScannerWrapper>
+      <div className="loader">
+        <div className="scanner">
+          <span>Loading...</span>
+        </div>
+      </div>
+    </ScannerWrapper>
+  );
+}
+
+const ScannerWrapper = styled.div`
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  padding: 40px 0;
+
+  .scanner span {
+    color: transparent;
+    font-size: 1.4rem;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .scanner span::before {
+    content: "Loading...";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 100%;
+    border-right: 4px solid #000000; /* ✅ Black */
+    overflow: hidden;
+    color: #000000; /* ✅ Black */
+    animation: load91371 2s linear infinite;
+  }
+
+  @keyframes load91371 {
+    0%, 10%, 100% {
+      width: 0;
+    }
+
+    10%,20%,30%,40%,50%,60%,70%,80%,90%,100% {
+      border-right-color: transparent;
+    }
+
+    11%,21%,31%,41%,51%,61%,71%,81%,91% {
+      border-right-color: #000000; /* ✅ Black */
+    }
+
+    60%, 80% {
+      width: 100%;
+    }
+  }
+`;
 
 // ==========================================
 // 1. TYPES & INTERFACES
@@ -107,6 +167,7 @@ export default function CampaignList() {
 
   // State Variables
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [loadingCampaigns, setLoadingCampaigns] = useState(true); // 🚀 NEW STATE: Track campaign list loading
   const [startingId, setStartingId] = useState<string | null>(null);
   const [actionId, setActionId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -171,6 +232,8 @@ export default function CampaignList() {
       }
     } catch (err) {
       console.error("Failed to load campaigns", err);
+    } finally {
+      setLoadingCampaigns(false); // 🚀 Turn off loader when data arrives
     }
   };
 
@@ -708,8 +771,12 @@ export default function CampaignList() {
             </div>
           </div>
 
-          {/* Campaign List */}
-          {filteredCampaigns.length === 0 ? (
+          {/* 🚀 MODIFIED: Show Scanner Loader ONLY when loading the campaign list */}
+          {loadingCampaigns ? (
+            <div className="flex justify-center items-center py-20 bg-white rounded-2xl border border-slate-200">
+              <ScannerLoader />
+            </div>
+          ) : filteredCampaigns.length === 0 ? (
             <div className="text-center py-20 sm:py-32 bg-white rounded-2xl border border-dashed border-slate-200 text-slate-400">
               <BarChart3 className="w-10 h-10 sm:w-12 sm:h-12 mx-auto mb-3 text-slate-200" />
               <p className="font-medium text-slate-500">No campaigns found</p>
