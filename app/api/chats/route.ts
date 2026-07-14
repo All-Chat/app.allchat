@@ -1,5 +1,5 @@
 /* =====================================================================
-   GET /api/chats - 100% STRICT ISOLATION + ONLY REPLIED CHATS
+   GET /api/chats - 100% STRICT ISOLATION + ONLY REPLIED CHATS (LIMIT 20)
    ===================================================================== */
 
 import { NextResponse } from "next/server";
@@ -21,7 +21,6 @@ export async function GET(req: Request) {
     const wabaId = searchParams.get("whatsappPhoneNumberId") || "";
     const userId = session.user.id;
 
-    // ── AUTO-BACKFILL: Fix legacy null messages for the selected WABA ──
     if (wabaId && wabaId !== "all") {
       Message.updateMany(
         {
@@ -30,13 +29,12 @@ export async function GET(req: Request) {
           direction: "out",
         },
         { $set: { whatsappPhoneNumberId: wabaId } }
-      ).lean(); 
+      ).exec(); 
     }
 
-    // ── STEP 1: Find phone numbers THAT HAVE AT LEAST ONE INCOMING REPLY ──
     const phoneMatchStage: Record<string, unknown> = {
       userId: new mongoose.Types.ObjectId(userId),
-      direction: "in", // ✅ STRICT: Only get chats where the customer replied
+      direction: "in", 
     };
 
     if (wabaId && wabaId !== "all") {
@@ -49,13 +47,11 @@ export async function GET(req: Request) {
       return NextResponse.json({ success: true, chats: [] });
     }
 
-    // ── STEP 2: Aggregate chat list ──
     const chats = await Message.aggregate([
       {
         $match: {
           userId: new mongoose.Types.ObjectId(userId),
           phone: { $in: matchingPhones },
-          // Strict filter inside aggregate too
           ...(wabaId && wabaId !== "all" ? { whatsappPhoneNumberId: wabaId } : {})
         },
       },
@@ -73,6 +69,7 @@ export async function GET(req: Request) {
         },
       },
       { $sort: { updatedAt: -1 } },
+      { $limit: 20 } // ✅ Only load the 20 most recent active chats instantly
     ]);
 
     return NextResponse.json({ success: true, chats });
