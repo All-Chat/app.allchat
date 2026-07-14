@@ -5,7 +5,6 @@
 // Force load environment variables BEFORE any other imports
 require('dotenv').config({ path: '.env.local' });
 
-import { Worker, Queue } from 'bullmq';
 import { connectDB } from '../lib/mongodb';
 import Campaign from '../models/Campaign';
 import User from '../models/User';
@@ -13,12 +12,48 @@ import Message from '../models/Message';
 import mongoose from 'mongoose';
 import { getPriceForCategory } from '../lib/billing';
 import { syncCampaignToGoogleSheet } from '../lib/googleSheetSync';
+import { Job, Cache, statsQueue } from '../lib/queue'; // 🚀 NEW: Import MongoDB Job, Cache, and statsQueue
 
 // ==========================================
 // 0. CONNECT TO MONGO ON STARTUP
 // ==========================================
 connectDB()
-  .then(() => console.log('✅ Worker process connected to MongoDB'))
+  .then(async () => {
+    console.log('✅ Worker process connected to MongoDB');
+    
+    // Start all background workers
+    startCampaignWorker();
+    startWorker('counts-processing', async (job) => {
+      if (job.name === 'generate-counts') {
+        return await generateCountsData(job.data.userId, job.data.page, job.data.limit, job.data.cacheKey, job.data.lockKey);
+      }
+    }, 5);
+    
+    startWorker('report-processing', async (job) => {
+      if (job.name === 'refresh-report-cache') {
+        return await refreshReportCache(job.data);
+      }
+    }, 5);
+    
+    startWorker('stats-processing', async (job) => {
+      if (job.name === 'sync-user-stats') {
+        return await syncUserStats(job.data.userId);
+      }
+      if (job.name === 'sync-all-stats') {
+        return await syncAllStats();
+      }
+    }, 1);
+
+    // Start periodic stats sync every 10 minutes
+    setInterval(async () => {
+      try {
+        await statsQueue.add('sync-all-stats', {}, { removeOnComplete: true, removeOnFail: true });
+        console.log('⏰ Queued periodic sync-all-stats');
+      } catch (e) { console.error('Failed to queue periodic stats', e); }
+    }, 10 * 60 * 1000);
+
+    console.log('🚀 Standalone worker process started — campaign / counts / report / stats workers running using MongoDB.');
+  })
   .catch((err) => {
     console.error('❌ Worker process failed to connect to MongoDB:', err);
     process.exit(1);
@@ -31,22 +66,101 @@ export async function ensureDbConnected() {
 }
 
 // ==========================================
-// 1. REDIS & QUEUE CONFIGURATION
+// 1. MONGODB QUEUE WORKER LOGIC
 // ==========================================
-const connection = {
-  host: process.env.REDIS_HOST || '127.0.0.1',
-  port: parseInt(process.env.REDIS_PORT || '6379'),
-  password: process.env.REDIS_PASSWORD || undefined,
-  tls: process.env.REDIS_HOST && process.env.REDIS_HOST !== '127.0.0.1' ? {} : undefined,
-  maxRetriesPerRequest: null,
-  keepAlive: 30000,
-  enableReadyCheck: false,
-  connectTimeout: 10000,
-};
+async function startWorker(queueName: string, processor: (job: any) => Promise<any>, concurrency: number = 1) {
+  console.log(`🚀 Worker started for queue: ${queueName} (Concurrency: ${concurrency})`);
+  
+  for (let i = 0; i < concurrency; i++) {
+    (async () => {
+      while (true) {
+        try {
+          // Atomically find and claim the next pending job
+          const job = await Job.findOneAndUpdate(
+            { 
+              queue: queueName, 
+              $or: [
+                { status: "pending", createdAt: { $lte: new Date() } },
+                { status: "processing", lockedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } } // Reset stuck jobs (5 mins)
+              ]
+            },
+            { $set: { status: "processing", lockedAt: new Date() } },
+            { sort: { createdAt: 1 }, returnDocument: "after" }
+          ).lean();
 
-const countsQueue = new Queue('counts-processing', { connection });
-const reportQueue = new Queue('report-processing', { connection });
-const statsQueue = new Queue('stats-processing', { connection }); // 🚀 NEW
+          if (job) {
+            console.log(`▶️ Processing job ${job.name} (${job._id}) in ${queueName}`);
+            try {
+              const result = await processor({ id: job._id.toString(), name: job.name, data: job.data });
+              
+              // Handle removeOnComplete/removeOnFail logic
+              const shouldRemove = job.opts?.removeOnComplete || job.opts?.removeOnFail;
+              if (shouldRemove) {
+                await Job.deleteOne({ _id: job._id });
+              } else {
+                await Job.updateOne({ _id: job._id }, { $set: { status: "completed", result } });
+              }
+              console.log(`✅ Completed job ${job.name} (${job._id})`);
+            } catch (err: any) {
+              console.error(`❌ Failed job ${job.name} (${job._id}):`, err.message);
+              const shouldRemove = job.opts?.removeOnFail || job.opts?.removeOnComplete;
+              if (shouldRemove) {
+                await Job.deleteOne({ _id: job._id });
+              } else {
+                await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
+              }
+            }
+          } else {
+            // Wait 1 second before polling again to save DB CPU
+            await new Promise((r) => setTimeout(r, 1000));
+          }
+        } catch (err) {
+          console.error(`Polling error for ${queueName}:`, err);
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+      }
+    })();
+  }
+}
+
+// Dedicated campaign worker to enforce the 1 req/sec rate limit
+async function startCampaignWorker() {
+  console.log('🚀 Worker started for queue: campaign-processing (Concurrency: 1, Rate: 1/sec)');
+  while (true) {
+    try {
+      const job = await Job.findOneAndUpdate(
+        { 
+          queue: 'campaign-processing', 
+          $or: [
+            { status: "pending", createdAt: { $lte: new Date() } },
+            { status: "processing", lockedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } }
+          ]
+        },
+        { $set: { status: "processing", lockedAt: new Date() } },
+        { sort: { createdAt: 1 }, returnDocument: "after" }
+      ).lean();
+
+      if (job) {
+        console.log(`▶️ Processing chunk ${job.data.startIdx}-${job.data.endIdx} (${job._id})`);
+        try {
+          await processCampaignChunk(job.data);
+          await Job.deleteOne({ _id: job._id }); // Chunks are always removeOnComplete
+          console.log(`✅ Chunk ${job.data.startIdx}-${job.data.endIdx} completed`);
+        } catch (err: any) {
+          console.error(`❌ Chunk ${job.data.startIdx}-${job.data.endIdx} failed:`, err.message);
+          await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
+        }
+        // Wait 1 second to enforce the limiter: { max: 1, duration: 1000 }
+        await new Promise(r => setTimeout(r, 1000));
+      } else {
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    } catch (err) {
+      console.error('Polling error for campaign-processing:', err);
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+}
 
 // ==========================================
 // 2. HELPER FUNCTIONS
@@ -96,25 +210,7 @@ function buildCampaignComponents(headerFormat: string, variables: string[], medi
 }
 
 // ==========================================
-// 3. CAMPAIGN WORKER
-// ==========================================
-const campaignWorker = new Worker('campaign-processing', async (job) => {
-  if (job.name === 'send-chunk') {
-    await processCampaignChunk(job.data);
-  }
-}, {
-  connection,
-  concurrency: 1,
-  limiter: { max: 1, duration: 1000 },
-  stalledInterval: 300000,
-  maxStalledCount: 2
-});
-
-campaignWorker.on('completed', (job: any) => console.log(`✅ Chunk ${job.data.startIdx}-${job.data.endIdx} completed`));
-campaignWorker.on('failed', (job: any, err: Error) => console.error(`❌ Chunk ${job?.data.startIdx}-${job?.data.endIdx} failed:`, err.message));
-
-// ==========================================
-// 4. PRICE CACHE OPTIMIZATION
+// 3. PRICE CACHE OPTIMIZATION
 // ==========================================
 const priceMapCache = new Map<string, { map: Map<string, number>, defaultPrice: number, timestamp: number }>();
 const PRICE_CACHE_TTL = 5 * 60 * 1000;
@@ -149,7 +245,7 @@ function getOptimizedPriceForPhone(payerId: string, payer: any, phone: string, c
 }
 
 // ==========================================
-// 5. WORKER LOGIC: Process Campaign Chunk
+// 4. WORKER LOGIC: Process Campaign Chunk
 // ==========================================
 async function processCampaignChunk(data: any) {
   const { campaignId, userId, payerId, startIdx, endIdx, PHONE_NUMBER_ID, ACCESS_TOKEN } = data;
@@ -263,7 +359,7 @@ async function processCampaignChunk(data: any) {
     await Campaign.updateOne({ _id: campaignId }, { $inc: { sentCount: sent, failedCount: failed, totalDeducted: ded } });
   } catch (e) { console.error(`[Worker] Campaign counter increment error:`, e); }
 
-  // 🚀 AUTOMATIC BACKGROUND SYNC: Queue stats update after chunk finishes
+  // Queue stats update after chunk finishes
   try {
     await statsQueue.add('sync-user-stats', { userId }, { removeOnComplete: true, removeOnFail: true });
   } catch (e) { console.error(`[Worker] Failed to queue stats sync:`, e); }
@@ -290,7 +386,7 @@ async function processCampaignChunk(data: any) {
 }
 
 // ==========================================
-// 6. META API WORKER FUNCTION
+// 5. META API WORKER FUNCTION
 // ==========================================
 async function metaSenderWorker(phone: string, variables: string[], tc: any, token: string, pnId: string, thf: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
   let comps = buildCampaignComponents(thf, variables, tc.mediaUrl || "");
@@ -356,17 +452,8 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
 }
 
 // ==========================================
-// 7. COUNTS WORKER (Optimized Aggregation)
+// 6. COUNTS WORKER (Optimized Aggregation)
 // ==========================================
-const countsWorker = new Worker('counts-processing', async (job) => {
-  if (job.name === 'generate-counts') {
-    return await generateCountsData(job.data.userId, job.data.page, job.data.limit, job.data.cacheKey, job.data.lockKey);
-  }
-}, { connection, concurrency: 5 });
-
-countsWorker.on('completed', () => console.log('✅ Counts job completed for user'));
-countsWorker.on('failed', (job: any, err: Error) => console.error(`❌ Counts job failed:`, err.message));
-
 async function generateCountsData(userId: string, page: number, limit: number, cacheKey: string, lockKey: string) {
   try {
     await ensureDbConnected();
@@ -455,31 +542,25 @@ async function generateCountsData(userId: string, page: number, limit: number, c
     const result = { success: true, campaigns: fixedCampaigns, page, limit };
     const cachePayload = JSON.stringify(result);
 
-    const redisClient = await countsQueue.client;
-    await redisClient.set(cacheKey, cachePayload, { EX: 3600 });
-    await redisClient.del(lockKey).catch(() => {});
+    // 🚀 NEW: Using MongoDB Cache instead of Redis
+    await Cache.updateOne(
+      { key: cacheKey },
+      { $set: { value: cachePayload, expireAt: new Date(Date.now() + 3600 * 1000) } },
+      { upsert: true }
+    );
+    await Cache.deleteOne({ key: lockKey }).catch(() => {});
 
     return result;
   } catch (error) {
     console.error("❌ Counts generation error:", error);
-    const redisClient = await countsQueue.client;
-    await redisClient.del(lockKey).catch(() => {});
+    await Cache.deleteOne({ key: lockKey }).catch(() => {});
     return { success: false, message: "Failed to generate counts" };
   }
 }
 
 // ==========================================
-// 8. REPORT WORKER
+// 7. REPORT WORKER
 // ==========================================
-const reportWorker = new Worker('report-processing', async (job) => {
-  if (job.name === 'refresh-report-cache') {
-    return await refreshReportCache(job.data);
-  }
-}, { connection, concurrency: 5 });
-
-reportWorker.on('completed', (job: any) => console.log(`✅ Report cache refreshed for campaign ${job.data.campaignId}`));
-reportWorker.on('failed', (job: any, err: Error) => console.error(`❌ Report job failed:`, err.message));
-
 async function refreshReportCache(data: any) {
   const { campaignId, userId, cacheKey, lockKey } = data;
   try {
@@ -496,9 +577,15 @@ async function refreshReportCache(data: any) {
     if (!result || result.length === 0) return { success: false, message: "Campaign not found", status: 404 };
 
     const campaign = result[0];
-    const redisClient = await reportQueue.client;
-    await redisClient.set(cacheKey, JSON.stringify({ stats: campaign.campaignStats, data: campaign.mappedReportData, meta: { name: campaign.name, templateName: campaign.templateName, additionalFields: campaign.additionalFields, languageCode: campaign.languageCode, totalDeducted: campaign.totalDeducted } }), { EX: 3600 });
-    await redisClient.del(lockKey).catch(() => {});
+    
+    // 🚀 NEW: Using MongoDB Cache instead of Redis
+    await Cache.updateOne(
+      { key: cacheKey },
+      { $set: { value: JSON.stringify({ stats: campaign.campaignStats, data: campaign.mappedReportData, meta: { name: campaign.name, templateName: campaign.templateName, additionalFields: campaign.additionalFields, languageCode: campaign.languageCode, totalDeducted: campaign.totalDeducted } }), expireAt: new Date(Date.now() + 3600 * 1000) } },
+      { upsert: true }
+    );
+    await Cache.deleteOne({ key: lockKey }).catch(() => {});
+    
     return { success: true };
   } catch (error: any) {
     console.error("❌ Report Worker Error:", error);
@@ -507,20 +594,8 @@ async function refreshReportCache(data: any) {
 }
 
 // ==========================================
-// 9. STATS WORKER (Background DB Sync) 🚀 NEW
+// 8. STATS WORKER (Background DB Sync) 🚀 NEW
 // ==========================================
-const statsWorker = new Worker('stats-processing', async (job) => {
-  if (job.name === 'sync-user-stats') {
-    return await syncUserStats(job.data.userId);
-  }
-  if (job.name === 'sync-all-stats') {
-    return await syncAllStats();
-  }
-}, { connection, concurrency: 1 });
-
-statsWorker.on('completed', (job: any) => console.log(`✅ Stats sync completed for job: ${job.id}`));
-statsWorker.on('failed', (job: any, err: Error) => console.error(`❌ Stats sync failed:`, err.message));
-
 async function syncUserStats(userId: string) {
   try {
     await ensureDbConnected();
@@ -617,20 +692,7 @@ async function syncAllStats() {
   }
 }
 
-// Setup repeatable cron job to sync all stats every 10 minutes
-statsQueue.add('sync-all-stats', {}, { 
-  repeat: { pattern: '*/10 * * * *' }, 
-  removeOnComplete: true, 
-  removeOnFail: true 
-}).catch(console.error);
-
-console.log('🚀 Standalone worker process started — campaign / counts / report / stats workers running independently of the web server.');
-
 process.on('SIGTERM', async () => {
   console.log('Worker process shutting down...');
-  await campaignWorker.close();
-  await countsWorker.close();
-  await reportWorker.close();
-  await statsWorker.close(); // 🚀 NEW
   process.exit(0);
 });
