@@ -12,7 +12,7 @@ import Message from '../models/Message';
 import mongoose from 'mongoose';
 import { getPriceForCategory } from '../lib/billing';
 import { syncCampaignToGoogleSheet } from '../lib/googleSheetSync';
-import { Job, Cache, statsQueue } from '../lib/queue'; // 🚀 NEW: Import MongoDB Job, Cache, and statsQueue
+import { Job, Cache, statsQueue } from '../lib/queue';
 
 // ==========================================
 // 0. CONNECT TO MONGO ON STARTUP
@@ -75,12 +75,12 @@ async function startWorker(queueName: string, processor: (job: any) => Promise<a
     (async () => {
       while (true) {
         try {
-          // Atomically find and claim the next pending job
+          // Atomically find and claim the next pending job (Removed strict date check)
           const job = await Job.findOneAndUpdate(
             { 
               queue: queueName, 
               $or: [
-                { status: "pending", createdAt: { $lte: new Date() } },
+                { status: "pending" },
                 { status: "processing", lockedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } } // Reset stuck jobs (5 mins)
               ]
             },
@@ -93,7 +93,6 @@ async function startWorker(queueName: string, processor: (job: any) => Promise<a
             try {
               const result = await processor({ id: job._id.toString(), name: job.name, data: job.data });
               
-              // Handle removeOnComplete/removeOnFail logic
               const shouldRemove = job.opts?.removeOnComplete || job.opts?.removeOnFail;
               if (shouldRemove) {
                 await Job.deleteOne({ _id: job._id });
@@ -128,11 +127,12 @@ async function startCampaignWorker() {
   console.log('🚀 Worker started for queue: campaign-processing (Concurrency: 1, Rate: 1/sec)');
   while (true) {
     try {
+      // Atomically find and claim the next pending job (Removed strict date check)
       const job = await Job.findOneAndUpdate(
         { 
           queue: 'campaign-processing', 
           $or: [
-            { status: "pending", createdAt: { $lte: new Date() } },
+            { status: "pending" },
             { status: "processing", lockedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } }
           ]
         },
@@ -359,7 +359,6 @@ async function processCampaignChunk(data: any) {
     await Campaign.updateOne({ _id: campaignId }, { $inc: { sentCount: sent, failedCount: failed, totalDeducted: ded } });
   } catch (e) { console.error(`[Worker] Campaign counter increment error:`, e); }
 
-  // Queue stats update after chunk finishes
   try {
     await statsQueue.add('sync-user-stats', { userId }, { removeOnComplete: true, removeOnFail: true });
   } catch (e) { console.error(`[Worker] Failed to queue stats sync:`, e); }
@@ -452,7 +451,7 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
 }
 
 // ==========================================
-// 6. COUNTS WORKER (Optimized Aggregation)
+// 6. COUNTS WORKER
 // ==========================================
 async function generateCountsData(userId: string, page: number, limit: number, cacheKey: string, lockKey: string) {
   try {
@@ -542,7 +541,6 @@ async function generateCountsData(userId: string, page: number, limit: number, c
     const result = { success: true, campaigns: fixedCampaigns, page, limit };
     const cachePayload = JSON.stringify(result);
 
-    // 🚀 NEW: Using MongoDB Cache instead of Redis
     await Cache.updateOne(
       { key: cacheKey },
       { $set: { value: cachePayload, expireAt: new Date(Date.now() + 3600 * 1000) } },
@@ -578,7 +576,6 @@ async function refreshReportCache(data: any) {
 
     const campaign = result[0];
     
-    // 🚀 NEW: Using MongoDB Cache instead of Redis
     await Cache.updateOne(
       { key: cacheKey },
       { $set: { value: JSON.stringify({ stats: campaign.campaignStats, data: campaign.mappedReportData, meta: { name: campaign.name, templateName: campaign.templateName, additionalFields: campaign.additionalFields, languageCode: campaign.languageCode, totalDeducted: campaign.totalDeducted } }), expireAt: new Date(Date.now() + 3600 * 1000) } },
@@ -594,7 +591,7 @@ async function refreshReportCache(data: any) {
 }
 
 // ==========================================
-// 8. STATS WORKER (Background DB Sync) 🚀 NEW
+// 8. STATS WORKER
 // ==========================================
 async function syncUserStats(userId: string) {
   try {
