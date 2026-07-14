@@ -84,6 +84,37 @@ export async function GET(req: Request) {
       const filterOut = searchParams.get("filterOut")?.split(",").filter(Boolean) || [];
       const search = searchParams.get("search") || "";
 
+      // Reusable expressions to avoid duplicate code and ensure accurate filtering
+      const isRepliedExpr = {
+        $or: [
+          { $ne: [{ $ifNull: ["$$r.reply", ""] }, ""] },
+          { $gt: [ { $size: { $filter: { input: { $ifNull: ["$$r.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0 ] },
+          { $in: [normalizePhoneExpr("$$r.phone"), "$repliedPhonesSet"] }
+        ]
+      };
+
+      const baseStatusExpr = {
+        $switch: {
+          branches: [
+            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "read"] }, then: "read" },
+            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "delivered"] }, then: "delivered" },
+            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "sent"] }, then: "sent" },
+            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "failed"] }, then: "failed" },
+            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "invalid"] }, then: "invalid" },
+            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "duplicate"] }, then: "duplicate" },
+          ],
+          default: "pending"
+        }
+      };
+
+      const effectiveStatusExpr = {
+        $cond: {
+          if: isRepliedExpr,
+          then: "replied",
+          else: baseStatusExpr
+        }
+      };
+
       const andConditions: any[] = [];
 
       if (search) {
@@ -96,11 +127,11 @@ export async function GET(req: Request) {
       }
 
       if (showOnly.length > 0) {
-        andConditions.push({ $in: ["$$r.status", showOnly] });
+        andConditions.push({ $in: [effectiveStatusExpr, showOnly] });
       }
       
       if (filterOut.length > 0) {
-        andConditions.push({ $not: [{ $in: ["$$r.status", filterOut] }] });
+        andConditions.push({ $not: [{ $in: [effectiveStatusExpr, filterOut] }] });
       }
 
       const finalFilterCond = andConditions.length > 0 ? { $and: andConditions } : true;
@@ -156,6 +187,55 @@ export async function GET(req: Request) {
             repliedPhonesSet: { $setUnion: ["$inboundMsgs.normalizedPhone", []] },
           },
         },
+        // ==========================================
+        // FAST STATS CALCULATION (No mapping overhead)
+        // ==========================================
+        {
+          $addFields: {
+            campaignStats: {
+              total: { $size: { $ifNull: ["$reportData", []] } },
+              replied: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: isRepliedExpr } } },
+              read: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "read"] }, { $not: isRepliedExpr } ] } } } },
+              delivered: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "delivered"] }, { $not: isRepliedExpr } ] } } } },
+              sent: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "sent"] }, { $not: isRepliedExpr } ] } } } },
+              failed: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "failed"] }, { $not: isRepliedExpr } ] } } } },
+              invalid: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "invalid"] }, { $not: isRepliedExpr } ] } } } },
+              duplicate: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "duplicate"] }, { $not: isRepliedExpr } ] } } } },
+              pending: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $or: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "pending"] }, { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "queued"] }, { $eq: [{ $ifNull: ["$$r.status", ""] }, ""] } ] }, { $not: isRepliedExpr } ] } } } },
+            }
+          }
+        },
+        // ==========================================
+        // APPLY FILTERS
+        // ==========================================
+        {
+          $addFields: {
+            filteredData: {
+              $filter: {
+                input: { $ifNull: ["$reportData", []] },
+                as: "r",
+                cond: finalFilterCond,
+              },
+            },
+          },
+        },
+        // ==========================================
+        // SLICE DATA EARLY (Pagination limit applied here!)
+        // ==========================================
+        {
+          $addFields: {
+            paginatedData: {
+              $cond: {
+                if: isDownload,
+                then: "$filteredData",
+                else: { $slice: ["$filteredData", skip, limit] }
+              }
+            }
+          }
+        },
+        // ==========================================
+        // HEAVY MAPPING (Only processes 50 items now!)
+        // ==========================================
         {
           $project: {
             name: 1,
@@ -163,9 +243,11 @@ export async function GET(req: Request) {
             additionalFields: 1,
             languageCode: 1,
             totalDeducted: 1,
-            mappedReportData: {
+            campaignStats: 1,
+            totalFiltered: { $size: "$filteredData" },
+            reportData: {
               $map: {
-                input: { $ifNull: ["$reportData", []] },
+                input: "$paginatedData",
                 as: "r",
                 in: {
                   $let: {
@@ -175,39 +257,14 @@ export async function GET(req: Request) {
                           input: { $ifNull: ["$inboundMsgs", []] },
                           as: "msg",
                           cond: { $eq: ["$$msg.normalizedPhone", normalizePhoneExpr("$$r.phone")] }
-                      }
-                      },
-                      baseStatus: {
-                        $switch: {
-                          branches: [
-                            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "read"] }, then: "read" },
-                            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "delivered"] }, then: "delivered" },
-                            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "sent"] }, then: "sent" },
-                            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "failed"] }, then: "failed" },
-                            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "invalid"] }, then: "invalid" },
-                            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "duplicate"] }, then: "duplicate" },
-                          ],
-                          default: "pending"
-                      }
+                        }
                       }
                     },
                     in: {
                       $mergeObjects: [
                         "$$r",
                         {
-                          status: {
-                            $cond: {
-                              if: {
-                                $or: [
-                                  { $ne: [{ $ifNull: ["$$r.reply", ""] }, ""] },
-                                  { $gt: [ { $size: { $filter: { input: { $ifNull: ["$$r.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0 ] },
-                                  { $gt: [ { $size: "$$matchedMsgs" }, 0 ] }
-                                ]
-                              },
-                              then: "replied",
-                              else: "$$baseStatus"
-                            }
-                          },
+                          status: effectiveStatusExpr,
                           replies: {
                             $filter: {
                               input: {
@@ -243,47 +300,8 @@ export async function GET(req: Request) {
                     }
                   }
                 }
-              },
+              }
             },
-          },
-        },
-        {
-          $project: {
-            name: 1,
-            templateName: 1,
-            additionalFields: 1,
-            languageCode: 1,
-            totalDeducted: 1,
-            campaignStats: {
-              total: { $size: { $ifNull: ["$mappedReportData", []] } },
-              replied: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r.status", "replied"] } } } },
-              read: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r.status", "read"] } } } },
-              delivered: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r.status", "delivered"] } } } },
-              sent: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r.status", "sent"] } } } },
-              failed: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r.status", "failed"] } } } },
-              invalid: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r.status", "invalid"] } } } },
-              duplicate: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r.status", "duplicate"] } } } },
-              pending: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r.status", "pending"] } } } },
-            },
-            filteredData: {
-              $filter: {
-                input: "$mappedReportData",
-                as: "r",
-                cond: finalFilterCond,
-              },
-            },
-          },
-        },
-        {
-          $project: {
-            name: 1,
-            templateName: 1,
-            additionalFields: 1,
-            languageCode: 1,
-            totalDeducted: 1,
-            campaignStats: 1,
-            reportData: isDownload ? "$filteredData" : { $slice: ["$filteredData", skip, limit] },
-            totalFiltered: { $size: "$filteredData" },
           },
         },
       ];
