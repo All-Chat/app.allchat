@@ -80,10 +80,34 @@ class MongoQueue {
   constructor(queueName: string) {
     this.queueName = queueName;
   }
+  
   async add(name: string, data: any, opts?: any) {
     return addJob(this.queueName, name, data, opts);
   }
-  
+
+  // 🚀 NEW: Add bulk jobs efficiently
+  async addBulk(jobs: Array<{ name: string; data: any; opts?: any }>) {
+    if (!jobs || jobs.length === 0) return [];
+    
+    const docs = jobs.map(job => ({
+      queue: this.queueName,
+      name: job.name,
+      data: job.data,
+      status: "pending",
+      opts: job.opts || {},
+    }));
+    
+    try {
+      const insertedDocs = await Job.insertMany(docs, { ordered: false });
+      return insertedDocs.map((doc: { _id: { toString: () => any; }; }) => ({
+        id: doc._id.toString(),
+      }));
+    } catch (error) {
+      console.error("Error in addBulk:", error);
+      throw error;
+    }
+  }
+
   // Allows existing code `await queue.client` to use MongoDB cache seamlessly
   get client() {
     return mockClient;
