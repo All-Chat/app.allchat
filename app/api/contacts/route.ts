@@ -15,15 +15,26 @@ export async function GET(req: Request) {
 
     const { searchParams } = new URL(req.url);
     const tag = searchParams.get("tag");
+    const phone = searchParams.get("phone");
 
-    // Build query
-    const query: any = { userId: session.user.id };
-    if (tag) {
-      query.tags = tag; // Filter by tag if provided
+    // ✅ If a phone number is provided, fetch ONLY that contact
+    if (phone) {
+      const cleanPhone = phone.replace(/\+/g, "");
+      const contact = await Contact.findOne({ 
+        userId: session.user.id, 
+        phone: cleanPhone 
+      }).select("phone name tags profilePicUrl -_id").lean(); // ✅ Added profilePicUrl
+      
+      return NextResponse.json({ success: true, contact });
     }
 
-    const contacts = await Contact.find(query).select("phone name tags -_id");
+    // Build query for list (if no phone is provided)
+    const query: any = { userId: session.user.id };
+    if (tag) {
+      query.tags = tag; 
+    }
 
+    const contacts = await Contact.find(query).select("phone name tags profilePicUrl -_id").lean();
     return NextResponse.json({ success: true, contacts });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
