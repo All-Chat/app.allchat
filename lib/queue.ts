@@ -83,9 +83,27 @@ class MongoQueue {
   async add(name: string, data: any, opts?: any) {
     return addJob(this.queueName, name, data, opts);
   }
+  
   // Allows existing code `await queue.client` to use MongoDB cache seamlessly
   get client() {
     return mockClient;
+  }
+
+  // 🚀 NEW: Methods to support queue count checks in API routes
+  async getActiveCount() {
+    return Job.countDocuments({ queue: this.queueName, status: "processing" });
+  }
+  async getWaitingCount() {
+    return Job.countDocuments({ queue: this.queueName, status: "pending" });
+  }
+  async getCompletedCount() {
+    return Job.countDocuments({ queue: this.queueName, status: "completed" });
+  }
+  async getFailedCount() {
+    return Job.countDocuments({ queue: this.queueName, status: "failed" });
+  }
+  async getDelayedCount() {
+    return 0; // Not actively used, returning 0 to satisfy interface
   }
 }
 
