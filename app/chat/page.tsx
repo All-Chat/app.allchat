@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* =====================================================================
-   LIVE CHAT PAGE - MULTI-WABA SUPPORT
+   LIVE CHAT PAGE - MULTI-WABA SUPPORT (20 FAST + BACKGROUND DETAILS)
    ===================================================================== */
 
 /* eslint-disable react-hooks/set-state-in-effect */
@@ -20,7 +20,6 @@ import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { useSession } from "next-auth/react";
 
-// ─── Type Definitions ───────────────────────────────────────────────────────
 type TemplateButton = {
   type: "quick_reply" | "url" | "phone_number";
   text: string;
@@ -46,8 +45,6 @@ type Message = {
   templateHeaderText?: string;
   templateBodyText?: string;
   templateFooter?: string;
-  // ✅ Also used as a generic "buttons" carrier for workflow-sent messages
-  // (quick replies / CTA URL / CTA phone) that aren't WhatsApp templates.
   templateButtons?: TemplateButton[] | string;
   templateLanguage?: string;
   whatsappPhoneNumberId?: string;
@@ -75,7 +72,12 @@ type WhatsappNumber = {
   isActive?: boolean;
 };
 
-// ─── Utility Functions ──────────────────────────────────────────────────────
+// ✅ NEW: Type to hold both Name and Profile Picture URL
+type ContactDetails = {
+  name?: string;
+  profilePicUrl?: string;
+};
+
 const getAvatarGradient = (id: string) => {
   const colors = [
     "from-pink-500 to-rose-500",
@@ -109,9 +111,6 @@ const handleUnauthorized = (res: Response) => {
   return false;
 };
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// MAIN COMPONENT
-// ═══════════════════════════════════════════════════════════════════════════════
 export default function ChatPage() {
   const { data: session, status } = useSession();
 
@@ -126,7 +125,9 @@ export default function ChatPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
-  const [contactNames, setContactNames] = useState<Record<string, string>>({});
+  
+  // ✅ NEW: State holds both name and profile pic
+  const [contactDetails, setContactDetails] = useState<Record<string, ContactDetails>>({});
   const [searchQuery, setSearchQuery] = useState("");
 
   const [whatsappNumbers, setWhatsappNumbers] = useState<WhatsappNumber[]>([]);
@@ -134,11 +135,9 @@ export default function ChatPage() {
   const [loadingNumbers, setLoadingNumbers] = useState(true);
 
   const [mediaErrors, setMediaErrors] = useState<Record<string, boolean>>({});
-  
-  // ✅ FIX: Store fetched templates in a separate state so they survive message polling
   const [fetchedTemplateData, setFetchedTemplateData] = useState<Record<string, any>>({});
   const fetchedTemplates = useRef<Set<string>>(new Set()); 
-  
+
   const [showChatList, setShowChatList] = useState(true);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -147,6 +146,7 @@ export default function ChatPage() {
   const fetchedContacts = useRef<Set<string>>(new Set());
   const isFetchingChats = useRef(false);
   const isFetchingMessages = useRef(false);
+  const isInitialLoad = useRef(false); 
 
   const fetchWhatsappNumbers = useCallback(async () => {
     setLoadingNumbers(true);
@@ -189,7 +189,8 @@ export default function ChatPage() {
     return null;
   }, [whatsappNumbers, selectedWabaId]);
 
-  const fetchContactName = useCallback(async (phoneId: string) => {
+  // ✅ NEW: Fetch details (Name + PP) for a single phone in the background
+  const fetchContactDetails = useCallback(async (phoneId: string) => {
     if (fetchedContacts.current.has(phoneId)) return;
     fetchedContacts.current.add(phoneId);
     try {
@@ -197,21 +198,27 @@ export default function ChatPage() {
       const res = await fetch(`/api/contacts?phone=${encodeURIComponent(cleanPhone)}`);
       if (handleUnauthorized(res)) return;
       const data = await res.json();
-      if (data.success && data.contact?.name && data.contact.name.trim() !== "") {
-        setContactNames((prev) => {
-          if (prev[phoneId] === data.contact.name) return prev;
-          return { ...prev, [phoneId]: data.contact.name };
-        });
+      if (data.success && data.contact) {
+        const newName = data.contact.name?.trim() && data.contact.name !== "Unknown" ? data.contact.name : undefined;
+        const newPic = data.contact.profilePicUrl || undefined;
+        
+        if (newName || newPic) {
+          setContactDetails((prev) => ({ 
+            ...prev, 
+            [phoneId]: { name: newName, profilePicUrl: newPic } 
+          }));
+        }
       }
     } catch { /* silent */ }
   }, []);
 
   const getResolvedName = useCallback((chat: Chat): string => {
-    if (contactNames[chat._id]?.trim()) return contactNames[chat._id];
+    const contactName = contactDetails[chat._id]?.name;
+    if (contactName && contactName.trim()) return contactName;
     if (chat.name?.trim() && chat.name !== "Unknown") return chat.name;
     if (chat.phone?.trim() && chat.phone !== "Unknown") return chat.phone;
     return chat._id;
-  }, [contactNames]);
+  }, [contactDetails]);
 
   const getDisplayName = (chat: Chat | null) => {
     if (!chat) return "";
@@ -220,6 +227,25 @@ export default function ChatPage() {
   };
 
   const getAvatarLabel = (chat: Chat) => getAvatarText(getResolvedName(chat), chat.phone || chat._id);
+
+  // ✅ NEW: Helper to render Avatar (Image or Gradient Fallback)
+  const renderAvatar = (chatId: string, sizeClass: string, textClass: string) => {
+    const picUrl = contactDetails[chatId]?.profilePicUrl;
+    if (picUrl) {
+      return (
+        <img 
+          src={picUrl} 
+          alt="avatar" 
+          className={`${sizeClass} rounded-full object-cover shadow-md flex-shrink-0`} 
+        />
+      );
+    }
+    return (
+      <div className={`${sizeClass} rounded-full bg-gradient-to-br ${getAvatarGradient(chatId)} flex items-center justify-center font-bold text-white ${textClass} shadow-md flex-shrink-0`}>
+        {getAvatarLabel({ _id: chatId, name: contactDetails[chatId]?.name } as Chat)}
+      </div>
+    );
+  };
 
   const checkScrollPosition = () => {
     const c = chatContainerRef.current;
@@ -233,13 +259,17 @@ export default function ChatPage() {
 
   useEffect(() => {
     const c = chatContainerRef.current;
-    if (!c) return;
-    if (c.scrollHeight - c.scrollTop - c.clientHeight < 120) scrollToBottom("smooth");
+    if (!c || messages.length === 0) return;
+    
+    if (isInitialLoad.current) {
+      scrollToBottom("instant");
+      isInitialLoad.current = false;
+    } else {
+      if (c.scrollHeight - c.scrollTop - c.clientHeight < 200) {
+        scrollToBottom("smooth");
+      }
+    }
   }, [messages]);
-
-  useEffect(() => {
-    if (activeChat) setTimeout(() => scrollToBottom("instant"), 50);
-  }, [activeChat]);
 
   const loadChats = useCallback(async () => {
     if (isFetchingChats.current) return;
@@ -270,18 +300,16 @@ export default function ChatPage() {
           return data.chats;
         });
 
+        // ✅ Fetch details (Name/PP) in the background ONLY for the 20 loaded chats
         data.chats.forEach((chat: Chat) => {
-          if (!chat.name || chat.name === "Unknown" || !chat.name.trim()) {
-            fetchContactName(chat._id);
+          if (!contactDetails[chat._id]) {
+            fetchContactDetails(chat._id);
           }
         });
 
         if (activeChat) {
           const current = data.chats.find((c: Chat) => c._id === activeChat);
           if (current) setActiveChatData(current);
-        } else if (data.chats.length > 0) {
-          setActiveChat(data.chats[0]._id);
-          setActiveChatData(data.chats[0]);
         }
       }
     } catch (err) {
@@ -290,7 +318,7 @@ export default function ChatPage() {
       setLoading(false);
       isFetchingChats.current = false;
     }
-  }, [activeChat, fetchContactName, selectedWabaId]);
+  }, [activeChat, selectedWabaId, contactDetails, fetchContactDetails]);
 
   const loadMessages = useCallback(async () => {
     if (!activeChat || isFetchingMessages.current) return;
@@ -319,7 +347,6 @@ export default function ChatPage() {
         prevMessageCount.current = newMessages.length;
         setMessages(newMessages);
 
-        // ✅ FIX: Fetch template data ONCE and store in separate state
         for (const msg of newMessages) {
           const templateName = msg.templateName;
           if (templateName && !msg.templateBodyText && !fetchedTemplates.current.has(templateName)) {
@@ -342,10 +369,10 @@ export default function ChatPage() {
           if (msg.contactName?.trim() && msg.contactName !== "Unknown") {
             const key = activeChat!;
             const contactName = msg.contactName.trim();
-            setContactNames((prev) => {
-              if (prev[key] === contactName) return prev;
-              return { ...prev, [key]: contactName };
-            });
+            setContactDetails((prev) => ({ 
+              ...prev, 
+              [key]: { ...prev[key], name: contactName } 
+            }));
             break;
           }
         }
@@ -364,7 +391,7 @@ export default function ChatPage() {
     setMessages([]);
     setMediaErrors({});
     fetchedTemplates.current.clear();
-    setFetchedTemplateData({}); // Clear template cache on number change
+    setFetchedTemplateData({});
     prevMessageCount.current = 0;
     setShowChatList(true);
   };
@@ -387,11 +414,12 @@ export default function ChatPage() {
     prevMessageCount.current = 0;
     setMessages([]);
     setShowProfile(false);
+    isInitialLoad.current = true; 
     if (activeChat) {
       loadMessages();
-      fetchContactName(activeChat);
+      fetchContactDetails(activeChat);
     }
-  }, [activeChat, loadMessages, fetchContactName]);
+  }, [activeChat, loadMessages, fetchContactDetails]);
 
   useEffect(() => {
     if (status !== "authenticated" || loadingNumbers) return;
@@ -439,7 +467,7 @@ export default function ChatPage() {
         setText("");
         setSelectedFile(null);
         loadMessages();
-        fetchContactName(activeChat);
+        fetchContactDetails(activeChat);
         setTimeout(() => loadChats(), 500);
       } else {
         toast.error(data.message || "Failed to send");
@@ -513,9 +541,6 @@ export default function ChatPage() {
     );
   };
 
-  // ✅ NEW: Generic button/CTA renderer shared by both template AND
-  // workflow-sent (non-template) messages, since they use the same
-  // `templateButtons` field as their carrier.
   const renderButtonRow = (msg: Message) => {
     const buttons = parseTemplateButtons(msg.templateButtons);
     if (buttons.length === 0) return null;
@@ -604,8 +629,6 @@ export default function ChatPage() {
 
   const renderTemplateContent = (msg: Message) => {
     const src = getMediaSrc(msg.mediaUrl);
-    
-    // ✅ FIX: Merge DB template data with dynamically fetched data
     const tplData = msg.templateName ? fetchedTemplateData[msg.templateName] || {} : {};
     const headerType = msg.templateHeaderType || tplData.templateHeaderType || 
       (msg.messageType === "image" || msg.messageType === "video" || msg.messageType === "document" ? msg.messageType : undefined);
@@ -615,7 +638,6 @@ export default function ChatPage() {
     const headerText = msg.templateHeaderText || tplData.templateHeaderText;
     const footer = msg.templateFooter || tplData.templateFooter;
     
-    // Prefer message buttons, fallback to fetched buttons
     const msgButtons = parseTemplateButtons(msg.templateButtons);
     const buttons = msgButtons.length > 0 ? msgButtons : parseTemplateButtons(tplData.templateButtons);
 
@@ -822,11 +844,7 @@ export default function ChatPage() {
                           : "hover:bg-gray-50 border-l-4 border-l-transparent"
                       }`}
                     >
-                      <div
-                        className={`w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-gradient-to-br ${getAvatarGradient(chat._id)} flex items-center justify-center font-bold text-white text-sm shadow-md flex-shrink-0`}
-                      >
-                        {getAvatarLabel(chat)}
-                      </div>
+                      {renderAvatar(chat._id, "w-11 h-11 sm:w-12 sm:h-12", "text-sm")}
                       <div className="flex-1 min-w-0 overflow-hidden">
                         <div className="flex justify-between items-center">
                           <h3 className="font-semibold text-[14px] sm:text-[15px] text-gray-900 truncate">
@@ -877,11 +895,7 @@ export default function ChatPage() {
                     onClick={() => setShowProfile(true)}
                     className="flex items-center gap-2 md:gap-3 cursor-pointer hover:bg-gray-200 rounded-lg px-1 md:px-2 py-1 -ml-1 md:-ml-2 transition-colors flex-1 min-w-0"
                   >
-                    <div
-                      className={`w-9 h-9 md:w-10 md:h-10 rounded-full bg-gradient-to-br ${getAvatarGradient(activeChatData._id)} flex items-center justify-center font-bold text-white text-xs shadow flex-shrink-0`}
-                    >
-                      {getAvatarLabel(activeChatData)}
-                    </div>
+                    {renderAvatar(activeChatData._id, "w-9 h-9 md:w-10 md:h-10", "text-xs")}
                     <div className="flex-1 min-w-0">
                       <p className="font-semibold text-[14px] md:text-[15px] text-gray-900 truncate">
                         {getDisplayName(activeChatData)}
@@ -943,7 +957,7 @@ export default function ChatPage() {
                     </p>
                   </div>
                 ) : messages.length === 0 ? (
-                  <div className="h-full flex items-center justify-center text-gray-400 text-sm flex-col gap-2">
+                  <div className="h-full flex items-center justify-center text-gray-400 text-sm flex-col gap-2 mt-10">
                     <Lock size={16} /> No messages yet. Send one!
                   </div>
                 ) : (
@@ -1118,12 +1132,8 @@ export default function ChatPage() {
               </div>
               <div className="flex-1 overflow-y-auto">
                 <div className="bg-white p-6 sm:p-8 flex flex-col items-center shadow-sm">
-                  <div
-                    className={`w-24 h-24 sm:w-32 sm:h-32 rounded-full bg-gradient-to-br ${getAvatarGradient(activeChatData?._id || "")} flex items-center justify-center font-bold text-white text-3xl sm:text-5xl shadow-inner mb-4`}
-                  >
-                    {activeChatData ? getAvatarLabel(activeChatData) : "?"}
-                  </div>
-                  <h2 className="text-lg sm:text-xl font-semibold text-gray-900">
+                  {activeChatData && renderAvatar(activeChatData._id, "w-24 h-24 sm:w-32 sm:h-32", "text-3xl sm:text-5xl")}
+                  <h2 className="text-lg sm:text-xl font-semibold text-gray-900 mt-4">
                     {getDisplayName(activeChatData)}
                   </h2>
                   <p className="text-sm text-gray-600 mt-1 font-medium">
