@@ -498,7 +498,8 @@ export default function CampaignList() {
   const handleViewClick = async (campaignId: string) => {
     setViewLoadingId(campaignId);
     try {
-      const res = await fetch(`/api/campaigns/list?editId=${campaignId}`);
+      // ✅ Changed editId to viewId for instant loading
+      const res = await fetch(`/api/campaigns/list?viewId=${campaignId}`);
       if (res.status === 401) {
         router.push("/");
         return;
