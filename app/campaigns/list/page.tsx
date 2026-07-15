@@ -172,6 +172,7 @@ export default function CampaignList() {
   const [actionId, setActionId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [viewCampaign, setViewCampaign] = useState<Campaign | null>(null);
+  const [viewLoadingId, setViewLoadingId] = useState<string | null>(null); // 🚀 Loader for View Modal
   const [quickPhone, setQuickPhone] = useState("");
   const [timers, setTimers] = useState<Record<string, string>>({});
   const [searchTerm, setSearchTerm] = useState("");
@@ -493,6 +494,34 @@ export default function CampaignList() {
     }
   };
 
+  // 🚀 NEW: Fetch full campaign details (including phoneNumbers) specifically for the View Modal
+  const handleViewClick = async (campaignId: string) => {
+    setViewLoadingId(campaignId);
+    try {
+      const res = await fetch(`/api/campaigns/list?editId=${campaignId}`);
+      if (res.status === 401) {
+        router.push("/");
+        return;
+      }
+      const data = await res.json();
+      if (data.success && data.campaigns.length > 0) {
+        // Preserve live stats if they exist on the front-end
+        const existing = campaigns.find(c => c._id === campaignId);
+        setViewCampaign({
+          ...data.campaigns[0],
+          liveStats: existing?.liveStats,
+          totalDeducted: existing?.totalDeducted || 0
+        });
+      } else {
+        toast.error("Failed to load campaign details");
+      }
+    } catch (err) {
+      toast.error("Error loading details");
+    } finally {
+      setViewLoadingId(null);
+    }
+  };
+
   // ==========================================
   // 7. DERIVED STATE & PAGINATION
   // ==========================================
@@ -628,7 +657,7 @@ export default function CampaignList() {
                 )}
                 <div>
                   <span className="text-slate-500 block mb-1">Audience Preview:</span>
-                  <div className="bg-slate-50 p-2 rounded-lg text-xs font-mono max-h-20 overflow-y-auto border border-slate-100">
+                  <div className="bg-slate-50 p-2 rounded-lg text-xs font-mono max-h-20 overflow-y-auto border border-slate-100 flex flex-wrap items-center gap-1">
                     {viewCampaign.phoneNumbers?.slice(0, 15).map((p: string, i: number) => (
                       <span
                         key={i}
@@ -637,8 +666,11 @@ export default function CampaignList() {
                         {p}
                       </span>
                     ))}
+                    {/* ✅ Shows exactly how many more numbers are hidden */}
                     {viewCampaign.totalMessages > 15 && (
-                      <span className="text-slate-400">+{viewCampaign.totalMessages - 15} more</span>
+                      <span className="text-slate-400 font-bold ml-1 inline-block mb-1">
+                        +{viewCampaign.totalMessages - 15} more numbers
+                      </span>
                     )}
                   </div>
                 </div>
@@ -841,11 +873,12 @@ export default function CampaignList() {
                       {/* Action Buttons */}
                       <div className="flex items-center gap-1.5 sm:ml-4 w-full sm:w-auto justify-end flex-wrap">
                         <button
-                          onClick={() => setViewCampaign(c)}
-                          className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                          onClick={() => handleViewClick(c._id)}
+                          disabled={viewLoadingId === c._id}
+                          className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-50"
                           title="Details"
                         >
-                          <Eye size={16} />
+                          {viewLoadingId === c._id ? <Loader2 size={16} className="animate-spin" /> : <Eye size={16} />}
                         </button>
                         <button
                           onClick={() => router.push(`/campaigns/edit?id=${c._id}`)}
