@@ -627,7 +627,7 @@ export default function CampaignList() {
                 <div className="bg-red-50 p-2 sm:p-3 rounded-xl text-center border border-red-100">
                   <AlertTriangle className="w-4 h-4 sm:w-5 sm:h-5 mx-auto text-red-500 mb-1" />
                   <p className="text-lg sm:text-xl font-bold text-red-600">
-                    {getCampaignStats(viewCampaign).failedInvalid}
+                    {Number(getCampaignStats(viewCampaign).failedInvalid) || 0}
                   </p>
                   <p className="text-[9px] sm:text-[10px] text-red-600 font-medium">Failed</p>
                 </div>
@@ -965,19 +965,21 @@ export default function CampaignList() {
                     <div className={`grid gap-2 sm:gap-3 text-center grid-cols-2 sm:grid-cols-3 md:grid-cols-5 ${amountSpent > 0 ? "lg:grid-cols-6" : ""}`}>
                       <div className="bg-slate-50 p-2 rounded-xl border border-slate-100">
                         <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Total</p>
-                        <p className="font-bold text-slate-900 text-sm mt-0.5">{liveStats.total || c.totalMessages}</p>
+                        <p className="font-bold text-slate-900 text-sm mt-0.5">{Number(liveStats.total) || c.totalMessages || 0}</p>
                       </div>
                       <div className="bg-cyan-50 p-2 rounded-xl border border-cyan-100">
                         <p className="text-[9px] text-cyan-600 font-bold uppercase tracking-wider">Delivered</p>
-                        <p className="font-bold text-cyan-700 text-sm mt-0.5">{trueDeliveredCount}</p>
+                        <p className="font-bold text-cyan-700 text-sm mt-0.5">{Number(trueDeliveredCount) || 0}</p>
                       </div>
                       <div className="bg-emerald-50 p-2 rounded-xl border border-emerald-100">
                         <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-wider">Sent</p>
-                        <p className="font-bold text-emerald-700 text-sm mt-0.5">{liveStats.sent}</p>
+                        <p className="font-bold text-emerald-700 text-sm mt-0.5">{Number(liveStats.sent) || 0}</p>
                       </div>
+                      
+                      {/* ✅ FIX: Guaranteed to show 0 instead of disappearing when empty */}
                       <div className="bg-orange-50 p-2 rounded-xl border border-orange-100">
                         <p className="text-[9px] text-orange-600 font-bold uppercase tracking-wider">Invalid</p>
-                        <p className="font-bold text-orange-700 text-sm mt-0.5">{liveStats.failedInvalid}</p>
+                        <p className="font-bold text-orange-700 text-sm mt-0.5">{Number(liveStats.failedInvalid) || 0}</p>
                       </div>
 
                       {amountSpent > 0 && (
