@@ -59,6 +59,20 @@ export async function GET(req: Request) {
     const campaignId = searchParams.get("id");
     const isDownload = searchParams.get("download") === "true"; 
 
+    // ✅ NEW: Lightning-fast fetch for Edit Page
+    const editId = searchParams.get("editId");
+    if (editId) {
+      const campaign = await Campaign.findOne({ 
+        _id: new mongoose.Types.ObjectId(editId), 
+        userId: new mongoose.Types.ObjectId(userId) 
+      }).lean();
+      
+      if (!campaign) {
+        return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
+      }
+      return NextResponse.json({ success: true, campaigns: [campaign] });
+    }
+
     // ==========================================
     // 1. LIVE CHECK MODE
     // ==========================================
