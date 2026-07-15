@@ -768,7 +768,7 @@ export default function CampaignList() {
               <div className="flex-1">
                 <p className="text-sm font-semibold text-red-800">Insufficient Balance</p>
                 <p className="text-xs text-red-600 mt-0.5">
-                  You cannot start or rerun campaigns. Please contact your administrator to recharge your account. Go
+                  You cannot start campaigns. Please contact your administrator to recharge your account. Go
                   to <a href="/settings" className="underline font-medium">Settings</a> to check your balance.
                 </p>
               </div>
@@ -919,7 +919,7 @@ export default function CampaignList() {
                           </div>
                         )}
 
-                        {isCompleted && (
+                        {/* {isCompleted && (
                           <button
                             onClick={() => rerunCampaign(c._id)}
                             disabled={startingId === c._id || !canSendMessage}
@@ -932,7 +932,7 @@ export default function CampaignList() {
                           >
                             {startingId === c._id ? <Loader2 size={16} className="animate-spin text-purple-600" /> : <RotateCcw size={16} />}
                           </button>
-                        )}
+                        )} */}
 
                         {c.status === "saved" && (
                           <button
