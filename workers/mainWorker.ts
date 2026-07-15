@@ -44,7 +44,22 @@ connectDB()
       }
     }, 1);
 
-    // Start periodic stats sync every 10 minutes
+    // ✅ NEW: Fast interval (15 seconds) specifically for active campaigns
+    setInterval(async () => {
+      try {
+        await ensureDbConnected();
+        // Only find users who have currently running or paused campaigns
+        const activeUsers = await Campaign.distinct('userId', { 
+          status: { $in: ['running', 'paused'] } 
+        }).catch(() => []);
+        
+        for (const userIdObj of activeUsers) {
+          await statsQueue.add('sync-user-stats', { userId: userIdObj.toString() }, { removeOnComplete: true, removeOnFail: true }).catch(() => {});
+        }
+      } catch (e) { console.error('Failed to queue fast periodic stats', e); }
+    }, 15 * 1000); // 15 seconds
+
+    // Keep the 10-minute full sweep for all users/stats
     setInterval(async () => {
       try {
         await statsQueue.add('sync-all-stats', {}, { removeOnComplete: true, removeOnFail: true });
@@ -75,13 +90,12 @@ async function startWorker(queueName: string, processor: (job: any) => Promise<a
     (async () => {
       while (true) {
         try {
-          // Atomically find and claim the next pending job (Removed strict date check)
           const job = await Job.findOneAndUpdate(
             { 
               queue: queueName, 
               $or: [
                 { status: "pending" },
-                { status: "processing", lockedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } } // Reset stuck jobs (5 mins)
+                { status: "processing", lockedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } }
               ]
             },
             { $set: { status: "processing", lockedAt: new Date() } },
@@ -110,7 +124,6 @@ async function startWorker(queueName: string, processor: (job: any) => Promise<a
               }
             }
           } else {
-            // Wait 1 second before polling again to save DB CPU
             await new Promise((r) => setTimeout(r, 1000));
           }
         } catch (err) {
@@ -122,12 +135,10 @@ async function startWorker(queueName: string, processor: (job: any) => Promise<a
   }
 }
 
-// Dedicated campaign worker to enforce the 1 req/sec rate limit
 async function startCampaignWorker() {
   console.log('🚀 Worker started for queue: campaign-processing (Concurrency: 1, Rate: 1/sec)');
   while (true) {
     try {
-      // Atomically find and claim the next pending job (Removed strict date check)
       const job = await Job.findOneAndUpdate(
         { 
           queue: 'campaign-processing', 
@@ -144,13 +155,12 @@ async function startCampaignWorker() {
         console.log(`▶️ Processing chunk ${job.data.startIdx}-${job.data.endIdx} (${job._id})`);
         try {
           await processCampaignChunk(job.data);
-          await Job.deleteOne({ _id: job._id }); // Chunks are always removeOnComplete
+          await Job.deleteOne({ _id: job._id });
           console.log(`✅ Chunk ${job.data.startIdx}-${job.data.endIdx} completed`);
         } catch (err: any) {
           console.error(`❌ Chunk ${job.data.startIdx}-${job.data.endIdx} failed:`, err.message);
           await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
         }
-        // Wait 1 second to enforce the limiter: { max: 1, duration: 1000 }
         await new Promise(r => setTimeout(r, 1000));
       } else {
         await new Promise(r => setTimeout(r, 1000));
@@ -646,19 +656,6 @@ async function syncUserStats(userId: string) {
         }
       },
       {
-        $project: {
-          stats: {
-            replied: "$liveStats.replied",
-            read: "$liveStats.read",
-            delivered: "$liveStats.delivered",
-            sent: "$liveStats.sent",
-            failed: "$liveStats.failed",
-            invalid: "$liveStats.invalid",
-            duplicate: "$liveStats.duplicate"
-          }
-        }
-      },
-      {
         $merge: {
           into: "campaigns",
           on: "_id",
@@ -667,6 +664,11 @@ async function syncUserStats(userId: string) {
         }
       }
     ]);
+
+    // ✅ CRITICAL: Bust the count caches for this user so the API fetches fresh data on next poll
+    try {
+      await Cache.deleteMany({ key: { $regex: `^counts:${userId}:` } });
+    } catch (e) {}
 
     return { success: true };
   } catch (error) {
