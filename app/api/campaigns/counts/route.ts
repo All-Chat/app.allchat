@@ -22,49 +22,87 @@ export async function GET(request: Request) {
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "25", 10)));
     const skip = (page - 1) * limit;
 
-    // 🚀 KEY FIX: We no longer walk `reportData` (huge embedded array) in the
-    // aggregation. Instead we read the pre-computed `stats` sub-document that
-    // is updated atomically whenever a message status changes (see helper below).
-    //
-    // This turns an O(campaigns × report_entries) scan into a pure indexed
-    // read — effectively instant even with millions of report entries.
-    //
-    // Only the fields the list view actually needs are projected. No
-    // phoneNumbers / names / additionalFieldsData / reportData loaded at all.
-    const campaigns = await Campaign.find(
-      { userId: new mongoose.Types.ObjectId(userId) },
+    // 🚀 LIVE STATS FIX: Use aggregation to calculate stats directly from reportData 
+    // for ONLY the current page items. This bypasses the need for a background worker 
+    // and guarantees real-time Delivered/Read counts.
+    const campaigns = await Campaign.aggregate([
+      { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+      { $sort: { createdAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
       {
-        name: 1,
-        templateName: 1,
-        templateCategory: 1,
-        languageCode: 1,
-        status: 1,
-        totalMessages: 1,
-        totalDeducted: 1,
-        scheduledAt: 1,
-        createdAt: 1,
-        stats: 1, // pre-computed counters
+        $project: {
+          name: 1,
+          templateName: 1,
+          templateCategory: 1,
+          languageCode: 1,
+          status: 1,
+          totalMessages: 1,
+          totalDeducted: 1,
+          scheduledAt: 1,
+          createdAt: 1,
+          // Calculate live stats directly in the DB
+          liveStats: {
+            $let: {
+              vars: {
+                counts: {
+                  $reduce: {
+                    input: { $ifNull: ["$reportData", []] },
+                    initialValue: { replied: 0, read: 0, delivered: 0, sent: 0, failed: 0, invalid: 0, duplicate: 0 },
+                    in: {
+                      replied: { 
+                        $add: [
+                          "$$value.replied", 
+                          { 
+                            $cond: [
+                              { $gt: [{ $size: { $ifNull: ["$$this.replies", []] } }, 0] }, 
+                              1, 
+                              0
+                            ]
+                          }
+                        ]
+                      },
+                      read: { $add: ["$$value.read", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "read"] }, 1, 0] }] },
+                      delivered: { $add: ["$$value.delivered", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "delivered"] }, 1, 0] }] },
+                      sent: { $add: ["$$value.sent", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "sent"] }, 1, 0] }] },
+                      failed: { $add: ["$$value.failed", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "failed"] }, 1, 0] }] },
+                      invalid: { $add: ["$$value.invalid", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "invalid"] }, 1, 0] }] },
+                      duplicate: { $add: ["$$value.duplicate", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "duplicate"] }, 1, 0] }] }
+                    }
+                  }
+                }
+              },
+              in: {
+                total: { $ifNull: ["$totalMessages", 0] },
+                replied: "$$counts.replied",
+                read: "$$counts.read",
+                delivered: "$$counts.delivered",
+                sent: "$$counts.sent",
+                failed: "$$counts.failed",
+                invalid: "$$counts.invalid",
+                duplicate: "$$counts.duplicate"
+              }
+            }
+          }
+        }
       }
-    )
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean();
+    ]);
 
     if (!campaigns || campaigns.length === 0) {
       return NextResponse.json({ success: true, campaigns: [], page, limit });
     }
 
+    // Format the calculated stats to match exactly what the frontend expects
     const fixedCampaigns = campaigns.map((c: any) => {
-      const s = c.stats || {};
-      const total = c.totalMessages || 0;
-      const replied = s.replied || 0;
-      const read = s.read || 0;
-      const delivered = s.delivered || 0;
-      const sent = s.sent || 0;
-      const failed = s.failed || 0;
-      const invalid = s.invalid || 0;
-      const duplicate = s.duplicate || 0;
+      const ls = c.liveStats || {};
+      const total = ls.total || 0;
+      const replied = ls.replied || 0;
+      const read = ls.read || 0;
+      const delivered = ls.delivered || 0;
+      const sent = ls.sent || 0;
+      const failed = ls.failed || 0;
+      const invalid = ls.invalid || 0;
+      const duplicate = ls.duplicate || 0;
 
       const processed = read + delivered + sent + failed + invalid + duplicate;
       const pending = Math.max(0, total - processed);
