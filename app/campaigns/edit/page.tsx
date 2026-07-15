@@ -84,27 +84,39 @@ function EditCampaignContent() {
     if (campaignId) fetchCampaignData();
   }, [campaignId]);
 
-  useEffect(() => {
+    useEffect(() => {
     if (initialCampaignData && templates.length > 0) {
       const tmpl = templates.find(
         (t: any) => t.name === initialCampaignData.templateName && t.language === initialCampaignData.languageCode
       );
+      
       if (tmpl) {
         handleTemplateSelect(tmpl.name, tmpl.language, initialCampaignData.variables);
-        
-        // Restore specific data that handleTemplateSelect might reset
-        setUseRandomOtp(initialCampaignData.generateOtp || false);
-        setOtpLength(initialCampaignData.otpLength || 4);
-        setRawVariables(initialCampaignData.mappedVariables || []);
-        
-        // Restore media
-        setMediaType(initialCampaignData.mediaType || "");
-        setMediaUrl(initialCampaignData.mediaUrl || "");
-        if (initialCampaignData.mediaUrl) setMediaInputType("url");
       } else {
         const fallback = templates.find((t: any) => t.name === initialCampaignData.templateName);
-        if (fallback) handleTemplateSelect(fallback.name, fallback.language, initialCampaignData.variables);
+        if (fallback) {
+          handleTemplateSelect(fallback.name, fallback.language, initialCampaignData.variables);
+        } else {
+          // If template is missing from Meta, manually set basic info so dropdown doesn't break
+          setSelectedTemplate({ 
+            name: initialCampaignData.templateName, 
+            language: initialCampaignData.languageCode,
+            category: initialCampaignData.templateCategory,
+            components: []
+          });
+          setVariables(initialCampaignData.variables || []);
+        }
       }
+
+      // ✅ Restore specific data
+      setUseRandomOtp(initialCampaignData.generateOtp || false);
+      setOtpLength(initialCampaignData.otpLength || 4);
+      setRawVariables(initialCampaignData.mappedVariables || []);
+      
+      // ✅ Force restore media
+      setMediaType(initialCampaignData.mediaType || "");
+      setMediaUrl(initialCampaignData.mediaUrl || "");
+      if (initialCampaignData.mediaUrl) setMediaInputType("url");
     }
   }, [initialCampaignData, templates]);
 
@@ -208,11 +220,12 @@ function EditCampaignContent() {
 
   const fetchCampaignData = async () => {
     try {
-      const res = await fetch("/api/campaigns/list");
+      // ✅ FIX: Fetch ONLY the specific campaign to avoid loading all 50 campaigns and their massive arrays
+      const res = await fetch(`/api/campaigns/list?editId=${campaignId}`);
       if (res.status === 401) { window.location.href = "/"; return; }
       const data = await res.json();
       if (data.success) {
-        const campaign = data.campaigns.find((c: any) => c._id === campaignId);
+        const campaign = data.campaigns[0]; // ✅ Get the first (and only) campaign
         if (campaign) {
           setCampaignName(campaign.name);
           setNameStatus("available"); 
@@ -280,8 +293,8 @@ function EditCampaignContent() {
 
     if (finalMediaType) {
       setMediaType(finalMediaType);
-      // ✅ Restore original media if we switched back to the initial template and haven't uploaded a new file
-      if (isInitialTemplate && !mediaFile && !preservedVars) {
+      // ✅ FIX: Removed !preservedVars check so media ALWAYS restores on initial load
+      if (isInitialTemplate && !mediaFile) {
         setMediaUrl(initialCampaignData.mediaUrl || "");
         if (initialCampaignData.mediaUrl) setMediaInputType("url");
       }
@@ -602,15 +615,31 @@ function EditCampaignContent() {
         additionalFieldsData: additionalFieldsData.length > 0 ? additionalFieldsData : [],
       };
 
-      if (mediaInputType === "upload" && mediaFile) {
-        const formData = new FormData();
-        Object.keys(commonData).forEach(key => {
-          formData.append(key, JSON.stringify((commonData as any)[key]));
-        });
-        formData.append("mediaUrl", "");
-        formData.append("file", mediaFile);
-        res = await fetch("/api/campaigns/update", { method: "POST", body: formData });
-      } else {
+    if (mediaInputType === "upload" && mediaFile) {
+      const formData = new FormData();
+      // ✅ FIX: Append scalar values directly, do not JSON.stringify them
+      formData.append("id", campaignId || "");
+      formData.append("name", campaignName);
+      formData.append("templateName", selectedTemplate.name);
+      formData.append("templateCategory", selectedTemplate.category);
+      formData.append("mediaUrl", "");
+      formData.append("mediaType", mediaType);
+      formData.append("languageCode", languageCode);
+      formData.append("scheduledAt", isSchedule ? scheduleDate : "null");
+      formData.append("generateOtp", String(useRandomOtp));
+      formData.append("otpLength", String(otpLength));
+
+      // Only JSON.stringify arrays and objects
+      formData.append("variables", JSON.stringify(useRandomOtp ? [] : variables));
+      formData.append("mappedVariables", JSON.stringify(rawVariables.length > 0 ? rawVariables : []));
+      formData.append("phoneNumbers", JSON.stringify(rawNumbers));
+      formData.append("names", JSON.stringify(rawNames));
+      formData.append("additionalFields", JSON.stringify(additionalFields.filter(f => f && f !== "skip")));
+      formData.append("additionalFieldsData", JSON.stringify(additionalFieldsData.length > 0 ? additionalFieldsData : []));
+      
+      formData.append("file", mediaFile);
+      res = await fetch("/api/campaigns/update", { method: "POST", body: formData });
+    } else {
         res = await fetch("/api/campaigns/update", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
