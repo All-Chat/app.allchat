@@ -59,7 +59,42 @@ export async function GET(req: Request) {
     const campaignId = searchParams.get("id");
     const isDownload = searchParams.get("download") === "true"; 
 
-    // ✅ NEW: Lightning-fast fetch for Edit Page
+    // ✅ NEW: Lightning-fast fetch for VIEW MODAL (Only fetches 15 numbers)
+    const viewId = searchParams.get("viewId");
+    if (viewId) {
+      const campaign = await Campaign.findOne(
+        { 
+          _id: new mongoose.Types.ObjectId(viewId), 
+          userId: new mongoose.Types.ObjectId(userId) 
+        },
+        {
+          name: 1,
+          templateName: 1,
+          templateCategory: 1,
+          languageCode: 1,
+          scheduledAt: 1,
+          variables: 1,
+          mappedVariables: 1,
+          generateOtp: 1,
+          otpLength: 1,
+          mediaUrl: 1,
+          mediaType: 1,
+          totalMessages: 1,
+          additionalFields: 1,
+          // ✅ FIX: Only fetch 15 elements of these massive arrays!
+          phoneNumbers: { $slice: 15 },
+          names: { $slice: 15 },
+          additionalFieldsData: { $slice: 15 }
+        }
+      ).lean();
+      
+      if (!campaign) {
+        return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
+      }
+      return NextResponse.json({ success: true, campaigns: [campaign] });
+    }
+
+    // ✅ Fetch for EDIT PAGE (Loads full arrays)
     const editId = searchParams.get("editId");
     if (editId) {
       const campaign = await Campaign.findOne({ 
@@ -87,7 +122,7 @@ export async function GET(req: Request) {
     }
 
     // ==========================================
-    // 2. SINGLE CAMPAIGN MODE
+    // 2. SINGLE CAMPAIGN MODE (Report Page)
     // ==========================================
     if (campaignId) {
       const limit = 50;
