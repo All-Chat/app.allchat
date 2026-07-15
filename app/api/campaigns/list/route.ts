@@ -59,7 +59,9 @@ export async function GET(req: Request) {
     const campaignId = searchParams.get("id");
     const isDownload = searchParams.get("download") === "true"; 
 
-    // ✅ NEW: Lightning-fast fetch for VIEW MODAL (Only fetches 15 numbers)
+    // ==========================================
+    // ✅ 1. FAST VIEW MODAL (Limits to 15 numbers)
+    // ==========================================
     const viewId = searchParams.get("viewId");
     if (viewId) {
       const campaign = await Campaign.findOne(
@@ -81,7 +83,7 @@ export async function GET(req: Request) {
           mediaType: 1,
           totalMessages: 1,
           additionalFields: 1,
-          // ✅ FIX: Only fetch 15 elements of these massive arrays!
+          // ✅ Only fetch 15 elements for instant loading
           phoneNumbers: { $slice: 15 },
           names: { $slice: 15 },
           additionalFieldsData: { $slice: 15 }
@@ -94,7 +96,36 @@ export async function GET(req: Request) {
       return NextResponse.json({ success: true, campaigns: [campaign] });
     }
 
-    // ✅ Fetch for EDIT PAGE (Loads full arrays)
+    // ==========================================
+    // ✅ 2. EXCEL EXPORT (Loads ALL numbers)
+    // ==========================================
+    const exportId = searchParams.get("exportId");
+    if (exportId) {
+      const campaign = await Campaign.findOne(
+        { 
+          _id: new mongoose.Types.ObjectId(exportId), 
+          userId: new mongoose.Types.ObjectId(userId) 
+        },
+        {
+          name: 1,
+          templateName: 1,
+          phoneNumbers: 1, // ✅ Full array
+          names: 1, // ✅ Full array
+          additionalFields: 1,
+          additionalFieldsData: 1, // ✅ Full array
+          reportData: 1 // ✅ Full array (for statuses and replies)
+        }
+      ).lean();
+      
+      if (!campaign) {
+        return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
+      }
+      return NextResponse.json({ success: true, campaigns: [campaign] });
+    }
+
+    // ==========================================
+    // 3. EDIT PAGE (Loads ALL data)
+    // ==========================================
     const editId = searchParams.get("editId");
     if (editId) {
       const campaign = await Campaign.findOne({ 
@@ -109,7 +140,7 @@ export async function GET(req: Request) {
     }
 
     // ==========================================
-    // 1. LIVE CHECK MODE
+    // 4. LIVE CHECK MODE
     // ==========================================
     if (checkName !== null) {
       const query: any = {
@@ -122,7 +153,7 @@ export async function GET(req: Request) {
     }
 
     // ==========================================
-    // 2. SINGLE CAMPAIGN MODE (Report Page)
+    // 5. SINGLE CAMPAIGN REPORT MODE
     // ==========================================
     if (campaignId) {
       const limit = 50;
@@ -133,7 +164,6 @@ export async function GET(req: Request) {
       const filterOut = searchParams.get("filterOut")?.split(",").filter(Boolean) || [];
       const search = searchParams.get("search") || "";
 
-      // Reusable expressions to avoid duplicate code and ensure accurate filtering
       const isRepliedExpr = {
         $or: [
           { $ne: [{ $ifNull: ["$$r.reply", ""] }, ""] },
@@ -236,9 +266,6 @@ export async function GET(req: Request) {
             repliedPhonesSet: { $setUnion: ["$inboundMsgs.normalizedPhone", []] },
           },
         },
-        // ==========================================
-        // FAST STATS CALCULATION (No mapping overhead)
-        // ==========================================
         {
           $addFields: {
             campaignStats: {
@@ -254,9 +281,6 @@ export async function GET(req: Request) {
             }
           }
         },
-        // ==========================================
-        // APPLY FILTERS
-        // ==========================================
         {
           $addFields: {
             filteredData: {
@@ -268,9 +292,6 @@ export async function GET(req: Request) {
             },
           },
         },
-        // ==========================================
-        // SLICE DATA EARLY (Pagination limit applied here!)
-        // ==========================================
         {
           $addFields: {
             paginatedData: {
@@ -282,9 +303,6 @@ export async function GET(req: Request) {
             }
           }
         },
-        // ==========================================
-        // HEAVY MAPPING (Only processes 50 items now!)
-        // ==========================================
         {
           $project: {
             name: 1,
@@ -380,7 +398,7 @@ export async function GET(req: Request) {
     }
 
     // ==========================================
-    // 3. PAGINATED LIST MODE
+    // 6. PAGINATED LIST MODE
     // ==========================================
     const page = parseInt(searchParams.get("page") || "1");
     const limit = parseInt(searchParams.get("limit") || "50");
