@@ -1,5 +1,5 @@
 /* =====================================================================
-   GET /api/chats - 100% STRICT ISOLATION + ONLY REPLIED CHATS (LIMIT 20)
+   GET /api/chats - 100% STRICT ISOLATION + PAGINATION (LIMIT 20)
    ===================================================================== */
 
 import { NextResponse } from "next/server";
@@ -20,6 +20,11 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const wabaId = searchParams.get("whatsappPhoneNumberId") || "";
     const userId = session.user.id;
+    
+    // ✅ NEW: Pagination parameters
+    const page = parseInt(searchParams.get("page") || "1");
+    const limit = parseInt(searchParams.get("limit") || "20");
+    const skip = (page - 1) * limit;
 
     if (wabaId && wabaId !== "all") {
       Message.updateMany(
@@ -44,7 +49,7 @@ export async function GET(req: Request) {
     const matchingPhones = await Message.distinct("phone", phoneMatchStage).lean();
 
     if (matchingPhones.length === 0) {
-      return NextResponse.json({ success: true, chats: [] });
+      return NextResponse.json({ success: true, chats: [], hasMore: false });
     }
 
     const chats = await Message.aggregate([
@@ -69,12 +74,17 @@ export async function GET(req: Request) {
         },
       },
       { $sort: { updatedAt: -1 } },
-      { $limit: 20 } // ✅ Only load the 20 most recent active chats instantly
+      { $skip: skip },
+      { $limit: limit } // ✅ Apply pagination limit
     ]);
 
-    return NextResponse.json({ success: true, chats });
+    // ✅ Check if there are more chats to load
+    const totalChats = matchingPhones.length;
+    const hasMore = skip + chats.length < totalChats;
+
+    return NextResponse.json({ success: true, chats, hasMore });
   } catch (error) {
     console.error("Error in /api/chats:", error);
-    return NextResponse.json({ success: false, chats: [] }, { status: 500 });
+    return NextResponse.json({ success: false, chats: [], hasMore: false }, { status: 500 });
   }
 }
