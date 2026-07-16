@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect */
 /* eslint-disable react-hooks/immutability */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
@@ -137,6 +138,9 @@ export default function ReportsPage() {
   const [syncingSheet, setSyncingSheet] = useState(false);
   const [downloadingExcel, setDownloadingExcel] = useState(false); 
   
+  // ✅ NEW: State to track if the sheet has been opened so we can auto-sync
+  const [sheetUrl, setSheetUrl] = useState<string | null>(null);
+
   const [showOnly, setShowOnly] = useState<string[]>([]);
   const [filterOut, setFilterOut] = useState<string[]>([]);
   const [search, setSearch] = useState("");
@@ -218,6 +222,22 @@ export default function ReportsPage() {
       fetchReportData(selectedId, 1);
     }
   }, [selectedId, showOnly, filterOut, search]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ✅ NEW: Reset sheet URL when changing campaigns
+  useEffect(() => {
+    setSheetUrl(null);
+  }, [selectedId]);
+
+  // ✅ NEW: 15-Second Auto-Sync Interval
+  useEffect(() => {
+    if (!sheetUrl || !selectedId) return;
+    
+    const interval = setInterval(() => {
+      handleSyncSheet(selectedId, false); // false = silent update (doesn't open new tab)
+    }, 15000); // 15000 ms = 15 seconds
+
+    return () => clearInterval(interval);
+  }, [sheetUrl, selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchCampaigns = async () => {
     try {
@@ -382,7 +402,6 @@ export default function ReportsPage() {
           row["Error Reason"] = d.error || ""; 
           row["Tags"] = d.tags?.join(", ") || "None";
           
-          // ✅ FIXED EXCEL BUG: Only add time if there is actually a reply text
           for (let i = 0; i < 5; i++) {
             const replyText = replies[i] || "";
             row[`Reply ${i + 1}`] = replyText;
@@ -412,8 +431,14 @@ export default function ReportsPage() {
     }
   };
 
-  const handleSyncSheet = async (id: string) => {
-    setSyncingSheet(true);
+  // ✅ MODIFIED: Added openTab parameter to control opening new tabs
+  const handleSyncSheet = async (id: string, openTab: boolean = true) => {
+    // Prevent spamming the API if it's already syncing
+    if (syncingSheet) return;
+    
+    // Only show the loading spinner for manual clicks (openTab = true)
+    if (openTab) setSyncingSheet(true);
+    
     try {
       const res = await fetch("/api/campaigns/sync-sheet", {
         method: "POST",
@@ -421,16 +446,20 @@ export default function ReportsPage() {
         body: JSON.stringify({ campaignId: id })
       });
       const data = await res.json();
+      
       if (data.success && data.url) {
-        toast.success("Google Sheet generated successfully!");
-        window.open(data.url, "_blank");
-      } else {
+        // Only open the tab if it's a manual click AND we haven't opened it yet
+        if (openTab && data.url !== sheetUrl) {
+          window.open(data.url, "_blank");
+        }
+        setSheetUrl(data.url);
+      } else if (openTab) {
         toast.error(data.message || "Failed to sync Google Sheet");
       }
     } catch (err) {
-      toast.error("Error syncing sheet");
+      if (openTab) toast.error("Error syncing sheet");
     } finally {
-      setSyncingSheet(false);
+      if (openTab) setSyncingSheet(false);
     }
   };
 
@@ -680,7 +709,7 @@ export default function ReportsPage() {
                       disabled={syncingSheet}
                       className="px-4 py-2 bg-indigo-500 text-white rounded-lg text-xs font-bold hover:bg-indigo-600 flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-50"
                     >
-                      {syncingSheet ? <Loader2 size={12} className="animate-spin"/> : <ExternalLink size={12}/>} Create Sheet
+                      {syncingSheet ? <Loader2 size={12} className="animate-spin"/> : <ExternalLink size={12}/>} {sheetUrl ? "Syncing..." : "Create Sheet"}
                     </button>
                     <button 
                       onClick={downloadExcel} 
