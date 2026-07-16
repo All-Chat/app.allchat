@@ -1166,27 +1166,3 @@ async function saveProfilePictureUrl(phone: string, num: any) {
     // Silent fail, as profile pictures are often restricted by privacy settings
   }
 }
-
-async function saveProfilePictureUrl(phone: string, num: any) {
-  try {
-    const { default: Contact } = await import("@/models/Contact");
-    // Best-effort fetch of profile picture URL from Meta Graph API
-    const res = await fetch(`https://graph.facebook.com/v21.0/${num.phoneNumberId}/contacts/${phone}`, {
-      headers: { Authorization: `Bearer ${num.accessToken}` }
-    });
-    const data = await res.json();
-    
-    // Meta API sometimes returns the URL inside the profile object
-    const profilePicUrl = data?.profile?.profile_picture_url || data?.profile?.url || null;
-    
-    if (profilePicUrl) {
-      await Contact.findOneAndUpdate(
-        { phone, userId: num.userId },
-        { $set: { profilePicUrl } },
-        { upsert: true }
-      );
-    }
-  } catch (err) {
-    // Silent fail, as profile pictures are often restricted by privacy settings
-  }
-}
