@@ -7,6 +7,7 @@ import { useSession } from "next-auth/react";
 import {
   Plus, Trash2, Loader2, PhoneCall,
   Gauge, AlertTriangle, Infinity as InfinityIcon, X, Check,
+  ChevronLeft, ChevronRight,
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 
@@ -17,12 +18,17 @@ interface LimitInfo {
   allowed: boolean;
 }
 
+const ITEMS_PER_PAGE = 6;
+
 export default function OptNumbersPage() {
   const { status } = useSession();
   const [numbers, setNumbers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [newNumber, setNewNumber] = useState("");
   const [adding, setAdding] = useState(false);
+
+  // ✅ Pagination State
+  const [currentPage, setCurrentPage] = useState(1);
 
   // ✅ Limit State
   const [optLimit, setOptLimit] = useState<LimitInfo | null>(null);
@@ -122,6 +128,7 @@ export default function OptNumbersPage() {
         setNumbers([data.optNumber, ...numbers]);
         setNewNumber("");
         showToast("Number added successfully!");
+        setCurrentPage(1); // ✅ Reset to first page to show the new number
         // Refresh limits
         loadData();
       } else {
@@ -134,12 +141,24 @@ export default function OptNumbersPage() {
     }
   };
 
+  // Delete confirmation
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
   const handleDelete = async (id: string) => {
+    const previousNumbersLength = numbers.length;
     try {
       const res = await fetch(`/api/opt-numbers/${id}`, { method: "DELETE" });
       if (res.ok) {
-        setNumbers(numbers.filter((n) => n._id !== id));
+        const updatedNumbers = numbers.filter((n) => n._id !== id);
+        setNumbers(updatedNumbers);
         showToast("Number deleted");
+        
+        // ✅ Pagination Fix: If deleting the last item on a page, go back one page
+        const totalPages = Math.ceil((previousNumbersLength - 1) / ITEMS_PER_PAGE);
+        if (currentPage > totalPages && totalPages > 0) {
+          setCurrentPage(totalPages);
+        }
+
         // Refresh limits after deletion
         loadData();
       } else {
@@ -151,9 +170,6 @@ export default function OptNumbersPage() {
     }
   };
 
-  // Delete confirmation
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-
   if (status === "loading" || loading) {
     return (
       <div className="flex min-h-screen bg-slate-50 items-center justify-center">
@@ -161,6 +177,12 @@ export default function OptNumbersPage() {
       </div>
     );
   }
+
+  // ✅ Pagination Calculations
+  const totalPages = Math.ceil(numbers.length / ITEMS_PER_PAGE);
+  const indexOfLastNumber = currentPage * ITEMS_PER_PAGE;
+  const indexOfFirstNumber = indexOfLastNumber - ITEMS_PER_PAGE;
+  const currentNumbers = numbers.slice(indexOfFirstNumber, indexOfLastNumber);
 
   return (
     <div className="min-h-screen bg-slate-50 text-gray-900">
@@ -387,63 +409,104 @@ export default function OptNumbersPage() {
                 </p>
               </div>
             ) : (
-              <ul className="divide-y divide-slate-100">
-                {numbers.map((num) => {
-                  const isDeleting = deletingId === num._id;
+              <>
+                <ul className="divide-y divide-slate-100">
+                  {currentNumbers.map((num) => {
+                    const isDeleting = deletingId === num._id;
 
-                  return (
-                    <li
-                      key={num._id}
-                      className="flex items-center justify-between p-4 hover:bg-slate-50/50 transition-colors"
+                    return (
+                      <li
+                        key={num._id}
+                        className="flex items-center justify-between p-4 hover:bg-slate-50/50 transition-colors"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-full bg-cyan-100 text-cyan-600 flex items-center justify-center text-xs font-bold shrink-0">
+                            {num.phoneNumber.slice(-2)}
+                          </div>
+                          <div>
+                            <span className="text-sm font-semibold text-gray-800 font-mono">
+                              {num.phoneNumber}
+                            </span>
+                            {num.createdAt && (
+                              <p className="text-[10px] text-slate-400 mt-0.5">
+                                Added {new Date(num.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        {!isDeleting ? (
+                          <button
+                            onClick={() => setDeletingId(num._id)}
+                            className="text-slate-300 hover:text-red-500 p-2 rounded-lg hover:bg-red-50 transition-colors"
+                            title="Delete Number"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        ) : (
+                          <div className="flex items-center gap-1 bg-red-50 p-1 rounded-lg border border-red-100">
+                            <span className="text-[10px] font-bold text-red-600 px-1">Delete?</span>
+                            <button
+                              onClick={() => {
+                                handleDelete(num._id);
+                                setDeletingId(null);
+                              }}
+                              className="p-1 bg-red-500 text-white rounded-md hover:bg-red-600 text-[10px] font-bold px-2"
+                            >
+                              Yes
+                            </button>
+                            <button
+                              onClick={() => setDeletingId(null)}
+                              className="p-1 text-slate-500 rounded-md hover:bg-slate-200 text-[10px] font-bold px-2"
+                            >
+                              No
+                            </button>
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+
+                {/* ✅ Pagination Controls */}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-between px-5 sm:px-6 py-4 border-t border-slate-100 bg-slate-50/50">
+                    <button
+                      onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
+                      disabled={currentPage === 1}
+                      className="flex items-center gap-1 text-xs font-bold text-slate-600 hover:text-cyan-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                     >
-                      <div className="flex items-center gap-3">
-                        <div className="w-9 h-9 rounded-full bg-cyan-100 text-cyan-600 flex items-center justify-center text-xs font-bold shrink-0">
-                          {num.phoneNumber.slice(-2)}
-                        </div>
-                        <div>
-                          <span className="text-sm font-semibold text-gray-800 font-mono">
-                            {num.phoneNumber}
-                          </span>
-                          {num.createdAt && (
-                            <p className="text-[10px] text-slate-400 mt-0.5">
-                              Added {new Date(num.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-
-                      {!isDeleting ? (
+                      <ChevronLeft size={14} />
+                      Prev
+                    </button>
+                    
+                    <div className="flex items-center gap-1.5">
+                      {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
                         <button
-                          onClick={() => setDeletingId(num._id)}
-                          className="text-slate-300 hover:text-red-500 p-2 rounded-lg hover:bg-red-50 transition-colors"
-                          title="Delete Number"
+                          key={page}
+                          onClick={() => setCurrentPage(page)}
+                          className={`w-7 h-7 flex items-center justify-center rounded-lg text-[11px] font-bold transition-all ${
+                            currentPage === page
+                              ? "bg-cyan-500 text-white shadow-md scale-105"
+                              : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+                          }`}
                         >
-                          <Trash2 size={16} />
+                          {page}
                         </button>
-                      ) : (
-                        <div className="flex items-center gap-1 bg-red-50 p-1 rounded-lg border border-red-100">
-                          <span className="text-[10px] font-bold text-red-600 px-1">Delete?</span>
-                          <button
-                            onClick={() => {
-                              handleDelete(num._id);
-                              setDeletingId(null);
-                            }}
-                            className="p-1 bg-red-500 text-white rounded-md hover:bg-red-600 text-[10px] font-bold px-2"
-                          >
-                            Yes
-                          </button>
-                          <button
-                            onClick={() => setDeletingId(null)}
-                            className="p-1 text-slate-500 rounded-md hover:bg-slate-200 text-[10px] font-bold px-2"
-                          >
-                            No
-                          </button>
-                        </div>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
+                      ))}
+                    </div>
+
+                    <button
+                      onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
+                      disabled={currentPage === totalPages}
+                      className="flex items-center gap-1 text-xs font-bold text-slate-600 hover:text-cyan-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    >
+                      Next
+                      <ChevronRight size={14} />
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
