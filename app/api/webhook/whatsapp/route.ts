@@ -1004,7 +1004,6 @@ export async function POST(req: NextRequest) {
           try { 
             const { default: Contact } = await import("@/models/Contact"); 
             await Contact.findOneAndUpdate({ phone: contactInfo.wa_id, userId: num.userId }, { name: contactInfo.profile.name, phone: contactInfo.wa_id }, { upsert: true }); 
-            await saveProfilePictureUrl(contactInfo.wa_id, num); // ADDED THIS ONE LINE
           } catch {}
         }
 
@@ -1012,7 +1011,7 @@ export async function POST(req: NextRequest) {
           if (msg.type === "reaction" || msg.type === "system") continue;
           await processAndSaveMessage(msg, num);
           await executeWorkflowsForMessage(msg, num, baseUrl);
-          await handleCampaignReply(msg, num); // ADDED THIS ONE LINE
+          await handleCampaignReply(msg, num); // ✅ ADDED CALL FOR REPLY TIMES
         }
 
         // ==========================================================
@@ -1047,7 +1046,7 @@ export async function POST(req: NextRequest) {
               const idx = campByWamid.reportData.findIndex((item: any) => item.sentWamid === id);
               if (idx !== -1 && shouldUpdateStatus(campByWamid.reportData[idx].status, status)) {
                 const updateSet: any = { "reportData.$.status": status, "reportData.$.error": errorText };
-                // ADDED THESE 2 LINES FOR TIMES
+                // ✅ ADDED THESE 2 LINES FOR TIMES
                 if (status === "delivered") updateSet["reportData.$.deliveredAt"] = new Date(parseInt(statusObj.timestamp) * 1000);
                 if (status === "read") updateSet["reportData.$.readAt"] = new Date(parseInt(statusObj.timestamp) * 1000);
                 
@@ -1075,7 +1074,7 @@ export async function POST(req: NextRequest) {
                   }
                   if (touchedIdx !== -1) {
                     const updateSet: any = { [`reportData.${touchedIdx}.status`]: status, [`reportData.${touchedIdx}.error`]: errorText };
-                    // ADDED THESE 2 LINES FOR TIMES
+                    // ✅ ADDED THESE 2 LINES FOR TIMES
                     if (status === "delivered") updateSet[`reportData.${touchedIdx}.deliveredAt`] = new Date(parseInt(statusObj.timestamp) * 1000);
                     if (status === "read") updateSet[`reportData.${touchedIdx}.readAt`] = new Date(parseInt(statusObj.timestamp) * 1000);
 
@@ -1099,7 +1098,7 @@ export async function POST(req: NextRequest) {
 }
 
 // =========================
-// NEW FUNCTIONS ADDED AT THE BOTTOM
+// NEW FUNCTION ADDED AT THE BOTTOM
 // =========================
 async function handleCampaignReply(msg: any, num: any) {
   try {
@@ -1108,12 +1107,11 @@ async function handleCampaignReply(msg: any, num: any) {
     const text = msg?.text?.body || msg?.button?.text || msg?.interactive?.button_reply?.title || msg?.interactive?.list_reply?.title || "[Media/Non-text reply]";
     const replyTime = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
 
-    // Find all campaigns for this user that have this phone number in their reportData
-    const campaigns = await Campaign.find({ userId: num.userId, "reportData.phone": { $exists: true } });
+    // ✅ FIXED: Find ONLY THE MOST RECENT campaign for this user, so it's not "common for all"
+    const camp = await Campaign.findOne({ userId: num.userId, "reportData.phone": { $exists: true } }).sort({ createdAt: -1 });
     
-    for (const camp of campaigns) {
+    if (camp) {
       let touchedIdx = -1;
-      // Use normalizePhone to match the last 10 digits to avoid format issues (+91 vs 91)
       for (let i = 0; i < camp.reportData.length; i++) {
         if (normalizePhone(camp.reportData[i].phone) === normalizePhone(phone)) {
           touchedIdx = i;
@@ -1122,7 +1120,7 @@ async function handleCampaignReply(msg: any, num: any) {
       }
 
       if (touchedIdx !== -1) {
-        // Use explicit index updating (reportData.${touchedIdx}) to guarantee the push works
+        // ✅ FIXED: Pushes a NEW replyTime into the replyTimes array for EACH message
         await Campaign.updateOne(
           { _id: camp._id },
           {
@@ -1140,29 +1138,5 @@ async function handleCampaignReply(msg: any, num: any) {
     }
   } catch (err) {
     console.error("Campaign reply update error:", err);
-  }
-}
-
-async function saveProfilePictureUrl(phone: string, num: any) {
-  try {
-    const { default: Contact } = await import("@/models/Contact");
-    // Best-effort fetch of profile picture URL from Meta Graph API
-    const res = await fetch(`https://graph.facebook.com/v21.0/${num.phoneNumberId}/contacts/${phone}`, {
-      headers: { Authorization: `Bearer ${num.accessToken}` }
-    });
-    const data = await res.json();
-    
-    // Meta API sometimes returns the URL inside the profile object
-    const profilePicUrl = data?.profile?.profile_picture_url || data?.profile?.url || null;
-    
-    if (profilePicUrl) {
-      await Contact.findOneAndUpdate(
-        { phone, userId: num.userId },
-        { $set: { profilePicUrl } },
-        { upsert: true }
-      );
-    }
-  } catch (err) {
-    // Silent fail, as profile pictures are often restricted by privacy settings
   }
 }
