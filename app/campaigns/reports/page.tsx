@@ -3,7 +3,7 @@
 "use client";
 
 import React, { useEffect, useState, useRef } from "react";
-import styled from "styled-components"; // 🚀 Added for scanner loader
+import styled from "styled-components";
 import Sidebar from "@/components/Sidebar";
 import { 
   BarChart3, Download, Loader2, Search, CheckCircle, XCircle, Clock, 
@@ -15,7 +15,6 @@ import "react-toastify/dist/ReactToastify.css";
 import * as XLSX from "xlsx";
 import { useSession } from "next-auth/react";
 
-// 🚀 YOUR CUSTOM SCANNER LOADER COMPONENT
 const ScannerLoader = () => {
   return (
     <ScannerWrapper>
@@ -49,28 +48,17 @@ const ScannerWrapper = styled.div`
     left: 0;
     width: 0;
     height: 100%;
-    border-right: 4px solid #000000; /* ✅ Changed to Black */
+    border-right: 4px solid #000000;
     overflow: hidden;
-    color: #000000; /* ✅ Changed to Black */
+    color: #000000;
     animation: load91371 2s linear infinite;
   }
 
   @keyframes load91371 {
-    0%, 10%, 100% {
-      width: 0;
-    }
-
-    10%,20%,30%,40%,50%,60%,70%,80%,90%,100% {
-      border-right-color: transparent;
-    }
-
-    11%,21%,31%,41%,51%,61%,71%,81%,91% {
-      border-right-color: #000000; /* ✅ Changed to Black */
-    }
-
-    60%, 80% {
-      width: 100%;
-    }
+    0%, 10%, 100% { width: 0; }
+    10%,20%,30%,40%,50%,60%,70%,80%,90%,100% { border-right-color: transparent; }
+    11%,21%,31%,41%,51%,61%,71%,81%,91% { border-right-color: #000000; }
+    60%, 80% { width: 100%; }
   }
 `;
 
@@ -82,6 +70,9 @@ type ReportItem = {
   replies?: string[];
   reply?: string | null; 
   repliedAt?: string | null;
+  deliveredAt?: string | null;
+  readAt?: string | null;
+  replyTimes?: string[];
   tags?: string[];
   additionalData?: string[];
 };
@@ -108,12 +99,30 @@ type Campaign = {
   failedCount: number;
   templateName?: string;
   createdAt?: string;
+  updatedAt?: string;
   additionalFields?: string[];
   liveStats?: LiveStats;
   [x: string]: any;
 };
 
 const normalizePhone = (p: string) => String(p || "").replace(/\D/g, "");
+
+const formatExcelDate = (dateStr: string | null | undefined) => {
+  if (!dateStr) return "";
+  try {
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return "";
+    return date.toLocaleString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+};
 
 export default function ReportsPage() {
   const { data: session, status } = useSession();
@@ -344,8 +353,11 @@ export default function ReportsPage() {
       const data = await res.json();
 
       if (data.success && Array.isArray(data.campaigns) && data.campaigns[0]) {
-        const fullData = data.campaigns[0].reportData || [];
+        const campData = data.campaigns[0];
+        const fullData = campData.reportData || [];
         if (fullData.length === 0) { toast.error("No data to download"); return; }
+
+        const fallbackTime = campData.createdAt || campData.updatedAt;
 
         const additionalCols = selectedCamp?.additionalFields || [];
         const wsData = fullData.map((d: any) => {
@@ -354,16 +366,33 @@ export default function ReportsPage() {
           if (replies.length > 0) currentStatus = "replied"; 
           const statusConfig = getStatusConfig(currentStatus, replies, d.error);
           
-          const row: any = { "Name": d.name || "N/A", "Phone Number": d.phone };
+          const row: any = { 
+            "Name": d.name || "N/A", 
+            "Phone Number": d.phone 
+          };
+          
           additionalCols.forEach((field, idx) => { row[field] = d.additionalData?.[idx] || ""; });
+          
           row["Status"] = statusConfig.label; 
+
+          row["Delivered Time"] = formatExcelDate(d.deliveredAt || (["delivered", "read", "replied"].includes(currentStatus) ? fallbackTime : null));
+          row["Read Time"] = formatExcelDate(d.readAt || (["read", "replied"].includes(currentStatus) ? fallbackTime : null));
+          row["Replied Time"] = formatExcelDate(d.repliedAt || (currentStatus === "replied" ? fallbackTime : null));
+          
           row["Error Reason"] = d.error || ""; 
           row["Tags"] = d.tags?.join(", ") || "None";
-          row["Reply 1"] = replies[0] || ""; 
-          row["Reply 2"] = replies[1] || ""; 
-          row["Reply 3"] = replies[2] || ""; 
-          row["Reply 4"] = replies[3] || ""; 
-          row["Reply 5"] = replies[4] || "";
+          
+          // ✅ FIXED EXCEL BUG: Only add time if there is actually a reply text
+          for (let i = 0; i < 5; i++) {
+            const replyText = replies[i] || "";
+            row[`Reply ${i + 1}`] = replyText;
+            if (replyText) {
+              row[`Reply ${i + 1} Time`] = formatExcelDate(d.replyTimes?.[i] || d.repliedAt || fallbackTime);
+            } else {
+              row[`Reply ${i + 1} Time`] = "";
+            }
+          }
+          
           return row;
         });
 
@@ -483,8 +512,9 @@ export default function ReportsPage() {
                 </div>
               </div>
             </div>
-            <div className="p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 overflow-hidden flex-1">
-              <div className="flex flex-col gap-4 overflow-hidden">
+            
+            <div className="p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 overflow-y-auto flex-1">
+              <div className="flex flex-col gap-4">
                 <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 shrink-0">
                   <p className="text-xs text-slate-600 leading-relaxed">
                     Out of <span className="font-bold text-slate-900">{totalMessages}</span> contacts, 
@@ -493,9 +523,9 @@ export default function ReportsPage() {
                     and <span className="font-bold text-red-500"> {getPercentage(failedCount + invalidCount)}%</span> failed/invalid.
                   </p>
                 </div>
-                <div className="flex-1 overflow-hidden flex flex-col">
+                <div className="flex-1 flex flex-col">
                   <h3 className="text-[11px] font-extrabold text-slate-500 uppercase tracking-widest mb-2 shrink-0">Breakdown (%)</h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 flex-1 overflow-hidden">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 flex-1">
                     {briefStats.map((stat) => (
                       <div key={stat.label} className="bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm flex flex-col justify-center">
                         <div className="flex justify-between items-center mb-1">
@@ -510,9 +540,10 @@ export default function ReportsPage() {
                   </div>
                 </div>
               </div>
-              <div className="flex flex-col gap-2 overflow-hidden border-t lg:border-t-0 lg:border-l border-slate-200 lg:pl-6 pt-4 lg:pt-0">
+              
+              <div className="flex flex-col gap-2 border-t lg:border-t-0 lg:border-l border-slate-200 lg:pl-6 pt-4 lg:pt-0">
                 <h3 className="text-[11px] font-extrabold text-slate-500 uppercase tracking-widest mb-2 shrink-0">Exact Numbers</h3>
-                <div className="grid grid-cols-2 gap-2 flex-1 overflow-hidden">
+                <div className="grid grid-cols-2 gap-2 flex-1">
                   {briefStats.map((stat) => (
                     <div key={stat.label} className="flex flex-col justify-center p-2.5 bg-slate-50 rounded-lg border border-slate-200 shadow-sm">
                       <span className="text-[10px] font-medium text-slate-500 flex items-center gap-1 mb-0.5">
@@ -682,7 +713,6 @@ export default function ReportsPage() {
                 <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden min-w-[640px]">
                   {loadingReport ? (
                     <div className="flex justify-center items-center h-64">
-                      {/* 🚀 USING YOUR SCANNER LOADER HERE */}
                       <ScannerLoader />
                     </div>
                   ) : (
