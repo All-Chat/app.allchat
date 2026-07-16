@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* =====================================================================
-   LIVE CHAT PAGE - MULTI-WABA SUPPORT (20 FAST + BACKGROUND DETAILS)
+   LIVE CHAT PAGE - MULTI-WABA SUPPORT (NO SCROLL JUMP + AVATAR FIX)
    ===================================================================== */
 
 /* eslint-disable react-hooks/set-state-in-effect */
@@ -72,7 +72,6 @@ type WhatsappNumber = {
   isActive?: boolean;
 };
 
-// ✅ NEW: Type to hold both Name and Profile Picture URL
 type ContactDetails = {
   name?: string;
   profilePicUrl?: string;
@@ -92,9 +91,16 @@ const getAvatarGradient = (id: string) => {
   return colors[Math.abs(hash) % colors.length];
 };
 
+// ✅ Get first 2 letters of name, or first 2 digits of number
 const getAvatarText = (name: string | undefined, id: string | undefined) => {
-  if (name && name.trim() !== "" && name !== "Unknown") return name.trim().charAt(0).toUpperCase();
-  if (id) return id.replace(/\D/g, "").substring(0, 2);
+  if (name && name.trim() !== "" && name !== "Unknown") {
+    const letters = name.trim().substring(0, 2).toUpperCase();
+    if (/^[A-Z]+$/.test(letters)) return letters; // Only return if they are letters
+  }
+  if (id) {
+    const digits = id.replace(/\D/g, "").substring(0, 2);
+    if (digits) return digits;
+  }
   return "?";
 };
 
@@ -126,7 +132,6 @@ export default function ChatPage() {
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   
-  // ✅ NEW: State holds both name and profile pic
   const [contactDetails, setContactDetails] = useState<Record<string, ContactDetails>>({});
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -138,15 +143,31 @@ export default function ChatPage() {
   const [fetchedTemplateData, setFetchedTemplateData] = useState<Record<string, any>>({});
   const fetchedTemplates = useRef<Set<string>>(new Set()); 
 
+  // ✅ NEW: State to track broken profile images so they fall back to text avatar
+  const [picErrors, setPicErrors] = useState<Record<string, boolean>>({});
+
   const [showChatList, setShowChatList] = useState(true);
+
+  // ✅ NEW: Pagination States
+  const [chatPage, setChatPage] = useState(1);
+  const [hasMoreChats, setHasMoreChats] = useState(true);
+  const [loadingMoreChats, setLoadingMoreChats] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const prevMessageCount = useRef(0);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const chatListRef = useRef<HTMLDivElement>(null);
   const fetchedContacts = useRef<Set<string>>(new Set());
   const isFetchingChats = useRef(false);
   const isFetchingMessages = useRef(false);
   const isInitialLoad = useRef(false); 
+
+  // ✅ NEW: Refs to prevent state loops and scroll resets
+  const activeChatRef = useRef<string | null>(null);
+  const contactDetailsRef = useRef<Record<string, ContactDetails>>({});
+  
+  useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
+  useEffect(() => { contactDetailsRef.current = contactDetails; }, [contactDetails]);
 
   const fetchWhatsappNumbers = useCallback(async () => {
     setLoadingNumbers(true);
@@ -189,7 +210,6 @@ export default function ChatPage() {
     return null;
   }, [whatsappNumbers, selectedWabaId]);
 
-  // ✅ NEW: Fetch details (Name + PP) for a single phone in the background
   const fetchContactDetails = useCallback(async (phoneId: string) => {
     if (fetchedContacts.current.has(phoneId)) return;
     fetchedContacts.current.add(phoneId);
@@ -228,15 +248,16 @@ export default function ChatPage() {
 
   const getAvatarLabel = (chat: Chat) => getAvatarText(getResolvedName(chat), chat.phone || chat._id);
 
-  // ✅ NEW: Helper to render Avatar (Image or Gradient Fallback)
+  // ✅ Helper to render Avatar (Image or Gradient Fallback with error handling)
   const renderAvatar = (chatId: string, sizeClass: string, textClass: string) => {
     const picUrl = contactDetails[chatId]?.profilePicUrl;
-    if (picUrl) {
+    if (picUrl && !picErrors[chatId]) {
       return (
         <img 
           src={picUrl} 
           alt="avatar" 
           className={`${sizeClass} rounded-full object-cover shadow-md flex-shrink-0`} 
+          onError={() => setPicErrors(prev => ({ ...prev, [chatId]: true }))}
         />
       );
     }
@@ -271,11 +292,18 @@ export default function ChatPage() {
     }
   }, [messages]);
 
-  const loadChats = useCallback(async () => {
+  // ✅ FIXED: Load chats with pagination and proper polling that preserves scroll
+  const loadChats = useCallback(async (pageNum = 1, isPolling = false) => {
     if (isFetchingChats.current) return;
     isFetchingChats.current = true;
+    
+    if (pageNum > 1) setLoadingMoreChats(true);
+    
     try {
       const params = new URLSearchParams();
+      params.set("page", String(pageNum));
+      params.set("limit", "20");
+      
       if (selectedWabaId && selectedWabaId !== "all") {
         params.set("whatsappPhoneNumberId", selectedWabaId);
       }
@@ -284,47 +312,102 @@ export default function ChatPage() {
       if (handleUnauthorized(res)) return;
       const data = await res.json();
 
-      if (data.success && data.chats) {
+      // ✅ FIX: Ensure data.chats is always an array to prevent filter errors
+      if (data.success && Array.isArray(data.chats)) {
+        const chatsData = data.chats as Chat[];
         setChats((prev) => {
-          if (prev.length === data.chats.length) {
-            let changed = false;
-            for (let i = 0; i < prev.length; i++) {
-              if (
-                prev[i]._id !== data.chats[i]._id ||
-                prev[i].lastMessage !== data.chats[i].lastMessage ||
-                prev[i].updatedAt !== data.chats[i].updatedAt
-              ) { changed = true; break; }
-            }
-            if (!changed) return prev;
+          if (pageNum === 1 && !isPolling) {
+            // Initial load or WABA change: replace entirely
+            return chatsData;
           }
-          return data.chats;
+          
+          if (isPolling) {
+            // Polling: Deep compare to prevent unnecessary re-renders
+            const existingMap = new Map(prev.map(c => [c._id, c]));
+            let hasChanged = false;
+            const newChatsToAdd: Chat[] = [];
+            
+            chatsData.forEach((c) => {
+              if (existingMap.has(c._id)) {
+                const old = existingMap.get(c._id);
+                // Only mark as changed if the message or time actually updated
+                if (old && (old.lastMessage !== c.lastMessage || old.updatedAt !== c.updatedAt)) {
+                  existingMap.set(c._id, c);
+                  hasChanged = true;
+                }
+              } else {
+                newChatsToAdd.push(c);
+                hasChanged = true;
+              }
+            });
+            
+            // ✅ CRITICAL: If nothing changed, return the EXACT same array reference.
+            // This prevents React from re-rendering and resetting the scroll!
+            if (!hasChanged) return prev;
+            
+            // If there are new chats, put them at the top. Otherwise, keep exact order.
+            if (newChatsToAdd.length > 0) {
+              return [...newChatsToAdd, ...prev.map(p => existingMap.get(p._id) || p)];
+            }
+            return prev.map(p => existingMap.get(p._id) || p);
+          }
+          
+          // Pagination: Append new page
+          const existingIds = new Set(prev.map(c => c._id));
+          const newChats = chatsData.filter((c) => !existingIds.has(c._id));
+          return [...prev, ...newChats];
         });
+        
+        if (pageNum > 1) setChatPage(pageNum);
+        setHasMoreChats(data.hasMore !== false);
 
-        // ✅ Fetch details (Name/PP) in the background ONLY for the 20 loaded chats
-        data.chats.forEach((chat: Chat) => {
-          if (!contactDetails[chat._id]) {
+        // Use refs here to avoid stale closures!
+        const currentContactDetails = contactDetailsRef.current;
+        chatsData.forEach((chat) => {
+          if (!currentContactDetails[chat._id]) {
             fetchContactDetails(chat._id);
           }
         });
 
-        if (activeChat) {
-          const current = data.chats.find((c: Chat) => c._id === activeChat);
+        const currentActiveChat = activeChatRef.current;
+        if (currentActiveChat) {
+          const current = chatsData.find((c) => c._id === currentActiveChat);
           if (current) setActiveChatData(current);
         }
+      } else {
+        setHasMoreChats(false);
       }
     } catch (err) {
       console.error("Failed to load chats:", err);
     } finally {
       setLoading(false);
+      setLoadingMoreChats(false);
       isFetchingChats.current = false;
     }
-  }, [activeChat, selectedWabaId, contactDetails, fetchContactDetails]);
+  }, [selectedWabaId, fetchContactDetails]);
+
+  // ✅ FIXED: Infinite Scroll Handler
+  const handleChatListScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const target = e.currentTarget;
+    const { scrollTop, scrollHeight, clientHeight } = target;
+    
+    // If user is near the bottom (100px), and we aren't already loading, and there are more chats
+    if (scrollHeight - scrollTop - clientHeight < 100 && !loadingMoreChats && hasMoreChats) {
+      setLoadingMoreChats(true);
+      setChatPage(prev => {
+        const next = prev + 1;
+        loadChats(next, false); // Fetch next page
+        return next;
+      });
+    }
+  };
 
   const loadMessages = useCallback(async () => {
-    if (!activeChat || isFetchingMessages.current) return;
+    const currentActiveChat = activeChatRef.current;
+    if (!currentActiveChat || isFetchingMessages.current) return;
     isFetchingMessages.current = true;
     try {
-      const cleanPhone = activeChat.replace(/\+/g, "");
+      const cleanPhone = currentActiveChat.replace(/\+/g, "");
       const params = new URLSearchParams({ phone: cleanPhone });
       if (selectedWabaId && selectedWabaId !== "all") {
         params.set("whatsappPhoneNumberId", selectedWabaId);
@@ -367,7 +450,7 @@ export default function ChatPage() {
 
         for (const msg of newMessages) {
           if (msg.contactName?.trim() && msg.contactName !== "Unknown") {
-            const key = activeChat!;
+            const key = currentActiveChat;
             const contactName = msg.contactName.trim();
             setContactDetails((prev) => ({ 
               ...prev, 
@@ -382,7 +465,7 @@ export default function ChatPage() {
     } finally {
       isFetchingMessages.current = false;
     }
-  }, [activeChat, selectedWabaId]);
+  }, [selectedWabaId]);
 
   const handleWabaChange = (newId: string) => {
     setSelectedWabaId(newId);
@@ -394,6 +477,10 @@ export default function ChatPage() {
     setFetchedTemplateData({});
     prevMessageCount.current = 0;
     setShowChatList(true);
+    
+    setChatPage(1);
+    setHasMoreChats(true);
+    setChats([]);
   };
 
   useEffect(() => {
@@ -406,9 +493,12 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (status === "authenticated" && !loadingNumbers) {
-      loadChats();
+      setChatPage(1);
+      setHasMoreChats(true);
+      loadChats(1, false);
     }
-  }, [status, loadingNumbers, selectedWabaId, loadChats]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, loadingNumbers, selectedWabaId]);
 
   useEffect(() => {
     prevMessageCount.current = 0;
@@ -424,11 +514,12 @@ export default function ChatPage() {
   useEffect(() => {
     if (status !== "authenticated" || loadingNumbers) return;
     const interval = setInterval(() => {
-      loadChats();
-      if (activeChat) loadMessages();
+      loadChats(1, true); 
+      if (activeChatRef.current) loadMessages();
     }, 3000);
     return () => clearInterval(interval);
-  }, [activeChat, loadChats, loadMessages, status, loadingNumbers]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, loadingNumbers]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -468,7 +559,7 @@ export default function ChatPage() {
         setSelectedFile(null);
         loadMessages();
         fetchContactDetails(activeChat);
-        setTimeout(() => loadChats(), 500);
+        setTimeout(() => loadChats(1, true), 500);
       } else {
         toast.error(data.message || "Failed to send");
       }
@@ -812,7 +903,11 @@ export default function ChatPage() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto scrollbar-hide bg-white">
+            <div 
+              ref={chatListRef}
+              onScroll={handleChatListScroll} 
+              className="flex-1 overflow-y-auto scrollbar-hide bg-white"
+            >
               {loading || loadingNumbers ? (
                 <div className="p-6 text-center">
                   <Loader2 className="w-6 h-6 animate-spin mx-auto text-emerald-600" />
@@ -826,45 +921,58 @@ export default function ChatPage() {
                   <p className="text-xs text-gray-400 mt-1 px-4">Add a WhatsApp Business Account to start.</p>
                 </div>
               ) : (
-                chats
-                  .filter((chat) => {
-                    if (!searchQuery) return true;
-                    const name = getResolvedName(chat).toLowerCase();
-                    const phone = (chat.phone || chat._id).toLowerCase();
-                    const query = searchQuery.toLowerCase();
-                    return name.includes(query) || phone.includes(query);
-                  })
-                  .map((chat) => (
-                    <div
-                      key={chat._id}
-                      onClick={() => handleChatSelect(chat)}
-                      className={`flex items-center gap-3 px-3 sm:px-4 py-3 cursor-pointer transition-all duration-150 border-b border-gray-50 ${
-                        activeChat === chat._id
-                          ? "bg-emerald-50 border-l-4 border-l-emerald-500"
-                          : "hover:bg-gray-50 border-l-4 border-l-transparent"
-                      }`}
-                    >
-                      {renderAvatar(chat._id, "w-11 h-11 sm:w-12 sm:h-12", "text-sm")}
-                      <div className="flex-1 min-w-0 overflow-hidden">
-                        <div className="flex justify-between items-center">
-                          <h3 className="font-semibold text-[14px] sm:text-[15px] text-gray-900 truncate">
-                            {getDisplayName(chat)}
-                          </h3>
-                          <span className={`text-[11px] font-medium ml-2 flex-shrink-0 ${
-                            chat.lastDirection === "out" ? "text-gray-400" : "text-emerald-600"
-                          }`}>
-                            {formatTime(chat.updatedAt)}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          {chat.lastDirection === "out" && <CheckCheck className="w-4 h-4 text-blue-500 shrink-0" />}
-                          <p className="text-sm text-gray-500 truncate leading-tight">
-                            {chat.lastMessageType === "template" ? "[Template]" : chat.lastMessage}
-                          </p>
+                <>
+                  {chats
+                    .filter((chat) => {
+                      if (!searchQuery) return true;
+                      const name = getResolvedName(chat).toLowerCase();
+                      const phone = (chat.phone || chat._id).toLowerCase();
+                      const query = searchQuery.toLowerCase();
+                      return name.includes(query) || phone.includes(query);
+                    })
+                    .map((chat) => (
+                      <div
+                        key={chat._id}
+                        onClick={() => handleChatSelect(chat)}
+                        className={`flex items-center gap-3 px-3 sm:px-4 py-3 cursor-pointer transition-all duration-150 border-b border-gray-50 ${
+                          activeChat === chat._id
+                            ? "bg-emerald-50 border-l-4 border-l-emerald-500"
+                            : "hover:bg-gray-50 border-l-4 border-l-transparent"
+                        }`}
+                      >
+                        {renderAvatar(chat._id, "w-11 h-11 sm:w-12 sm:h-12", "text-sm")}
+                        <div className="flex-1 min-w-0 overflow-hidden">
+                          <div className="flex justify-between items-center">
+                            <h3 className="font-semibold text-[14px] sm:text-[15px] text-gray-900 truncate">
+                              {getDisplayName(chat)}
+                            </h3>
+                            <span className={`text-[11px] font-medium ml-2 flex-shrink-0 ${
+                              chat.lastDirection === "out" ? "text-gray-400" : "text-emerald-600"
+                            }`}>
+                              {formatTime(chat.updatedAt)}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            {chat.lastDirection === "out" && <CheckCheck className="w-4 h-4 text-blue-500 shrink-0" />}
+                            <p className="text-sm text-gray-500 truncate leading-tight">
+                              {chat.lastMessageType === "template" ? "[Template]" : chat.lastMessage}
+                            </p>
+                          </div>
                         </div>
                       </div>
+                    ))}
+                  
+                  {loadingMoreChats && (
+                    <div className="py-4 flex justify-center">
+                      <Loader2 className="w-5 h-5 animate-spin text-emerald-500" />
                     </div>
-                  ))
+                  )}
+                  {!hasMoreChats && chats.length > 0 && (
+                    <div className="py-4 text-center text-xs text-gray-400">
+                      No more chats to load.
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>
