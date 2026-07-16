@@ -115,6 +115,9 @@ type Campaign = {
   totalDeducted: number;
   scheduledAt: string;
   createdAt: string;
+  updatedAt?: string; // ✅ Added fallback for Run/Completed times
+  startedAt?: string; // ✅ Added for Run On
+  completedAt?: string; // ✅ Added for Completed On
   liveStats?: LiveStats;
 };
 
@@ -127,6 +130,18 @@ const formatINR = (amount: number) =>
     currency: "INR",
     minimumFractionDigits: 2,
   }).format(amount);
+
+// ✅ NEW: Full Date Time Formatter (Time, Date, Year)
+const formatFullDateTime = (dateStr: string) => {
+  if (!dateStr) return "N/A";
+  return new Date(dateStr).toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
 
 const getCategoryColor = (category: string) => {
   switch (category?.toUpperCase()) {
@@ -636,14 +651,41 @@ export default function CampaignList() {
 
               {/* Details */}
               <div className="space-y-3 text-sm border-t border-slate-100 pt-4">
-                {viewCampaign.scheduledAt && (
+                {/* ✅ NEW: Full Date Time Details in Modal */}
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Created On:</span>
+                  <span className="font-medium text-right">
+                    {formatFullDateTime(viewCampaign.createdAt)}
+                  </span>
+                </div>
+                
+                {viewCampaign.status !== "saved" && viewCampaign.status !== "scheduled" && (
                   <div className="flex justify-between">
-                    <span className="text-slate-500">Scheduled:</span>
+                    <span className="text-slate-500">Run On:</span>
                     <span className="font-medium text-right">
-                      {new Date(viewCampaign.scheduledAt).toLocaleString()}
+                      {formatFullDateTime(viewCampaign.startedAt || viewCampaign.updatedAt || "")}
                     </span>
                   </div>
                 )}
+
+                {(viewCampaign.status === "completed" || viewCampaign.status === "failed") && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Completed On:</span>
+                    <span className="font-medium text-right">
+                      {formatFullDateTime(viewCampaign.completedAt || viewCampaign.updatedAt || "")}
+                    </span>
+                  </div>
+                )}
+
+                {viewCampaign.scheduledAt && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Scheduled For:</span>
+                    <span className="font-medium text-right">
+                      {formatFullDateTime(viewCampaign.scheduledAt)}
+                    </span>
+                  </div>
+                )}
+
                 {viewCampaign.variables?.length > 0 && (
                   <div>
                     <span className="text-slate-500 block mb-1">Variables:</span>
@@ -861,9 +903,16 @@ export default function CampaignList() {
                             </span>
                           )}
                         </div>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          {c.templateName} • Created {new Date(c.createdAt).toLocaleDateString()}
-                        </p>
+                        
+                        {/* ✅ NEW: Replaced plain text with full Date/Time logs */}
+                        <p className="text-xs text-slate-500 mt-1">{c.templateName}</p>
+                        <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
+                          <span className="flex items-center gap-1.5">
+                            <Clock size={11} className="text-slate-400" />
+                            <strong>Created:</strong> {formatFullDateTime(c.createdAt)}
+                          </span>
+                        </div>
+
                         {c.status === "scheduled" && timers[c._id] && (
                           <div className="mt-2 inline-flex items-center gap-1.5 bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-lg text-xs font-bold border border-indigo-100">
                             <Clock size={12} className="animate-pulse" /> Starts in: {timers[c._id]}
