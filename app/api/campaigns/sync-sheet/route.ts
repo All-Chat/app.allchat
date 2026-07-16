@@ -7,6 +7,24 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { syncCampaignToGoogleSheet } from "@/lib/googleSheetSync";
 
+// ✅ NEW: Date formatter for Google Sheets
+function formatSheetDate(dateStr: string | null | undefined) {
+  if (!dateStr) return "";
+  try {
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return "";
+    return date.toLocaleString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
+
 function isValidReply(msg: any): boolean {
   const text = (msg.text || "").trim();
   if (msg.messageType && ["image", "video", "audio", "document", "sticker", "location", "contacts", "interactive", "button"].includes(msg.messageType)) return true;
@@ -93,11 +111,25 @@ export async function POST(req: Request) {
         status: getDisplayStatus(String(item.status || ""), replies.length),
         error: String(item.error || "").trim(),
         tags: Array.isArray(item.tags) ? item.tags.filter(Boolean).join(", ") : "",
+        // ✅ NEW: Add Time columns
+        deliveredTime: formatSheetDate(item.deliveredAt),
+        readTime: formatSheetDate(item.readAt),
+        repliedTime: formatSheetDate(item.repliedAt),
       };
 
       additionalFields.forEach((field, idx) => row[field] = item.additionalData?.[idx] || "");
 
-      for (let i = 1; i <= 5; i++) row[`Reply ${i}`] = replies[i - 1] || "";
+      // ✅ FIXED: Only add time if there is actually a reply text
+      for (let i = 1; i <= 5; i++) {
+        const replyText = replies[i - 1] || "";
+        row[`Reply ${i}`] = replyText;
+        if (replyText) {
+          row[`Reply ${i} Time`] = formatSheetDate(item.replyTimes?.[i - 1] || item.repliedAt);
+        } else {
+          row[`Reply ${i} Time`] = "";
+        }
+      }
+      
       return row;
     });
 
