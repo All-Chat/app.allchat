@@ -17,15 +17,6 @@ const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "watiX_webhook_verify_
 const workflowTimers = new Map<string, NodeJS.Timeout>();
 const formTimers = new Map<string, NodeJS.Timeout>();
 
-/**
- * ⚠️ REQUIRED index — run once on MongoDB. This is a multikey index on the
- * array subfield, and is what makes the sentWamid lookup below O(1) instead
- * of a full collection scan on every single status webhook event:
- *
- *   db.campaigns.createIndex({ "reportData.sentWamid": 1 })
- */
-
-// ✅ STATUS PRIORITY HELPER FUNCTION
 const statusPriority: Record<string, number> = {
   "pending": 1, "queued": 2, "sent": 3, "delivered": 4, "read": 5
 };
@@ -40,18 +31,11 @@ function shouldUpdateStatus(currentStatus: string, newStatus: string): boolean {
   return newPriority > currentPriority;
 }
 
-// Normalize a phone string to its last 10 digits — used only as a FALLBACK
-// for old reportData rows that predate the sentWamid field being saved.
 function normalizePhone(val: any): string {
   const digits = String(val || "").replace(/\D/g, "");
   return digits.slice(-10);
 }
 
-// ============================================================================
-// ✅ NEW: Build the "outgoing message" representation (text, media, buttons)
-// for ANY step we send via the workflow engine, so it can be saved to the
-// Message collection and rendered correctly in the live chat UI.
-// ============================================================================
 type OutgoingPayload = {
   text: string;
   messageType: string;
@@ -65,7 +49,6 @@ function buildOutgoingMessagePayload(step: any): OutgoingPayload {
   let mediaUrl: string | null = null;
   let buttons: OutgoingPayload["buttons"] = [];
 
-  // --- Call action (phone CTA button) ---
   if (step.stepType === "call_action" && step.phoneNumber) {
     text = step.message || step.urlLabel || step.phoneNumber || "";
     buttons = [
@@ -78,7 +61,6 @@ function buildOutgoingMessagePayload(step: any): OutgoingPayload {
     return { text, messageType, mediaUrl, buttons };
   }
 
-  // --- URL action (link CTA button) ---
   if (step.stepType === "url_action" && step.url) {
     let url = step.url.trim();
     if (!url.startsWith("http")) url = "https://" + url;
@@ -93,13 +75,11 @@ function buildOutgoingMessagePayload(step: any): OutgoingPayload {
     return { text, messageType, mediaUrl, buttons };
   }
 
-  // --- Media attached directly to a message step (image/video/document) ---
   if (step.mediaUrl && ["image", "video", "document"].includes(step.mediaType)) {
     messageType = step.mediaType;
     mediaUrl = step.mediaUrl;
   }
 
-  // --- Quick-reply / list buttons on a message step ---
   if (step.buttons?.length > 0) {
     const valid = step.buttons.filter((b: any) => b.label?.trim());
     if (valid.length > 0) {
@@ -1003,6 +983,7 @@ export async function POST(req: NextRequest) {
         if (contactInfo?.profile?.name && contactInfo?.wa_id) {
           try { 
             const { default: Contact } = await import("@/models/Contact"); 
+            // ✅ Profile picture code completely removed. Only saving the name.
             await Contact.findOneAndUpdate({ phone: contactInfo.wa_id, userId: num.userId }, { name: contactInfo.profile.name, phone: contactInfo.wa_id }, { upsert: true }); 
           } catch {}
         }
@@ -1011,19 +992,12 @@ export async function POST(req: NextRequest) {
           if (msg.type === "reaction" || msg.type === "system") continue;
           await processAndSaveMessage(msg, num);
           await executeWorkflowsForMessage(msg, num, baseUrl);
-          await handleCampaignReply(msg, num); // ✅ ADDED CALL FOR REPLY TIMES
+          await handleCampaignReply(msg, num);
         }
 
-        // ==========================================================
-        // ✅ STATUS UPDATES (delivered / read / sent / failed)
-        // ==========================================================
         for (const statusObj of value.statuses || []) {
           const { id, status, recipient_id, errors } = statusObj;
 
-          // 🔍 Temporary diagnostic log — remove once you've confirmed
-          // these are landing correctly. If you NEVER see this line in
-          // your PM2 logs for a campaign, Meta isn't calling your webhook
-          // at all (check App Dashboard > Webhooks subscription/health).
           console.log(`[WEBHOOK STATUS] id=${id} status=${status} recipient=${recipient_id}`);
 
           if (status === "delivered" || status === "read") await Message.updateOne({ whatsappMessageId: id }, { $set: { status, error: null } });
@@ -1036,17 +1010,12 @@ export async function POST(req: NextRequest) {
               errorText = (raw.toLowerCase().includes("undeliverable") || raw.toLowerCase().includes("unsupported")) ? "Message not delivered to maintain a healthy ecosystem." : raw;
             }
 
-            // 🚀 FIX (primary path): match by the exact WhatsApp message ID
-            // that was saved on send (`sentWamid`). This is unambiguous —
-            // no phone-format guessing, and can't accidentally touch a
-            // different campaign that happens to share the same number.
             const campByWamid = await Campaign.findOne({ "reportData.sentWamid": id });
 
             if (campByWamid) {
               const idx = campByWamid.reportData.findIndex((item: any) => item.sentWamid === id);
               if (idx !== -1 && shouldUpdateStatus(campByWamid.reportData[idx].status, status)) {
                 const updateSet: any = { "reportData.$.status": status, "reportData.$.error": errorText };
-                // ✅ ADDED THESE 2 LINES FOR TIMES
                 if (status === "delivered") updateSet["reportData.$.deliveredAt"] = new Date(parseInt(statusObj.timestamp) * 1000);
                 if (status === "read") updateSet["reportData.$.readAt"] = new Date(parseInt(statusObj.timestamp) * 1000);
                 
@@ -1056,10 +1025,6 @@ export async function POST(req: NextRequest) {
                 );
               }
             } else {
-              // 🔙 FALLBACK: only for rows that predate sentWamid being
-              // saved. Uses normalized (last-10-digit) phone matching
-              // instead of brittle exact-string matching, so format
-              // differences (+91, leading 0, spaces, etc.) still match.
               const normRecipient = normalizePhone(recipient_id);
               if (normRecipient) {
                 const camps = await Campaign.find({ userId: num.userId, "reportData.sentWamid": { $exists: false } });
@@ -1074,7 +1039,6 @@ export async function POST(req: NextRequest) {
                   }
                   if (touchedIdx !== -1) {
                     const updateSet: any = { [`reportData.${touchedIdx}.status`]: status, [`reportData.${touchedIdx}.error`]: errorText };
-                    // ✅ ADDED THESE 2 LINES FOR TIMES
                     if (status === "delivered") updateSet[`reportData.${touchedIdx}.deliveredAt`] = new Date(parseInt(statusObj.timestamp) * 1000);
                     if (status === "read") updateSet[`reportData.${touchedIdx}.readAt`] = new Date(parseInt(statusObj.timestamp) * 1000);
 
@@ -1097,9 +1061,6 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// =========================
-// NEW FUNCTION ADDED AT THE BOTTOM
-// =========================
 async function handleCampaignReply(msg: any, num: any) {
   try {
     const Campaign = (await import("@/models/Campaign")).default;
@@ -1107,7 +1068,6 @@ async function handleCampaignReply(msg: any, num: any) {
     const text = msg?.text?.body || msg?.button?.text || msg?.interactive?.button_reply?.title || msg?.interactive?.list_reply?.title || "[Media/Non-text reply]";
     const replyTime = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
 
-    // ✅ FIXED: Find ONLY THE MOST RECENT campaign for this user, so it's not "common for all"
     const camp = await Campaign.findOne({ userId: num.userId, "reportData.phone": { $exists: true } }).sort({ createdAt: -1 });
     
     if (camp) {
@@ -1120,7 +1080,6 @@ async function handleCampaignReply(msg: any, num: any) {
       }
 
       if (touchedIdx !== -1) {
-        // ✅ FIXED: Pushes a NEW replyTime into the replyTimes array for EACH message
         await Campaign.updateOne(
           { _id: camp._id },
           {
