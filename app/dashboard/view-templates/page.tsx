@@ -34,6 +34,89 @@ export default function AllTemplatesPage() {
   const [isViewModalOpen, setIsViewModalOpen] = useState(false);
   const [viewingTemplate, setViewingTemplate] = useState<any>(null);
 
+  // ✅ NEW: Bulletproof Date Formatter
+  const formatDateTime = (dateInput: any) => {
+    if (!dateInput) return "N/A";
+    
+    try {
+      let date: Date;
+      
+      // If it's already a Date object
+      if (dateInput instanceof Date) {
+        date = dateInput;
+      } 
+      // If it's a number (Unix timestamp)
+      else if (typeof dateInput === 'number') {
+        // If it's a 10-digit number, it's in seconds. If 13-digit, milliseconds.
+        date = new Date(dateInput < 10000000000 ? dateInput * 1000 : dateInput);
+      } 
+      // If it's a string
+      else if (typeof dateInput === 'string') {
+        date = new Date(dateInput);
+      } 
+      else {
+        return "N/A";
+      }
+
+      // Check if valid
+      if (isNaN(date.getTime())) return "N/A";
+      
+      return date.toLocaleString("en-IN", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return "N/A";
+    }
+  };
+
+  // ✅ NEW: Bulletproof Date Extractor (Created At)
+  const getCreatedAt = (tpl: any) => {
+    if (tpl.createdAt) return tpl.createdAt;
+    if (tpl.created_at) return tpl.created_at;
+    if (tpl.date_created) return tpl.date_created;
+
+    if (tpl.history && Array.isArray(tpl.history) && tpl.history.length > 0) {
+      if (tpl.history[0].created_at) return tpl.history[0].created_at;
+    }
+
+    let objId = tpl._id || tpl.id;
+    if (objId && typeof objId === 'object' && typeof objId.toString === 'function') {
+      objId = objId.toString();
+    }
+    
+    if (objId && typeof objId === 'string' && objId.length === 24) {
+      try {
+        if (/^[0-9a-fA-F]{24}$/.test(objId)) {
+          const timestamp = parseInt(objId.substring(0, 8), 16);
+          return new Date(timestamp * 1000);
+        }
+      } catch (e) {}
+    }
+
+    return null;
+  };
+
+  // ✅ NEW: Bulletproof Date Extractor (Approved At / Updated At)
+  const getApprovedAt = (tpl: any) => {
+    if (tpl.updatedAt) return tpl.updatedAt;
+    if (tpl.updated_at) return tpl.updated_at;
+    if (tpl.approvedAt) return tpl.approvedAt;
+    if (tpl.approved_at) return tpl.approved_at;
+    
+    // Fallback to Meta history if available
+    if (tpl.history && Array.isArray(tpl.history) && tpl.history.length > 0) {
+      // Look for an approval event in history
+      const approvalEvent = tpl.history.find((h: any) => h.event === "APPROVED");
+      if (approvalEvent?.created_at) return approvalEvent.created_at;
+    }
+    
+    return null;
+  };
+
   // Load view preference from localStorage
   useEffect(() => {
     const savedView = localStorage.getItem("templateViewMode");
@@ -144,7 +227,7 @@ export default function AllTemplatesPage() {
                 <RefreshCw className={`w-4 h-4 text-emerald-600 ${syncing ? "animate-spin" : ""}`} />
                 {syncing ? "Syncing..." : "Sync Meta"}
               </button>
-              <Link href="/dashboard/templates/create" className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl shadow-lg shadow-emerald-500/20 hover:from-emerald-600 hover:to-teal-600 transition-all text-sm font-bold">
+              <Link href="/dashboard/templates" className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl shadow-lg shadow-emerald-500/20 hover:from-emerald-600 hover:to-teal-600 transition-all text-sm font-bold">
                 <PlusCircle className="w-4 h-4" /> New Template
               </Link>
             </div>
@@ -244,6 +327,16 @@ export default function AllTemplatesPage() {
                             <span className="flex items-center gap-1 px-2.5 py-1 bg-slate-50 rounded-lg border border-slate-100">
                               <Globe size={11} className="text-slate-400" /> {tpl.language || "en_US"}
                             </span>
+                            {/* ✅ Created At */}
+                            <span className="flex items-center gap-1 px-2.5 py-1 bg-slate-50 rounded-lg border border-slate-100">
+                              <Clock size={11} className="text-slate-400" /> {formatDateTime(getCreatedAt(tpl))}
+                            </span>
+                            {/* ✅ Approved At */}
+                            {getApprovedAt(tpl) && (
+                              <span className="flex items-center gap-1 px-2.5 py-1 bg-emerald-50 rounded-lg border border-emerald-100 text-emerald-700">
+                                <CheckCircle size={11} className="text-emerald-500" /> {formatDateTime(getApprovedAt(tpl))}
+                              </span>
+                            )}
                           </div>
                         </div>
 
@@ -276,12 +369,16 @@ export default function AllTemplatesPage() {
                             </div>
                             <div className="min-w-0">
                               <h3 className="font-bold text-slate-900 text-sm truncate">{tpl.name}</h3>
-                              <div className="flex items-center gap-2 mt-1">
+                              <div className="flex items-center flex-wrap gap-2 mt-1">
                                 <span className="flex items-center gap-1 text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
                                   <Tag size={9} /> {tpl.category || "MARKETING"}
                                 </span>
                                 <span className="flex items-center gap-1 text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
                                   <Globe size={9} /> {tpl.language || "en_US"}
+                                </span>
+                                {/* ✅ Created At */}
+                                <span className="flex items-center gap-1 text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                                  <Clock size={9} />Created At: {formatDateTime(getCreatedAt(tpl))}
                                 </span>
                               </div>
                             </div>
@@ -376,6 +473,13 @@ export default function AllTemplatesPage() {
                   <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Language</span>
                   <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-white rounded-lg border border-slate-200 text-xs font-semibold w-fit">
                     <Globe size={11} className="text-slate-400" /> {viewingTemplate.language || "en_US"}
+                  </span>
+                </div>
+                {/* ✅ Created At in Modal */}
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Created On</span>
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-white rounded-lg border border-slate-200 text-xs font-semibold w-fit">
+                    <Clock size={11} className="text-slate-400" /> {formatDateTime(getCreatedAt(viewingTemplate))}
                   </span>
                 </div>
               </div>
