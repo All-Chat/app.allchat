@@ -1,49 +1,38 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
-import Campaign from "@/models/Campaign";
+import Template from "@/models/Template"; // ✅ Import your Template model
+import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import mongoose from "mongoose";
 
-function normalizePhoneExpr(phoneFieldExpr: any) {
-  return {
-    $let: {
-      vars: {
-        digitsArr: {
-          $map: {
-            input: { $regexFindAll: { input: { $toString: { $ifNull: [phoneFieldExpr, ""] } }, regex: "\\d" } },
-            as: "m",
-            in: "$$m.match",
-          },
-        },
-      },
-      in: {
-        $let: {
-          vars: {
-            digitsStr: {
-              $reduce: {
-                input: "$$digitsArr",
-                initialValue: "",
-                in: { $concat: ["$$value", "$$this"] },
-              },
-            },
-          },
-          in: {
-            $substrCP: [
-              "$$digitsStr",
-              { $max: [0, { $subtract: [{ $strLenCP: "$$digitsStr" }, 10] }] },
-              10,
-            ],
-          },
-        },
-      },
-    },
+interface WhatsAppTemplate {
+  id: string;
+  name: string;
+  status: string;
+  category: string;
+  language: string;
+  createdAt?: any; // ✅ Injected from DB
+  updatedAt?: any; // ✅ Injected from DB (Approval/Saved time)
+  components?: any[];
+  [key: string]: any;
+}
+
+interface MetaResponse {
+  data?: WhatsAppTemplate[];
+  paging?: {
+    next?: string;
+  };
+  error?: {
+    message: string;
   };
 }
 
-export async function GET(req: Request) {
+export async function GET() {
   try {
+    await connectDB();
+    
+    // 1. Get the current logged-in user's ID
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
 
@@ -51,383 +40,89 @@ export async function GET(req: Request) {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
     }
 
-    await connectDB();
+    // 2. Fetch the user's WhatsApp credentials (multi-tenant)
+    const user = await User.findById(userId);
+    
+    const WABA_ID = user?.wabaId || process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+    const ACCESS_TOKEN = user?.whatsappAccessToken || process.env.META_ACCESS_TOKEN;
 
-    const { searchParams } = new URL(req.url);
-    const checkName = searchParams.get("check");
-    const excludeId = searchParams.get("excludeId");
-    const campaignId = searchParams.get("id");
-    const isDownload = searchParams.get("download") === "true"; 
-
-    // ==========================================
-    // ✅ 1. FAST VIEW MODAL (Limits to 15 numbers)
-    // ==========================================
-    const viewId = searchParams.get("viewId");
-    if (viewId) {
-      const campaign = await Campaign.findOne(
-        { 
-          _id: new mongoose.Types.ObjectId(viewId), 
-          userId: new mongoose.Types.ObjectId(userId) 
-        },
-        {
-          name: 1,
-          templateName: 1,
-          templateCategory: 1,
-          languageCode: 1,
-          scheduledAt: 1,
-          variables: 1,
-          mappedVariables: 1,
-          generateOtp: 1,
-          otpLength: 1,
-          mediaUrl: 1,
-          mediaType: 1,
-          totalMessages: 1,
-          additionalFields: 1,
-          // ✅ Only fetch 15 elements for instant loading
-          phoneNumbers: { $slice: 15 },
-          names: { $slice: 15 },
-          additionalFieldsData: { $slice: 15 }
-        }
-      ).lean();
-      
-      if (!campaign) {
-        return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
-      }
-      return NextResponse.json({ success: true, campaigns: [campaign] });
-    }
-
-    // ==========================================
-    // ✅ 2. EXCEL EXPORT (Loads ALL numbers)
-    // ==========================================
-    const exportId = searchParams.get("exportId");
-    if (exportId) {
-      const campaign = await Campaign.findOne(
-        { 
-          _id: new mongoose.Types.ObjectId(exportId), 
-          userId: new mongoose.Types.ObjectId(userId) 
-        },
-        {
-          name: 1,
-          templateName: 1,
-          phoneNumbers: 1, // ✅ Full array
-          names: 1, // ✅ Full array
-          additionalFields: 1,
-          additionalFieldsData: 1, // ✅ Full array
-          reportData: 1 // ✅ Full array (for statuses and replies)
-        }
-      ).lean();
-      
-      if (!campaign) {
-        return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
-      }
-      return NextResponse.json({ success: true, campaigns: [campaign] });
-    }
-
-    // ==========================================
-    // 3. EDIT PAGE (Loads ALL data)
-    // ==========================================
-    const editId = searchParams.get("editId");
-    if (editId) {
-      const campaign = await Campaign.findOne({ 
-        _id: new mongoose.Types.ObjectId(editId), 
-        userId: new mongoose.Types.ObjectId(userId) 
-      }).lean();
-      
-      if (!campaign) {
-        return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
-      }
-      return NextResponse.json({ success: true, campaigns: [campaign] });
-    }
-
-    // ==========================================
-    // 4. LIVE CHECK MODE
-    // ==========================================
-    if (checkName !== null) {
-      const query: any = {
-        userId: new mongoose.Types.ObjectId(userId),
-        name: { $regex: new RegExp(`^${checkName}$`, "i") },
-      };
-      if (excludeId) query._id = { $ne: excludeId };
-      const existing = await Campaign.findOne(query).lean();
-      return NextResponse.json({ success: true, exists: !!existing });
-    }
-
-    // ==========================================
-    // 5. SINGLE CAMPAIGN REPORT MODE
-    // ==========================================
-    if (campaignId) {
-      const limit = 50;
-      const page = parseInt(searchParams.get("page") || "1");
-      const skip = (page - 1) * limit;
-
-      const showOnly = searchParams.get("showOnly")?.split(",").filter(Boolean) || [];
-      const filterOut = searchParams.get("filterOut")?.split(",").filter(Boolean) || [];
-      const search = searchParams.get("search") || "";
-
-      const isRepliedExpr = {
-        $or: [
-          { $ne: [{ $ifNull: ["$$r.reply", ""] }, ""] },
-          { $gt: [ { $size: { $filter: { input: { $ifNull: ["$$r.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0 ] },
-          { $in: [normalizePhoneExpr("$$r.phone"), "$repliedPhonesSet"] }
-        ]
-      };
-
-      const baseStatusExpr = {
-        $switch: {
-          branches: [
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "read"] }, then: "read" },
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "delivered"] }, then: "delivered" },
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "sent"] }, then: "sent" },
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "failed"] }, then: "failed" },
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "invalid"] }, then: "invalid" },
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "duplicate"] }, then: "duplicate" },
-          ],
-          default: "pending"
-        }
-      };
-
-      const effectiveStatusExpr = {
-        $cond: {
-          if: isRepliedExpr,
-          then: "replied",
-          else: baseStatusExpr
-        }
-      };
-
-      const andConditions: any[] = [];
-
-      if (search) {
-        andConditions.push({
-          $or: [
-            { $regexMatch: { input: { $toString: { $ifNull: ["$$r.phone", ""] } }, regex: search, options: "i" } },
-            { $regexMatch: { input: { $ifNull: ["$$r.name", ""] }, regex: search, options: "i" } },
-          ],
-        });
-      }
-
-      if (showOnly.length > 0) {
-        andConditions.push({ $in: [effectiveStatusExpr, showOnly] });
-      }
-      
-      if (filterOut.length > 0) {
-        andConditions.push({ $not: [{ $in: [effectiveStatusExpr, filterOut] }] });
-      }
-
-      const finalFilterCond = andConditions.length > 0 ? { $and: andConditions } : true;
-
-      const pipeline: any[] = [
-        {
-          $match: {
-            _id: new mongoose.Types.ObjectId(campaignId),
-            userId: new mongoose.Types.ObjectId(userId),
-          },
-        },
-        {
-          $addFields: {
-            campPhonesNormalized: {
-              $setUnion: [
-                {
-                  $map: {
-                    input: { $ifNull: ["$reportData", []] },
-                    as: "r",
-                    in: normalizePhoneExpr("$$r.phone"),
-                  },
-                },
-                [],
-              ],
-            },
-          },
-        },
-        {
-          $lookup: {
-            from: "messages",
-            let: { camp_createdAt: "$createdAt", user_id: "$userId", camp_phones: "$campPhonesNormalized" },
-            pipeline: [
-              {
-                $match: {
-                  $expr: {
-                    $and: [
-                      { $eq: ["$userId", "$$user_id"] },
-                      { $eq: ["$direction", "in"] },
-                      { $gte: ["$createdAt", "$$camp_createdAt"] },
-                    ],
-                  },
-                },
-              },
-              { $addFields: { normalizedPhone: normalizePhoneExpr("$phone") } },
-              { $match: { $expr: { $in: ["$normalizedPhone", "$$camp_phones"] } } },
-              { $project: { _id: 0, normalizedPhone: 1, text: 1, messageType: 1 } },
-            ],
-            as: "inboundMsgs",
-          },
-        },
-        {
-          $addFields: {
-            repliedPhonesSet: { $setUnion: ["$inboundMsgs.normalizedPhone", []] },
-          },
-        },
-        {
-          $addFields: {
-            campaignStats: {
-              total: { $size: { $ifNull: ["$reportData", []] } },
-              replied: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: isRepliedExpr } } },
-              read: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "read"] }, { $not: isRepliedExpr } ] } } } },
-              delivered: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "delivered"] }, { $not: isRepliedExpr } ] } } } },
-              sent: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "sent"] }, { $not: isRepliedExpr } ] } } } },
-              failed: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "failed"] }, { $not: isRepliedExpr } ] } } } },
-              invalid: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "invalid"] }, { $not: isRepliedExpr } ] } } } },
-              duplicate: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "duplicate"] }, { $not: isRepliedExpr } ] } } } },
-              pending: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $or: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "pending"] }, { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "queued"] }, { $eq: [{ $ifNull: ["$$r.status", ""] }, ""] } ] }, { $not: isRepliedExpr } ] } } } },
-            }
-          }
-        },
-        {
-          $addFields: {
-            filteredData: {
-              $filter: {
-                input: { $ifNull: ["$reportData", []] },
-                as: "r",
-                cond: finalFilterCond,
-              },
-            },
-          },
-        },
-        {
-          $addFields: {
-            paginatedData: {
-              $cond: {
-                if: isDownload,
-                then: "$filteredData",
-                else: { $slice: ["$filteredData", skip, limit] }
-              }
-            }
-          }
-        },
-        {
-          $project: {
-            name: 1,
-            templateName: 1,
-            additionalFields: 1,
-            languageCode: 1,
-            totalDeducted: 1,
-            campaignStats: 1,
-            totalFiltered: { $size: "$filteredData" },
-            reportData: {
-              $map: {
-                input: "$paginatedData",
-                as: "r",
-                in: {
-                  $let: {
-                    vars: {
-                      matchedMsgs: {
-                        $filter: {
-                          input: { $ifNull: ["$inboundMsgs", []] },
-                          as: "msg",
-                          cond: { $eq: ["$$msg.normalizedPhone", normalizePhoneExpr("$$r.phone")] }
-                        }
-                      }
-                    },
-                    in: {
-                      $mergeObjects: [
-                        "$$r",
-                        {
-                          status: effectiveStatusExpr,
-                          replies: {
-                            $filter: {
-                              input: {
-                                $concatArrays: [
-                                  { $ifNull: ["$$r.replies", []] },
-                                  {
-                                    $map: {
-                                      input: "$$matchedMsgs",
-                                      as: "msg",
-                                      in: {
-                                        $cond: {
-                                          if: { $ne: [{ $ifNull: ["$$msg.text", ""] }, ""] },
-                                          then: "$$msg.text",
-                                          else: {
-                                            $cond: {
-                                              if: { $ne: [{ $ifNull: ["$$msg.messageType", ""] }, ""] },
-                                              then: { $concat: ["[", "$$msg.messageType", "]"] },
-                                              else: ""
-                                            }
-                                          }
-                                        }
-                                      }
-                                    }
-                                  }
-                                ]
-                              },
-                              as: "rep",
-                              cond: { $ne: ["$$rep", ""] }
-                            }
-                          }
-                        }
-                      ]
-                    }
-                  }
-                }
-              }
-            },
-          },
-        },
-      ];
-
-      const result = await Campaign.aggregate(pipeline);
-
-      if (!result || result.length === 0) {
-        return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
-      }
-
-      const campaign = result[0];
-      const totalPages = Math.max(1, Math.ceil(campaign.totalFiltered / limit));
-
+    if (!WABA_ID || !ACCESS_TOKEN) {
       return NextResponse.json({
-        success: true,
-        campaigns: [
-          {
-            ...campaign,
-            languageCode: campaign.languageCode || "en",
-            totalDeducted: campaign.totalDeducted || 0,
-          },
-        ],
-        currentPage: page,
-        totalPages: totalPages,
-        campaignStats: campaign.campaignStats,
-      });
+        success: false,
+        message: "WhatsApp Business Account ID or Access Token not configured. Please update your Settings.",
+      }, { status: 400 });
     }
 
-    // ==========================================
-    // 6. PAGINATED LIST MODE
-    // ==========================================
-    const page = parseInt(searchParams.get("page") || "1");
-    const limit = parseInt(searchParams.get("limit") || "50");
-    const skip = (page - 1) * limit;
+    // 3. Fetch templates from DB to get exact createdAt and updatedAt timestamps
+    const dbTemplates = await Template.find({ userId }).lean();
+    const dbTemplateMap = new Map();
+    
+    dbTemplates.forEach((t: any) => {
+      // Match by Meta's template ID or name
+      const metaId = t.metaId || t.id;
+      if (metaId) dbTemplateMap.set(metaId, t);
+      if (t.name) dbTemplateMap.set(t.name, t);
+    });
 
-    const [campaigns, totalCampaigns] = await Promise.all([
-      Campaign.find({ userId: new mongoose.Types.ObjectId(userId) })
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .select("-reportData")
-        .lean(),
-      Campaign.countDocuments({ userId: new mongoose.Types.ObjectId(userId) }),
-    ]);
+    // 4. Fetch templates from Meta API (Restoring your previous code)
+    let url: string | null = `https://graph.facebook.com/v21.0/${WABA_ID}/message_templates?fields=id,name,status,category,language,created_at,components`;
+    const allTemplates: WhatsAppTemplate[] = [];
 
-    const fixedCampaigns = campaigns.map((c: any) => ({
-      ...c,
-      languageCode: c.languageCode || "en",
-      totalDeducted: c.totalDeducted || 0,
-    }));
+    while (url) {
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${ACCESS_TOKEN}`,
+        },
+        cache: "no-store",
+      });
+
+      const data: MetaResponse = await res.json();
+
+      if (!res.ok) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: data.error?.message || "Failed to fetch templates",
+          },
+          { status: res.status }
+        );
+      }
+
+      if (data.data) {
+        allTemplates.push(...data.data);
+      }
+
+      url = data.paging?.next ?? null;
+    }
+
+    // 5. Merge Meta data with DB timestamps
+    const finalTemplates = allTemplates.map((metaTpl) => {
+      const dbTpl = dbTemplateMap.get(metaTpl.id) || dbTemplateMap.get(metaTpl.name);
+      
+      return {
+        ...metaTpl,
+        // ✅ Only take createdAt from DB (fallback to Meta's created_at if missing in DB)
+        createdAt: dbTpl?.createdAt || metaTpl.created_at,
+        // ✅ Take updatedAt from DB (represents when it was approved/saved in your system)
+        updatedAt: dbTpl?.updatedAt || null,
+      };
+    });
 
     return NextResponse.json({
       success: true,
-      campaigns: fixedCampaigns,
-      totalCampaigns,
-      hasMore: skip + campaigns.length < totalCampaigns,
+      count: finalTemplates.length,
+      templates: finalTemplates,
     });
-  } catch (error: any) {
-    console.error("List API Error:", error);
-    return NextResponse.json({ success: false, message: error.message }, { status: 500 });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Unknown error";
+
+    return NextResponse.json(
+      {
+        success: false,
+        message,
+      },
+      { status: 500 }
+    );
   }
 }
