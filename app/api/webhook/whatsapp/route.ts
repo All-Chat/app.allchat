@@ -1106,27 +1106,64 @@ async function handleCampaignReply(msg: any, num: any) {
     const Campaign = (await import("@/models/Campaign")).default;
     const phone = msg.from;
     const text = msg?.text?.body || msg?.button?.text || msg?.interactive?.button_reply?.title || msg?.interactive?.list_reply?.title || "[Media/Non-text reply]";
-    const replyTime = new Date(parseInt(msg.timestamp) * 1000);
+    const replyTime = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
 
-    // 1. If it's the first reply, update status to replied and set times
-    await Campaign.updateOne(
-      { "reportData.phone": phone, "reportData.status": { $ne: "replied" } },
-      {
-        $set: { "reportData.$.status": "replied", "reportData.$.repliedAt": replyTime },
-        $push: { "reportData.$.replies": text, "reportData.$.replyTimes": replyTime }
+    // Find all campaigns for this user that have this phone number in their reportData
+    const campaigns = await Campaign.find({ userId: num.userId, "reportData.phone": { $exists: true } });
+    
+    for (const camp of campaigns) {
+      let touchedIdx = -1;
+      // Use normalizePhone to match the last 10 digits to avoid format issues (+91 vs 91)
+      for (let i = 0; i < camp.reportData.length; i++) {
+        if (normalizePhone(camp.reportData[i].phone) === normalizePhone(phone)) {
+          touchedIdx = i;
+          break;
+        }
       }
-    );
 
-    // 2. If it's already replied, just push the new reply to the arrays
-    await Campaign.updateOne(
-      { "reportData.phone": phone, "reportData.status": "replied" },
-      {
-        $push: { "reportData.$.replies": text, "reportData.$.replyTimes": replyTime },
-        $set: { "reportData.$.repliedAt": replyTime }
+      if (touchedIdx !== -1) {
+        // Use explicit index updating (reportData.${touchedIdx}) to guarantee the push works
+        await Campaign.updateOne(
+          { _id: camp._id },
+          {
+            $set: {
+              [`reportData.${touchedIdx}.status`]: "replied",
+              [`reportData.${touchedIdx}.repliedAt`]: replyTime,
+            },
+            $push: {
+              [`reportData.${touchedIdx}.replies`]: text,
+              [`reportData.${touchedIdx}.replyTimes`]: replyTime,
+            }
+          }
+        );
       }
-    );
+    }
   } catch (err) {
     console.error("Campaign reply update error:", err);
+  }
+}
+
+async function saveProfilePictureUrl(phone: string, num: any) {
+  try {
+    const { default: Contact } = await import("@/models/Contact");
+    // Best-effort fetch of profile picture URL from Meta Graph API
+    const res = await fetch(`https://graph.facebook.com/v21.0/${num.phoneNumberId}/contacts/${phone}`, {
+      headers: { Authorization: `Bearer ${num.accessToken}` }
+    });
+    const data = await res.json();
+    
+    // Meta API sometimes returns the URL inside the profile object
+    const profilePicUrl = data?.profile?.profile_picture_url || data?.profile?.url || null;
+    
+    if (profilePicUrl) {
+      await Contact.findOneAndUpdate(
+        { phone, userId: num.userId },
+        { $set: { profilePicUrl } },
+        { upsert: true }
+      );
+    }
+  } catch (err) {
+    // Silent fail, as profile pictures are often restricted by privacy settings
   }
 }
 
