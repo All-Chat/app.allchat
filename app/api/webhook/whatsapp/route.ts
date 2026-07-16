@@ -1004,6 +1004,7 @@ export async function POST(req: NextRequest) {
           try { 
             const { default: Contact } = await import("@/models/Contact"); 
             await Contact.findOneAndUpdate({ phone: contactInfo.wa_id, userId: num.userId }, { name: contactInfo.profile.name, phone: contactInfo.wa_id }, { upsert: true }); 
+            await saveProfilePictureUrl(contactInfo.wa_id, num); // ADDED THIS ONE LINE
           } catch {}
         }
 
@@ -1011,6 +1012,7 @@ export async function POST(req: NextRequest) {
           if (msg.type === "reaction" || msg.type === "system") continue;
           await processAndSaveMessage(msg, num);
           await executeWorkflowsForMessage(msg, num, baseUrl);
+          await handleCampaignReply(msg, num); // ADDED THIS ONE LINE
         }
 
         // ==========================================================
@@ -1044,9 +1046,14 @@ export async function POST(req: NextRequest) {
             if (campByWamid) {
               const idx = campByWamid.reportData.findIndex((item: any) => item.sentWamid === id);
               if (idx !== -1 && shouldUpdateStatus(campByWamid.reportData[idx].status, status)) {
+                const updateSet: any = { "reportData.$.status": status, "reportData.$.error": errorText };
+                // ADDED THESE 2 LINES FOR TIMES
+                if (status === "delivered") updateSet["reportData.$.deliveredAt"] = new Date(parseInt(statusObj.timestamp) * 1000);
+                if (status === "read") updateSet["reportData.$.readAt"] = new Date(parseInt(statusObj.timestamp) * 1000);
+                
                 await Campaign.updateOne(
                   { _id: campByWamid._id, "reportData.sentWamid": id },
-                  { $set: { "reportData.$.status": status, "reportData.$.error": errorText } }
+                  { $set: updateSet }
                 );
               }
             } else {
@@ -1067,9 +1074,14 @@ export async function POST(req: NextRequest) {
                     }
                   }
                   if (touchedIdx !== -1) {
+                    const updateSet: any = { [`reportData.${touchedIdx}.status`]: status, [`reportData.${touchedIdx}.error`]: errorText };
+                    // ADDED THESE 2 LINES FOR TIMES
+                    if (status === "delivered") updateSet[`reportData.${touchedIdx}.deliveredAt`] = new Date(parseInt(statusObj.timestamp) * 1000);
+                    if (status === "read") updateSet[`reportData.${touchedIdx}.readAt`] = new Date(parseInt(statusObj.timestamp) * 1000);
+
                     await Campaign.updateOne(
                       { _id: camp._id },
-                      { $set: { [`reportData.${touchedIdx}.status`]: status, [`reportData.${touchedIdx}.error`]: errorText } }
+                      { $set: updateSet }
                     );
                   }
                 }
@@ -1083,5 +1095,61 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     console.error("❌ [WEBHOOK] Fatal Error:", error);
     return NextResponse.json({ success: true });
+  }
+}
+
+// =========================
+// NEW FUNCTIONS ADDED AT THE BOTTOM
+// =========================
+async function handleCampaignReply(msg: any, num: any) {
+  try {
+    const Campaign = (await import("@/models/Campaign")).default;
+    const phone = msg.from;
+    const text = msg?.text?.body || msg?.button?.text || msg?.interactive?.button_reply?.title || msg?.interactive?.list_reply?.title || "[Media/Non-text reply]";
+    const replyTime = new Date(parseInt(msg.timestamp) * 1000);
+
+    // 1. If it's the first reply, update status to replied and set times
+    await Campaign.updateOne(
+      { "reportData.phone": phone, "reportData.status": { $ne: "replied" } },
+      {
+        $set: { "reportData.$.status": "replied", "reportData.$.repliedAt": replyTime },
+        $push: { "reportData.$.replies": text, "reportData.$.replyTimes": replyTime }
+      }
+    );
+
+    // 2. If it's already replied, just push the new reply to the arrays
+    await Campaign.updateOne(
+      { "reportData.phone": phone, "reportData.status": "replied" },
+      {
+        $push: { "reportData.$.replies": text, "reportData.$.replyTimes": replyTime },
+        $set: { "reportData.$.repliedAt": replyTime }
+      }
+    );
+  } catch (err) {
+    console.error("Campaign reply update error:", err);
+  }
+}
+
+async function saveProfilePictureUrl(phone: string, num: any) {
+  try {
+    const { default: Contact } = await import("@/models/Contact");
+    // Best-effort fetch of profile picture URL from Meta Graph API
+    const res = await fetch(`https://graph.facebook.com/v21.0/${num.phoneNumberId}/contacts/${phone}`, {
+      headers: { Authorization: `Bearer ${num.accessToken}` }
+    });
+    const data = await res.json();
+    
+    // Meta API sometimes returns the URL inside the profile object
+    const profilePicUrl = data?.profile?.profile_picture_url || data?.profile?.url || null;
+    
+    if (profilePicUrl) {
+      await Contact.findOneAndUpdate(
+        { phone, userId: num.userId },
+        { $set: { profilePicUrl } },
+        { upsert: true }
+      );
+    }
+  } catch (err) {
+    // Silent fail, as profile pictures are often restricted by privacy settings
   }
 }
