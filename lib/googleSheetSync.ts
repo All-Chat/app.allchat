@@ -81,7 +81,6 @@ export async function syncCampaignToGoogleSheet(userId: string, campaign: any) {
 
   const user = await User.findById(userId);
   
-  // ✅ FIX: Throw explicit errors instead of silently returning
   if (!user?.googleSheetId) throw new Error("Google Sheet ID not found in user settings.");
   if (!user?.googleTokens?.refresh_token) throw new Error("Google refresh token not found. Please reconnect your Google Account.");
 
@@ -89,26 +88,35 @@ export async function syncCampaignToGoogleSheet(userId: string, campaign: any) {
   const sheets = google.sheets({ version: "v4", auth: oauth2Client });
   const spreadsheetId = user.googleSheetId;
 
-  // ✅ Sanitize tab name to prevent Google API crashes
   const sheetName = sanitizeSheetName(campaign.name || "Campaign");
   const sheetId = await ensureSheetTab(sheets, spreadsheetId, sheetName);
 
   const additionalFields: string[] = campaign.additionalFields || [];
 
+  // ✅ NEW: Updated HEADERS to include Time columns
   const HEADERS = [
     "Name",
     "Phone",
     ...additionalFields,
     "Status",
+    "Delivered Time",
+    "Read Time",
+    "Replied Time",
     "Error",
     "Tags",
     "Reply 1",
+    "Reply 1 Time",
     "Reply 2",
+    "Reply 2 Time",
     "Reply 3",
+    "Reply 3 Time",
     "Reply 4",
+    "Reply 4 Time",
     "Reply 5",
+    "Reply 5 Time",
   ];
 
+  // ✅ NEW: Updated row mapping to include the Time columns
   const rows = (campaign.reportData || []).map((d: any) => {
     const row = [
       String(d.name || "N/A").trim(),
@@ -120,13 +128,17 @@ export async function syncCampaignToGoogleSheet(userId: string, campaign: any) {
     });
 
     row.push(String(d.status || "Unknown").trim());
+    row.push(String(d.deliveredTime || "").trim()); // Delivered Time
+    row.push(String(d.readTime || "").trim());       // Read Time
+    row.push(String(d.repliedTime || "").trim());    // Replied Time
     row.push(String(d.error || "").trim());
     row.push(Array.isArray(d.tags) ? d.tags.filter(Boolean).join(", ") : String(d.tags || "").trim());
-    row.push(String(d["Reply 1"] || "").trim());
-    row.push(String(d["Reply 2"] || "").trim());
-    row.push(String(d["Reply 3"] || "").trim());
-    row.push(String(d["Reply 4"] || "").trim());
-    row.push(String(d["Reply 5"] || "").trim());
+    
+    // Loop to push Reply and Reply Time pairs
+    for (let i = 1; i <= 5; i++) {
+      row.push(String(d[`Reply ${i}`] || "").trim());
+      row.push(String(d[`Reply ${i} Time`] || "").trim());
+    }
 
     return row;
   });
@@ -148,7 +160,6 @@ export async function syncCampaignToGoogleSheet(userId: string, campaign: any) {
 
   await boldHeaderRow(sheets, spreadsheetId, sheetId, HEADERS.length);
 
-  // ✅ Return the direct URL to the specific tab so the frontend can open it
   return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${sheetId}`;
 }
 
