@@ -23,6 +23,7 @@ const CampaignSchema = new mongoose.Schema({
   additionalFields: { type: [String], default: [] },
   additionalFieldsData: { type: [[String]], default: [] },
   
+// In your models/Campaign.ts
   reportData: {
     type: [
       {
@@ -33,9 +34,13 @@ const CampaignSchema = new mongoose.Schema({
         error: String,
         replies: [String],
         reply: String,
-        repliedAt: Date,
+        // ✅ ADD THESE 3 FIELDS:
+        deliveredAt: Date, 
+        readAt: Date,         
+        repliedAt: Date,      
+        replyTimes: [Date],   
         tags: [String],
-        additionalData: { type: [String], default: [] }, // ✅ NEW: Additional fields values per contact
+        additionalData: { type: [String], default: [] },
       }
     ],
     default: []
