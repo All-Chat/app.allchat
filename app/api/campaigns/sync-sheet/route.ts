@@ -61,7 +61,8 @@ export async function POST(req: Request) {
     const { campaignId } = await req.json();
     if (!campaignId) return NextResponse.json({ success: false, message: "Campaign ID required" }, { status: 400 });
 
-    const campaign = await Campaign.findById(campaignId).select("userId name reportData createdAt additionalFields").lean();
+    // ✅ REMOVED .lean() and .select() so we can save the document later
+    const campaign = await Campaign.findById(campaignId);
     if (!campaign || campaign.userId.toString() !== session.user.id) return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
 
     const additionalFields: string[] = campaign.additionalFields || [];
@@ -141,6 +142,11 @@ export async function POST(req: Request) {
         reportData: reportDataForSheet,
         additionalFields: additionalFields,
       });
+
+      // ✅ CRITICAL: Save the URL to the database so it persists on page refresh
+      campaign.sheetUrl = sheetUrl;
+      campaign.markModified('sheetUrl');
+      await campaign.save();
 
       return NextResponse.json({ success: true, message: "Sheet synced successfully", url: sheetUrl });
     } catch (sheetErr: any) {
