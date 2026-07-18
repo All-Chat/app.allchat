@@ -83,6 +83,8 @@ export async function GET(req: Request) {
           mediaType: 1,
           totalMessages: 1,
           additionalFields: 1,
+          sheetUrl: 1, // ✅ Added
+          standaloneSheetUrl: 1, // ✅ Added
           // ✅ Only fetch 15 elements for instant loading
           phoneNumbers: { $slice: 15 },
           names: { $slice: 15 },
@@ -113,7 +115,9 @@ export async function GET(req: Request) {
           names: 1, // ✅ Full array
           additionalFields: 1,
           additionalFieldsData: 1, // ✅ Full array
-          reportData: 1 // ✅ Full array (for statuses and replies)
+          reportData: 1, // ✅ Full array (for statuses and replies)
+          sheetUrl: 1, // ✅ Added
+          standaloneSheetUrl: 1, // ✅ Added
         }
       ).lean();
       
@@ -311,6 +315,9 @@ export async function GET(req: Request) {
             languageCode: 1,
             totalDeducted: 1,
             campaignStats: 1,
+            // ✅ NEW: Include the sheet URLs so frontend buttons stay disabled on refresh
+            sheetUrl: 1,
+            standaloneSheetUrl: 1,
             totalFiltered: { $size: "$filteredData" },
             reportData: {
               $map: {
@@ -409,7 +416,7 @@ export async function GET(req: Request) {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select("-reportData")
+        .select("-reportData") // This returns everything EXCEPT reportData, so sheetUrl and standaloneSheetUrl are already included
         .lean(),
       Campaign.countDocuments({ userId: new mongoose.Types.ObjectId(userId) }),
     ]);
