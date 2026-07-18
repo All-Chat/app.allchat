@@ -30,9 +30,14 @@ function ReportContent() {
     try {
       const res = await fetch(`/api/sheet-sync-reports?campaignId=${campaignId}`);
       const data = await res.json();
+      
+      // ✅ FIX: Only update state if successful. If it fails (e.g. Rate Limit), we KEEP the old data.
       if (data.success) {
         setCampaign(data.campaign);
         setMessages(data.messages);
+      } else {
+        // Optional: Log the error to console without spamming toast notifications every 15 seconds
+        console.warn("Live update skipped due to API error. Retrying in 15s...");
       }
     } catch (error) {
       console.error("Failed to fetch report", error);
@@ -43,7 +48,8 @@ function ReportContent() {
 
   useEffect(() => {
     fetchReport();
-    const interval = setInterval(fetchReport, 5000);
+    // ✅ FIX: Changed from 5000 (5s) to 15000 (15s) to prevent Google API Quota limits
+    const interval = setInterval(fetchReport, 15000);
     return () => clearInterval(interval);
   }, [fetchReport]);
 
@@ -357,7 +363,7 @@ function ReportContent() {
                 <MessageSquare size={14} className="text-blue-500" /> Live Message Logs & Replies
               </label>
               <span className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-lg text-[10px] font-bold border border-emerald-100">
-                <Radio size={10} className="animate-pulse" /> Live Polling
+                <Radio size={10} className="animate-pulse" /> Live Polling (15s)
               </span>
             </div>
             
