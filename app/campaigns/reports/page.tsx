@@ -9,7 +9,7 @@ import Sidebar from "@/components/Sidebar";
 import { 
   BarChart3, Download, Loader2, Search, CheckCircle, XCircle, Clock, 
   MessageSquare, Eye, CheckCheck, AlertTriangle, Copy, Ban, Radio, ArrowLeft, X, 
-  Tag as TagIcon, Users, PieChart, Database, Filter, FilterX, ChevronLeft, ChevronRight, ExternalLink
+  Tag as TagIcon, Users, PieChart, Database, Filter, FilterX, ChevronLeft, ChevronRight, ExternalLink, FileSpreadsheet, Link2, Check
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -103,6 +103,8 @@ type Campaign = {
   updatedAt?: string;
   additionalFields?: string[];
   liveStats?: LiveStats;
+  standaloneSheetUrl?: string | null;
+  sheetUrl?: string | null;
   [x: string]: any;
 };
 
@@ -137,9 +139,7 @@ export default function ReportsPage() {
   const [campaignStats, setCampaignStats] = useState<any>({});
   const [syncingSheet, setSyncingSheet] = useState(false);
   const [downloadingExcel, setDownloadingExcel] = useState(false); 
-  
-  // ✅ NEW: State to track if the sheet has been opened so we can auto-sync
-  const [sheetUrl, setSheetUrl] = useState<string | null>(null);
+  const [syncingStandaloneSheet, setSyncingStandaloneSheet] = useState(false);
 
   const [showOnly, setShowOnly] = useState<string[]>([]);
   const [filterOut, setFilterOut] = useState<string[]>([]);
@@ -223,21 +223,28 @@ export default function ReportsPage() {
     }
   }, [selectedId, showOnly, filterOut, search]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ✅ NEW: Reset sheet URL when changing campaigns
-  useEffect(() => {
-    setSheetUrl(null);
-  }, [selectedId]);
+  // ✅ Extract URLs from the currently selected campaign
+  const selectedCamp = campaigns.find(c => c._id === selectedId);
+  const sheetUrl = selectedCamp?.sheetUrl || null;
+  const standaloneSheetUrl = selectedCamp?.standaloneSheetUrl || null;
 
-  // ✅ NEW: 15-Second Auto-Sync Interval
+  // ✅ 15-Second Auto-Sync Interval for Shared Sheet
   useEffect(() => {
     if (!sheetUrl || !selectedId) return;
-    
     const interval = setInterval(() => {
-      handleSyncSheet(selectedId, false); // false = silent update (doesn't open new tab)
-    }, 15000); // 15000 ms = 15 seconds
-
+      handleSyncSheet(selectedId, false); 
+    }, 15000);
     return () => clearInterval(interval);
   }, [sheetUrl, selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ✅ 15-Second Auto-Sync Interval for Standalone Sheet
+  useEffect(() => {
+    if (!standaloneSheetUrl || !selectedId) return;
+    const interval = setInterval(() => {
+      handleCreateStandaloneSheet(selectedId, false); 
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [standaloneSheetUrl, selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchCampaigns = async () => {
     try {
@@ -431,13 +438,9 @@ export default function ReportsPage() {
     }
   };
 
-  // ✅ MODIFIED: Added openTab parameter to control opening new tabs
-  const handleSyncSheet = async (id: string, openTab: boolean = true) => {
-    // Prevent spamming the API if it's already syncing
+  const handleSyncSheet = async (id: string, manualClick: boolean = true) => {
     if (syncingSheet) return;
-    
-    // Only show the loading spinner for manual clicks (openTab = true)
-    if (openTab) setSyncingSheet(true);
+    if (manualClick) setSyncingSheet(true);
     
     try {
       const res = await fetch("/api/campaigns/sync-sheet", {
@@ -448,22 +451,49 @@ export default function ReportsPage() {
       const data = await res.json();
       
       if (data.success && data.url) {
-        // Only open the tab if it's a manual click AND we haven't opened it yet
-        if (openTab && data.url !== sheetUrl) {
-          window.open(data.url, "_blank");
-        }
-        setSheetUrl(data.url);
-      } else if (openTab) {
+        setCampaigns(prev => prev.map(c => c._id === id ? { ...c, sheetUrl: data.url } : c));
+        if (manualClick) toast.success("Sheet synced! Link is available below.");
+      } else if (manualClick) {
         toast.error(data.message || "Failed to sync Google Sheet");
       }
     } catch (err) {
-      if (openTab) toast.error("Error syncing sheet");
+      if (manualClick) toast.error("Error syncing sheet");
     } finally {
-      if (openTab) setSyncingSheet(false);
+      if (manualClick) setSyncingSheet(false);
     }
   };
 
-  const selectedCamp = campaigns.find(c => c._id === selectedId);
+  const handleCreateStandaloneSheet = async (id: string, manualClick: boolean = true) => {
+    if (syncingStandaloneSheet) return;
+    if (manualClick) setSyncingStandaloneSheet(true);
+    
+    try {
+      const res = await fetch("/api/campaigns/create-sheet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ campaignId: id, forceUpdate: true })
+      });
+      const data = await res.json();
+      
+      if (data.success && data.url) {
+        setCampaigns(prev => prev.map(c => c._id === id ? { ...c, standaloneSheetUrl: data.url } : c));
+        if (manualClick) {
+          if (data.created) {
+            toast.success("Report generated! Link is available below.");
+          } else {
+            toast.success("Report data force-updated!");
+          }
+        }
+      } else if (manualClick) {
+        toast.error(data.error || "Failed to generate report sheet");
+      }
+    } catch (err) {
+      if (manualClick) toast.error("Error generating report sheet");
+    } finally {
+      if (manualClick) setSyncingStandaloneSheet(false);
+    }
+  };
+
   const additionalFieldsCount = selectedCamp?.additionalFields?.length || 0;
 
   const handleSelectCampaign = (id: string) => { 
@@ -687,38 +717,84 @@ export default function ReportsPage() {
                   </div>
                 </div>
 
-                <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-                  <div className="relative flex-1 sm:flex-none">
-                    <Search className="absolute left-2.5 top-2.5 w-4 h-4 text-slate-400" />
-                    <input 
-                      value={search} 
-                      onChange={(e) => setSearch(e.target.value)} 
-                      placeholder="Search name/phone..." 
-                      className="w-full sm:w-56 pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none" 
-                    />
+                <div className="flex flex-col gap-2 w-full sm:w-auto">
+                  <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+                    <div className="relative flex-1 sm:flex-none">
+                      <Search className="absolute left-2.5 top-2.5 w-4 h-4 text-slate-400" />
+                      <input 
+                        value={search} 
+                        onChange={(e) => setSearch(e.target.value)} 
+                        placeholder="Search name/phone..." 
+                        className="w-full sm:w-56 pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none" 
+                      />
+                    </div>
+                    <div className="flex gap-2 flex-wrap items-center">
+                      <button 
+                        onClick={() => setIsBriefOpen(true)} 
+                        className="px-4 py-2 bg-white border border-indigo-200 text-indigo-600 rounded-lg text-xs font-bold hover:bg-indigo-50 flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0"
+                      >
+                        <BarChart3 size={12}/> Brief
+                      </button>
+
+                      {/* ✅ DISABLED IF sheetUrl EXISTS */}
+                      <button 
+                        onClick={() => handleSyncSheet(selectedCamp._id)} 
+                        disabled={syncingSheet || !!sheetUrl}
+                        className={`px-4 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed ${
+                          sheetUrl ? "bg-slate-200 text-slate-500" : "bg-indigo-500 text-white hover:bg-indigo-600"
+                        }`}
+                      >
+                        {syncingSheet ? <Loader2 size={12} className="animate-spin"/> : sheetUrl ? <Check size={12}/> : <ExternalLink size={12}/>} 
+                        {sheetUrl ? "Sheet Loaded" : "Load Sheet"}
+                      </button>
+
+                      {/* ✅ DISABLED IF standaloneSheetUrl EXISTS */}
+                      <button 
+                        onClick={() => handleCreateStandaloneSheet(selectedCamp._id)} 
+                        disabled={syncingStandaloneSheet || !!standaloneSheetUrl}
+                        className={`px-4 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed ${
+                          standaloneSheetUrl ? "bg-slate-200 text-slate-500" : "bg-purple-500 text-white hover:bg-purple-600"
+                        }`}
+                      >
+                        {syncingStandaloneSheet ? <Loader2 size={12} className="animate-spin"/> : standaloneSheetUrl ? <Check size={12}/> : <FileSpreadsheet size={12}/>} 
+                        {standaloneSheetUrl ? "Report Created" : "Generate Report"}
+                      </button>
+
+                      <button 
+                        onClick={downloadExcel} 
+                        disabled={downloadingExcel}
+                        className="px-4 py-2 bg-emerald-500 text-white rounded-lg text-xs font-bold hover:bg-emerald-600 flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-50 disabled:cursor-wait"
+                      >
+                        {downloadingExcel ? <Loader2 size={12} className="animate-spin"/> : <Download size={12}/>} Excel
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex gap-2">
-                    <button 
-                      onClick={() => setIsBriefOpen(true)} 
-                      className="px-4 py-2 bg-white border border-indigo-200 text-indigo-600 rounded-lg text-xs font-bold hover:bg-indigo-50 flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0"
-                    >
-                      <BarChart3 size={12}/> Brief
-                    </button>
-                    <button 
-                      onClick={() => handleSyncSheet(selectedCamp._id)} 
-                      disabled={syncingSheet}
-                      className="px-4 py-2 bg-indigo-500 text-white rounded-lg text-xs font-bold hover:bg-indigo-600 flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-50"
-                    >
-                      {syncingSheet ? <Loader2 size={12} className="animate-spin"/> : <ExternalLink size={12}/>} {sheetUrl ? "Syncing..." : "Create Sheet"}
-                    </button>
-                    <button 
-                      onClick={downloadExcel} 
-                      disabled={downloadingExcel}
-                      className="px-4 py-2 bg-emerald-500 text-white rounded-lg text-xs font-bold hover:bg-emerald-600 flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-50 disabled:cursor-wait"
-                    >
-                      {downloadingExcel ? <Loader2 size={12} className="animate-spin"/> : <Download size={12}/>} Excel
-                    </button>
-                  </div>
+
+                  {/* ✅ URL LINKS APPEAR HERE ON THE NEXT LINE */}
+                  {(sheetUrl || standaloneSheetUrl) && (
+                    <div className="flex flex-col gap-1 w-full p-2 bg-slate-50 rounded-lg border border-slate-200">
+                      {sheetUrl && (
+                        <a 
+                          href={sheetUrl} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 hover:text-indigo-800 hover:underline truncate"
+                        >
+                          <Link2 size={12} className="shrink-0" /> Open Shared Sheet
+                        </a>
+                      )}
+                      {standaloneSheetUrl && (
+                        <a 
+                          href={standaloneSheetUrl} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1.5 text-xs font-bold text-purple-600 hover:text-purple-800 hover:underline truncate"
+                        >
+                          <Link2 size={12} className="shrink-0" /> Open Standalone Report Sheet
+                        </a>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
