@@ -22,6 +22,16 @@ export async function GET(req: Request) {
 
     return NextResponse.json({ success: true, ...reportData });
   } catch (error: any) {
+    console.error("❌ Sheet Sync Report API Error:", error);
+    
+    // ✅ NEW: Catch Google API Rate Limits gracefully so the frontend doesn't crash
+    if (error?.message?.includes("Quota exceeded") || error?.code === 429) {
+      return NextResponse.json(
+        { success: false, error: "Rate limit hit. Showing last known data." }, 
+        { status: 429 }
+      );
+    }
+    
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
