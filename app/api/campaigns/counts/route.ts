@@ -41,6 +41,9 @@ export async function GET(request: Request) {
           totalDeducted: 1,
           scheduledAt: 1,
           createdAt: 1,
+          // ✅ NEW: Include the sheet URLs so frontend buttons stay disabled on refresh
+          sheetUrl: 1,
+          standaloneSheetUrl: 1,
           // Calculate live stats directly in the DB
           liveStats: {
             $let: {
