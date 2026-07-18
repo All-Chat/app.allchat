@@ -19,11 +19,9 @@ const CampaignSchema = new mongoose.Schema({
   names: { type: [String], default: [] },
   languageCode: { type: String, default: "en" },
   
-  // ✅ NEW: Additional Fields Storage
   additionalFields: { type: [String], default: [] },
   additionalFieldsData: { type: [[String]], default: [] },
   
-// In your models/Campaign.ts
   reportData: {
     type: [
       {
@@ -34,7 +32,6 @@ const CampaignSchema = new mongoose.Schema({
         error: String,
         replies: [String],
         reply: String,
-        // ✅ ADD THESE 3 FIELDS:
         deliveredAt: Date, 
         readAt: Date,         
         repliedAt: Date,      
@@ -46,14 +43,14 @@ const CampaignSchema = new mongoose.Schema({
     default: []
   },
   stats: {
-  replied:   { type: Number, default: 0 },
-  read:      { type: Number, default: 0 },
-  delivered: { type: Number, default: 0 },
-  sent:      { type: Number, default: 0 },
-  failed:    { type: Number, default: 0 },
-  invalid:   { type: Number, default: 0 },
-  duplicate: { type: Number, default: 0 },
-},
+    replied:   { type: Number, default: 0 },
+    read:      { type: Number, default: 0 },
+    delivered: { type: Number, default: 0 },
+    sent:      { type: Number, default: 0 },
+    failed:    { type: Number, default: 0 },
+    invalid:   { type: Number, default: 0 },
+    duplicate: { type: Number, default: 0 },
+  },
   
   mediaUrl: { type: String, default: null },
   mediaType: { type: String, default: null },
@@ -69,6 +66,11 @@ const CampaignSchema = new mongoose.Schema({
   failedCount: { type: Number, default: 0 },
   
   totalDeducted: { type: Number, default: 0 },
+  
+  // ✅ NEW: Add these two fields to store the URLs permanently in the database
+  sheetUrl: { type: String, default: null },
+  standaloneSheetUrl: { type: String, default: null },
+
   createdAt: { type: Date, default: Date.now },
 });
 
