@@ -1,10 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* =====================================================================
-   LIVE CHAT PAGE - MULTI-WABA SUPPORT (NO SCROLL JUMP + AVATAR FIX)
+   LIVE CHAT PAGE - MULTI-WABA SUPPORT & CHAT TRANSFER & DELETE
    ===================================================================== */
 
 /* eslint-disable react-hooks/set-state-in-effect */
-/* eslint-disable react/jsx-no-undef */
+ 
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
@@ -14,7 +14,7 @@ import {
   MoreVertical, Paperclip, Smile, Mic, Phone, Video,
   FileText, ArrowDown, X, Lock, Tag, ExternalLink,
   Image as ImageIcon, ArrowLeft, ChevronDown, Radio, AlertCircle,
-  Check,
+  Check, Forward, UserCheck, Users, Trash2
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -77,6 +77,11 @@ type ContactDetails = {
   profilePicUrl?: string;
 };
 
+type TeamMember = {
+  _id: string;
+  name: string;
+};
+
 const getAvatarGradient = (id: string) => {
   const colors = [
     "from-pink-500 to-rose-500",
@@ -91,11 +96,10 @@ const getAvatarGradient = (id: string) => {
   return colors[Math.abs(hash) % colors.length];
 };
 
-// ✅ Get first 2 letters of name, or first 2 digits of number
 const getAvatarText = (name: string | undefined, id: string | undefined) => {
   if (name && name.trim() !== "" && name !== "Unknown") {
     const letters = name.trim().substring(0, 2).toUpperCase();
-    if (/^[A-Z]+$/.test(letters)) return letters; // Only return if they are letters
+    if (/^[A-Z]+$/.test(letters)) return letters;
   }
   if (id) {
     const digits = id.replace(/\D/g, "").substring(0, 2);
@@ -136,22 +140,26 @@ export default function ChatPage() {
   const [searchQuery, setSearchQuery] = useState("");
 
   const [whatsappNumbers, setWhatsappNumbers] = useState<WhatsappNumber[]>([]);
-  const [selectedWabaId, setSelectedWabaId] = useState<string>("all");
+  const [selectedWabaId, setSelectedWabaId] = useState<string>("");
   const [loadingNumbers, setLoadingNumbers] = useState(true);
 
   const [mediaErrors, setMediaErrors] = useState<Record<string, boolean>>({});
   const [fetchedTemplateData, setFetchedTemplateData] = useState<Record<string, any>>({});
   const fetchedTemplates = useRef<Set<string>>(new Set()); 
 
-  // ✅ NEW: State to track broken profile images so they fall back to text avatar
   const [picErrors, setPicErrors] = useState<Record<string, boolean>>({});
-
   const [showChatList, setShowChatList] = useState(true);
 
-  // ✅ NEW: Pagination States
-  const [chatPage, setChatPage] = useState(1);
+  const [_chatPage, setChatPage] = useState(1);
   const [hasMoreChats, setHasMoreChats] = useState(true);
   const [loadingMoreChats, setLoadingMoreChats] = useState(false);
+
+  // Transfer Chat States
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [selectedTransferUser, setSelectedTransferUser] = useState<string | null>(null);
+  const [transferStatus, setTransferStatus] = useState<{ isTransferred: boolean; transferredToName?: string; transferredToId?: string } | null>(null);
+  const [currentUserInfo, setCurrentUserInfo] = useState<{ id: string; isTenant: boolean } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const prevMessageCount = useRef(0);
@@ -162,17 +170,25 @@ export default function ChatPage() {
   const isFetchingMessages = useRef(false);
   const isInitialLoad = useRef(false); 
 
-  // ✅ NEW: Refs to prevent state loops and scroll resets
   const activeChatRef = useRef<string | null>(null);
   const contactDetailsRef = useRef<Record<string, ContactDetails>>({});
+  const activeChatDataRef = useRef<Chat | null>(null); 
   
   useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
   useEffect(() => { contactDetailsRef.current = contactDetails; }, [contactDetails]);
+  useEffect(() => { activeChatDataRef.current = activeChatData; }, [activeChatData]);
+
+  // Fetch Current User Info (for transfer permissions)
+  useEffect(() => {
+    if (status === "authenticated" && session?.user?.id) {
+      setCurrentUserInfo({ id: session.user.id, isTenant: (session.user as any).isTenant || false });
+    }
+  }, [status, session]);
 
   const fetchWhatsappNumbers = useCallback(async () => {
     setLoadingNumbers(true);
     try {
-      const res = await fetch("/api/user/whatsapp-numbers");
+      const res = await fetch("/api/user/whatsapp-numbers", { cache: 'no-store' });
       if (!res.ok) { setLoadingNumbers(false); return; }
       const data = await res.json();
 
@@ -184,7 +200,7 @@ export default function ChatPage() {
 
       setWhatsappNumbers(numbers);
 
-      if (numbers.length === 1 && numbers[0].whatsappPhoneNumberId) {
+      if (numbers.length > 0 && numbers[0].whatsappPhoneNumberId) {
         setSelectedWabaId(numbers[0].whatsappPhoneNumberId);
       }
     } catch (err) {
@@ -194,13 +210,27 @@ export default function ChatPage() {
     }
   }, []);
 
+  const fetchTeamMembers = useCallback(async () => {
+    try {
+      const res = await fetch("/api/chat/team", { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setTeamMembers(data.members);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to fetch team members:", err);
+    }
+  }, []);
+
   const getSenderName = useCallback((msg: Message): string | null => {
     if (msg.direction !== "out") return null;
     if (msg.whatsappPhoneNumberId) {
       const match = whatsappNumbers.find((n) => n.whatsappPhoneNumberId === msg.whatsappPhoneNumberId);
       if (match?.name) return match.name;
     }
-    if (selectedWabaId !== "all") {
+    if (selectedWabaId) {
       const sel = whatsappNumbers.find((n) => n.whatsappPhoneNumberId === selectedWabaId);
       if (sel?.name) return sel.name;
     }
@@ -214,15 +244,17 @@ export default function ChatPage() {
     if (fetchedContacts.current.has(phoneId)) return;
     fetchedContacts.current.add(phoneId);
     try {
-      const cleanPhone = phoneId.replace(/\+/g, "");
-      const res = await fetch(`/api/contacts?phone=${encodeURIComponent(cleanPhone)}`);
+      const cleanPhone = phoneId.replace(/\D/g, "");
+      if (!cleanPhone) return;
+      
+      const res = await fetch(`/api/contacts?phone=${encodeURIComponent(cleanPhone)}`, { cache: 'no-store' });
       if (handleUnauthorized(res)) return;
+      
       const data = await res.json();
-      if (data.success && data.contact) {
-        const newName = data.contact.name?.trim() && data.contact.name !== "Unknown" ? data.contact.name : undefined;
-        const newPic = data.contact.profilePicUrl || undefined;
-        
-        if (newName || newPic) {
+      if (data.success && data.contact && data.contact.name) {
+        const newName = data.contact.name.trim();
+        if (newName && newName !== "Unknown") {
+          const newPic = data.contact.profilePicUrl || undefined;
           setContactDetails((prev) => ({ 
             ...prev, 
             [phoneId]: { name: newName, profilePicUrl: newPic } 
@@ -248,7 +280,6 @@ export default function ChatPage() {
 
   const getAvatarLabel = (chat: Chat) => getAvatarText(getResolvedName(chat), chat.phone || chat._id);
 
-  // ✅ Helper to render Avatar (Image or Gradient Fallback with error handling)
   const renderAvatar = (chatId: string, sizeClass: string, textClass: string) => {
     const picUrl = contactDetails[chatId]?.profilePicUrl;
     if (picUrl && !picErrors[chatId]) {
@@ -292,9 +323,30 @@ export default function ChatPage() {
     }
   }, [messages]);
 
-  // ✅ FIXED: Load chats with pagination and proper polling that preserves scroll
+  // Fetch chats that are transferred TO the current user, and merge them
+  const fetchTransferredChats = useCallback(async () => {
+    try {
+      const res = await fetch("/api/chat/transfer/chats", { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.chats.length > 0) {
+          setChats(prev => {
+            const map = new Map(prev.map(c => [c._id, c]));
+            data.chats.forEach((c: any) => {
+              const cleanId = c._id.replace(/\D/g, "");
+              if (!map.has(cleanId)) {
+                map.set(cleanId, { ...c, _id: cleanId, phone: (c.phone || cleanId).replace(/\D/g, "") });
+              }
+            });
+            return Array.from(map.values()).sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+          });
+        }
+      }
+    } catch {}
+  }, []);
+
   const loadChats = useCallback(async (pageNum = 1, isPolling = false) => {
-    if (isFetchingChats.current) return;
+    if (isFetchingChats.current || !selectedWabaId) return;
     isFetchingChats.current = true;
     
     if (pageNum > 1) setLoadingMoreChats(true);
@@ -303,67 +355,57 @@ export default function ChatPage() {
       const params = new URLSearchParams();
       params.set("page", String(pageNum));
       params.set("limit", "20");
-      
-      if (selectedWabaId && selectedWabaId !== "all") {
-        params.set("whatsappPhoneNumberId", selectedWabaId);
-      }
+      params.set("whatsappPhoneNumberId", selectedWabaId);
 
-      const res = await fetch(`/api/chats?${params.toString()}`);
+      const res = await fetch(`/api/chats?${params.toString()}`, { cache: 'no-store' });
       if (handleUnauthorized(res)) return;
       const data = await res.json();
 
-      // ✅ FIX: Ensure data.chats is always an array to prevent filter errors
       if (data.success && Array.isArray(data.chats)) {
-        const chatsData = data.chats as Chat[];
+        const normalizedChats = data.chats.map((c: Chat) => ({
+          ...c,
+          _id: c._id.replace(/\D/g, ""),
+          phone: (c.phone || c._id).replace(/\D/g, "")
+        }));
+
         setChats((prev) => {
           if (pageNum === 1 && !isPolling) {
-            // Initial load or WABA change: replace entirely
-            return chatsData;
+            const map = new Map<string, Chat>();
+            normalizedChats.forEach((c: Chat) => map.set(c._id, c));
+            return Array.from(map.values());
           }
           
           if (isPolling) {
-            // Polling: Deep compare to prevent unnecessary re-renders
             const existingMap = new Map(prev.map(c => [c._id, c]));
             let hasChanged = false;
-            const newChatsToAdd: Chat[] = [];
             
-            chatsData.forEach((c) => {
+            normalizedChats.forEach((c: Chat) => {
               if (existingMap.has(c._id)) {
                 const old = existingMap.get(c._id);
-                // Only mark as changed if the message or time actually updated
                 if (old && (old.lastMessage !== c.lastMessage || old.updatedAt !== c.updatedAt)) {
                   existingMap.set(c._id, c);
                   hasChanged = true;
                 }
               } else {
-                newChatsToAdd.push(c);
+                existingMap.set(c._id, c);
                 hasChanged = true;
               }
             });
             
-            // ✅ CRITICAL: If nothing changed, return the EXACT same array reference.
-            // This prevents React from re-rendering and resetting the scroll!
             if (!hasChanged) return prev;
-            
-            // If there are new chats, put them at the top. Otherwise, keep exact order.
-            if (newChatsToAdd.length > 0) {
-              return [...newChatsToAdd, ...prev.map(p => existingMap.get(p._id) || p)];
-            }
-            return prev.map(p => existingMap.get(p._id) || p);
+            return Array.from(existingMap.values()).sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
           }
           
-          // Pagination: Append new page
-          const existingIds = new Set(prev.map(c => c._id));
-          const newChats = chatsData.filter((c) => !existingIds.has(c._id));
-          return [...prev, ...newChats];
+          const map = new Map<string, Chat>(prev.map((c: Chat) => [c._id, c] as [string, Chat]));
+          normalizedChats.forEach((c: Chat) => map.set(c._id, c));
+          return Array.from(map.values());
         });
         
         if (pageNum > 1) setChatPage(pageNum);
         setHasMoreChats(data.hasMore !== false);
 
-        // Use refs here to avoid stale closures!
         const currentContactDetails = contactDetailsRef.current;
-        chatsData.forEach((chat) => {
+        normalizedChats.forEach((chat: Chat) => {
           if (!currentContactDetails[chat._id]) {
             fetchContactDetails(chat._id);
           }
@@ -371,8 +413,12 @@ export default function ChatPage() {
 
         const currentActiveChat = activeChatRef.current;
         if (currentActiveChat) {
-          const current = chatsData.find((c) => c._id === currentActiveChat);
-          if (current) setActiveChatData(current);
+          const cleanActive = currentActiveChat.replace(/\D/g, "");
+          const current = normalizedChats.find((c: Chat) => c._id === cleanActive);
+          if (current) {
+            setActiveChatData(current);
+            activeChatDataRef.current = current; 
+          }
         }
       } else {
         setHasMoreChats(false);
@@ -386,17 +432,15 @@ export default function ChatPage() {
     }
   }, [selectedWabaId, fetchContactDetails]);
 
-  // ✅ FIXED: Infinite Scroll Handler
   const handleChatListScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const target = e.currentTarget;
     const { scrollTop, scrollHeight, clientHeight } = target;
     
-    // If user is near the bottom (100px), and we aren't already loading, and there are more chats
     if (scrollHeight - scrollTop - clientHeight < 100 && !loadingMoreChats && hasMoreChats) {
       setLoadingMoreChats(true);
       setChatPage(prev => {
         const next = prev + 1;
-        loadChats(next, false); // Fetch next page
+        loadChats(next, false);
         return next;
       });
     }
@@ -404,16 +448,13 @@ export default function ChatPage() {
 
   const loadMessages = useCallback(async () => {
     const currentActiveChat = activeChatRef.current;
-    if (!currentActiveChat || isFetchingMessages.current) return;
+    if (!currentActiveChat || isFetchingMessages.current || !selectedWabaId) return;
     isFetchingMessages.current = true;
     try {
       const cleanPhone = currentActiveChat.replace(/\+/g, "");
-      const params = new URLSearchParams({ phone: cleanPhone });
-      if (selectedWabaId && selectedWabaId !== "all") {
-        params.set("whatsappPhoneNumberId", selectedWabaId);
-      }
+      const params = new URLSearchParams({ phone: cleanPhone, whatsappPhoneNumberId: selectedWabaId });
 
-      const res = await fetch(`/api/chat?${params.toString()}`);
+      const res = await fetch(`/api/chat?${params.toString()}`, { cache: 'no-store' });
       if (handleUnauthorized(res)) { isFetchingMessages.current = false; return; }
       const data = await res.json();
 
@@ -434,7 +475,10 @@ export default function ChatPage() {
           const templateName = msg.templateName;
           if (templateName && !msg.templateBodyText && !fetchedTemplates.current.has(templateName)) {
             fetchedTemplates.current.add(templateName);
-            fetch(`/api/chat/template-data?name=${encodeURIComponent(templateName)}&language=${msg.templateLanguage || "en"}`)
+            
+            const tplUrl = `/api/chat/template-data?name=${encodeURIComponent(templateName)}&language=${msg.templateLanguage || "en"}&whatsappPhoneNumberId=${selectedWabaId}`;
+            
+            fetch(tplUrl)
               .then(res => res.ok ? res.json() : null)
               .then(tplData => {
                 if (tplData?.success && tplData.template) {
@@ -442,15 +486,28 @@ export default function ChatPage() {
                     ...prev,
                     [templateName]: tplData.template
                   }));
+                } else {
+                  setFetchedTemplateData(prev => ({
+                    ...prev,
+                    [templateName]: { 
+                      templateBodyText: msg.text || "Template content unavailable.", 
+                      templateButtons: [] 
+                    }
+                  }));
                 }
               })
-              .catch(() => {});
+              .catch(() => {
+                setFetchedTemplateData(prev => ({
+                  ...prev,
+                  [templateName]: { templateBodyText: "Failed to load template.", templateButtons: [] }
+                }));
+              });
           }
         }
 
         for (const msg of newMessages) {
           if (msg.contactName?.trim() && msg.contactName !== "Unknown") {
-            const key = currentActiveChat;
+            const key = currentActiveChat.replace(/\D/g, "");
             const contactName = msg.contactName.trim();
             setContactDetails((prev) => ({ 
               ...prev, 
@@ -467,16 +524,119 @@ export default function ChatPage() {
     }
   }, [selectedWabaId]);
 
+  const checkTransferStatus = useCallback(async () => {
+    if (!activeChat) {
+      setTransferStatus(null);
+      return;
+    }
+    try {
+      const cleanPhone = activeChat.replace(/\+/g, "");
+      const res = await fetch(`/api/chat/transfer?phone=${cleanPhone}`, { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setTransferStatus(data);
+        } else {
+          setTransferStatus({ isTransferred: false });
+        }
+      }
+    } catch (err) {
+      console.error("Failed to check transfer status:", err);
+    }
+  }, [activeChat]);
+
+  useEffect(() => {
+    if (activeChat) {
+      checkTransferStatus();
+    }
+  }, [activeChat, checkTransferStatus]);
+
+  const handleTransferChat = async () => {
+    if (!activeChat || !selectedTransferUser) return;
+    try {
+      const res = await fetch("/api/chat/transfer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: activeChat, targetUserId: selectedTransferUser }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success("Chat transferred successfully!");
+        setShowTransferModal(false);
+        setSelectedTransferUser(null);
+        checkTransferStatus();
+        fetchTransferredChats();
+      } else {
+        toast.error("Failed to transfer chat.");
+      }
+    } catch {
+      toast.error("Error transferring chat");
+    }
+  };
+
+  const handleReclaimChat = async () => {
+    if (!activeChat) return;
+    try {
+      const res = await fetch(`/api/chat/transfer?phone=${activeChat.replace(/\+/g, "")}`, { method: "DELETE" });
+      const data = await res.json();
+      if (data.success) {
+        toast.success("Chat reclaimed!");
+        checkTransferStatus();
+      }
+    } catch {
+      toast.error("Error reclaiming chat");
+    }
+  };
+
+  // Delete Chat Handler
+  const handleDeleteChat = async (chatId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm("Delete this chat? This will remove the message history for everyone in your team.")) return;
+    
+    try {
+      const params = new URLSearchParams();
+      params.set("phone", chatId.replace(/\+/g, ""));
+      if (selectedWabaId) params.set("whatsappPhoneNumberId", selectedWabaId);
+      
+      const res = await fetch(`/api/chat/delete?${params.toString()}`, { method: "DELETE" });
+      const data = await res.json();
+      
+      if (data.success) {
+        toast.success("Chat deleted");
+        setChats(prev => prev.filter(c => c._id !== chatId));
+        if (activeChat === chatId) {
+          setActiveChat(null);
+          setActiveChatData(null);
+          activeChatDataRef.current = null;
+          setMessages([]);
+        }
+      } else {
+        toast.error("Failed to delete chat");
+      }
+    } catch {
+      toast.error("Error deleting chat");
+    }
+  };
+
+  // Input Disable Logic: If transferred away from me, and I am not the Admin/Tenant
+  const isInputDisabled = transferStatus?.isTransferred && 
+                           transferStatus?.transferredToId !== currentUserInfo?.id && 
+                           !currentUserInfo?.isTenant;
+
   const handleWabaChange = (newId: string) => {
     setSelectedWabaId(newId);
     setActiveChat(null);
     setActiveChatData(null);
+    activeChatDataRef.current = null; 
     setMessages([]);
     setMediaErrors({});
     fetchedTemplates.current.clear();
     setFetchedTemplateData({});
     prevMessageCount.current = 0;
     setShowChatList(true);
+    
+    fetchedContacts.current.clear(); 
+    setContactDetails({});
     
     setChatPage(1);
     setHasMoreChats(true);
@@ -486,16 +646,18 @@ export default function ChatPage() {
   useEffect(() => {
     if (status === "authenticated") {
       fetchWhatsappNumbers();
+      fetchTeamMembers();
     } else if (status === "unauthenticated") {
       window.location.href = "/";
     }
-  }, [status, fetchWhatsappNumbers]);
+  }, [status, fetchWhatsappNumbers, fetchTeamMembers]);
 
   useEffect(() => {
-    if (status === "authenticated" && !loadingNumbers) {
+    if (status === "authenticated" && !loadingNumbers && selectedWabaId) {
       setChatPage(1);
       setHasMoreChats(true);
       loadChats(1, false);
+      fetchTransferredChats();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, loadingNumbers, selectedWabaId]);
@@ -507,19 +669,20 @@ export default function ChatPage() {
     isInitialLoad.current = true; 
     if (activeChat) {
       loadMessages();
-      fetchContactDetails(activeChat);
+      fetchContactDetails(activeChat.replace(/\D/g, ""));
     }
   }, [activeChat, loadMessages, fetchContactDetails]);
 
   useEffect(() => {
-    if (status !== "authenticated" || loadingNumbers) return;
-    const interval = setInterval(() => {
+    if (status !== "authenticated" || loadingNumbers || !selectedWabaId) return;
+    const pollData = () => {
       loadChats(1, true); 
+      fetchTransferredChats();
       if (activeChatRef.current) loadMessages();
-    }, 3000);
+    };
+    const interval = setInterval(pollData, 3000);
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, loadingNumbers]);
+  }, [status, loadingNumbers, loadChats, loadMessages, selectedWabaId, fetchTransferredChats]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -527,14 +690,15 @@ export default function ChatPage() {
   };
 
   const sendMessage = async () => {
-    if ((!text && !selectedFile) || !activeChat) return;
+    if (isInputDisabled) {
+      toast.error("Chat is transferred. Reclaim to send messages.");
+      return;
+    }
+    if ((!text && !selectedFile) || !activeChat || !selectedWabaId) return;
     setSending(true);
     try {
       const cleanPhone = activeChat.replace(/\+/g, "");
-      const baseBody: Record<string, string> = { phone: cleanPhone, text: text || "" };
-      if (selectedWabaId && selectedWabaId !== "all") {
-        baseBody.whatsappPhoneNumberId = selectedWabaId;
-      }
+      const baseBody: Record<string, string> = { phone: cleanPhone, text: text || "", whatsappPhoneNumberId: selectedWabaId };
 
       let data;
       if (selectedFile) {
@@ -558,7 +722,7 @@ export default function ChatPage() {
         setText("");
         setSelectedFile(null);
         loadMessages();
-        fetchContactDetails(activeChat);
+        fetchContactDetails(activeChat.replace(/\D/g, ""));
         setTimeout(() => loadChats(1, true), 500);
       } else {
         toast.error(data.message || "Failed to send");
@@ -573,6 +737,7 @@ export default function ChatPage() {
   const handleChatSelect = (chat: Chat) => {
     setActiveChat(chat._id);
     setActiveChatData(chat);
+    activeChatDataRef.current = chat; 
     setShowChatList(false);
   };
 
@@ -864,9 +1029,6 @@ export default function ChatPage() {
                       onChange={(e) => handleWabaChange(e.target.value)}
                       className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 transition appearance-none cursor-pointer pr-8 text-gray-800"
                     >
-                      {whatsappNumbers.length > 1 && (
-                        <option value="all">📋 All Numbers ({whatsappNumbers.length})</option>
-                      )}
                       {whatsappNumbers
                         .filter((n) => n.whatsappPhoneNumberId && n.whatsappPhoneNumberId.trim() !== "")
                         .map((n) => (
@@ -878,7 +1040,7 @@ export default function ChatPage() {
                     <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                   </div>
 
-                  {selectedWabaId !== "all" && (
+                  {selectedWabaId && (
                     <p className="text-[10px] text-gray-400 mt-1 flex items-center gap-1">
                       <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full inline-block" />
                       Viewing: <span className="font-semibold text-gray-600">
@@ -908,7 +1070,7 @@ export default function ChatPage() {
               onScroll={handleChatListScroll} 
               className="flex-1 overflow-y-auto scrollbar-hide bg-white"
             >
-              {loading || loadingNumbers ? (
+              {loading || loadingNumbers || !selectedWabaId ? (
                 <div className="p-6 text-center">
                   <Loader2 className="w-6 h-6 animate-spin mx-auto text-emerald-600" />
                 </div>
@@ -934,7 +1096,7 @@ export default function ChatPage() {
                       <div
                         key={chat._id}
                         onClick={() => handleChatSelect(chat)}
-                        className={`flex items-center gap-3 px-3 sm:px-4 py-3 cursor-pointer transition-all duration-150 border-b border-gray-50 ${
+                        className={`group flex items-center gap-3 px-3 sm:px-4 py-3 cursor-pointer transition-all duration-150 border-b border-gray-50 ${
                           activeChat === chat._id
                             ? "bg-emerald-50 border-l-4 border-l-emerald-500"
                             : "hover:bg-gray-50 border-l-4 border-l-transparent"
@@ -946,11 +1108,20 @@ export default function ChatPage() {
                             <h3 className="font-semibold text-[14px] sm:text-[15px] text-gray-900 truncate">
                               {getDisplayName(chat)}
                             </h3>
-                            <span className={`text-[11px] font-medium ml-2 flex-shrink-0 ${
-                              chat.lastDirection === "out" ? "text-gray-400" : "text-emerald-600"
-                            }`}>
-                              {formatTime(chat.updatedAt)}
-                            </span>
+                            <div className="flex items-center gap-2 ml-2 flex-shrink-0">
+                              <span className={`text-[11px] font-medium ${
+                                chat.lastDirection === "out" ? "text-gray-400" : "text-emerald-600"
+                              }`}>
+                                {formatTime(chat.updatedAt)}
+                              </span>
+                              {/* <button 
+                                onClick={(e) => handleDeleteChat(chat._id, e)}
+                                className="text-gray-400 hover:text-red-500 transition-colors"
+                                title="Delete Chat"
+                              >
+                                <Trash2 size={16} />
+                              </button> */}
+                            </div>
                           </div>
                           <div className="flex items-center gap-1.5 mt-0.5">
                             {chat.lastDirection === "out" && <CheckCheck className="w-4 h-4 text-blue-500 shrink-0" />}
@@ -1024,7 +1195,15 @@ export default function ChatPage() {
                       </div>
                     </div>
                   </div>
+
                   <div className="flex gap-0.5 md:gap-1 text-gray-500 flex-shrink-0">
+                    <button
+                      onClick={() => setShowTransferModal(true)}
+                      className="p-2 md:p-2.5 hover:bg-gray-200 rounded-full transition-colors"
+                      title="Transfer Chat"
+                    >
+                      <Forward className="w-5 h-5" />
+                    </button>
                     <button className="p-2 md:p-2.5 hover:bg-gray-200 rounded-full transition-colors">
                       <Video className="w-5 h-5" />
                     </button>
@@ -1045,6 +1224,24 @@ export default function ChatPage() {
                 </div>
               )}
             </div>
+
+            {/* Transfer Status Banner */}
+            {transferStatus?.isTransferred && (
+              <div className="bg-blue-50 border-b border-blue-200 px-4 py-2 flex items-center justify-between z-20">
+                <div className="flex items-center gap-2 text-blue-700 text-sm font-medium">
+                  <UserCheck className="w-4 h-4" />
+                  <span>This chat is transferred to {transferStatus.transferredToName}</span>
+                </div>
+                {transferStatus.transferredToId !== currentUserInfo?.id && !currentUserInfo?.isTenant && (
+                  <button 
+                    onClick={handleReclaimChat}
+                    className="text-xs font-bold text-white bg-blue-600 px-3 py-1 rounded-full hover:bg-blue-700"
+                  >
+                    Reclaim Chat
+                  </button>
+                )}
+              </div>
+            )}
 
             <div className="flex-1 relative z-10 overflow-hidden">
               <div
@@ -1162,7 +1359,7 @@ export default function ChatPage() {
             </div>
 
             {activeChat && (
-              <div className="bg-[#f0f2f5] px-2 sm:px-4 pt-2 pb-2.5 z-20 border-t border-gray-200 flex-shrink-0">
+              <div className={`bg-[#f0f2f5] px-2 sm:px-4 pt-2 pb-2.5 z-20 border-t border-gray-200 flex-shrink-0 ${isInputDisabled ? 'opacity-50 pointer-events-none' : ''}`}>
                 {selectedFile && (
                   <div className="flex items-center gap-2 bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-full text-xs font-medium border border-emerald-200 w-fit mb-2 shadow-sm">
                     <ImageIcon size={14} className="shrink-0" />
@@ -1183,6 +1380,7 @@ export default function ChatPage() {
                     onChange={handleFileChange}
                     className="hidden"
                     accept="image/*,video/*,audio/*,.pdf"
+                    disabled={isInputDisabled}
                   />
                   <button className="p-2 text-gray-500 hover:text-emerald-600 transition-colors">
                     <Smile className="w-5 h-5 sm:w-6 sm:h-6" />
@@ -1199,13 +1397,14 @@ export default function ChatPage() {
                       value={text}
                       onChange={(e) => setText(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && !sending && sendMessage()}
-                      placeholder="Type a message"
+                      placeholder={isInputDisabled ? "Chat transferred. Reclaim to send messages." : "Type a message"}
                       className="flex-1 py-2.5 bg-transparent border-none focus:outline-none text-[14px] sm:text-[15px] text-gray-800 placeholder:text-gray-400 min-w-0"
+                      disabled={isInputDisabled}
                     />
                   </div>
                   <button
                     onClick={sendMessage}
-                    disabled={sending || (!text && !selectedFile)}
+                    disabled={sending || (!text && !selectedFile) || isInputDisabled}
                     className={`p-2 sm:p-2.5 rounded-full transition-all duration-300 flex-shrink-0 ${
                       text || selectedFile
                         ? "bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg scale-105"
@@ -1263,6 +1462,64 @@ export default function ChatPage() {
             </div>
           </div>
         </div>
+
+        {/* ═══════ TRANSFER CHAT MODAL ═══════ */}
+        {showTransferModal && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                  <Users className="w-5 h-5 text-emerald-600" />
+                  Transfer Chat
+                </h3>
+                <button onClick={() => setShowTransferModal(false)} className="text-gray-400 hover:text-gray-600">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <p className="text-sm text-gray-500 mb-4">
+                Select a team member to transfer this chat to. They will be able to send and receive messages for this contact.
+              </p>
+              <div className="max-h-64 overflow-y-auto space-y-2 mb-4 border border-gray-100 rounded-xl p-2">
+                {teamMembers.length === 0 ? (
+                  <div className="text-center text-gray-400 text-sm py-4">
+                    No team members found.
+                  </div>
+                ) : (
+                  teamMembers.map((member) => (
+                    <label 
+                      key={member._id} 
+                      className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors ${
+                        selectedTransferUser === member._id ? "bg-emerald-50" : "hover:bg-gray-50"
+                      }`}
+                    >
+                      <input 
+                        type="radio" 
+                        name="transferUser" 
+                        value={member._id}
+                        checked={selectedTransferUser === member._id}
+                        onChange={(e) => setSelectedTransferUser(e.target.value)}
+                        className="w-4 h-4 text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <div className={`w-9 h-9 rounded-full bg-gradient-to-br ${getAvatarGradient(member._id)} flex items-center justify-center font-bold text-white text-sm`}>
+                        {member.name.charAt(0).toUpperCase()}
+                      </div>
+                      <span className="font-medium text-gray-800">{member.name}</span>
+                    </label>
+                  ))
+                )}
+              </div>
+              <button
+                onClick={handleTransferChat}
+                disabled={!selectedTransferUser}
+                className={`w-full py-2.5 rounded-xl font-semibold text-white transition-colors ${
+                  selectedTransferUser ? "bg-emerald-500 hover:bg-emerald-600" : "bg-gray-300 cursor-not-allowed"
+                }`}
+              >
+                Transfer Chat
+              </button>
+            </div>
+          </div>
+        )}
 
         <ToastContainer position="bottom-right" theme="light" autoClose={3000} />
       </div>
