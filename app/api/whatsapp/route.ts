@@ -1,5 +1,5 @@
 /* =====================================================================
-   FREE-TEXT SEND FROM CHAT - MULTI-ACCOUNT SUPPORT
+   FREE-TEXT SEND FROM CHAT - BULLETPROOF OWNER FINDER
    ===================================================================== */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -9,59 +9,9 @@ import User from "@/models/User";
 import Message from "@/models/Message";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import mongoose from "mongoose";
 
 export const runtime = "nodejs";
-
-// ─── ARRAY-FIRST CREDENTIAL RESOLUTION ───────────────────────────────────
-function resolveCredentials(user: any, payer: any, explicitPhoneId?: string) {
-  if (explicitPhoneId) {
-    const uMatch = user?.whatsappNumbers?.find(
-      (n: any) => n.whatsappPhoneNumberId === explicitPhoneId
-    );
-    if (uMatch)
-      return {
-        PHONE_NUMBER_ID: uMatch.whatsappPhoneNumberId,
-        ACCESS_TOKEN:
-          uMatch.whatsappAccessToken || user?.whatsappAccessToken,
-      };
-    const pMatch = payer?.whatsappNumbers?.find(
-      (n: any) => n.whatsappPhoneNumberId === explicitPhoneId
-    );
-    if (pMatch)
-      return {
-        PHONE_NUMBER_ID: pMatch.whatsappPhoneNumberId,
-        ACCESS_TOKEN:
-          pMatch.whatsappAccessToken || payer?.whatsappAccessToken,
-      };
-  }
-  const activeNum = user?.whatsappNumbers?.find((n: any) => n.isActive);
-  if (activeNum?.whatsappPhoneNumberId) {
-    return {
-      PHONE_NUMBER_ID: activeNum.whatsappPhoneNumberId,
-      ACCESS_TOKEN:
-        activeNum.whatsappAccessToken || user?.whatsappAccessToken,
-    };
-  }
-  if (user?.whatsappNumbers?.[0]?.whatsappPhoneNumberId) {
-    const f = user.whatsappNumbers[0];
-    return {
-      PHONE_NUMBER_ID: f.whatsappPhoneNumberId,
-      ACCESS_TOKEN: f.whatsappAccessToken || user?.whatsappAccessToken,
-    };
-  }
-  return {
-    PHONE_NUMBER_ID:
-      user?.whatsappPhoneNumberId ||
-      payer?.whatsappPhoneNumberId ||
-      process.env.WHATSAPP_PHONE_NUMBER_ID ||
-      "",
-    ACCESS_TOKEN:
-      user?.whatsappAccessToken ||
-      payer?.whatsappAccessToken ||
-      process.env.META_ACCESS_TOKEN ||
-      "",
-  };
-}
 
 export async function POST(req: Request) {
   try {
@@ -111,17 +61,56 @@ export async function POST(req: Request) {
         { status: 400 }
       );
 
-    const { PHONE_NUMBER_ID, ACCESS_TOKEN } = resolveCredentials(
-      user.toObject(),
-      payer.toObject(),
-      whatsappPhoneNumberId
-    );
+    // ─── ✅ BULLETPROOF OWNER FINDER ───────────────────────────────────
+    let PHONE_NUMBER_ID = "";
+    let ACCESS_TOKEN = "";
+    let messageOwnerId = session.user.id; // Default to logged in user
+
+    if (whatsappPhoneNumberId) {
+      // 1. Check if the current user owns this number
+      const ownNumber = user.whatsappNumbers?.find((n: any) => n.whatsappPhoneNumberId === whatsappPhoneNumberId);
+      
+      if (ownNumber) {
+        // User owns it
+        PHONE_NUMBER_ID = ownNumber.whatsappPhoneNumberId || "";
+        ACCESS_TOKEN = ownNumber.whatsappAccessToken || user.whatsappAccessToken || "";
+        messageOwnerId = session.user.id;
+      } else {
+        // 2. User doesn't own it. Search the ENTIRE database for the exact owner of this number.
+        const owner = await User.findOne({ 
+          "whatsappNumbers.whatsappPhoneNumberId": whatsappPhoneNumberId 
+        }).select("_id whatsappNumbers whatsappAccessToken");
+
+        if (owner) {
+          const subNum = owner.whatsappNumbers.find((n: any) => n.whatsappPhoneNumberId === whatsappPhoneNumberId);
+          if (subNum) {
+            PHONE_NUMBER_ID = subNum.whatsappPhoneNumberId || "";
+            ACCESS_TOKEN = subNum.whatsappAccessToken || owner.whatsappAccessToken || "";
+            
+            // ✅ CRITICAL: Save the message under the EXACT owner's ID
+            messageOwnerId = owner._id.toString(); 
+          }
+        }
+      }
+    } else {
+      // Fallback to active number if no specific ID was passed
+      const activeNum = user.whatsappNumbers?.find((n: any) => n.isActive);
+      if (activeNum) {
+        PHONE_NUMBER_ID = activeNum.whatsappPhoneNumberId || "";
+        ACCESS_TOKEN = activeNum.whatsappAccessToken || user.whatsappAccessToken || "";
+      } else {
+        PHONE_NUMBER_ID = user.whatsappPhoneNumberId || payer.whatsappPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || "";
+        ACCESS_TOKEN = user.whatsappAccessToken || payer.whatsappAccessToken || process.env.META_ACCESS_TOKEN || "";
+      }
+    }
+
     if (!PHONE_NUMBER_ID || !ACCESS_TOKEN) {
       return NextResponse.json(
-        { success: false, message: "WhatsApp credentials not configured." },
+        { success: false, message: "WhatsApp credentials not configured for this number." },
         { status: 400 }
       );
     }
+    // ─────────────────────────────────────────────────────────────────
 
     const sPhone = phone.replace(/\+/g, "");
 
@@ -130,7 +119,6 @@ export async function POST(req: Request) {
     let mediaType: string = "document";
 
     if (file) {
-      // Determine media type from MIME
       if (file.type?.startsWith("image/")) mediaType = "image";
       else if (file.type?.startsWith("video/")) mediaType = "video";
       else mediaType = "document";
@@ -156,14 +144,11 @@ export async function POST(req: Request) {
       mediaId = ud.id;
     }
 
-    // ── ✅ FIX: Build message payload CORRECTLY for Meta's schema ──
-    // Meta requires: text: { body: "..." }  NOT  text: "..."
+    // ── Build message payload for Meta's schema ──
     let mp: any;
 
     if (mediaId) {
-      // Media message (image/video/document)
       const mediaObj: any = { id: mediaId };
-      // Add caption for image/video (documents don't support caption in API)
       if ((mediaType === "image" || mediaType === "video") && text.trim()) {
         mediaObj.caption = text.trim();
       }
@@ -174,12 +159,10 @@ export async function POST(req: Request) {
         [mediaType]: mediaObj,
       };
     } else {
-      // Text-only message
       mp = {
         messaging_product: "whatsapp",
         to: sPhone,
         type: "text",
-        // ✅ THIS IS THE FIX: text must be an object with "body", not a raw string
         text: {
           body: text,
           preview_url: false,
@@ -211,14 +194,13 @@ export async function POST(req: Request) {
 
     // ── Save to DB for chat display ──
     try {
-      // For documents, include the filename in the text
       let displayText = text;
       if (mediaType === "document" && file) {
         displayText = text || file.name || "Document";
       }
 
       await Message.create({
-        userId: session.user.id,
+        userId: new mongoose.Types.ObjectId(messageOwnerId), // ✅ Saves under the exact owner
         phone: sPhone,
         text: displayText || "",
         direction: "out",
