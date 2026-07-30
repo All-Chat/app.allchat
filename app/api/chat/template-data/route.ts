@@ -5,6 +5,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { connectDB } from "@/lib/mongodb";
 import User from "@/models/User";
+import mongoose from "mongoose";
 
 export const runtime = "nodejs";
 
@@ -13,6 +14,7 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const name = searchParams.get("name");
     const language = searchParams.get("language") || "en";
+    const wabaIdParam = searchParams.get("whatsappPhoneNumberId");
     
     if (!name) return NextResponse.json({ success: false, error: "Missing name" }, { status: 400 });
 
@@ -20,20 +22,56 @@ export async function GET(req: NextRequest) {
     if (!session?.user?.id) return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
 
     await connectDB();
-    const user = await User.findById(session.user.id);
-    
-    // ✅ FIX: Use WABA_ID and ACCESS_TOKEN as per your snippet
-    const WABA_ID = user?.wabaId || process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
-    const ACCESS_TOKEN = user?.whatsappAccessToken || process.env.META_ACCESS_TOKEN;
+    const currentUser = await User.findById(session.user.id).select("isTenant tenantId parentTenantId wabaId whatsappAccessToken whatsappNumbers").lean();
+    if (!currentUser) return NextResponse.json({ success: false, error: "User not found" }, { status: 404 });
 
-    if (!WABA_ID || !ACCESS_TOKEN) {
-      return NextResponse.json({ success: false, error: "WhatsApp Business Account ID or Access Token not configured." }, { status: 400 });
+    // ✅ STEP 1: Build an array of User IDs that belong to the same tenant group
+    const userIds: mongoose.Types.ObjectId[] = [new mongoose.Types.ObjectId(session.user.id)];
+    let tenantIdToSearch: string | null = null;
+
+    if (currentUser.isTenant) {
+      tenantIdToSearch = currentUser.tenantId || currentUser._id.toString();
+    } else if (currentUser.parentTenantId) {
+      tenantIdToSearch = currentUser.parentTenantId;
+    }
+
+    if (tenantIdToSearch) {
+      const tenantUser = await User.findOne({ tenantId: tenantIdToSearch, isTenant: true }).select("_id").lean();
+      if (tenantUser && !userIds.some(id => id.equals(tenantUser._id))) userIds.push(tenantUser._id);
+      
+      const subUsers = await User.find({ parentTenantId: tenantIdToSearch }).select("_id").lean();
+      subUsers.forEach(u => {
+        if (!userIds.some(id => id.equals(u._id))) userIds.push(u._id);
+      });
+    }
+
+    // ✅ STEP 2: Determine which WABA_ID and ACCESS_TOKEN to use for Meta API
+    let WABA_ID = currentUser.wabaId || process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+    let ACCESS_TOKEN = currentUser.whatsappAccessToken || process.env.META_ACCESS_TOKEN;
+
+    if ((!WABA_ID || !ACCESS_TOKEN || wabaIdParam) && tenantIdToSearch) {
+        const usersToCheck = await User.find({ _id: { $in: userIds } }).select("wabaId whatsappAccessToken whatsappNumbers").lean();
+        for (const u of usersToCheck) {
+            if (wabaIdParam) {
+                const numMatch = u.whatsappNumbers?.find((n: any) => n.whatsappPhoneNumberId === wabaIdParam);
+                if (numMatch?.whatsappAccessToken) {
+                    WABA_ID = u.wabaId || WABA_ID;
+                    ACCESS_TOKEN = numMatch.whatsappAccessToken;
+                    break;
+                }
+            } else if (u.wabaId && u.whatsappAccessToken) {
+                WABA_ID = u.wabaId;
+                ACCESS_TOKEN = u.whatsappAccessToken;
+                break;
+            }
+        }
     }
 
     // 1. Try fetching from Local DB first
     try {
       const { default: Template } = await import("@/models/Template");
-      const localTpl = await Template.findOne({ name, userId: session.user.id }).lean();
+      const localTpl = await Template.findOne({ name, userId: { $in: userIds } }).lean();
+      
       if (localTpl) {
         let headerText = "";
         let bodyText = "";
@@ -75,6 +113,10 @@ export async function GET(req: NextRequest) {
       // Template model might not exist, proceed to Meta API
     }
 
+    if (!WABA_ID || !ACCESS_TOKEN) {
+      return NextResponse.json({ success: false, error: "WhatsApp credentials not configured." }, { status: 400 });
+    }
+
     // 2. Fetch from Meta API using WABA_ID
     const url = `https://graph.facebook.com/v21.0/${WABA_ID}/message_templates?name=${encodeURIComponent(name)}`;
     
@@ -86,7 +128,6 @@ export async function GET(req: NextRequest) {
     const data = await res.json();
     const tpls = data?.data || [];
     
-    // Find the template matching the language, or fallback to the first one
     const tpl = tpls.find((t: any) => t.language === language) || tpls[0];
     
     if (!tpl) return NextResponse.json({ success: false, error: "Template not found on Meta" }, { status: 404 });
