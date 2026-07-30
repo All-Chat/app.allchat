@@ -4,7 +4,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import styled from "styled-components"; // 🚀 Added for scanner loader
+import styled from "styled-components";
 import Sidebar from "@/components/Sidebar";
 import {
   Play, Clock, CheckCircle, Loader2, XCircle, FileText, Trash2, Eye, X,
@@ -16,7 +16,6 @@ import "react-toastify/dist/ReactToastify.css";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 
-// 🚀 CUSTOM SCANNER LOADER COMPONENT (BLACK COLOR)
 const ScannerLoader = () => {
   return (
     <ScannerWrapper>
@@ -35,14 +34,12 @@ const ScannerWrapper = styled.div`
   align-items: center;
   width: 100%;
   padding: 40px 0;
-
   .scanner span {
     color: transparent;
     font-size: 1.4rem;
     position: relative;
     overflow: hidden;
   }
-
   .scanner span::before {
     content: "Loading...";
     position: absolute;
@@ -50,34 +47,19 @@ const ScannerWrapper = styled.div`
     left: 0;
     width: 0;
     height: 100%;
-    border-right: 4px solid #000000; /* ✅ Black */
+    border-right: 4px solid #000000;
     overflow: hidden;
-    color: #000000; /* ✅ Black */
+    color: #000000;
     animation: load91371 2s linear infinite;
   }
-
   @keyframes load91371 {
-    0%, 10%, 100% {
-      width: 0;
-    }
-
-    10%,20%,30%,40%,50%,60%,70%,80%,90%,100% {
-      border-right-color: transparent;
-    }
-
-    11%,21%,31%,41%,51%,61%,71%,81%,91% {
-      border-right-color: #000000; /* ✅ Black */
-    }
-
-    60%, 80% {
-      width: 100%;
-    }
+    0%, 10%, 100% { width: 0; }
+    10%,20%,30%,40%,50%,60%,70%,80%,90%,100% { border-right-color: transparent; }
+    11%,21%,31%,41%,51%,61%,71%,81%,91% { border-right-color: #000000; }
+    60%, 80% { width: 100%; }
   }
 `;
 
-// ==========================================
-// 1. TYPES & INTERFACES
-// ==========================================
 type LiveStats = {
   total: number;
   replied: number;
@@ -100,9 +82,6 @@ type Campaign = {
   templateName: string;
   templateCategory: string;
   variables: string[];
-  mappedVariables?: string[][];
-  generateOtp?: boolean;
-  otpLength?: number;
   phoneNumbers: string[];
   names?: string[];
   mediaUrl: string;
@@ -115,79 +94,50 @@ type Campaign = {
   totalDeducted: number;
   scheduledAt: string;
   createdAt: string;
-  updatedAt?: string; // ✅ Added fallback for Run/Completed times
-  startedAt?: string; // ✅ Added for Run On
-  completedAt?: string; // ✅ Added for Completed On
+  updatedAt?: string;
+  startedAt?: string;
+  completedAt?: string;
   liveStats?: LiveStats;
+  currentPrice?: number;
 };
 
-// ==========================================
-// 2. HELPER FUNCTIONS
-// ==========================================
 const formatINR = (amount: number) =>
-  new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    minimumFractionDigits: 2,
-  }).format(amount);
+  new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", minimumFractionDigits: 2 }).format(amount || 0);
 
-// ✅ NEW: Full Date Time Formatter (Time, Date, Year)
 const formatFullDateTime = (dateStr: string) => {
   if (!dateStr) return "N/A";
   return new Date(dateStr).toLocaleString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
+    day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
   });
 };
 
 const getCategoryColor = (category: string) => {
   switch (category?.toUpperCase()) {
-    case "MARKETING":
-      return "bg-orange-50 text-orange-700 border-orange-200";
-    case "UTILITY":
-      return "bg-blue-50 text-blue-700 border-blue-200";
-    case "AUTHENTICATION":
-      return "bg-purple-50 text-purple-700 border-purple-200";
-    default:
-      return "bg-gray-50 text-gray-700 border-gray-200";
+    case "MARKETING": return "bg-orange-50 text-orange-700 border-orange-200";
+    case "UTILITY": return "bg-blue-50 text-blue-700 border-blue-200";
+    case "AUTHENTICATION": return "bg-purple-50 text-purple-700 border-purple-200";
+    default: return "bg-gray-50 text-gray-700 border-gray-200";
   }
 };
 
 const getCampaignStats = (c: Campaign): LiveStats => {
   return c.liveStats || {
-    total: c.totalMessages,
-    replied: 0,
-    read: 0,
-    delivered: 0,
-    sent: 0,
-    failed: 0,
-    invalid: 0,
-    duplicate: 0,
-    pending: 0,
-    deliveredRead: 0,
-    failedInvalid: 0,
-    progress: 0,
+    total: c.totalMessages, replied: 0, read: 0, delivered: 0, sent: 0, failed: 0,
+    invalid: 0, duplicate: 0, pending: 0, deliveredRead: 0, failedInvalid: 0, progress: 0,
   };
 };
 
-// ==========================================
-// 3. MAIN COMPONENT
-// ==========================================
 export default function CampaignList() {
   const router = useRouter();
   const { data: session, status } = useSession();
 
-  // State Variables
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [loadingCampaigns, setLoadingCampaigns] = useState(true); // 🚀 NEW STATE: Track campaign list loading
+  const [loadingCampaigns, setLoadingCampaigns] = useState(true);
   const [startingId, setStartingId] = useState<string | null>(null);
   const [actionId, setActionId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [viewCampaign, setViewCampaign] = useState<Campaign | null>(null);
-  const [viewLoadingId, setViewLoadingId] = useState<string | null>(null); // 🚀 Loader for View Modal
+  const [viewLoadingId, setViewLoadingId] = useState<string | null>(null);
   const [quickPhone, setQuickPhone] = useState("");
   const [timers, setTimers] = useState<Record<string, string>>({});
   const [searchTerm, setSearchTerm] = useState("");
@@ -202,15 +152,12 @@ export default function CampaignList() {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 6;
 
-  // ==========================================
-  // 4. DATA FETCHING FUNCTIONS
-  // ==========================================
   const fetchBilling = async () => {
     try {
       const res = await fetch("/api/billing");
       if (res.status === 401) return;
       const data = await res.json();
-      if (data.success) {
+      if (data.success && data.billing) {
         setBalance(data.billing.balance || 0);
         setCanSendMessage(data.billing.canSendMessage !== false);
       }
@@ -219,49 +166,47 @@ export default function CampaignList() {
     }
   };
 
-  const fetchSettings = async () => {
+  const fetchPricing = async () => {
     try {
-      const res = await fetch("/api/settings");
+      const res = await fetch("/api/user/pricing", { cache: 'no-store' });
       if (res.status === 401) return;
       const data = await res.json();
-      if (data.success && data.settings?.enabledCountries && data.settings.enabledCountries.length > 0) {
-        setEnabledCountries(data.settings.enabledCountries);
-        setSelectedCountryCode(data.settings.enabledCountries[0].code);
+      if (data.success) {
+        setEnabledCountries(data.enabledCountries || []);
+        if (data.enabledCountries.length > 0) {
+          setSelectedCountryCode(data.enabledCountries[0].code);
+        }
       }
     } catch (error) {
-      console.error("Failed to fetch settings", error);
+      console.error("Failed to fetch pricing", error);
     }
   };
 
+  // ✅ Fetch campaigns from the new billing route which calculates the price on the backend
   const loadCampaigns = async () => {
     try {
-      const res = await fetch("/api/campaigns/counts");
+      const res = await fetch("/api/campaigns/billing", { cache: 'no-store' });
       if (res.status === 401) {
         router.push("/");
         return;
       }
       const data = await res.json();
-      
-      // ✅ CRITICAL FIX: Ensure campaigns is always an array to prevent .filter() crashes
       if (data.success && Array.isArray(data.campaigns)) {
         setCampaigns(data.campaigns);
       }
     } catch (err) {
       console.error("Failed to load campaigns", err);
     } finally {
-      setLoadingCampaigns(false); // 🚀 Turn off loader when data arrives
+      setLoadingCampaigns(false);
     }
   };
 
-  // ==========================================
-  // 5. useEffect HOOKS
-  // ==========================================
   useEffect(() => {
     if (status === "authenticated") {
       loadCampaigns();
       fetchBilling();
-      fetchSettings();
-      const interval = setInterval(loadCampaigns, 5000); // Poll every 5 seconds
+      fetchPricing();
+      const interval = setInterval(loadCampaigns, 5000);
       return () => clearInterval(interval);
     } else if (status === "unauthenticated") {
       router.push("/");
@@ -289,19 +234,12 @@ export default function CampaignList() {
     return () => clearInterval(timerInterval);
   }, [campaigns]);
 
-  // ==========================================
-  // 6. CAMPAIGN ACTION FUNCTIONS
-  // ==========================================
   const startCampaign = async (id: string) => {
-    if (!canSendMessage) {
-      toast.error("Insufficient balance.");
-      return;
-    }
+    if (!canSendMessage) { toast.error("Insufficient balance."); return; }
     if (!confirm("Start this campaign now?")) return;
 
-    // Instant UI update to running
     setCampaigns((prev) => prev.map((c) => (c._id === id ? { ...c, status: "running" } : c)));
-    setStartingId(id); // This keeps the button disabled and shows "Starting..."
+    setStartingId(id);
 
     try {
       const res = await fetch("/api/campaigns/start", {
@@ -330,14 +268,12 @@ export default function CampaignList() {
       toast.error("Failed to start");
       loadCampaigns();
     } finally {
-      setStartingId(null); // Re-enable buttons once API responds
+      setStartingId(null);
     }
   };
 
   const handleCampaignAction = async (id: string, action: "pause" | "resume" | "stop") => {
     const newStatus = action === "pause" ? "paused" : action === "resume" ? "running" : "completed";
-    
-    // Instant UI update
     setCampaigns((prev) => prev.map((c) => (c._id === id ? { ...c, status: newStatus } : c)));
     setActionId(id);
 
@@ -348,12 +284,9 @@ export default function CampaignList() {
         body: JSON.stringify({ campaignId: id }),
       });
       const data = await res.json();
-      
       if (data.success) {
         toast.success(`Campaign ${action}ed!`);
         loadCampaigns();
-        
-        // If resuming, trigger the start API to continue the background loop
         if (action === "resume") {
           await fetch("/api/campaigns/start", {
             method: "POST",
@@ -370,60 +303,6 @@ export default function CampaignList() {
       loadCampaigns();
     } finally {
       setActionId(null);
-    }
-  };
-
-  const rerunCampaign = async (id: string) => {
-    if (!canSendMessage) {
-      toast.error("Insufficient balance.");
-      return;
-    }
-    if (!confirm("Rerun this campaign?")) return;
-
-    // Instant UI update
-    setCampaigns((prev) =>
-      prev.map((c) => (c._id === id ? { ...c, status: "running", sentCount: 0, failedCount: 0, totalDeducted: 0 } : c))
-    );
-    setStartingId(id);
-
-    try {
-      const campaign = campaigns.find((c) => c._id === id);
-      if (!campaign) return;
-
-      // Reset campaign stats in DB
-      const updateRes = await fetch("/api/campaigns/update", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...campaign, id: campaign._id, status: "saved", sentCount: 0, failedCount: 0, totalDeducted: 0 }),
-      });
-
-      if (!updateRes.ok) {
-        toast.error("Failed to reset");
-        return;
-      }
-
-      // Trigger start
-      const startRes = await fetch("/api/campaigns/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ campaignId: id }),
-      });
-
-      if (startRes.status === 402) {
-        const data402 = await startRes.json();
-        toast.error(data402.message || "Insufficient balance.");
-        setCanSendMessage(false);
-        fetchBilling();
-      } else {
-        const data = await startRes.json();
-        if (data.success) toast.success("Rerun queued!");
-      }
-      loadCampaigns();
-    } catch (err: any) {
-      toast.error("Failed to rerun");
-      loadCampaigns();
-    } finally {
-      setStartingId(null);
     }
   };
 
@@ -448,19 +327,11 @@ export default function CampaignList() {
   };
 
   const quickTestSend = async (c: Campaign) => {
-    if (!quickPhone) {
-      toast.error("Enter a phone number");
-      return;
-    }
-    if (!canSendMessage) {
-      toast.error("Insufficient balance.");
-      return;
-    }
+    if (!quickPhone) { toast.error("Enter a phone number"); return; }
+    if (!canSendMessage) { toast.error("Insufficient balance."); return; }
 
     try {
       let variablesToSend = c.variables || [];
-
-      // Handle OTP generation for Auth templates
       if (c.generateOtp && c.templateCategory === "AUTHENTICATION") {
         const len = c.otpLength || 4;
         const min = Math.pow(10, len - 1);
@@ -509,11 +380,9 @@ export default function CampaignList() {
     }
   };
 
-  // 🚀 NEW: Fetch full campaign details (including phoneNumbers) specifically for the View Modal
   const handleViewClick = async (campaignId: string) => {
     setViewLoadingId(campaignId);
     try {
-      // ✅ Changed editId to viewId for instant loading
       const res = await fetch(`/api/campaigns/list?viewId=${campaignId}`);
       if (res.status === 401) {
         router.push("/");
@@ -521,12 +390,12 @@ export default function CampaignList() {
       }
       const data = await res.json();
       if (data.success && data.campaigns.length > 0) {
-        // Preserve live stats if they exist on the front-end
         const existing = campaigns.find(c => c._id === campaignId);
         setViewCampaign({
           ...data.campaigns[0],
           liveStats: existing?.liveStats,
-          totalDeducted: existing?.totalDeducted || 0
+          totalDeducted: existing?.totalDeducted || 0,
+          currentPrice: existing?.currentPrice || 0
         });
       } else {
         toast.error("Failed to load campaign details");
@@ -538,9 +407,6 @@ export default function CampaignList() {
     }
   };
 
-  // ==========================================
-  // 7. DERIVED STATE & PAGINATION
-  // ==========================================
   const filteredCampaigns = campaigns
     .filter((c) => statusFilter === "all" || c.status === statusFilter)
     .filter((c) => {
@@ -548,7 +414,6 @@ export default function CampaignList() {
       const lt = searchTerm.toLowerCase();
       return c.name.toLowerCase().includes(lt) || c.templateName.toLowerCase().includes(lt);
     })
-    // ✅ CRITICAL FIX: Sort by createdAt descending so newest campaigns are always on top
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   useEffect(() => {
@@ -569,9 +434,6 @@ export default function CampaignList() {
     failed: { bg: "bg-red-50", text: "text-red-700", border: "border-red-200", icon: <XCircle size={12} /> },
   };
 
-  // ==========================================
-  // 8. RENDER
-  // ==========================================
   if (status === "loading") {
     return (
       <div className="flex min-h-screen bg-slate-50 items-center justify-center">
@@ -584,9 +446,6 @@ export default function CampaignList() {
     <div className="min-h-screen bg-slate-50 text-gray-900">
       <Sidebar />
 
-      {/* ==========================================
-          VIEW CAMPAIGN MODAL
-          ========================================== */}
       {viewCampaign && (
         <div
           className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
@@ -596,7 +455,6 @@ export default function CampaignList() {
             className="bg-white rounded-t-3xl sm:rounded-3xl w-full sm:max-w-xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header */}
             <div className="bg-gradient-to-r from-emerald-600 to-teal-500 p-5 sm:p-6 text-white relative shrink-0">
               <button
                 onClick={() => setViewCampaign(null)}
@@ -622,9 +480,7 @@ export default function CampaignList() {
               </div>
             </div>
 
-            {/* Modal Body */}
             <div className="p-5 sm:p-6 space-y-5 overflow-y-auto">
-              {/* Stats Grid */}
               <div className="grid grid-cols-3 gap-2 sm:gap-3">
                 <div className="bg-slate-50 p-2 sm:p-3 rounded-xl text-center border border-slate-100">
                   <Users className="w-4 h-4 sm:w-5 sm:h-5 mx-auto text-blue-500 mb-1" />
@@ -649,9 +505,7 @@ export default function CampaignList() {
                 </div>
               </div>
 
-              {/* Details */}
               <div className="space-y-3 text-sm border-t border-slate-100 pt-4">
-                {/* ✅ NEW: Full Date Time Details in Modal */}
                 <div className="flex justify-between">
                   <span className="text-slate-500">Created On:</span>
                   <span className="font-medium text-right">
@@ -709,7 +563,6 @@ export default function CampaignList() {
                         {p}
                       </span>
                     ))}
-                    {/* ✅ Shows exactly how many more numbers are hidden */}
                     {viewCampaign.totalMessages > 15 && (
                       <span className="text-slate-400 font-bold ml-1 inline-block mb-1">
                         +{viewCampaign.totalMessages - 15} more numbers
@@ -719,7 +572,6 @@ export default function CampaignList() {
                 </div>
               </div>
 
-              {/* Quick Test Send */}
               <div className="border-t border-slate-100 pt-4">
                 <label className="text-xs font-bold text-slate-700 mb-2 block flex items-center gap-1.5">
                   <Zap className="w-3.5 h-3.5 text-amber-500" /> Quick Test Send
@@ -766,13 +618,9 @@ export default function CampaignList() {
         </div>
       )}
 
-      {/* ==========================================
-          MAIN PAGE CONTENT
-          ========================================== */}
       <div className="md:ml-64 p-4 sm:p-6 lg:p-8">
         <div className="max-w-6xl mx-auto space-y-4 sm:space-y-6">
           
-          {/* Page Header */}
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end border-b border-slate-200 pb-4 sm:pb-6 gap-4">
             <div>
               <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-slate-900">Campaigns</h1>
@@ -803,7 +651,6 @@ export default function CampaignList() {
             </div>
           </div>
 
-          {/* Insufficient Balance Warning */}
           {!canSendMessage && (
             <div className="p-3 sm:p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
               <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
@@ -817,7 +664,6 @@ export default function CampaignList() {
             </div>
           )}
 
-          {/* Search & Filter Bar */}
           <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3 sm:gap-4">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
@@ -846,7 +692,6 @@ export default function CampaignList() {
             </div>
           </div>
 
-          {/* 🚀 MODIFIED: Show Scanner Loader ONLY when loading the campaign list */}
           {loadingCampaigns ? (
             <div className="flex justify-center items-center py-20 bg-white rounded-2xl border border-slate-200">
               <ScannerLoader />
@@ -862,7 +707,6 @@ export default function CampaignList() {
                 const cfg = statusConfig[c.status] || statusConfig.saved;
                 const liveStats = getCampaignStats(c);
                 
-                // Strict math for Delivered + Read + Replied
                 const trueDeliveredCount =
                   Number(liveStats.delivered || 0) +
                   Number(liveStats.read || 0) +
@@ -870,14 +714,16 @@ export default function CampaignList() {
                   
                 const progressPercent = liveStats.total > 0 ? Math.round((trueDeliveredCount / liveStats.total) * 100) : 0;
                 const isCompleted = c.status === "completed" || c.status === "failed";
-                const amountSpent = c.totalDeducted || 0;
+
+                // ✅ Simply use c.currentPrice calculated securely from the backend
+                const currentPrice = Number(c.currentPrice || 0);
+                const amountSpent = Number(trueDeliveredCount || 0) * currentPrice;
 
                 return (
                   <div
                     key={c._id}
                     className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all duration-200 group"
                   >
-                    {/* Campaign Card Header */}
                     <div className="flex flex-col sm:flex-row justify-between items-start gap-3 mb-4">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 sm:gap-3 mb-1 flex-wrap">
@@ -904,7 +750,6 @@ export default function CampaignList() {
                           )}
                         </div>
                         
-                        {/* ✅ NEW: Replaced plain text with full Date/Time logs */}
                         <p className="text-xs text-slate-500 mt-1">{c.templateName}</p>
                         <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
                           <span className="flex items-center gap-1.5">
@@ -920,7 +765,6 @@ export default function CampaignList() {
                         )}
                       </div>
 
-                      {/* Action Buttons */}
                       <div className="flex items-center gap-1.5 sm:ml-4 w-full sm:w-auto justify-end flex-wrap">
                         <button
                           onClick={() => handleViewClick(c._id)}
@@ -968,21 +812,6 @@ export default function CampaignList() {
                           </div>
                         )}
 
-                        {/* {isCompleted && (
-                          <button
-                            onClick={() => rerunCampaign(c._id)}
-                            disabled={startingId === c._id || !canSendMessage}
-                            className={`p-2 rounded-lg transition-colors ${
-                              !canSendMessage
-                                ? "text-slate-300 cursor-not-allowed"
-                                : "text-slate-400 hover:text-purple-600 hover:bg-purple-50"
-                            }`}
-                            title={!canSendMessage ? "Insufficient balance" : "Rerun"}
-                          >
-                            {startingId === c._id ? <Loader2 size={16} className="animate-spin text-purple-600" /> : <RotateCcw size={16} />}
-                          </button>
-                        )} */}
-
                         {c.status === "saved" && (
                           <button
                             onClick={() => startCampaign(c._id)}
@@ -1011,8 +840,7 @@ export default function CampaignList() {
                       </div>
                     </div>
 
-                    {/* Stats Grid */}
-                    <div className={`grid gap-2 sm:gap-3 text-center grid-cols-2 sm:grid-cols-3 md:grid-cols-5 ${amountSpent > 0 ? "lg:grid-cols-6" : ""}`}>
+                    <div className={`grid gap-2 sm:gap-3 text-center grid-cols-2 sm:grid-cols-3 md:grid-cols-5 ${trueDeliveredCount > 0 ? "lg:grid-cols-6" : ""}`}>
                       <div className="bg-slate-50 p-2 rounded-xl border border-slate-100">
                         <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Total</p>
                         <p className="font-bold text-slate-900 text-sm mt-0.5">{Number(liveStats.total) || c.totalMessages || 0}</p>
@@ -1026,13 +854,12 @@ export default function CampaignList() {
                         <p className="font-bold text-emerald-700 text-sm mt-0.5">{Number(liveStats.sent) || 0}</p>
                       </div>
                       
-                      {/* ✅ FIX: Guaranteed to show 0 instead of disappearing when empty */}
                       <div className="bg-orange-50 p-2 rounded-xl border border-orange-100">
                         <p className="text-[9px] text-orange-600 font-bold uppercase tracking-wider">Invalid</p>
                         <p className="font-bold text-orange-700 text-sm mt-0.5">{Number(liveStats.failedInvalid) || 0}</p>
                       </div>
 
-                      {amountSpent > 0 && (
+                      {trueDeliveredCount > 0 && (
                         <div className="bg-blue-50 p-2 rounded-xl border border-blue-100 col-span-2 sm:col-span-1">
                           <p className="text-[9px] text-blue-600 font-bold uppercase tracking-wider flex items-center justify-center gap-0.5">
                             <Wallet size={8} /> Spent
@@ -1052,7 +879,6 @@ export default function CampaignList() {
                       </div>
                     </div>
 
-                    {/* Starting / Running Progress Bar */}
                     {startingId === c._id ? (
                       <div className="mt-3 w-full bg-slate-100 rounded-full h-2 overflow-hidden">
                         <div className="bg-emerald-500 h-2 w-full rounded-full animate-pulse"></div>
@@ -1066,28 +892,25 @@ export default function CampaignList() {
                       </div>
                     ) : null}
 
-                    {/* Amount Spent Text */}
-                    {amountSpent > 0 && (
+                    {trueDeliveredCount > 0 && (
                       <div className="mt-3 flex items-center gap-2 text-xs">
                         <Wallet size={12} className="text-blue-500" />
                         <span className="text-slate-500">Amount spent (Dynamic):</span>
                         <span className="font-bold text-blue-700">{formatINR(amountSpent)}</span>
-                        <span className="text-slate-400">({trueDeliveredCount} delivered)</span>
+                        <span className="text-slate-400">({trueDeliveredCount} delivered × {formatINR(currentPrice)})</span>
                       </div>
                     )}
 
-                    {/* Completed Text */}
-                    {isCompleted && amountSpent === 0 && trueDeliveredCount > 0 && (
+                    {isCompleted && trueDeliveredCount === 0 && (
                       <div className="mt-3 flex items-center gap-2 text-xs">
                         <CheckCircle size={12} className="text-emerald-500" />
-                        <span className="text-slate-500">Completed — {trueDeliveredCount} messages delivered (Free)</span>
+                        <span className="text-slate-500">Completed — 0 messages delivered</span>
                       </div>
                     )}
                   </div>
                 );
               })}
 
-              {/* Pagination Controls */}
               {totalPages > 1 && (
                 <div className="flex justify-center items-center gap-4 mt-8">
                   <button
