@@ -18,12 +18,42 @@ export async function GET(req: NextRequest) {
     if (!session?.user?.id) return new NextResponse("Unauthorized", { status: 401 });
 
     await connectDB();
-    const user = await User.findById(session.user.id);
     
-    let accessToken = user?.whatsappAccessToken || process.env.META_ACCESS_TOKEN;
-    if (Array.isArray(user?.whatsappNumbers) && user.whatsappNumbers.length > 0) {
-      const active = user.whatsappNumbers.find((n: any) => n.isActive) || user.whatsappNumbers[0];
-      accessToken = active.whatsappAccessToken || accessToken;
+    // ✅ Fetch current user to determine tenant hierarchy
+    const currentUser = await User.findById(session.user.id).select("isTenant tenantId parentTenantId whatsappAccessToken whatsappNumbers").lean();
+    if (!currentUser) return new NextResponse("User not found", { status: 404 });
+
+    // ✅ Find all users in the tenant group to check for the correct access token
+    let tenantIdToSearch = null;
+    if (currentUser.isTenant) {
+      tenantIdToSearch = currentUser.tenantId || currentUser._id.toString();
+    } else if (currentUser.parentTenantId) {
+      tenantIdToSearch = currentUser.parentTenantId;
+    }
+
+    const usersToCheck = [currentUser];
+    if (tenantIdToSearch) {
+      const tenantUser = await User.findOne({ tenantId: tenantIdToSearch, isTenant: true }).select("whatsappAccessToken whatsappNumbers").lean();
+      if (tenantUser) usersToCheck.push(tenantUser);
+      
+      const subUsers = await User.find({ parentTenantId: tenantIdToSearch }).select("whatsappAccessToken whatsappNumbers").lean();
+      subUsers.forEach(u => usersToCheck.push(u));
+    }
+
+    let accessToken = process.env.META_ACCESS_TOKEN;
+
+    // ✅ Look for the token attached to any user in the tenant group
+    for (const u of usersToCheck) {
+      if (Array.isArray(u?.whatsappNumbers) && u.whatsappNumbers.length > 0) {
+        const active = u.whatsappNumbers.find((n: any) => n.isActive) || u.whatsappNumbers[0];
+        if (active?.whatsappAccessToken) {
+          accessToken = active.whatsappAccessToken;
+          break; // Found a valid token
+        }
+      } else if (u?.whatsappAccessToken) {
+         accessToken = u.whatsappAccessToken;
+         break; 
+      }
     }
 
     if (!accessToken) return new NextResponse("Token not configured", { status: 500 });
