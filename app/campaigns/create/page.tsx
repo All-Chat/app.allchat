@@ -43,6 +43,12 @@ export default function CreateCampaign() {
   const [saving, setSaving] = useState(false);
   const [languageCode, setLanguageCode] = useState("en");
 
+  // ✅ ADDED: State for Modal and Checkboxes
+  const [showComplianceModal, setShowComplianceModal] = useState(false);
+  const [pendingAction, setPendingAction] = useState<boolean>(false); // false = draft, true = schedule
+  const [consentChecked, setConsentChecked] = useState(false);
+  const [responsibilityChecked, setResponsibilityChecked] = useState(false);
+
   const [useRandomOtp, setUseRandomOtp] = useState(false);
   const [otpLength, setOtpLength] = useState(4);
   const [selectedVarCols, setSelectedVarCols] = useState<string[]>([]);
@@ -168,7 +174,6 @@ export default function CreateCampaign() {
     }
   };
 
-  // ✅ LIVE DEBOUNCED NAME CHECK
   const handleCampaignNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setCampaignName(value);
@@ -630,7 +635,8 @@ export default function CreateCampaign() {
       </div>
     );
   }; 
-const handleSave = async (isSchedule: boolean) => {
+
+  const promptSave = (isSchedule: boolean) => {
     if (!campaignName || !selectedTemplate || rawNumbers.length === 0) {
       toast.error("Fill all required fields");
       return;
@@ -656,9 +662,19 @@ const handleSave = async (isSchedule: boolean) => {
       return;
     }
 
+    // Reset checkboxes and open modal
+    setConsentChecked(false);
+    setResponsibilityChecked(false);
+    setPendingAction(isSchedule);
+    setShowComplianceModal(true);
+  };
+
+  const handleSave = async () => {
+    setShowComplianceModal(false);
     setSaving(true);
     try {
       let res;
+      const isSchedule = pendingAction;
       const validAdditionalFields = additionalFields.filter(f => f && f !== "skip");
       const commonData = {
         name: campaignName,
@@ -1311,17 +1327,20 @@ const handleSave = async (isSchedule: boolean) => {
                       min={new Date(Date.now() + 15 * 60000).toISOString().slice(0, 16)}
                       className="w-full px-4 sm:px-5 py-3 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"
                     />
+                    <p className="text-[10px] text-amber-600 bg-amber-50 p-2 rounded-lg border border-amber-100 flex items-center gap-1.5 mt-2 font-bold"><AlertCircle size={10} /> Must be at least 15 mins in advance.</p>
                   </div>
+
+                  {/* ✅ Removed inline checkboxes, buttons now trigger the modal */}
                   <div className="flex flex-col sm:flex-row gap-3">
                     <button
-                      onClick={() => handleSave(false)}
+                      onClick={() => promptSave(false)}
                       disabled={saving || isAtLimit || nameStatus === "taken"}
                       className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-slate-100 border border-slate-200 rounded-xl font-bold hover:bg-slate-200 flex items-center justify-center gap-2 text-sm transition-colors text-slate-700 shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       <FileSpreadsheet size={16} /> Save Draft
                     </button>
                     <button
-                      onClick={() => handleSave(true)}
+                      onClick={() => promptSave(true)}
                       disabled={saving || !scheduleDate || isAtLimit || nameStatus === "taken"}
                       className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-xl font-bold hover:from-indigo-600 hover:to-purple-600 flex items-center justify-center gap-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-md"
                     >
@@ -1334,6 +1353,96 @@ const handleSave = async (isSchedule: boolean) => {
           </div>
         </div>
       </div>
+
+      {/* ✅ COMPLIANCE MODAL (Premium & Full Screen on Mobile) */}
+{showComplianceModal && (
+  <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-300">
+    
+    {/* Full screen on mobile, compact size on desktop */}
+    <div className="bg-white rounded-none sm:rounded-3xl shadow-2xl w-full h-full sm:w-auto sm:h-auto sm:max-w-lg sm:max-h-[70vh] flex flex-col overflow-hidden border border-slate-100">
+      
+      {/* Header (Fixed) */}
+      <div className="relative bg-gradient-to-br from-emerald-50 via-white to-teal-50 px-5 sm:px-6 pt-6 pb-4 text-center border-b border-slate-100 shrink-0">
+        <button 
+          onClick={() => setShowComplianceModal(false)} 
+          className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition-colors"
+        >
+          <X size={18} />
+        </button>
+        
+        <div className="w-14 h-14 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-lg shadow-emerald-200/50 rotate-3">
+          <ShieldCheck className="w-7 h-7 text-white -rotate-3" />
+        </div>
+        <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">Compliance & Responsibility</h2>
+        <p className="text-xs sm:text-sm text-slate-500 mt-1 font-medium">Please review and accept the terms to proceed.</p>
+      </div>
+
+      {/* Body (Scrollable) */}
+      <div className="p-5 space-y-3 overflow-y-auto flex-1 overscroll-contain">
+        {/* Custom Checkbox 1 */}
+        <label className="flex items-start gap-3 p-3.5 rounded-xl border-2 border-slate-100 hover:border-emerald-200 hover:bg-emerald-50/30 transition-all cursor-pointer group">
+          <div className={`mt-0.5 w-5 h-5 rounded-md flex items-center justify-center shrink-0 transition-all duration-200 ${consentChecked ? 'bg-emerald-500 border-emerald-500' : 'bg-white border-2 border-slate-300 group-hover:border-emerald-400'}`}>
+            {consentChecked && <CheckCircle2 className="w-4 h-4 text-white" />}
+          </div>
+          <input
+            type="checkbox"
+            checked={consentChecked}
+            onChange={(e) => setConsentChecked(e.target.checked)}
+            className="hidden"
+          />
+          <span className="text-xs sm:text-sm text-slate-600 leading-relaxed font-medium">
+            I confirm that all uploaded contacts were collected lawfully, have provided the required consent, and that this campaign complies with applicable laws and WhatsApp Business Messaging Policies.
+          </span>
+        </label>
+
+        {/* Custom Checkbox 2 */}
+        <label className="flex items-start gap-3 p-3.5 rounded-xl border-2 border-slate-100 hover:border-emerald-200 hover:bg-emerald-50/30 transition-all cursor-pointer group">
+          <div className={`mt-0.5 w-5 h-5 rounded-md flex items-center justify-center shrink-0 transition-all duration-200 ${responsibilityChecked ? 'bg-emerald-500 border-emerald-500' : 'bg-white border-2 border-slate-300 group-hover:border-emerald-400'}`}>
+            {responsibilityChecked && <CheckCircle2 className="w-4 h-4 text-white" />}
+          </div>
+          <input
+            type="checkbox"
+            checked={responsibilityChecked}
+            onChange={(e) => setResponsibilityChecked(e.target.checked)}
+            className="hidden"
+          />
+          <span className="text-xs sm:text-sm text-slate-600 leading-relaxed font-medium">
+            I understand that I am solely responsible for the contacts, message content, legal compliance, and any policy violations resulting from my use of AllChat. Violations may lead to message restrictions or suspension of my WhatsApp Business Account and/or AllChat account.
+          </span>
+        </label>
+
+        {/* Warning Box */}
+        <div className="bg-amber-50/80 border border-amber-200 text-amber-800 p-3 rounded-xl text-[11px] sm:text-xs font-medium flex items-start gap-2.5">
+          <div className="p-1 bg-amber-100 rounded-md shrink-0">
+            <AlertCircle size={14} className="text-amber-600" />
+          </div>
+          <span className="leading-relaxed">
+            Please ensure you have recipient consent before sending this campaign. By continuing, you agree to the AllChat Terms of Service and WhatsApp Business Messaging Policies.
+          </span>
+        </div>
+      </div>
+
+      {/* Footer Actions (Fixed) */}
+      <div className="flex gap-3 p-5 bg-slate-50/50 border-t border-slate-100 shrink-0 pb-[calc(1.25rem+env(safe-area-inset-bottom))]">
+        <button
+          onClick={() => setShowComplianceModal(false)}
+          className="flex-1 px-4 py-3 bg-white border border-slate-200 text-slate-700 rounded-xl font-bold text-xs sm:text-sm hover:bg-slate-100 transition-colors shadow-sm"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleSave}
+          disabled={!consentChecked || !responsibilityChecked || saving}
+          className="flex-[2] px-4 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-bold text-xs sm:text-sm hover:from-emerald-600 hover:to-teal-600 transition-all disabled:from-slate-300 disabled:to-slate-300 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20"
+        >
+          {saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+          {saving ? "Saving..." : "I Confirm & Continue"}
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
       <ToastContainer position="bottom-right" theme="light" autoClose={3000} />
     </div>
   );
