@@ -506,40 +506,6 @@ export default function CampaignList() {
               </div>
 
               <div className="space-y-3 text-sm border-t border-slate-100 pt-4">
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Created On:</span>
-                  <span className="font-medium text-right">
-                    {formatFullDateTime(viewCampaign.createdAt)}
-                  </span>
-                </div>
-                
-                {viewCampaign.status !== "saved" && viewCampaign.status !== "scheduled" && (
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Run On:</span>
-                    <span className="font-medium text-right">
-                      {formatFullDateTime(viewCampaign.startedAt || viewCampaign.updatedAt || "")}
-                    </span>
-                  </div>
-                )}
-
-                {(viewCampaign.status === "completed" || viewCampaign.status === "failed") && (
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Completed On:</span>
-                    <span className="font-medium text-right">
-                      {formatFullDateTime(viewCampaign.completedAt || viewCampaign.updatedAt || "")}
-                    </span>
-                  </div>
-                )}
-
-                {viewCampaign.scheduledAt && (
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Scheduled For:</span>
-                    <span className="font-medium text-right">
-                      {formatFullDateTime(viewCampaign.scheduledAt)}
-                    </span>
-                  </div>
-                )}
-
                 {viewCampaign.variables?.length > 0 && (
                   <div>
                     <span className="text-slate-500 block mb-1">Variables:</span>
@@ -867,16 +833,15 @@ export default function CampaignList() {
                           <p className="font-bold text-blue-700 text-sm mt-0.5">{formatINR(amountSpent)}</p>
                         </div>
                       )}
-
-                      <div className="bg-slate-50 p-2 rounded-xl border border-slate-100 flex flex-col items-center justify-center col-span-2 sm:col-span-1">
-                        <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider mb-1">Progress</p>
-                        <div className="w-full bg-slate-200 rounded-full h-2">
-                          <div
-                            className="bg-emerald-500 h-2 rounded-full transition-all duration-500"
-                            style={{ width: `${progressPercent}%` }}
-                          ></div>
-                        </div>
-                      </div>
+<div className="bg-slate-50 p-2 rounded-xl border border-slate-100 flex flex-col items-center justify-center col-span-2 sm:col-span-1">
+  <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider mb-1">Progress</p>
+  <div className="w-full bg-slate-200 rounded-full h-2">
+    <div
+      className="bg-emerald-500 h-2 rounded-full transition-all duration-500"
+      style={{ width: `${Math.min(100, progressPercent)}%` }}
+    ></div>
+  </div>
+</div>
                     </div>
 
                     {startingId === c._id ? (
