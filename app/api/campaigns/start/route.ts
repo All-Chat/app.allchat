@@ -1,12 +1,25 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
+import mongoose from "mongoose"; // ✅ ADDED: Required for Transaction schema
 import Campaign from "@/models/Campaign";
 import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getPriceForCategory } from "@/lib/billing";
 import { campaignQueue } from "@/lib/queue";
+
+// ✅ ADDED: Transaction Schema and Model
+const TransactionSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  type: String,
+  amount: Number,
+  description: String,
+  status: String,
+  createdAt: { type: Date, default: Date.now },
+  metadata: Object
+});
+const Transaction = mongoose.models.Transaction || mongoose.model('Transaction', TransactionSchema);
 
 export const runtime = "nodejs";
 
@@ -36,11 +49,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, message: "Campaign already completed or stopped." });
     }
 
-    // 🚀 FIX: block re-starting a campaign that's already actively running.
-    // Previously "running" fell through and re-queued EVERY chunk from
-    // scratch on every call — if /start got hit twice (double-click,
-    // frontend retry, etc.) this flooded the shared queue with duplicate
-    // jobs for the whole campaign, starving real progress.
     if (campaign.status === "running") {
       const activeCount = await campaignQueue.getActiveCount();
       const waitingCount = await campaignQueue.getWaitingCount();
@@ -50,9 +58,6 @@ export async function POST(req: Request) {
           message: "Campaign is already running and has jobs in progress.",
         });
       }
-      // status says "running" but queue is empty -> genuinely stuck, fall
-      // through and let the recovery logic below re-queue it safely
-      // (deterministic jobIds below make this idempotent even if wrong).
     }
 
     const user = await User.findById(userId); 
@@ -76,11 +81,6 @@ export async function POST(req: Request) {
     const bPrice = getPriceForCategory(payer, cat);
     if (bPrice > 0 && (payer.balance || 0) < bPrice) return NextResponse.json({ success: false, message: `Insufficient balance.` }, { status: 402 });
 
-    // 🚀 FIX: positional `$` only patches the FIRST matching array element.
-    // Any campaign that ever had more than one item stuck in "queued"
-    // (crashed job, restart, timeout) would leave the rest stuck forever,
-    // since the worker permanently skips "queued" items. arrayFilters with
-    // $[elem] patches ALL matching elements in one go.
     await Campaign.updateOne(
       { _id: campaignId },
       { $set: { "reportData.$[elem].status": "pending" } },
@@ -88,12 +88,31 @@ export async function POST(req: Request) {
     );
     await Campaign.updateOne({ _id: campaignId }, { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID } });
 
-       // Divide numbers into chunks of 10
+    // Divide numbers into chunks of 10
     const CHUNK_SIZE = 10;
     const totalNumbers = campaign.phoneNumbers.length;
     const jobs = [];
 
     for (let i = 0; i < totalNumbers; i += CHUNK_SIZE) {
+      const endIdx = Math.min(i + CHUNK_SIZE, totalNumbers);
+      const chunkPhones = campaign.phoneNumbers.slice(i, endIdx);
+
+      // 🚀 ADDED: Create Transaction records for this chunk so they show up in history
+      const transactionsToCreate = chunkPhones.map((phone: string) => ({
+        userId: new mongoose.Types.ObjectId(userId),
+        type: "campaign",
+        amount: bPrice,
+        description: `Campaign message sent`,
+        status: "success", 
+        createdAt: new Date(),
+        metadata: {
+          campaignName: campaign.name,
+          templateName: campaign.templateName,
+          phone: phone,
+        }
+      }));
+      await Transaction.insertMany(transactionsToCreate);
+
       jobs.push({
         name: 'send-chunk',
         data: {
@@ -101,7 +120,7 @@ export async function POST(req: Request) {
           userId,
           payerId: payer._id.toString(),
           startIdx: i,
-          endIdx: Math.min(i + CHUNK_SIZE, totalNumbers),
+          endIdx: endIdx,
           PHONE_NUMBER_ID,
           ACCESS_TOKEN,
         },
@@ -111,16 +130,11 @@ export async function POST(req: Request) {
             type: 'exponential',
             delay: 2000
           },
-          // 🚀 FIX: deterministic jobId per (campaign, chunk). BullMQ will
-          // refuse/no-op adding a job whose ID already exists and hasn't
-          // completed — this makes /start idempotent even if it's called
-          // multiple times concurrently, instead of duplicating every
-          // chunk of the entire campaign each time.
           jobId: `${campaignId}-chunk-${i}`,
         }
       });
     }
-
+    
     await campaignQueue.addBulk(jobs);
 
     return NextResponse.json({ success: true, message: "Campaign started in background queue!" });
