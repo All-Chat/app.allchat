@@ -7,7 +7,7 @@ import { authOptions } from "@/lib/auth";
 
 const TransactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  type: String, // 'recharge' | 'test_message' | 'campaign'
+  type: String,
   amount: Number,
   description: String,
   status: String,
@@ -18,9 +18,35 @@ const Transaction = mongoose.models.Transaction || mongoose.model('Transaction',
 
 const UserSchema = new mongoose.Schema({
   balance: Number,
+  totalRecharged: Number,
   parentTenantId: String,
+  priceMarketing: Number,
+  priceUtility: Number,
+  priceAuthentication: Number,
+  pricePerMessage: Number
 }, { strict: false });
 const User = mongoose.models.User || mongoose.model('User', UserSchema);
+
+const CampaignSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  name: String,
+  templateName: String,
+  templateCategory: String,
+  status: String,
+  createdAt: { type: Date, default: Date.now },
+  pricePerMessage: { type: Number, default: 0 },
+  totalDeducted: { type: Number, default: 0 },
+  stats: {
+    replied: Number,
+    read: Number,
+    delivered: Number,
+    sent: Number,
+    failed: Number,
+    invalid: Number,
+    duplicate: Number,
+  }
+});
+const Campaign = mongoose.models.Campaign || mongoose.model("Campaign", CampaignSchema);
 
 export async function GET(req: Request) {
   try {
@@ -32,12 +58,11 @@ export async function GET(req: Request) {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
     }
 
-    // ✅ Check if user is a sub-user to fetch parent's transactions too
-    const userDoc = await User.findById(userId).select("parentTenantId").lean();
+    const userObjId = new mongoose.Types.ObjectId(userId);
+    const userDoc = await User.findById(userObjId).select("parentTenantId").lean();
     const parentTenantId = (userDoc as any)?.parentTenantId;
     
-    // Create an array of user IDs to query (own ID + parent ID if exists)
-    const userIdsToQuery = [new mongoose.Types.ObjectId(userId)];
+    const userIdsToQuery = [userObjId];
     if (parentTenantId) {
       userIdsToQuery.push(new mongoose.Types.ObjectId(parentTenantId));
     }
@@ -52,56 +77,89 @@ export async function GET(req: Request) {
     let transactions: any[] = [];
     let totalRecords = 0;
 
-    // ==========================================
-    // 1. CAMPAIGN + TEST MESSAGE USAGE HISTORY
-    // ==========================================
+    let billingUser: any = await User.findById(userObjId).select("balance totalRecharged parentTenantId").lean();
+    if (billingUser?.parentTenantId) {
+      const parent = await User.findOne({ tenantId: billingUser.parentTenantId }).select("balance totalRecharged").lean();
+      if (parent) billingUser = parent;
+    }
+
     if (type === "usage") {
-      const query: any = { 
-        userId: { $in: userIdsToQuery }, // ✅ Query both user and parent
-        type: { $in: ["campaign", "test_message"] } 
+      // 1. Fetch test message transactions normally from DB
+      const testMsgQuery: any = { 
+        userId: { $in: userIdsToQuery }, 
+        type: "test_message",
+        status: "success"
       };
+      const testMsgs = await Transaction.find(testMsgQuery).sort({ createdAt: -1 }).lean();
 
-      if (search) {
-        const searchNum = parseFloat(search);
-        const isNum = !isNaN(searchNum);
-        query.$or = [
-          { description: { $regex: search, $options: "i" } },
-          { "metadata.campaignName": { $regex: search, $options: "i" } },
-          { "metadata.templateName": { $regex: search, $options: "i" } },
-        ];
-        if (isNum) {
-          query.$or.push({ amount: searchNum });
-        }
-      }
-
-      totalRecords = await Transaction.countDocuments(query);
-      const docs = await Transaction.find(query)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean();
-
-      transactions = docs.map((t: any) => ({
+      const testUsages = testMsgs.map((t: any) => ({
         _id: t._id,
-        type: t.type === "campaign" ? "usage" : "test_message",
+        type: "usage",
         amount: t.amount,
-        description: t.description,
-        status: t.status === "completed" ? "success" : t.status,
+        description: "Test Message Sent",
+        status: "success",
         createdAt: t.createdAt,
         metadata: {
-          campaignName: t.metadata?.campaignName,
+          campaignName: "-",
           templateName: t.metadata?.templateName,
           phone: t.metadata?.phone,
         }
       }));
 
-    }
-    // ==========================================
-    // 2. RECHARGE HISTORY (From Transaction Model)
-    // ==========================================
-    else {
+      // 2. Fetch Campaigns and use the SAVED totalDeducted from DB
+      const campaigns = await Campaign.find({
+        userId: { $in: userIdsToQuery },
+        status: { $in: ["running", "paused", "completed", "failed", "stopped"] }
+      }).sort({ createdAt: -1 }).lean();
+
+      const campaignUsages = campaigns.map((camp: any) => {
+        const trueDeliveredCount = 
+          Number(camp.stats?.delivered || 0) + 
+          Number(camp.stats?.read || 0) + 
+          Number(camp.stats?.replied || 0);
+        
+        // ✅ Read directly from the saved DB fields
+        const price = camp.pricePerMessage || 0;
+        const amount = camp.totalDeducted || 0;
+        
+        return {
+          _id: camp._id,
+          type: "usage",
+          amount: amount,
+          description: `Campaign Usage`,
+          status: camp.status === "failed" ? "failed" : "success",
+          createdAt: camp.createdAt,
+          metadata: {
+            campaignName: camp.name,
+            templateName: camp.templateName,
+            phone: `${trueDeliveredCount} delivered`
+          }
+        };
+      });
+
+      let combined = [...testUsages, ...campaignUsages];
+
+      if (search) {
+        const searchNum = parseFloat(search);
+        const isNum = !isNaN(searchNum);
+        combined = combined.filter(t => {
+          const matchesText = 
+            t.description?.toLowerCase().includes(search.toLowerCase()) ||
+            t.metadata?.campaignName?.toLowerCase().includes(search.toLowerCase()) ||
+            t.metadata?.templateName?.toLowerCase().includes(search.toLowerCase());
+          const matchesNum = isNum && t.amount === searchNum;
+          return matchesText || matchesNum;
+        });
+      }
+
+      combined.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      totalRecords = combined.length;
+      transactions = combined.slice(skip, skip + limit);
+
+    } else {
       const query: any = { 
-        userId: { $in: userIdsToQuery }, // ✅ Query both user and parent
+        userId: { $in: userIdsToQuery }, 
         type: "recharge" 
       };
 
@@ -124,43 +182,14 @@ export async function GET(req: Request) {
         .lean();
     }
 
-    // ==========================================
-    // 3. SUMMARY STATS (Total Recharged / Total Spent / Current Balance)
-    // ==========================================
+    let balance = 0;
     let totalRecharged = 0;
     let totalSpent = 0;
-    let currentBalance = 0;
 
     try {
-      const [rechargeAgg, spendAgg, currentUserDoc] = await Promise.all([
-        Transaction.aggregate([
-          {
-            $match: {
-              userId: { $in: userIdsToQuery },
-              type: "recharge",
-              status: { $in: ["success", "completed"] }
-            }
-          },
-          { $group: { _id: null, total: { $sum: "$amount" } } }
-        ]),
-        Transaction.aggregate([
-          {
-            $match: {
-              userId: { $in: userIdsToQuery },
-              type: { $in: ["campaign", "test_message"] },
-              status: { $in: ["success", "completed"] }
-            }
-          },
-          { $group: { _id: null, total: { $sum: "$amount" } } }
-        ]),
-        User.findById(userId).select("balance").lean()
-      ]);
-
-      totalRecharged = rechargeAgg[0]?.total || 0;
-      totalSpent = spendAgg[0]?.total || 0;
-
-      const liveBalance = (currentUserDoc as any)?.balance;
-      currentBalance = typeof liveBalance === "number" ? liveBalance : (totalRecharged - totalSpent);
+      balance = billingUser?.balance || 0;
+      totalRecharged = billingUser?.totalRecharged || 0;
+      totalSpent = Math.round((totalRecharged - balance) * 100) / 100;
     } catch (summaryErr) {
       console.error("Error computing transaction summary:", summaryErr);
     }
@@ -170,8 +199,8 @@ export async function GET(req: Request) {
       transactions,
       summary: {
         totalRecharged,
-        totalSpent,
-        currentBalance,
+        totalSpent: Math.max(totalSpent, 0),
+        currentBalance: balance,
       },
       pagination: {
         totalPages: Math.ceil(totalRecords / limit),
@@ -186,4 +215,8 @@ export async function GET(req: Request) {
       { status: 500 }
     );
   }
+}
+
+function formatINR(amount: number) {
+  return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", minimumFractionDigits: 2 }).format(amount || 0);
 }
