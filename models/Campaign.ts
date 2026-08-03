@@ -65,9 +65,10 @@ const CampaignSchema = new mongoose.Schema({
   sentCount: { type: Number, default: 0 },
   failedCount: { type: Number, default: 0 },
   
+  // ✅ UPDATED: Added pricePerMessage to lock in the exact price
+  pricePerMessage: { type: Number, default: 0 },
   totalDeducted: { type: Number, default: 0 },
   
-  // ✅ NEW: Add these two fields to store the URLs permanently in the database
   sheetUrl: { type: String, default: null },
   standaloneSheetUrl: { type: String, default: null },
 
