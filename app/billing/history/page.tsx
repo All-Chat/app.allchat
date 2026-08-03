@@ -242,7 +242,7 @@ export default function TransactionHistoryPage() {
                               <p className="font-semibold text-slate-900 text-sm">
                                 {tx.description}
                               </p>
-                              {tx.metadata?.campaignName && (
+                              {tx.metadata?.campaignName && tx.metadata.campaignName !== "-" && (
                                 <p className="text-xs text-slate-500 mt-0.5">
                                   Campaign: <span className="font-medium">{tx.metadata.campaignName}</span>
                                 </p>
@@ -252,7 +252,8 @@ export default function TransactionHistoryPage() {
                                   Template: <span className="font-medium">{tx.metadata.templateName}</span>
                                 </p>
                               )}
-                              {tx.metadata?.phone && (
+                              {/* ✅ ONLY SHOW PHONE FOR TEST MESSAGES (where campaignName is "-") */}
+                              {tx.metadata?.phone && tx.metadata?.campaignName === "-" && (
                                 <p className="text-xs text-slate-400 font-mono mt-0.5">
                                   To: {tx.metadata.phone}
                                 </p>
