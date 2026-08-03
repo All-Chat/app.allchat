@@ -46,6 +46,12 @@ function EditCampaignContent() {
   const [loadingData, setLoadingData] = useState(true);
   const [languageCode, setLanguageCode] = useState("en");
 
+  // ✅ ADDED: State for Modal and Checkboxes
+  const [showComplianceModal, setShowComplianceModal] = useState(false);
+  const [pendingAction, setPendingAction] = useState<boolean>(false); // false = draft, true = schedule
+  const [consentChecked, setConsentChecked] = useState(false);
+  const [responsibilityChecked, setResponsibilityChecked] = useState(false);
+
   const [useRandomOtp, setUseRandomOtp] = useState(false);
   const [otpLength, setOtpLength] = useState(4);
   const [selectedVarCols, setSelectedVarCols] = useState<string[]>([]);
@@ -220,12 +226,11 @@ function EditCampaignContent() {
 
   const fetchCampaignData = async () => {
     try {
-      // ✅ FIX: Fetch ONLY the specific campaign to avoid loading all 50 campaigns and their massive arrays
       const res = await fetch(`/api/campaigns/list?editId=${campaignId}`);
       if (res.status === 401) { window.location.href = "/"; return; }
       const data = await res.json();
       if (data.success) {
-        const campaign = data.campaigns[0]; // ✅ Get the first (and only) campaign
+        const campaign = data.campaigns[0];
         if (campaign) {
           setCampaignName(campaign.name);
           setNameStatus("available"); 
@@ -233,7 +238,6 @@ function EditCampaignContent() {
           setRawNames(campaign.names || []);
           setVariables(campaign.variables || []);
           
-          // ✅ Explicitly set media state on load to guarantee the box renders
           setMediaUrl(campaign.mediaUrl || "");
           setMediaType(campaign.mediaType || "");
           
@@ -275,25 +279,21 @@ function EditCampaignContent() {
     if (tmpl.language) setLanguageCode(tmpl.language);
     else setLanguageCode("en");
 
-    // ✅ Check if this is the template originally saved with the campaign
     const isInitialTemplate = initialCampaignData && 
                               tmpl.name === initialCampaignData.templateName && 
                               tmpl.language === initialCampaignData.languageCode;
 
-    // Determine the correct media type to use
     let finalMediaType = "";
     if (["IMAGE", "VIDEO", "DOCUMENT"].includes(hFormat)) {
       finalMediaType = hFormat.toLowerCase();
     }
     
-    // ✅ If switching back to the initial template, force restore the saved media type
     if (isInitialTemplate && initialCampaignData.mediaType) {
       finalMediaType = initialCampaignData.mediaType;
     }
 
     if (finalMediaType) {
       setMediaType(finalMediaType);
-      // ✅ FIX: Removed !preservedVars check so media ALWAYS restores on initial load
       if (isInitialTemplate && !mediaFile) {
         setMediaUrl(initialCampaignData.mediaUrl || "");
         if (initialCampaignData.mediaUrl) setMediaInputType("url");
@@ -314,7 +314,6 @@ function EditCampaignContent() {
     if (preservedVars) {
       setVariables(preservedVars);
     } else {
-      // ✅ Restore original variables if we switched back to the initial template
       if (isInitialTemplate) {
         setVariables(initialCampaignData.variables || Array(varCount).fill(""));
         setRawVariables(initialCampaignData.mappedVariables || []);
@@ -537,10 +536,8 @@ function EditCampaignContent() {
   const clearMediaFile = () => { if (mediaPreview) URL.revokeObjectURL(mediaPreview); setMediaFile(null); setMediaPreview(null); };
 
   const renderMediaInput = () => {
-    // ✅ BULLETPROOF: Show if mediaType is set, OR if we already have a mediaUrl saved
     if (!mediaType && !mediaUrl) return null;
     
-    // Use mediaType, or fallback to 'image' if URL exists but type is missing
     const currentType = mediaType || "image";
     
     return (
@@ -583,7 +580,7 @@ function EditCampaignContent() {
     );
   };
 
-  const handleSave = async (isSchedule: boolean) => {
+  const promptSave = (isSchedule: boolean) => {
     if (!campaignName || !selectedTemplate || rawNumbers.length === 0) { toast.error("Name, Template, and valid Numbers are required"); return; }
     if (nameStatus === "taken") {
       toast.error("Campaign name already exists. Please use another name.");
@@ -593,9 +590,18 @@ function EditCampaignContent() {
     if (mediaType && mediaInputType === "url" && !mediaUrl) { toast.error("Please enter the media URL"); return; }
     if (mediaType && mediaInputType === "upload" && !mediaFile && !mediaUrl) { toast.error("Please upload the media file"); return; }
 
+    setConsentChecked(false);
+    setResponsibilityChecked(false);
+    setPendingAction(isSchedule);
+    setShowComplianceModal(true);
+  };
+
+  const handleSave = async () => {
+    setShowComplianceModal(false);
     setSaving(true);
     try {
       let res;
+      const isSchedule = pendingAction;
       const validAdditionalFields = additionalFields.filter(f => f && f !== "skip");
       const commonData = {
         id: campaignId,
@@ -617,7 +623,6 @@ function EditCampaignContent() {
 
     if (mediaInputType === "upload" && mediaFile) {
       const formData = new FormData();
-      // ✅ FIX: Append scalar values directly, do not JSON.stringify them
       formData.append("id", campaignId || "");
       formData.append("name", campaignName);
       formData.append("templateName", selectedTemplate.name);
@@ -629,7 +634,6 @@ function EditCampaignContent() {
       formData.append("generateOtp", String(useRandomOtp));
       formData.append("otpLength", String(otpLength));
 
-      // Only JSON.stringify arrays and objects
       formData.append("variables", JSON.stringify(useRandomOtp ? [] : variables));
       formData.append("mappedVariables", JSON.stringify(rawVariables.length > 0 ? rawVariables : []));
       formData.append("phoneNumbers", JSON.stringify(rawNumbers));
@@ -660,7 +664,6 @@ function EditCampaignContent() {
 
   if (loadingData) return <div className="flex min-h-screen bg-slate-50 items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-emerald-600" /></div>;
 
-  // ✅ Check media state for preview
   const hasLocalPreview = mediaInputType === "upload" && mediaPreview;
   const hasDirectUrl = mediaUrl && mediaUrl.startsWith("http");
   const hasMetaId = mediaUrl && /^\d+$/.test(mediaUrl);
@@ -1017,9 +1020,23 @@ function EditCampaignContent() {
                     <input type="datetime-local" value={scheduleDate} onChange={(e) => setScheduleDate(e.target.value)} min={new Date(Date.now() + 15 * 60000).toISOString().slice(0, 16)} className="w-full px-4 sm:px-5 py-3 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]" />
                     <p className="text-[10px] text-amber-600 bg-amber-50 p-2 rounded-lg border border-amber-100 flex items-center gap-1.5 mt-2 font-bold"><AlertCircle size={10} /> Must be at least 15 mins in advance.</p>
                   </div>
+
+                  {/* ✅ Removed inline checkboxes, buttons now trigger the modal */}
                   <div className="flex flex-col sm:flex-row gap-3">
-                    <button onClick={() => handleSave(false)} disabled={saving || nameStatus === "taken"} className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-bold hover:from-emerald-600 hover:to-teal-600 flex items-center justify-center gap-2 text-sm transition-all shadow-md disabled:opacity-40">{saving ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}{saving ? "Saving..." : "Save Changes"}</button>
-                    <button onClick={() => handleSave(true)} disabled={saving || !scheduleDate || nameStatus === "taken"} className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-xl font-bold hover:from-indigo-600 hover:to-purple-600 flex items-center justify-center gap-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-md">{saving ? <Loader2 size={16} className="animate-spin" /> : <Clock size={16} />}{saving ? "Saving..." : "Update Schedule"}</button>
+                    <button 
+                      onClick={() => promptSave(false)} 
+                      disabled={saving || nameStatus === "taken"} 
+                      className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-bold hover:from-emerald-600 hover:to-teal-600 flex items-center justify-center gap-2 text-sm transition-all shadow-md disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {saving ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}{saving ? "Saving..." : "Save Changes"}
+                    </button>
+                    <button 
+                      onClick={() => promptSave(true)} 
+                      disabled={saving || !scheduleDate || nameStatus === "taken"} 
+                      className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-xl font-bold hover:from-indigo-600 hover:to-purple-600 flex items-center justify-center gap-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-md"
+                    >
+                      {saving ? <Loader2 size={16} className="animate-spin" /> : <Clock size={16} />}{saving ? "Saving..." : "Update Schedule"}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -1027,6 +1044,88 @@ function EditCampaignContent() {
           </div>
         </div>
       </div>
+
+      {/* ✅ COMPLIANCE MODAL (Premium & Full Screen on Mobile) */}
+      {showComplianceModal && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-300">
+          <div className="bg-white rounded-none sm:rounded-3xl shadow-2xl w-full h-full sm:w-auto sm:h-auto sm:max-w-lg sm:max-h-[70vh] flex flex-col overflow-hidden border border-slate-100">
+            
+            <div className="relative bg-gradient-to-br from-emerald-50 via-white to-teal-50 px-5 sm:px-6 pt-6 pb-4 text-center border-b border-slate-100 shrink-0">
+              <button 
+                onClick={() => setShowComplianceModal(false)} 
+                className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition-colors"
+              >
+                <X size={18} />
+              </button>
+              
+              <div className="w-14 h-14 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-lg shadow-emerald-200/50 rotate-3">
+                <ShieldCheck className="w-7 h-7 text-white -rotate-3" />
+              </div>
+              <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">Compliance & Responsibility</h2>
+              <p className="text-xs sm:text-sm text-slate-500 mt-1 font-medium">Please review and accept the terms to proceed.</p>
+            </div>
+
+            <div className="p-5 space-y-3 overflow-y-auto flex-1 overscroll-contain">
+              <label className="flex items-start gap-3 p-3.5 rounded-xl border-2 border-slate-100 hover:border-emerald-200 hover:bg-emerald-50/30 transition-all cursor-pointer group">
+                <div className={`mt-0.5 w-5 h-5 rounded-md flex items-center justify-center shrink-0 transition-all duration-200 ${consentChecked ? 'bg-emerald-500 border-emerald-500' : 'bg-white border-2 border-slate-300 group-hover:border-emerald-400'}`}>
+                  {consentChecked && <CheckCircle2 className="w-4 h-4 text-white" />}
+                </div>
+                <input
+                  type="checkbox"
+                  checked={consentChecked}
+                  onChange={(e) => setConsentChecked(e.target.checked)}
+                  className="hidden"
+                />
+                <span className="text-xs sm:text-sm text-slate-600 leading-relaxed font-medium">
+                  I confirm that all imported contacts were collected lawfully, have provided any required consent to receive messages, and that this campaign complies with applicable laws and WhatsApp Business policies.
+                </span>
+              </label>
+
+              <label className="flex items-start gap-3 p-3.5 rounded-xl border-2 border-slate-100 hover:border-emerald-200 hover:bg-emerald-50/30 transition-all cursor-pointer group">
+                <div className={`mt-0.5 w-5 h-5 rounded-md flex items-center justify-center shrink-0 transition-all duration-200 ${responsibilityChecked ? 'bg-emerald-500 border-emerald-500' : 'bg-white border-2 border-slate-300 group-hover:border-emerald-400'}`}>
+                  {responsibilityChecked && <CheckCircle2 className="w-4 h-4 text-white" />}
+                </div>
+                <input
+                  type="checkbox"
+                  checked={responsibilityChecked}
+                  onChange={(e) => setResponsibilityChecked(e.target.checked)}
+                  className="hidden"
+                />
+                <span className="text-xs sm:text-sm text-slate-600 leading-relaxed font-medium">
+                  I understand that I am solely responsible for all contacts, messages, campaigns, complaints, legal claims, and any policy violations resulting from my use of AllChat, and that violations may result in account suspension or termination.
+                </span>
+              </label>
+
+              <div className="bg-amber-50/80 border border-amber-200 text-amber-800 p-3 rounded-xl text-[11px] sm:text-xs font-medium flex items-start gap-2.5">
+                <div className="p-1 bg-amber-100 rounded-md shrink-0">
+                  <AlertCircle size={14} className="text-amber-600" />
+                </div>
+                <span className="leading-relaxed">
+                  Please ensure all recipients have opted in to receive messages. Violations of WhatsApp Business policies may result in account suspension.
+                </span>
+              </div>
+            </div>
+
+            <div className="flex gap-3 p-5 bg-slate-50/50 border-t border-slate-100 shrink-0 pb-[calc(1.25rem+env(safe-area-inset-bottom))]">
+              <button
+                onClick={() => setShowComplianceModal(false)}
+                className="flex-1 px-4 py-3 bg-white border border-slate-200 text-slate-700 rounded-xl font-bold text-xs sm:text-sm hover:bg-slate-100 transition-colors shadow-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={!consentChecked || !responsibilityChecked || saving}
+                className="flex-[2] px-4 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-bold text-xs sm:text-sm hover:from-emerald-600 hover:to-teal-600 transition-all disabled:from-slate-300 disabled:to-slate-300 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20"
+              >
+                {saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+                {saving ? "Saving..." : "I Confirm & Continue"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <ToastContainer position="bottom-right" theme="light" autoClose={3000} />
     </div>
   );
