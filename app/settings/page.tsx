@@ -20,6 +20,7 @@ declare global {
     fbAsyncInit: () => void;
     _wabaId: string | null;
     _phoneNumberId: string | null;
+    _businessId: string | null;
   }
 }
 
@@ -191,268 +192,474 @@ export default function SettingsPage() {
   // ✅ Embedded Signup — uses postMessage listener to capture WABA/Phone IDs
 const handleEmbeddedSignup = () => {
   if (!fbReady || !window.FB) {
-    toast.error("Facebook SDK is still loading. Please wait.");
+    toast.error(
+      "Facebook SDK is not ready. Please wait."
+    );
     return;
   }
 
+  const appId =
+    process.env.NEXT_PUBLIC_META_APP_ID || "";
+
+  const configId =
+    process.env.NEXT_PUBLIC_META_CONFIG_ID || "";
+
+  const solutionId =
+    process.env.NEXT_PUBLIC_META_SOLUTION_ID || "";
+
+  if (!appId) {
+    toast.error(
+      "Meta App ID is missing."
+    );
+    return;
+  }
+
+  if (!configId) {
+    toast.error(
+      "Meta Config ID is missing."
+    );
+    return;
+  }
+
+  if (!solutionId) {
+    toast.error(
+      "Meta Solution ID is missing."
+    );
+    return;
+  }
+
+  console.log(
+    "[Embedded Signup] App ID:",
+    appId
+  );
+
+  console.log(
+    "[Embedded Signup] Config ID:",
+    configId
+  );
+
+  console.log(
+    "[Embedded Signup] Solution ID:",
+    solutionId
+  );
+
   setSigningUp(true);
 
-  // Clear previous signup data
   window._wabaId = null;
   window._phoneNumberId = null;
+  window._businessId = null;
 
-  // ==========================================
-  // LISTEN FOR META EMBEDDED SIGNUP EVENTS
-  // ==========================================
-  const sessionInfoListener = (event: MessageEvent) => {
-    // Meta Embedded Signup messages normally come from Facebook
+  let finished = false;
+
+  // --------------------------------------------------
+  // META POST MESSAGE LISTENER
+  // --------------------------------------------------
+
+  const sessionInfoListener = (
+    event: MessageEvent
+  ) => {
+    /*
+     * Meta Embedded Signup normally sends
+     * messages from facebook.com.
+     */
+
+    const allowedOrigins = [
+      "https://www.facebook.com",
+      "https://web.facebook.com",
+      "https://business.facebook.com",
+    ];
+
     if (
-      event.origin !== "https://www.facebook.com" &&
-      event.origin !== "https://web.facebook.com"
+      !allowedOrigins.includes(
+        event.origin
+      )
     ) {
       return;
     }
 
+    let data: any;
+
     try {
-      const data =
+      data =
         typeof event.data === "string"
           ? JSON.parse(event.data)
           : event.data;
+    } catch {
+      return;
+    }
 
-      console.log("[Embedded Signup] Message received:", data);
+    if (
+      data?.type !==
+      "WA_EMBEDDED_SIGNUP"
+    ) {
+      return;
+    }
 
-      if (data?.type !== "WA_EMBEDDED_SIGNUP") {
-        return;
-      }
+    console.log(
+      "[Embedded Signup] EVENT:",
+      JSON.stringify(
+        data,
+        null,
+        2
+      )
+    );
 
-      // ==========================================
-      // SIGNUP FINISHED
-      // ==========================================
-      if (data.event === "FINISH") {
-        const wabaId = data.data?.waba_id || null;
-        const phoneNumberId =
-          data.data?.phone_number_id || null;
+    // ------------------------------------------------
+    // ERROR
+    // ------------------------------------------------
 
-        console.log(
-          "[Embedded Signup] FINISH received"
-        );
-
-        console.log(
-          "[Embedded Signup] WABA ID:",
-          wabaId
-        );
-
-        console.log(
-          "[Embedded Signup] Phone Number ID:",
-          phoneNumberId
-        );
-
-        // Store temporarily for FB.login callback
-        window._wabaId = wabaId;
-        window._phoneNumberId = phoneNumberId;
-      }
-
-      // ==========================================
-      // USER CANCELLED
-      // ==========================================
-      else if (data.event === "CANCEL") {
-        console.log(
-          "[Embedded Signup] Cancelled at step:",
-          data.data?.current_step
-        );
-      }
-
-      // ==========================================
-      // META ERROR
-      // ==========================================
-      else if (data.event === "ERROR") {
-        console.error(
-          "[Embedded Signup] Meta error:",
-          data.data
-        );
-      }
-    } catch (error) {
-      console.log(
-        "[Embedded Signup] Non-JSON message:",
-        event.data
+    if (
+      data.event === "ERROR"
+    ) {
+      console.error(
+        "[Embedded Signup] META ERROR:",
+        data.data
       );
+
+      toast.error(
+        data?.data?.error_message ||
+          data?.data?.message ||
+          "Meta Embedded Signup failed."
+      );
+
+      cleanup();
+
+      return;
+    }
+
+    // ------------------------------------------------
+    // CANCEL
+    // ------------------------------------------------
+
+    if (
+      data.event === "CANCEL"
+    ) {
+      console.warn(
+        "[Embedded Signup] CANCEL:",
+        data.data
+      );
+
+      toast.warning(
+        "Embedded Signup was cancelled."
+      );
+
+      cleanup();
+
+      return;
+    }
+
+    // ------------------------------------------------
+    // FINISH
+    // ------------------------------------------------
+
+    if (
+      data.event === "FINISH" ||
+      data.event ===
+        "FINISH_ONLY_WABA"
+    ) {
+      const signupData =
+        data.data || {};
+
+      const wabaId =
+        signupData.waba_id ||
+        signupData.wabaId ||
+        null;
+
+      const phoneNumberId =
+        signupData.phone_number_id ||
+        signupData.phoneNumberId ||
+        null;
+
+      const businessId =
+        signupData.business_id ||
+        signupData.businessId ||
+        null;
+
+      console.log(
+        "[Embedded Signup] FINISH"
+      );
+
+      console.log(
+        "[Embedded Signup] WABA ID:",
+        wabaId
+      );
+
+      console.log(
+        "[Embedded Signup] Phone Number ID:",
+        phoneNumberId
+      );
+
+      console.log(
+        "[Embedded Signup] Business ID:",
+        businessId
+      );
+
+      window._wabaId =
+        wabaId;
+
+      window._phoneNumberId =
+        phoneNumberId;
+
+      window._businessId =
+        businessId;
+
+      finished = true;
+
+      toast.info(
+        "Meta signup completed. Connecting account..."
+      );
+
+      /*
+       * IMPORTANT:
+       *
+       * We DON'T call backend here.
+       *
+       * FB.login callback contains the
+       * authorization code.
+       *
+       * We wait for FB.login callback.
+       */
+
+      return;
     }
   };
 
-  // Add listener before opening Embedded Signup
+  const cleanup = () => {
+    window.removeEventListener(
+      "message",
+      sessionInfoListener
+    );
+
+    setSigningUp(false);
+  };
+
   window.addEventListener(
     "message",
     sessionInfoListener
   );
 
-  // ==========================================
-  // OPEN META EMBEDDED SIGNUP
-  // ==========================================
+  // --------------------------------------------------
+  // OPEN EMBEDDED SIGNUP
+  // --------------------------------------------------
+
   window.FB.login(
     (response: any) => {
-      // IMPORTANT:
-      // This callback must NOT be async.
-      window.removeEventListener(
-        "message",
-        sessionInfoListener
-      );
-
       console.log(
-        "[FB.login] Full response:",
-        JSON.stringify(response, null, 2)
+        "[FB.login] RESPONSE:",
+        JSON.stringify(
+          response,
+          null,
+          2
+        )
       );
 
-      // ==========================================
-      // FACEBOOK LOGIN FAILED / CANCELLED
-      // ==========================================
-      if (!response?.authResponse) {
+      // ----------------------------------------------
+      // FACEBOOK LOGIN FAILED
+      // ----------------------------------------------
+
+      if (
+        !response?.authResponse
+      ) {
         toast.error(
           "Facebook login was cancelled or failed."
         );
 
-        setSigningUp(false);
+        cleanup();
+
         return;
       }
 
-      // ==========================================
-      // GET AUTHORIZATION CODE
-      // ==========================================
-      const code = response.authResponse.code;
+      const code =
+        response.authResponse.code;
 
       if (!code) {
         toast.error(
-          "No authorization code received from Meta."
+          "Meta did not return authorization code."
         );
 
-        setSigningUp(false);
+        cleanup();
+
         return;
       }
 
-      // ==========================================
-      // GET WABA / PHONE NUMBER
-      // ==========================================
-      const wabaId = window._wabaId || null;
+      // ----------------------------------------------
+      // GET META DATA
+      // ----------------------------------------------
+
+      const wabaId =
+        window._wabaId ||
+        null;
+
       const phoneNumberId =
-        window._phoneNumberId || null;
+        window._phoneNumberId ||
+        null;
+
+      const businessId =
+        window._businessId ||
+        null;
 
       console.log(
-        "[FB.login] Authorization code received:",
+        "[FB.login] CODE received:",
         !!code
       );
 
       console.log(
-        "[FB.login] WABA ID:",
+        "[FB.login] WABA:",
         wabaId
       );
 
       console.log(
-        "[FB.login] Phone Number ID:",
+        "[FB.login] PHONE:",
         phoneNumberId
       );
 
-      // ==========================================
-      // WABA ID REQUIRED
-      // ==========================================
+      console.log(
+        "[FB.login] BUSINESS:",
+        businessId
+      );
+
+      // ----------------------------------------------
+      // WABA IS REQUIRED
+      // ----------------------------------------------
+
       if (!wabaId) {
         toast.error(
-          "Meta did not return the WABA ID. Please complete Embedded Signup again."
+          "Meta did not return WABA ID. Please complete the signup again."
         );
 
-        setSigningUp(false);
+        cleanup();
+
         return;
       }
 
-      // ==========================================
-      // BACKEND REQUEST
-      // ==========================================
-      // Use an async IIFE instead of making FB.login
-      // callback itself async.
+      // ----------------------------------------------
+      // SEND TO BACKEND
+      // ----------------------------------------------
+
       (async () => {
         try {
-          const res = await fetch(
-            "/api/settings/embedded-signup",
-            {
-              method: "POST",
+          const res =
+            await fetch(
+              "/api/settings/embedded-signup",
+              {
+                method: "POST",
 
-              headers: {
-                "Content-Type": "application/json",
-              },
+                headers: {
+                  "Content-Type":
+                    "application/json",
+                },
 
-              body: JSON.stringify({
-                code,
-                wabaId,
-                phoneNumberId,
+                credentials:
+                  "include",
 
-                // Your Meta Solution ID
-                solutionId: "1691305462165667",
-              }),
-            }
-          );
+                body: JSON.stringify({
+                  code,
 
-          const data = await res.json();
+                  wabaId,
+
+                  phoneNumberId,
+
+                  businessId,
+
+                  solutionId,
+                }),
+              }
+            );
+
+          const result =
+            await res.json();
 
           console.log(
-            "[Embedded Signup] Backend response:",
-            data
+            "[Embedded Signup] BACKEND:",
+            result
           );
 
-          if (!res.ok || !data.success) {
+          if (
+            !res.ok ||
+            !result.success
+          ) {
             throw new Error(
-              data.message ||
-                "Embedded Signup request failed"
+              result.message ||
+                "Backend could not connect WhatsApp."
             );
           }
 
-          // ==========================================
-          // SUCCESS
-          // ==========================================
           toast.success(
-            data.message ||
-              "WhatsApp connected successfully!"
+            result.message ||
+              "WhatsApp connected successfully."
           );
 
-          // Clear temporary signup information
-          window._wabaId = null;
-          window._phoneNumberId = null;
+          window._wabaId =
+            null;
 
-          // Refresh WhatsApp numbers
+          window._phoneNumberId =
+            null;
+
+          window._businessId =
+            null;
+
           await fetchSettings();
-        } catch (error: any) {
+        } catch (
+          error: any
+        ) {
           console.error(
-            "[Embedded Signup] Backend error:",
+            "[Embedded Signup] BACKEND ERROR:",
             error
           );
 
           toast.error(
             error?.message ||
-              "Error connecting WhatsApp. Please try again."
+              "Unable to connect WhatsApp."
           );
         } finally {
-          setSigningUp(false);
+          cleanup();
         }
       })();
     },
 
-    // ==========================================
-    // META EMBEDDED SIGNUP OPTIONS
-    // ==========================================
+    // --------------------------------------------------
+    // META EMBEDDED SIGNUP CONFIG
+    // --------------------------------------------------
+
     {
       config_id:
-        process.env.NEXT_PUBLIC_META_CONFIG_ID || "",
+        configId,
 
-      response_type: "code",
+      response_type:
+        "code",
 
-      override_default_response_type: true,
+      override_default_response_type:
+        true,
 
       extras: {
         setup: {
-          solutionID: "1691305462165667",
+          /*
+           * IMPORTANT:
+           *
+           * Pinnacle's ACTIVE Solution ID
+           */
+          solutionID:
+            solutionId,
         },
 
-        featureType:
-          "whatsapp_business_app_onboarding",
+        /*
+         * IMPORTANT:
+         *
+         * Keep this enabled so that
+         * WABA/Phone/Business IDs are
+         * returned through postMessage.
+         */
+        sessionInfoVersion:
+          "3",
 
-        sessionInfoVersion: "3",
+        /*
+         * DO NOT use:
+         *
+         * whatsapp_business_app_onboarding
+         *
+         * for your normal Partner Solution
+         * Embedded Signup.
+         */
       },
     }
   );
