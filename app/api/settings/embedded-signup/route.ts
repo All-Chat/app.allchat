@@ -1,3 +1,4 @@
+/* eslint-disable prefer-const */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { NextResponse } from "next/server";
@@ -7,6 +8,12 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 
 const META_API_VERSION = "v24.0";
+
+/*
+ * ============================================================
+ * META GET HELPER
+ * ============================================================
+ */
 
 async function metaGet(
   path: string,
@@ -21,17 +28,18 @@ async function metaGet(
     params.set("fields", fields);
   }
 
-  const response = await fetch(
-    `https://graph.facebook.com/${META_API_VERSION}${path}?${params.toString()}`,
-    {
-      method: "GET",
-      cache: "no-store",
-    }
-  );
+  const url =
+    `https://graph.facebook.com/${META_API_VERSION}` +
+    `${path}?${params.toString()}`;
+
+  const response = await fetch(url, {
+    method: "GET",
+    cache: "no-store",
+  });
 
   const data = await response.json();
 
-  if (!response.ok || data.error) {
+  if (!response.ok || data?.error) {
     throw new Error(
       data?.error?.message ||
         `Meta GET request failed: ${response.status}`
@@ -41,9 +49,21 @@ async function metaGet(
   return data;
 }
 
+/*
+ * ============================================================
+ * POST
+ * ============================================================
+ */
+
 export async function POST(req: Request) {
   try {
     await connectDB();
+
+    /*
+     * ----------------------------------------------------------
+     * AUTHENTICATION
+     * ----------------------------------------------------------
+     */
 
     const session = await getServerSession(authOptions);
 
@@ -59,18 +79,22 @@ export async function POST(req: Request) {
       );
     }
 
-    const body = await req.json();
-
     /*
-     * Your frontend can send:
+     * ----------------------------------------------------------
+     * REQUEST BODY
+     * ----------------------------------------------------------
      *
-     * code
-     * wabaId
-     * phoneNumberId
-     * businessId
+     * Expected:
      *
-     * Only code is mandatory.
+     * {
+     *   code: "...",
+     *   wabaId?: "...",
+     *   phoneNumberId?: "...",
+     *   businessId?: "..."
+     * }
      */
+
+    const body = await req.json();
 
     const {
       code,
@@ -92,6 +116,12 @@ export async function POST(req: Request) {
       );
     }
 
+    /*
+     * ----------------------------------------------------------
+     * META APP CREDENTIALS
+     * ----------------------------------------------------------
+     */
+
     const appId = process.env.META_APP_ID;
     const appSecret = process.env.META_APP_SECRET;
 
@@ -109,10 +139,10 @@ export async function POST(req: Request) {
     }
 
     /*
-     * =========================================================
+     * ==========================================================
      * STEP 1
-     * Exchange Embedded Signup code for access token
-     * =========================================================
+     * Exchange Embedded Signup code
+     * ==========================================================
      */
 
     console.log(
@@ -129,21 +159,18 @@ export async function POST(req: Request) {
       `https://graph.facebook.com/${META_API_VERSION}/oauth/access_token`,
       {
         method: "POST",
-
         headers: {
           "Content-Type":
             "application/x-www-form-urlencoded",
         },
-
         body: tokenParams.toString(),
-
         cache: "no-store",
       }
     );
 
     const tokenData = await tokenResponse.json();
 
-    if (!tokenResponse.ok || !tokenData.access_token) {
+    if (!tokenResponse.ok || !tokenData?.access_token) {
       console.error(
         "[Embedded Signup] Token exchange failed:",
         tokenData
@@ -170,10 +197,10 @@ export async function POST(req: Request) {
     );
 
     /*
-     * =========================================================
+     * ==========================================================
      * STEP 2
-     * Verify permissions
-     * =========================================================
+     * Check permissions
+     * ==========================================================
      */
 
     console.log(
@@ -186,29 +213,32 @@ export async function POST(req: Request) {
         accessToken
       );
 
-      const wabaPermission =
-        permissions?.data?.find(
+      const grantedPermissions =
+        permissions?.data || [];
+
+      const whatsappManagement =
+        grantedPermissions.find(
           (permission: any) =>
             permission.permission ===
-            "whatsapp_business_management"
+              "whatsapp_business_management" &&
+            permission.status === "granted"
         );
 
-      if (
-        !wabaPermission ||
-        wabaPermission.status !== "granted"
-      ) {
-        return NextResponse.json(
-          {
-            success: false,
-            message:
-              "whatsapp_business_management permission was not granted.",
-          },
-          {
-            status: 400,
-          }
+      if (!whatsappManagement) {
+        console.warn(
+          "[Embedded Signup] whatsapp_business_management permission not confirmed."
+        );
+      } else {
+        console.log(
+          "[Embedded Signup] ✓ WhatsApp Business Management permission granted"
         );
       }
     } catch (error) {
+      /*
+       * Permission inspection should not unnecessarily kill
+       * the Embedded Signup callback.
+       */
+
       console.warn(
         "[Embedded Signup] Permission check failed:",
         error
@@ -216,83 +246,14 @@ export async function POST(req: Request) {
     }
 
     /*
-     * =========================================================
+     * ==========================================================
      * STEP 3
-     * Try long-lived token
-     *
-     * Keep this because your existing implementation already
-     * uses this flow.
-     * =========================================================
-     */
-
-    try {
-      console.log(
-        "[Embedded Signup] Step 3: Requesting long-lived token..."
-      );
-
-      const longLivedParams =
-        new URLSearchParams({
-          grant_type:
-            "fb_exchange_token",
-
-          client_id:
-            appId,
-
-          client_secret:
-            appSecret,
-
-          fb_exchange_token:
-            accessToken,
-        });
-
-      const longLivedResponse =
-        await fetch(
-          `https://graph.facebook.com/${META_API_VERSION}/oauth/access_token`,
-          {
-            method: "POST",
-
-            headers: {
-              "Content-Type":
-                "application/x-www-form-urlencoded",
-            },
-
-            body:
-              longLivedParams.toString(),
-
-            cache: "no-store",
-          }
-        );
-
-      const longLivedData =
-        await longLivedResponse.json();
-
-      if (
-        longLivedResponse.ok &&
-        longLivedData.access_token
-      ) {
-        accessToken =
-          longLivedData.access_token;
-
-        console.log(
-          "[Embedded Signup] ✓ Long-lived token obtained"
-        );
-      }
-    } catch (error) {
-      console.warn(
-        "[Embedded Signup] Long-lived token skipped:",
-        error
-      );
-    }
-
-    /*
-     * =========================================================
-     * STEP 4
-     * Resolve WABA ID
-     * =========================================================
+     * Resolve WABA
+     * ==========================================================
      */
 
     console.log(
-      "[Embedded Signup] Step 4: Resolving WABA..."
+      "[Embedded Signup] Step 3: Resolving WABA..."
     );
 
     let wabaId: string | null =
@@ -300,12 +261,12 @@ export async function POST(req: Request) {
 
     /*
      * METHOD 1
-     * Frontend provided WABA ID
+     * Frontend supplied WABA ID
      */
 
     if (wabaId) {
       console.log(
-        "[Embedded Signup] ✓ WABA from frontend:",
+        "[Embedded Signup] ✓ WABA supplied by frontend:",
         wabaId
       );
     }
@@ -317,17 +278,13 @@ export async function POST(req: Request) {
 
     if (!wabaId) {
       try {
-        const response =
-          await metaGet(
-            "/me/whatsapp_business_accounts",
-            accessToken
-          );
+        const response = await metaGet(
+          "/me/whatsapp_business_accounts",
+          accessToken
+        );
 
-        if (
-          response?.data?.length
-        ) {
-          wabaId =
-            response.data[0].id;
+        if (response?.data?.length) {
+          wabaId = response.data[0].id;
 
           console.log(
             "[Embedded Signup] ✓ WABA from /me/whatsapp_business_accounts:",
@@ -336,7 +293,7 @@ export async function POST(req: Request) {
         }
       } catch (error) {
         console.warn(
-          "[Embedded Signup] WABA lookup method 1 failed:",
+          "[Embedded Signup] WABA lookup failed:",
           error
         );
       }
@@ -344,19 +301,25 @@ export async function POST(req: Request) {
 
     /*
      * METHOD 3
-     * debug_token granular scope
+     * debug_token granular scopes
      */
 
     if (!wabaId) {
       try {
+        const appAccessToken =
+          `${appId}|${appSecret}`;
+
+        const debugParams =
+          new URLSearchParams({
+            input_token: accessToken,
+            access_token: appAccessToken,
+          });
+
         const debugResponse =
           await fetch(
-            `https://graph.facebook.com/${META_API_VERSION}/debug_token?input_token=${encodeURIComponent(
-              accessToken
-            )}&access_token=${encodeURIComponent(
-              `${appId}|${appSecret}`
-            )}`,
+            `https://graph.facebook.com/${META_API_VERSION}/debug_token?${debugParams.toString()}`,
             {
+              method: "GET",
               cache: "no-store",
             }
           );
@@ -365,8 +328,7 @@ export async function POST(req: Request) {
           await debugResponse.json();
 
         const granularScopes =
-          debugData?.data
-            ?.granular_scopes || [];
+          debugData?.data?.granular_scopes || [];
 
         const wabaScope =
           granularScopes.find(
@@ -375,9 +337,7 @@ export async function POST(req: Request) {
               "whatsapp_business_management"
           );
 
-        if (
-          wabaScope?.target_ids?.length
-        ) {
+        if (wabaScope?.target_ids?.length) {
           wabaId =
             wabaScope.target_ids[0];
 
@@ -388,7 +348,7 @@ export async function POST(req: Request) {
         }
       } catch (error) {
         console.warn(
-          "[Embedded Signup] debug_token WABA lookup failed:",
+          "[Embedded Signup] debug_token lookup failed:",
           error
         );
       }
@@ -396,7 +356,7 @@ export async function POST(req: Request) {
 
     /*
      * METHOD 4
-     * /me/businesses
+     * Search businesses
      */
 
     if (!wabaId) {
@@ -421,24 +381,34 @@ export async function POST(req: Request) {
             if (
               businessWabas?.data?.length
             ) {
-              wabaId =
-                businessWabas.data[0].id;
+              const matchingWaba =
+                businessWabas.data.find(
+                  (waba: any) =>
+                    waba.id ===
+                    frontendWabaId
+                );
 
-              console.log(
-                "[Embedded Signup] ✓ WABA found from business:",
-                business.id,
-                wabaId
-              );
+              if (matchingWaba) {
+                wabaId =
+                  matchingWaba.id;
 
-              break;
+                console.log(
+                  "[Embedded Signup] ✓ Matching WABA found:",
+                  wabaId
+                );
+
+                break;
+              }
             }
           } catch {
-            // Continue to next business
+            /*
+             * Continue with next business.
+             */
           }
         }
       } catch (error) {
         console.warn(
-          "[Embedded Signup] Business WABA lookup failed:",
+          "[Embedded Signup] Business search failed:",
           error
         );
       }
@@ -448,9 +418,8 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           success: false,
-
           message:
-            "Could not determine WABA ID. Make sure the Embedded Signup flow completed successfully and whatsapp_business_management is granted.",
+            "Could not determine WABA ID. Make sure Embedded Signup completed successfully.",
         },
         {
           status: 400,
@@ -458,33 +427,32 @@ export async function POST(req: Request) {
       );
     }
 
+    console.log(
+      "[Embedded Signup] ✓ Final WABA:",
+      wabaId
+    );
+
     /*
-     * =========================================================
-     * STEP 5
-     * Resolve phone number
-     * =========================================================
+     * ==========================================================
+     * STEP 4
+     * Resolve Phone Number
+     * ==========================================================
      */
 
     console.log(
-      "[Embedded Signup] Step 5: Resolving phone number..."
+      "[Embedded Signup] Step 4: Resolving phone number..."
     );
 
     let phoneNumberId: string | null =
-      frontendPhoneNumberId ||
-      null;
+      frontendPhoneNumberId || null;
 
-    let displayPhone =
-      "Unknown";
-
-    let verifiedName =
-      "";
-
-    let phoneStatus =
-      "UNKNOWN";
+    let displayPhone = "Unknown";
+    let verifiedName = "";
+    let phoneStatus = "UNKNOWN";
 
     /*
      * METHOD 1
-     * Frontend provided Phone Number ID
+     * Frontend phone number ID
      */
 
     if (phoneNumberId) {
@@ -497,24 +465,21 @@ export async function POST(req: Request) {
           );
 
         if (phone?.id) {
-          phoneNumberId =
-            phone.id;
+          phoneNumberId = phone.id;
 
           displayPhone =
             phone.display_phone_number ||
             "Unknown";
 
           verifiedName =
-            phone.verified_name ||
-            "";
+            phone.verified_name || "";
 
           phoneStatus =
-            phone.status ||
-            "UNKNOWN";
+            phone.status || "UNKNOWN";
         }
       } catch (error) {
         console.warn(
-          "[Embedded Signup] Frontend phone lookup failed:",
+          "[Embedded Signup] Phone lookup failed:",
           error
         );
       }
@@ -522,54 +487,65 @@ export async function POST(req: Request) {
 
     /*
      * METHOD 2
-     * Get phone numbers from WABA
+     * WABA phone numbers
      */
 
     if (!phoneNumberId) {
-      const phones =
-        await metaGet(
-          `/${wabaId}/phone_numbers`,
-          accessToken,
-          "id,display_phone_number,verified_name,status"
+      try {
+        const phones =
+          await metaGet(
+            `/${wabaId}/phone_numbers`,
+            accessToken,
+            "id,display_phone_number,verified_name,status"
+          );
+
+        if (!phones?.data?.length) {
+          return NextResponse.json(
+            {
+              success: false,
+              message:
+                "WABA was found, but no phone number was found.",
+            },
+            {
+              status: 400,
+            }
+          );
+        }
+
+        const selectedPhone =
+          phones.data[0];
+
+        phoneNumberId =
+          selectedPhone.id;
+
+        displayPhone =
+          selectedPhone.display_phone_number ||
+          "Unknown";
+
+        verifiedName =
+          selectedPhone.verified_name || "";
+
+        phoneStatus =
+          selectedPhone.status ||
+          "UNKNOWN";
+      } catch (error: any) {
+        console.error(
+          "[Embedded Signup] Phone lookup failed:",
+          error
         );
 
-      if (
-        !phones?.data?.length
-      ) {
         return NextResponse.json(
           {
             success: false,
-
             message:
-              "WABA was found, but no phone number was found.",
+              error?.message ||
+              "Could not retrieve WhatsApp phone number.",
           },
           {
             status: 400,
           }
         );
       }
-
-      const selectedPhone =
-        phones.data.find(
-          (phone: any) =>
-            phone.verified_name
-        ) ||
-        phones.data[0];
-
-      phoneNumberId =
-        selectedPhone.id;
-
-      displayPhone =
-        selectedPhone.display_phone_number ||
-        "Unknown";
-
-      verifiedName =
-        selectedPhone.verified_name ||
-        "";
-
-      phoneStatus =
-        selectedPhone.status ||
-        "UNKNOWN";
     }
 
     if (!phoneNumberId) {
@@ -587,40 +563,37 @@ export async function POST(req: Request) {
 
     console.log(
       "[Embedded Signup] ✓ Phone:",
-      displayPhone,
-      "| ID:",
+      displayPhone
+    );
+
+    console.log(
+      "[Embedded Signup] ✓ Phone Number ID:",
       phoneNumberId
     );
 
     /*
-     * =========================================================
-     * STEP 6
+     * ==========================================================
+     * STEP 5
      * Resolve Business Portfolio ID
-     * =========================================================
+     * ==========================================================
      *
      * IMPORTANT:
-     * We are NOT using PINBOT_SYSTEM_USER_TOKEN.
      *
-     * First use businessId supplied by frontend.
-     * Otherwise try /me/businesses with the Embedded Signup
-     * access token.
-     * =========================================================
+     * Business ID is OPTIONAL here.
+     *
+     * Embedded Signup should not fail merely because this
+     * information wasn't returned.
+     *
+     * The later partner/credit-line process can resolve it.
+     * ==========================================================
      */
 
     console.log(
-      "[Embedded Signup] Step 6: Resolving Business Portfolio..."
+      "[Embedded Signup] Step 5: Resolving Business Portfolio..."
     );
 
     let businessId: string | null =
-      frontendBusinessId ||
-      null;
-
-    if (businessId) {
-      console.log(
-        "[Embedded Signup] ✓ Business ID from frontend:",
-        businessId
-      );
-    }
+      frontendBusinessId || null;
 
     /*
      * Try /me/businesses.
@@ -634,98 +607,94 @@ export async function POST(req: Request) {
             accessToken
           );
 
-        if (
-          businesses?.data?.length
-        ) {
+        if (businesses?.data?.length) {
           /*
-           * Try to identify the business which owns
-           * the WABA.
-           */
-
-          for (
-            const business of
-              businesses.data
-          ) {
-            try {
-              const wabas =
-                await metaGet(
-                  `/${business.id}/whatsapp_business_accounts`,
-                  accessToken
-                );
-
-              const ownsWaba =
-                wabas?.data?.some(
-                  (waba: any) =>
-                    waba.id ===
-                    wabaId
-                );
-
-              if (ownsWaba) {
-                businessId =
-                  business.id;
-
-                console.log(
-                  "[Embedded Signup] ✓ Business Portfolio found:",
-                  businessId
-                );
-
-                break;
-              }
-            } catch {
-              // Continue
-            }
-          }
-
-          /*
-           * If exact WABA match failed but only one business
-           * is available, use it.
+           * If only one business is visible,
+           * use it as the best available match.
            */
 
           if (
-            !businessId &&
             businesses.data.length === 1
           ) {
             businessId =
               businesses.data[0].id;
 
             console.log(
-              "[Embedded Signup] ✓ Using only available Business Portfolio:",
+              "[Embedded Signup] ✓ Business Portfolio:",
               businessId
             );
+          } else {
+            /*
+             * Try matching the WABA.
+             */
+
+            for (
+              const business of
+                businesses.data
+            ) {
+              try {
+                const businessWabas =
+                  await metaGet(
+                    `/${business.id}/whatsapp_business_accounts`,
+                    accessToken
+                  );
+
+                const match =
+                  businessWabas?.data?.some(
+                    (waba: any) =>
+                      waba.id === wabaId
+                  );
+
+                if (match) {
+                  businessId =
+                    business.id;
+
+                  console.log(
+                    "[Embedded Signup] ✓ Business Portfolio matched to WABA:",
+                    businessId
+                  );
+
+                  break;
+                }
+              } catch {
+                /*
+                 * Continue.
+                 */
+              }
+            }
           }
         }
       } catch (error) {
         console.warn(
-          "[Embedded Signup] Business Portfolio lookup failed:",
+          "[Embedded Signup] Business Portfolio lookup unavailable:",
           error
         );
       }
     }
 
     /*
-     * We need businessId because Pinbot's credit-line API
-     * requires it.
+     * IMPORTANT:
+     *
+     * DO NOT RETURN 400 HERE.
+     *
+     * businessId is allowed to remain null.
      */
 
     if (!businessId) {
-      return NextResponse.json(
-        {
-          success: false,
+      console.warn(
+        "[Embedded Signup] ⚠ Business Portfolio ID not available yet."
+      );
 
-          message:
-            "Could not determine the customer's Business Portfolio ID. Send businessId from the Embedded Signup frontend event, or make sure the Embedded Signup access token has permission to access /me/businesses.",
-        },
-        {
-          status: 400,
-        }
+      console.warn(
+        "[Embedded Signup] Signup will continue without it."
       );
     }
 
     /*
-     * =========================================================
-     * STEP 7
+     * ==========================================================
+     * STEP 6
      * Load User
-     * =========================================================
+     * ==========================================================
      */
 
     const user =
@@ -737,14 +706,20 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           success: false,
-          message:
-            "User not found.",
+          message: "User not found.",
         },
         {
           status: 404,
         }
       );
     }
+
+    /*
+     * ==========================================================
+     * STEP 7
+     * Existing numbers
+     * ==========================================================
+     */
 
     const existingNumbers: any[] =
       Array.isArray(
@@ -754,10 +729,10 @@ export async function POST(req: Request) {
         : [];
 
     /*
-     * =========================================================
+     * ==========================================================
      * STEP 8
-     * Prevent duplicate
-     * =========================================================
+     * Duplicate check
+     * ==========================================================
      */
 
     const duplicate =
@@ -771,7 +746,6 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           success: false,
-
           message:
             `Number ${displayPhone} is already connected.`,
         },
@@ -782,37 +756,35 @@ export async function POST(req: Request) {
     }
 
     /*
-     * =========================================================
+     * ==========================================================
      * STEP 9
-     * Generate registration PIN
-     * =========================================================
-     */
-
-    const registrationPin =
-      Math.floor(
-        100000 +
-          Math.random() *
-            900000
-      ).toString();
-
-    /*
-     * =========================================================
-     * STEP 10
-     * Save number
+     * Setup timing
+     * ==========================================================
      *
-     * We wait 4 minutes before credit-line API.
-     * Pinbot specifically asks for 3-4 minutes sync time.
-     * =========================================================
+     * We don't call the partner process directly from the
+     * user's signup request.
+     *
+     * We save the state and let the setup worker/process
+     * continue it.
+     *
+     * NO REDIS REQUIRED.
      */
 
-    const setupStart =
+    const setupStartedAt =
       new Date();
 
-    const nextSetupAttempt =
+    const nextSetupAttemptAt =
       new Date(
         Date.now() +
           4 * 60 * 1000
       );
+
+    /*
+     * ==========================================================
+     * STEP 10
+     * Create WhatsApp Number object
+     * ==========================================================
+     */
 
     const isFirstNumber =
       existingNumbers.length === 0;
@@ -840,24 +812,26 @@ export async function POST(req: Request) {
       isActive:
         isFirstNumber,
 
-      addedAt:
-        setupStart,
-
       source:
         "embedded_signup",
 
       /*
-       * Business Portfolio
+       * Business Portfolio.
+       *
+       * Can be null.
        */
 
-      businessId,
+      businessId:
+        businessId || null,
 
       /*
-       * Automatic setup state
+       * Setup status.
        */
 
       setupStatus:
-        "WAITING_CREDIT_LINE",
+        businessId
+          ? "WAITING_CREDIT_LINE"
+          : "PROCESSING",
 
       creditLineStatus:
         "PENDING",
@@ -868,24 +842,35 @@ export async function POST(req: Request) {
       registrationStatus:
         "PENDING",
 
+      /*
+       * IMPORTANT:
+       *
+       * Do not generate a fake registration PIN here.
+       *
+       * The actual Meta registration flow must use the
+       * appropriate registration/verification process.
+       */
+
+      registrationPin:
+        null,
+
       setupError:
         null,
 
-      /*
-       * PIN used for Meta registration / 2FA.
-       */
+      setupStartedAt,
 
-      registrationPin,
-
-      setupStartedAt:
-        setupStart,
-
-      nextSetupAttemptAt:
-        nextSetupAttempt,
+      nextSetupAttemptAt,
 
       setupCompletedAt:
         null,
     };
+
+    /*
+     * ==========================================================
+     * STEP 11
+     * Save number
+     * ==========================================================
+     */
 
     if (
       !Array.isArray(
@@ -901,7 +886,7 @@ export async function POST(req: Request) {
     );
 
     /*
-     * Keep your existing main WhatsApp fields.
+     * Keep your existing primary-number fields.
      */
 
     if (isFirstNumber) {
@@ -917,12 +902,23 @@ export async function POST(req: Request) {
 
     await user.save();
 
+    /*
+     * ==========================================================
+     * LOG
+     * ==========================================================
+     */
+
     console.log(
-      "[Embedded Signup] ========================================"
+      "=================================================="
     );
 
     console.log(
-      "[Embedded Signup] ✓ Number saved"
+      "[Embedded Signup] ✓ SUCCESS"
+    );
+
+    console.log(
+      "[Embedded Signup] User:",
+      session.user.id
     );
 
     console.log(
@@ -936,46 +932,63 @@ export async function POST(req: Request) {
     );
 
     console.log(
+      "[Embedded Signup] Display Phone:",
+      displayPhone
+    );
+
+    console.log(
       "[Embedded Signup] Business:",
-      businessId
+      businessId || "NOT AVAILABLE"
     );
 
     console.log(
-      "[Embedded Signup] Status: WAITING_CREDIT_LINE"
+      "[Embedded Signup] Setup Status:",
+      newNumber.setupStatus
     );
 
     console.log(
-      "[Embedded Signup] Next attempt:",
-      nextSetupAttempt
+      "[Embedded Signup] Next Attempt:",
+      nextSetupAttemptAt
     );
 
     console.log(
-      "[Embedded Signup] ========================================"
+      "=================================================="
     );
 
     /*
-     * IMPORTANT:
-     *
-     * Do NOT wait here.
-     *
-     * The worker will continue the process.
+     * ==========================================================
+     * RESPONSE
+     * ==========================================================
      */
 
     return NextResponse.json({
       success: true,
 
       message:
-        `WhatsApp number ${displayPhone} connected. Automatic setup will continue after the partner synchronization period.`,
+        `WhatsApp number ${displayPhone} connected successfully.`,
 
       data: {
         wabaId,
 
         phoneNumberId,
 
-        businessId,
+        displayPhoneNumber:
+          displayPhone,
+
+        businessId:
+          businessId || null,
 
         setupStatus:
-          "WAITING_CREDIT_LINE",
+          newNumber.setupStatus,
+
+        creditLineStatus:
+          "PENDING",
+
+        subscriptionStatus:
+          "PENDING",
+
+        registrationStatus:
+          "PENDING",
       },
     });
   } catch (error: any) {
