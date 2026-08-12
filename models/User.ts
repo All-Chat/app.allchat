@@ -53,206 +53,236 @@ const usageItemSchema = new mongoose.Schema(
    WHATSAPP NUMBER SCHEMA
 ========================================================= */
 
-const whatsappNumberSchema =
-  new mongoose.Schema(
-    {
-      /* -----------------------------------------
-         BASIC INFORMATION
-      ----------------------------------------- */
+const whatsappNumberSchema = new mongoose.Schema(
+  {
+    /* =====================================================
+       BASIC INFORMATION
+    ===================================================== */
 
-      name: {
-        type: String,
-        default: "Default Number",
-      },
-
-      wabaId: {
-        type: String,
-        default: null,
-      },
-
-      whatsappPhoneNumberId: {
-        type: String,
-        default: null,
-      },
-
-      whatsappAccessToken: {
-        type: String,
-        default: null,
-      },
-
-      displayPhoneNumber: {
-        type: String,
-        default: null,
-      },
-
-      verifiedName: {
-        type: String,
-        default: null,
-      },
-
-      phoneStatus: {
-        type: String,
-        default: "UNKNOWN",
-      },
-
-      isActive: {
-        type: Boolean,
-        default: false,
-      },
-
-      /* -----------------------------------------
-         SOURCE
-      ----------------------------------------- */
-
-      source: {
-        type: String,
-        default: "manual",
-      },
-
-      addedAt: {
-        type: Date,
-        default: Date.now,
-      },
-
-      /* -----------------------------------------
-         META BUSINESS PORTFOLIO
-      ----------------------------------------- */
-
-      businessId: {
-        type: String,
-        default: null,
-      },
-
-      /* -----------------------------------------
-         AUTOMATIC WHATSAPP SETUP
-      ----------------------------------------- */
-
-      setupStatus: {
-        type: String,
-        enum: [
-          "PROCESSING",
-          "WAITING_CREDIT_LINE",
-          "CREDIT_LINE_READY",
-          "SUBSCRIBING",
-          "REGISTERING",
-          "READY",
-          "FAILED",
-        ],
-        default: "PROCESSING",
-      },
-
-      /* -----------------------------------------
-         CREDIT LINE
-      ----------------------------------------- */
-
-      creditLineStatus: {
-        type: String,
-        enum: [
-          "PENDING",
-          "PROCESSING",
-          "READY",
-          "FAILED",
-        ],
-        default: "PENDING",
-      },
-
-      creditLineId: {
-        type: String,
-        default: null,
-      },
-
-      creditLineError: {
-        type: String,
-        default: null,
-      },
-
-      /* -----------------------------------------
-         WABA SUBSCRIPTION
-      ----------------------------------------- */
-
-      subscriptionStatus: {
-        type: String,
-        enum: [
-          "PENDING",
-          "SUBSCRIBING",
-          "SUBSCRIBED",
-          "FAILED",
-        ],
-        default: "PENDING",
-      },
-
-      subscriptionError: {
-        type: String,
-        default: null,
-      },
-
-      /* -----------------------------------------
-         PHONE REGISTRATION
-      ----------------------------------------- */
-
-      registrationStatus: {
-        type: String,
-        enum: [
-          "PENDING",
-          "REGISTERING",
-          "REGISTERED",
-          "FAILED",
-        ],
-        default: "PENDING",
-      },
-
-      registrationError: {
-        type: String,
-        default: null,
-      },
-
-      /*
-       * IMPORTANT:
-       * Only store a registration PIN here if your actual
-       * registration flow legitimately provides one.
-       *
-       * Do not randomly generate a PIN and assume Meta
-       * will accept it.
-       */
-
-      registrationPin: {
-        type: String,
-        default: null,
-      },
-
-      /* -----------------------------------------
-         SETUP ERRORS
-      ----------------------------------------- */
-
-      setupError: {
-        type: String,
-        default: null,
-      },
-
-      /* -----------------------------------------
-         SETUP TIMING
-      ----------------------------------------- */
-
-      setupStartedAt: {
-        type: Date,
-        default: null,
-      },
-
-      nextSetupAttemptAt: {
-        type: Date,
-        default: null,
-      },
-
-      setupCompletedAt: {
-        type: Date,
-        default: null,
-      },
+    name: {
+      type: String,
+      default: "Default Number",
     },
-    {
-      _id: true,
-      timestamps: true,
-    }
-  );
+
+    wabaId: {
+      type: String,
+      default: null,
+    },
+
+    whatsappPhoneNumberId: {
+      type: String,
+      default: null,
+    },
+
+    whatsappAccessToken: {
+      type: String,
+      default: null,
+    },
+
+    displayPhoneNumber: {
+      type: String,
+      default: null,
+    },
+
+    verifiedName: {
+      type: String,
+      default: null,
+    },
+
+    phoneStatus: {
+      type: String,
+      default: "UNKNOWN",
+    },
+
+    isActive: {
+      type: Boolean,
+      default: false,
+    },
+
+    /* =====================================================
+       SOURCE
+    ===================================================== */
+
+    source: {
+      type: String,
+      default: "manual",
+    },
+
+    addedAt: {
+      type: Date,
+      default: Date.now,
+    },
+
+    /* =====================================================
+       META BUSINESS PORTFOLIO
+    ===================================================== */
+
+    businessId: {
+      type: String,
+      default: null,
+    },
+
+    /* =====================================================
+       AUTOMATIC WHATSAPP SETUP
+    ===================================================== */
+
+    setupStatus: {
+      type: String,
+      enum: [
+        "PROCESSING",
+        "WAITING_CREDIT_LINE",
+        "CREDIT_LINE_READY",
+        "SUBSCRIBING",
+        "REGISTERING",
+        "READY",
+        "FAILED",
+      ],
+      default: "PROCESSING",
+    },
+
+    /* =====================================================
+       CREDIT LINE
+    ===================================================== */
+
+    creditLineStatus: {
+      type: String,
+      enum: [
+        "PENDING",
+        "PROCESSING",
+        "READY",
+        "FAILED",
+      ],
+      default: "PENDING",
+    },
+
+    creditLineId: {
+      type: String,
+      default: null,
+    },
+
+    creditLineError: {
+      type: String,
+      default: null,
+    },
+
+    /* =====================================================
+       WABA SUBSCRIPTION
+    ===================================================== */
+
+    subscriptionStatus: {
+      type: String,
+      enum: [
+        "PENDING",
+        "SUBSCRIBING",
+        "SUBSCRIBED",
+        "FAILED",
+      ],
+      default: "PENDING",
+    },
+
+    subscriptionError: {
+      type: String,
+      default: null,
+    },
+
+    /* =====================================================
+       PHONE REGISTRATION
+    ===================================================== */
+
+    registrationStatus: {
+      type: String,
+      enum: [
+        "PENDING",
+        "REGISTERING",
+        "REGISTERED",
+        "FAILED",
+      ],
+      default: "PENDING",
+    },
+
+    registrationError: {
+      type: String,
+      default: null,
+    },
+
+    /*
+     * IMPORTANT:
+     *
+     * Do not randomly generate a registration PIN and assume
+     * Meta will accept it.
+     *
+     * Only store this when a legitimate registration flow
+     * provides/uses the PIN.
+     */
+
+    registrationPin: {
+      type: String,
+      default: null,
+    },
+
+    /* =====================================================
+       PINBOT EMBEDDED DETAIL API
+    ===================================================== */
+
+    pinbotEmbeddedDetailStatus: {
+      type: String,
+      enum: [
+        "PENDING",
+        "PROCESSING",
+        "SUCCESS",
+        "FAILED",
+      ],
+      default: "PENDING",
+    },
+
+    pinbotEmbeddedDetailResponse: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
+
+    pinbotEmbeddedDetailError: {
+      type: String,
+      default: null,
+    },
+
+    pinbotEmbeddedDetailAt: {
+      type: Date,
+      default: null,
+    },
+
+    /* =====================================================
+       SETUP ERRORS
+    ===================================================== */
+
+    setupError: {
+      type: String,
+      default: null,
+    },
+
+    /* =====================================================
+       SETUP TIMING
+    ===================================================== */
+
+    setupStartedAt: {
+      type: Date,
+      default: null,
+    },
+
+    nextSetupAttemptAt: {
+      type: Date,
+      default: null,
+    },
+
+    setupCompletedAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  {
+    _id: true,
+    timestamps: true,
+  }
+);
 
 /* =========================================================
    USER SCHEMA
@@ -528,7 +558,6 @@ const UserSchema = new mongoose.Schema(
     limits: {
       tags: {
         type: limitItemSchema,
-
         default: () => ({
           max: -1,
           period: "unlimited",
@@ -537,7 +566,6 @@ const UserSchema = new mongoose.Schema(
 
       workflows: {
         type: limitItemSchema,
-
         default: () => ({
           max: -1,
           period: "unlimited",
@@ -546,7 +574,6 @@ const UserSchema = new mongoose.Schema(
 
       templates: {
         type: limitItemSchema,
-
         default: () => ({
           max: -1,
           period: "unlimited",
@@ -555,7 +582,6 @@ const UserSchema = new mongoose.Schema(
 
       testMessages: {
         type: limitItemSchema,
-
         default: () => ({
           max: -1,
           period: "unlimited",
@@ -564,7 +590,6 @@ const UserSchema = new mongoose.Schema(
 
       campaigns: {
         type: limitItemSchema,
-
         default: () => ({
           max: -1,
           period: "unlimited",
@@ -573,7 +598,6 @@ const UserSchema = new mongoose.Schema(
 
       optNumbers: {
         type: limitItemSchema,
-
         default: () => ({
           max: -1,
           period: "unlimited",
@@ -582,7 +606,6 @@ const UserSchema = new mongoose.Schema(
 
       forms: {
         type: limitItemSchema,
-
         default: () => ({
           max: -1,
           period: "unlimited",
@@ -591,7 +614,6 @@ const UserSchema = new mongoose.Schema(
 
       whatsappNumbers: {
         type: limitItemSchema,
-
         default: () => ({
           max: -1,
           period: "unlimited",
@@ -606,7 +628,6 @@ const UserSchema = new mongoose.Schema(
     usage: {
       tags: {
         type: usageItemSchema,
-
         default: () => ({
           count: 0,
           resetAt: null,
@@ -615,7 +636,6 @@ const UserSchema = new mongoose.Schema(
 
       workflows: {
         type: usageItemSchema,
-
         default: () => ({
           count: 0,
           resetAt: null,
@@ -624,7 +644,6 @@ const UserSchema = new mongoose.Schema(
 
       templates: {
         type: usageItemSchema,
-
         default: () => ({
           count: 0,
           resetAt: null,
@@ -633,7 +652,6 @@ const UserSchema = new mongoose.Schema(
 
       testMessages: {
         type: usageItemSchema,
-
         default: () => ({
           count: 0,
           resetAt: null,
@@ -642,7 +660,6 @@ const UserSchema = new mongoose.Schema(
 
       campaigns: {
         type: usageItemSchema,
-
         default: () => ({
           count: 0,
           resetAt: null,
@@ -651,7 +668,6 @@ const UserSchema = new mongoose.Schema(
 
       optNumbers: {
         type: usageItemSchema,
-
         default: () => ({
           count: 0,
           resetAt: null,
@@ -660,7 +676,6 @@ const UserSchema = new mongoose.Schema(
 
       forms: {
         type: usageItemSchema,
-
         default: () => ({
           count: 0,
           resetAt: null,
@@ -669,7 +684,6 @@ const UserSchema = new mongoose.Schema(
 
       whatsappNumbers: {
         type: usageItemSchema,
-
         default: () => ({
           count: 0,
           resetAt: null,
@@ -683,7 +697,7 @@ const UserSchema = new mongoose.Schema(
 );
 
 /* =========================================================
-   PREVENT MODEL OVERWRITE / DUPLICATE MODEL PROBLEM
+   PREVENT MODEL OVERWRITE
 ========================================================= */
 
 const User =
