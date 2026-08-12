@@ -197,8 +197,15 @@ const handleEmbeddedSignup = () => {
 
   setSigningUp(true);
 
+  // Clear any previous signup data
+  window._wabaId = null;
+  window._phoneNumberId = null;
+
   const sessionInfoListener = (event: MessageEvent) => {
-    if (event.origin !== "https://www.facebook.com") return;
+    // Meta Embedded Signup messages come from Facebook
+    if (event.origin !== "https://www.facebook.com") {
+      return;
+    }
 
     try {
       const data =
@@ -208,34 +215,54 @@ const handleEmbeddedSignup = () => {
 
       console.log("[Embedded Signup] Message received:", data);
 
-      if (data.type === "WA_EMBEDDED_SIGNUP") {
-        if (data.event === "FINISH") {
-          const wabaId = data.data?.waba_id;
-          const phoneNumberId = data.data?.phone_number_id;
+      if (data?.type !== "WA_EMBEDDED_SIGNUP") {
+        return;
+      }
 
-          console.log("[Embedded Signup] WABA ID:", wabaId);
-          console.log(
-            "[Embedded Signup] Phone Number ID:",
-            phoneNumberId
-          );
+      // ==========================================
+      // SIGNUP FINISHED
+      // ==========================================
+      if (data.event === "FINISH") {
+        const wabaId = data.data?.waba_id || null;
+        const phoneNumberId =
+          data.data?.phone_number_id || null;
 
-          window._wabaId = wabaId || null;
-          window._phoneNumberId = phoneNumberId || null;
-        }
+        console.log(
+          "[Embedded Signup] FINISH received"
+        );
 
-        if (data.event === "CANCEL") {
-          console.log(
-            "[Embedded Signup] Cancelled:",
-            data.data?.current_step
-          );
-        }
+        console.log(
+          "[Embedded Signup] WABA ID:",
+          wabaId
+        );
 
-        if (data.event === "ERROR") {
-          console.error(
-            "[Embedded Signup] Error:",
-            data.data
-          );
-        }
+        console.log(
+          "[Embedded Signup] Phone Number ID:",
+          phoneNumberId
+        );
+
+        window._wabaId = wabaId;
+        window._phoneNumberId = phoneNumberId;
+      }
+
+      // ==========================================
+      // USER CANCELLED
+      // ==========================================
+      else if (data.event === "CANCEL") {
+        console.log(
+          "[Embedded Signup] Cancelled at step:",
+          data.data?.current_step
+        );
+      }
+
+      // ==========================================
+      // META ERROR
+      // ==========================================
+      else if (data.event === "ERROR") {
+        console.error(
+          "[Embedded Signup] Meta error:",
+          data.data
+        );
       }
     } catch (error) {
       console.log(
@@ -245,10 +272,15 @@ const handleEmbeddedSignup = () => {
     }
   };
 
-  window.addEventListener("message", sessionInfoListener);
+  // Listen for Meta Embedded Signup session information
+  window.addEventListener(
+    "message",
+    sessionInfoListener
+  );
 
   window.FB.login(
-    (response: any) => {
+    async (response: any) => {
+      // Always remove the listener after FB.login finishes
       window.removeEventListener(
         "message",
         sessionInfoListener
@@ -259,89 +291,135 @@ const handleEmbeddedSignup = () => {
         JSON.stringify(response, null, 2)
       );
 
-      if (!response.authResponse) {
+      // ==========================================
+      // FACEBOOK LOGIN FAILED / CANCELLED
+      // ==========================================
+      if (!response?.authResponse) {
         toast.error(
           "Facebook login was cancelled or failed."
         );
+
         setSigningUp(false);
         return;
       }
 
+      // ==========================================
+      // GET AUTHORIZATION CODE
+      // ==========================================
       const code = response.authResponse.code;
 
       if (!code) {
         toast.error(
-          "No authorization code received. Please try again."
+          "No authorization code received from Meta."
         );
+
         setSigningUp(false);
         return;
       }
 
+      // ==========================================
+      // GET WABA / PHONE NUMBER FROM SESSION INFO
+      // ==========================================
       const wabaId = window._wabaId || null;
-      const phoneNumberId = window._phoneNumberId || null;
+      const phoneNumberId =
+        window._phoneNumberId || null;
 
-      console.log("[FB.login] Authorization code received");
-      console.log("[FB.login] WABA ID:", wabaId);
+      console.log(
+        "[FB.login] Authorization code received:",
+        !!code
+      );
+
+      console.log(
+        "[FB.login] WABA ID:",
+        wabaId
+      );
+
       console.log(
         "[FB.login] Phone Number ID:",
         phoneNumberId
       );
 
-      fetch("/api/settings/embedded-signup", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          code,
-          wabaId,
-          phoneNumberId,
-        }),
-      })
-        .then(async (res) => {
-          const data = await res.json();
+      // WABA ID is important for the backend
+      if (!wabaId) {
+        toast.error(
+          "Meta did not return the WABA ID. Please complete Embedded Signup again."
+        );
 
-          if (!res.ok) {
-            throw new Error(
-              data.message ||
-                "Embedded Signup request failed"
-            );
+        setSigningUp(false);
+        return;
+      }
+
+      // ==========================================
+      // SEND DATA TO YOUR BACKEND
+      // ==========================================
+      try {
+        const res = await fetch(
+          "/api/settings/embedded-signup",
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type": "application/json",
+            },
+
+            body: JSON.stringify({
+              code,
+              wabaId,
+              phoneNumberId,
+
+              // Keep this available to your backend
+              // if you want to use it for partner setup.
+              solutionId: "1691305462165667",
+            }),
           }
+        );
 
-          return data;
-        })
-        .then((data) => {
-          if (data.success) {
-            toast.success(
-              data.message || "WhatsApp connected!"
-            );
+        const data = await res.json();
 
-            window._wabaId = null;
-            window._phoneNumberId = null;
+        console.log(
+          "[Embedded Signup] Backend response:",
+          data
+        );
 
-            fetchSettings();
-          } else {
-            toast.error(
-              data.message ||
-                "Failed to connect WhatsApp."
-            );
-          }
-        })
-        .catch((error) => {
-          console.error(
-            "[Embedded Signup] Error:",
-            error
+        if (!res.ok || !data.success) {
+          throw new Error(
+            data.message ||
+              "Embedded Signup request failed"
           );
+        }
 
-          toast.error(
-            error.message ||
-              "Error connecting WhatsApp. Please try again."
-          );
-        })
-        .finally(() => {
-          setSigningUp(false);
-        });
+        // ==========================================
+        // SUCCESS
+        // ==========================================
+        toast.success(
+          data.message ||
+            "WhatsApp connected successfully!"
+        );
+
+        // Clear temporary signup information
+        window._wabaId = null;
+        window._phoneNumberId = null;
+
+        // Reload WhatsApp numbers
+        await fetchSettings();
+      } catch (error: any) {
+        console.error(
+          "[Embedded Signup] Backend error:",
+          error
+        );
+
+        toast.error(
+          error?.message ||
+            "Error connecting WhatsApp. Please try again."
+        );
+      } finally {
+        setSigningUp(false);
+      }
     },
+
+    // ==========================================
+    // META EMBEDDED SIGNUP CONFIGURATION
+    // ==========================================
     {
       config_id:
         process.env.NEXT_PUBLIC_META_CONFIG_ID || "",
@@ -351,9 +429,12 @@ const handleEmbeddedSignup = () => {
       override_default_response_type: true,
 
       extras: {
-        setup: {solutionID: "1691305462165667"},
+        setup: {
+          solutionID: "1691305462165667",
+        },
 
-        featureType: "whatsapp_business_app_onboarding",
+        featureType:
+          "whatsapp_business_app_onboarding",
 
         sessionInfoVersion: "3",
       },
