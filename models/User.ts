@@ -1,10 +1,8 @@
 import mongoose from "mongoose";
 
-/*
- * ============================================================
- * LIMIT SCHEMA
- * ============================================================
- */
+/* =========================================================
+   LIMIT SCHEMA
+========================================================= */
 
 const limitItemSchema = new mongoose.Schema(
   {
@@ -30,11 +28,9 @@ const limitItemSchema = new mongoose.Schema(
   }
 );
 
-/*
- * ============================================================
- * USAGE SCHEMA
- * ============================================================
- */
+/* =========================================================
+   USAGE SCHEMA
+========================================================= */
 
 const usageItemSchema = new mongoose.Schema(
   {
@@ -53,254 +49,220 @@ const usageItemSchema = new mongoose.Schema(
   }
 );
 
-/*
- * ============================================================
- * WHATSAPP NUMBER SCHEMA
- * ============================================================
- *
- * Every WhatsApp number connected through Embedded Signup
- * gets its own setup/credit-line/registration information.
- */
+/* =========================================================
+   WHATSAPP NUMBER SCHEMA
+========================================================= */
 
-const whatsappNumberSchema = new mongoose.Schema(
-  {
-    /*
-     * Basic WhatsApp information
-     */
+const whatsappNumberSchema =
+  new mongoose.Schema(
+    {
+      /* -----------------------------------------
+         BASIC INFORMATION
+      ----------------------------------------- */
 
-    name: {
-      type: String,
-      default: "Default Number",
+      name: {
+        type: String,
+        default: "Default Number",
+      },
+
+      wabaId: {
+        type: String,
+        default: null,
+      },
+
+      whatsappPhoneNumberId: {
+        type: String,
+        default: null,
+      },
+
+      whatsappAccessToken: {
+        type: String,
+        default: null,
+      },
+
+      displayPhoneNumber: {
+        type: String,
+        default: null,
+      },
+
+      verifiedName: {
+        type: String,
+        default: null,
+      },
+
+      phoneStatus: {
+        type: String,
+        default: "UNKNOWN",
+      },
+
+      isActive: {
+        type: Boolean,
+        default: false,
+      },
+
+      /* -----------------------------------------
+         SOURCE
+      ----------------------------------------- */
+
+      source: {
+        type: String,
+        default: "manual",
+      },
+
+      addedAt: {
+        type: Date,
+        default: Date.now,
+      },
+
+      /* -----------------------------------------
+         META BUSINESS PORTFOLIO
+      ----------------------------------------- */
+
+      businessId: {
+        type: String,
+        default: null,
+      },
+
+      /* -----------------------------------------
+         AUTOMATIC WHATSAPP SETUP
+      ----------------------------------------- */
+
+      setupStatus: {
+        type: String,
+        enum: [
+          "PROCESSING",
+          "WAITING_CREDIT_LINE",
+          "CREDIT_LINE_READY",
+          "SUBSCRIBING",
+          "REGISTERING",
+          "READY",
+          "FAILED",
+        ],
+        default: "PROCESSING",
+      },
+
+      /* -----------------------------------------
+         CREDIT LINE
+      ----------------------------------------- */
+
+      creditLineStatus: {
+        type: String,
+        enum: [
+          "PENDING",
+          "PROCESSING",
+          "READY",
+          "FAILED",
+        ],
+        default: "PENDING",
+      },
+
+      creditLineId: {
+        type: String,
+        default: null,
+      },
+
+      creditLineError: {
+        type: String,
+        default: null,
+      },
+
+      /* -----------------------------------------
+         WABA SUBSCRIPTION
+      ----------------------------------------- */
+
+      subscriptionStatus: {
+        type: String,
+        enum: [
+          "PENDING",
+          "SUBSCRIBING",
+          "SUBSCRIBED",
+          "FAILED",
+        ],
+        default: "PENDING",
+      },
+
+      subscriptionError: {
+        type: String,
+        default: null,
+      },
+
+      /* -----------------------------------------
+         PHONE REGISTRATION
+      ----------------------------------------- */
+
+      registrationStatus: {
+        type: String,
+        enum: [
+          "PENDING",
+          "REGISTERING",
+          "REGISTERED",
+          "FAILED",
+        ],
+        default: "PENDING",
+      },
+
+      registrationError: {
+        type: String,
+        default: null,
+      },
+
+      /*
+       * IMPORTANT:
+       * Only store a registration PIN here if your actual
+       * registration flow legitimately provides one.
+       *
+       * Do not randomly generate a PIN and assume Meta
+       * will accept it.
+       */
+
+      registrationPin: {
+        type: String,
+        default: null,
+      },
+
+      /* -----------------------------------------
+         SETUP ERRORS
+      ----------------------------------------- */
+
+      setupError: {
+        type: String,
+        default: null,
+      },
+
+      /* -----------------------------------------
+         SETUP TIMING
+      ----------------------------------------- */
+
+      setupStartedAt: {
+        type: Date,
+        default: null,
+      },
+
+      nextSetupAttemptAt: {
+        type: Date,
+        default: null,
+      },
+
+      setupCompletedAt: {
+        type: Date,
+        default: null,
+      },
     },
+    {
+      _id: true,
+      timestamps: true,
+    }
+  );
 
-    wabaId: {
-      type: String,
-      default: null,
-    },
-
-    whatsappPhoneNumberId: {
-      type: String,
-      default: null,
-    },
-
-    whatsappAccessToken: {
-      type: String,
-      default: null,
-    },
-
-    displayPhoneNumber: {
-      type: String,
-      default: null,
-    },
-
-    verifiedName: {
-      type: String,
-      default: null,
-    },
-
-    phoneStatus: {
-      type: String,
-      default: "UNKNOWN",
-    },
-
-    /*
-     * Whether this is the number currently selected
-     * as the active WhatsApp number.
-     */
-
-    isActive: {
-      type: Boolean,
-      default: false,
-    },
-
-    /*
-     * ========================================================
-     * BUSINESS PORTFOLIO
-     * ========================================================
-     *
-     * This is required by Pinbot's credit-line API.
-     */
-
-    businessId: {
-      type: String,
-      default: null,
-    },
-
-    /*
-     * ========================================================
-     * EMBEDDED SIGNUP
-     * ========================================================
-     */
-
-    source: {
-      type: String,
-      enum: [
-        "embedded_signup",
-        "manual",
-        "api",
-        "unknown",
-      ],
-      default: "unknown",
-    },
-
-    /*
-     * ========================================================
-     * AUTOMATIC SETUP STATUS
-     * ========================================================
-     *
-     * WAITING_CREDIT_LINE
-     * RELAYING_DETAILS
-     * ASSIGNING_CREDIT_LINE
-     * SUBSCRIBING_WABA
-     * REGISTERING_PHONE
-     * SETTING_PIN
-     * PROCESSING
-     * READY
-     * ERROR
-     */
-
-    setupStatus: {
-      type: String,
-      enum: [
-        "PENDING",
-        "WAITING_CREDIT_LINE",
-        "RELAYING_DETAILS",
-        "ASSIGNING_CREDIT_LINE",
-        "SUBSCRIBING_WABA",
-        "REGISTERING_PHONE",
-        "SETTING_PIN",
-        "PROCESSING",
-        "READY",
-        "ERROR",
-      ],
-      default: "PENDING",
-    },
-
-    /*
-     * ========================================================
-     * CREDIT LINE STATUS
-     * ========================================================
-     */
-
-    creditLineStatus: {
-      type: String,
-      enum: [
-        "PENDING",
-        "PROCESSING",
-        "CONNECTED",
-        "FAILED",
-      ],
-      default: "PENDING",
-    },
-
-    /*
-     * ========================================================
-     * WABA SUBSCRIPTION STATUS
-     * ========================================================
-     */
-
-    subscriptionStatus: {
-      type: String,
-      enum: [
-        "PENDING",
-        "PROCESSING",
-        "CONNECTED",
-        "FAILED",
-      ],
-      default: "PENDING",
-    },
-
-    /*
-     * ========================================================
-     * PHONE REGISTRATION STATUS
-     * ========================================================
-     */
-
-    registrationStatus: {
-      type: String,
-      enum: [
-        "PENDING",
-        "PROCESSING",
-        "REGISTERED",
-        "FAILED",
-      ],
-      default: "PENDING",
-    },
-
-    /*
-     * ========================================================
-     * REGISTRATION / TWO-STEP VERIFICATION PIN
-     * ========================================================
-     *
-     * This is the 6-digit PIN used by the automatic
-     * registration process.
-     */
-
-    registrationPin: {
-      type: String,
-      default: null,
-    },
-
-    /*
-     * ========================================================
-     * SETUP ERROR
-     * ========================================================
-     *
-     * If Pinbot or Meta fails, the worker stores the error
-     * here so it can be displayed/debugged later.
-     */
-
-    setupError: {
-      type: String,
-      default: null,
-    },
-
-    /*
-     * ========================================================
-     * SETUP TIMING
-     * ========================================================
-     */
-
-    setupStartedAt: {
-      type: Date,
-      default: null,
-    },
-
-    /*
-     * The worker will process the number after this time.
-     *
-     * We use this for the 3-4 minute Pinbot synchronization
-     * period.
-     */
-
-    nextSetupAttemptAt: {
-      type: Date,
-      default: null,
-    },
-
-    setupCompletedAt: {
-      type: Date,
-      default: null,
-    },
-  },
-  {
-    _id: true,
-  }
-);
-
-/*
- * ============================================================
- * USER SCHEMA
- * ============================================================
- */
+/* =========================================================
+   USER SCHEMA
+========================================================= */
 
 const UserSchema = new mongoose.Schema(
   {
-    /*
-     * ========================================================
-     * BASIC USER INFORMATION
-     * ========================================================
-     */
+    /* =====================================================
+       BASIC USER INFORMATION
+    ===================================================== */
 
     name: {
       type: String,
@@ -313,11 +275,9 @@ const UserSchema = new mongoose.Schema(
       required: true,
     },
 
-    /*
-     * ========================================================
-     * TENANT SYSTEM
-     * ========================================================
-     */
+    /* =====================================================
+       TENANT SYSTEM
+    ===================================================== */
 
     isTenant: {
       type: Boolean,
@@ -341,14 +301,9 @@ const UserSchema = new mongoose.Schema(
       default: 0,
     },
 
-    /*
-     * ========================================================
-     * DEFAULT / PRIMARY WHATSAPP INFORMATION
-     * ========================================================
-     *
-     * These are kept because your existing application already
-     * uses them.
-     */
+    /* =====================================================
+       DEFAULT / MAIN WHATSAPP ACCOUNT
+    ===================================================== */
 
     wabaId: {
       type: String,
@@ -365,24 +320,18 @@ const UserSchema = new mongoose.Schema(
       default: null,
     },
 
-    /*
-     * ========================================================
-     * WHATSAPP NUMBERS
-     * ========================================================
-     *
-     * Multiple WhatsApp numbers can belong to one user.
-     */
+    /* =====================================================
+       MULTIPLE WHATSAPP NUMBERS
+    ===================================================== */
 
     whatsappNumbers: {
       type: [whatsappNumberSchema],
       default: [],
     },
 
-    /*
-     * ========================================================
-     * BALANCE / PRICING
-     * ========================================================
-     */
+    /* =====================================================
+       BALANCE / BILLING
+    ===================================================== */
 
     balance: {
       type: Number,
@@ -414,11 +363,9 @@ const UserSchema = new mongoose.Schema(
       default: 0.3,
     },
 
-    /*
-     * ========================================================
-     * COUNTRY SETTINGS
-     * ========================================================
-     */
+    /* =====================================================
+       COUNTRY SETTINGS
+    ===================================================== */
 
     maxEnabledCountries: {
       type: Number,
@@ -432,7 +379,6 @@ const UserSchema = new mongoose.Schema(
           default: "",
         },
 
-        // Example: "91", "1", "44"
         code: {
           type: String,
           default: "",
@@ -455,21 +401,17 @@ const UserSchema = new mongoose.Schema(
       },
     ],
 
-    /*
-     * ========================================================
-     * ACCOUNT STATUS
-     * ========================================================
-     */
+    /* =====================================================
+       ACCOUNT STATUS
+    ===================================================== */
 
     accountStatus: {
       type: String,
-
       enum: [
         "active",
         "expired",
         "suspended",
       ],
-
       default: "active",
     },
 
@@ -498,11 +440,9 @@ const UserSchema = new mongoose.Schema(
       default: null,
     },
 
-    /*
-     * ========================================================
-     * WHITE LABEL
-     * ========================================================
-     */
+    /* =====================================================
+       WHITE LABEL
+    ===================================================== */
 
     whiteLabel: {
       enabled: {
@@ -536,11 +476,9 @@ const UserSchema = new mongoose.Schema(
       },
     },
 
-    /*
-     * ========================================================
-     * GOOGLE SHEETS
-     * ========================================================
-     */
+    /* =====================================================
+       GOOGLE SHEETS
+    ===================================================== */
 
     googleSheetId: {
       type: String,
@@ -569,33 +507,23 @@ const UserSchema = new mongoose.Schema(
       },
     },
 
-    /*
-     * ========================================================
-     * INTEGRATIONS
-     * ========================================================
-     */
-
     hideIntegrations: {
       type: Boolean,
       default: false,
     },
 
-    /*
-     * ========================================================
-     * HIDDEN SIDEBAR LINKS
-     * ========================================================
-     */
+    /* =====================================================
+       HIDDEN SIDEBAR LINKS
+    ===================================================== */
 
     hiddenSidebarLinks: {
       type: [String],
       default: [],
     },
 
-    /*
-     * ========================================================
-     * LIMITS
-     * ========================================================
-     */
+    /* =====================================================
+       LIMITS
+    ===================================================== */
 
     limits: {
       tags: {
@@ -671,11 +599,9 @@ const UserSchema = new mongoose.Schema(
       },
     },
 
-    /*
-     * ========================================================
-     * USAGE
-     * ========================================================
-     */
+    /* =====================================================
+       USAGE
+    ===================================================== */
 
     usage: {
       tags: {
@@ -756,19 +682,12 @@ const UserSchema = new mongoose.Schema(
   }
 );
 
-/*
- * ============================================================
- * MONGOOSE HOT-RELOAD FIX
- * ============================================================
- *
- * Important for Next.js development mode.
- */
+/* =========================================================
+   PREVENT MODEL OVERWRITE / DUPLICATE MODEL PROBLEM
+========================================================= */
 
-if (mongoose.models.User) {
-  delete mongoose.models.User;
-}
+const User =
+  mongoose.models.User ||
+  mongoose.model("User", UserSchema);
 
-export default mongoose.model(
-  "User",
-  UserSchema
-);
+export default User;
