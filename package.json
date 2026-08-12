@@ -6,7 +6,8 @@
     "dev": "set NEXT_PRIVATE_DISABLE_HMR=1 && next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "worker:whatsapp": "tsx scripts/whatsappSetupWorker.ts"
   },
   "dependencies": {
     "@hello-pangea/dnd": "^18.0.1",
