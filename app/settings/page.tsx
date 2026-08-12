@@ -197,13 +197,19 @@ const handleEmbeddedSignup = () => {
 
   setSigningUp(true);
 
-  // Clear any previous signup data
+  // Clear previous signup data
   window._wabaId = null;
   window._phoneNumberId = null;
 
+  // ==========================================
+  // LISTEN FOR META EMBEDDED SIGNUP EVENTS
+  // ==========================================
   const sessionInfoListener = (event: MessageEvent) => {
-    // Meta Embedded Signup messages come from Facebook
-    if (event.origin !== "https://www.facebook.com") {
+    // Meta Embedded Signup messages normally come from Facebook
+    if (
+      event.origin !== "https://www.facebook.com" &&
+      event.origin !== "https://web.facebook.com"
+    ) {
       return;
     }
 
@@ -241,6 +247,7 @@ const handleEmbeddedSignup = () => {
           phoneNumberId
         );
 
+        // Store temporarily for FB.login callback
         window._wabaId = wabaId;
         window._phoneNumberId = phoneNumberId;
       }
@@ -272,15 +279,19 @@ const handleEmbeddedSignup = () => {
     }
   };
 
-  // Listen for Meta Embedded Signup session information
+  // Add listener before opening Embedded Signup
   window.addEventListener(
     "message",
     sessionInfoListener
   );
 
+  // ==========================================
+  // OPEN META EMBEDDED SIGNUP
+  // ==========================================
   window.FB.login(
-    async (response: any) => {
-      // Always remove the listener after FB.login finishes
+    (response: any) => {
+      // IMPORTANT:
+      // This callback must NOT be async.
       window.removeEventListener(
         "message",
         sessionInfoListener
@@ -318,7 +329,7 @@ const handleEmbeddedSignup = () => {
       }
 
       // ==========================================
-      // GET WABA / PHONE NUMBER FROM SESSION INFO
+      // GET WABA / PHONE NUMBER
       // ==========================================
       const wabaId = window._wabaId || null;
       const phoneNumberId =
@@ -339,7 +350,9 @@ const handleEmbeddedSignup = () => {
         phoneNumberId
       );
 
-      // WABA ID is important for the backend
+      // ==========================================
+      // WABA ID REQUIRED
+      // ==========================================
       if (!wabaId) {
         toast.error(
           "Meta did not return the WABA ID. Please complete Embedded Signup again."
@@ -350,75 +363,78 @@ const handleEmbeddedSignup = () => {
       }
 
       // ==========================================
-      // SEND DATA TO YOUR BACKEND
+      // BACKEND REQUEST
       // ==========================================
-      try {
-        const res = await fetch(
-          "/api/settings/embedded-signup",
-          {
-            method: "POST",
+      // Use an async IIFE instead of making FB.login
+      // callback itself async.
+      (async () => {
+        try {
+          const res = await fetch(
+            "/api/settings/embedded-signup",
+            {
+              method: "POST",
 
-            headers: {
-              "Content-Type": "application/json",
-            },
+              headers: {
+                "Content-Type": "application/json",
+              },
 
-            body: JSON.stringify({
-              code,
-              wabaId,
-              phoneNumberId,
+              body: JSON.stringify({
+                code,
+                wabaId,
+                phoneNumberId,
 
-              // Keep this available to your backend
-              // if you want to use it for partner setup.
-              solutionId: "1691305462165667",
-            }),
-          }
-        );
-
-        const data = await res.json();
-
-        console.log(
-          "[Embedded Signup] Backend response:",
-          data
-        );
-
-        if (!res.ok || !data.success) {
-          throw new Error(
-            data.message ||
-              "Embedded Signup request failed"
+                // Your Meta Solution ID
+                solutionId: "1691305462165667",
+              }),
+            }
           );
+
+          const data = await res.json();
+
+          console.log(
+            "[Embedded Signup] Backend response:",
+            data
+          );
+
+          if (!res.ok || !data.success) {
+            throw new Error(
+              data.message ||
+                "Embedded Signup request failed"
+            );
+          }
+
+          // ==========================================
+          // SUCCESS
+          // ==========================================
+          toast.success(
+            data.message ||
+              "WhatsApp connected successfully!"
+          );
+
+          // Clear temporary signup information
+          window._wabaId = null;
+          window._phoneNumberId = null;
+
+          // Refresh WhatsApp numbers
+          await fetchSettings();
+        } catch (error: any) {
+          console.error(
+            "[Embedded Signup] Backend error:",
+            error
+          );
+
+          toast.error(
+            error?.message ||
+              "Error connecting WhatsApp. Please try again."
+          );
+        } finally {
+          setSigningUp(false);
         }
-
-        // ==========================================
-        // SUCCESS
-        // ==========================================
-        toast.success(
-          data.message ||
-            "WhatsApp connected successfully!"
-        );
-
-        // Clear temporary signup information
-        window._wabaId = null;
-        window._phoneNumberId = null;
-
-        // Reload WhatsApp numbers
-        await fetchSettings();
-      } catch (error: any) {
-        console.error(
-          "[Embedded Signup] Backend error:",
-          error
-        );
-
-        toast.error(
-          error?.message ||
-            "Error connecting WhatsApp. Please try again."
-        );
-      } finally {
-        setSigningUp(false);
-      }
+      })();
     },
 
     // ==========================================
-    // META EMBEDDED SIGNUP CONFIGURATION
+    // META EMBEDDED SIGNUP OPTIONS
     // ==========================================
     {
       config_id:
