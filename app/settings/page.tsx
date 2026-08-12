@@ -189,108 +189,177 @@ export default function SettingsPage() {
   };
 
   // ✅ Embedded Signup — uses postMessage listener to capture WABA/Phone IDs
-  const handleEmbeddedSignup = () => {
-    if (!fbReady || !window.FB) {
-      toast.error("Facebook SDK is still loading. Please wait.");
-      return;
-    }
+const handleEmbeddedSignup = () => {
+  if (!fbReady || !window.FB) {
+    toast.error("Facebook SDK is still loading. Please wait.");
+    return;
+  }
 
-    setSigningUp(true);
+  setSigningUp(true);
 
-    // ✅ Listen for session info message from Meta popup
-    const sessionInfoListener = (event: MessageEvent) => {
-      if (event.origin !== "https://www.facebook.com") return;
-      try {
-        const data = typeof event.data === "string"
+  const sessionInfoListener = (event: MessageEvent) => {
+    if (event.origin !== "https://www.facebook.com") return;
+
+    try {
+      const data =
+        typeof event.data === "string"
           ? JSON.parse(event.data)
           : event.data;
 
-        console.log("[SessionInfo] Message received:", data);
+      console.log("[Embedded Signup] Message received:", data);
 
-        if (data.type === "WA_EMBEDDED_SIGNUP") {
-          if (data.event === "FINISH") {
-            const { phone_number_id, waba_id } = data.data;
-            console.log("[SessionInfo] WABA ID:", waba_id);
-            console.log("[SessionInfo] Phone Number ID:", phone_number_id);
+      if (data.type === "WA_EMBEDDED_SIGNUP") {
+        if (data.event === "FINISH") {
+          const wabaId = data.data?.waba_id;
+          const phoneNumberId = data.data?.phone_number_id;
 
-            // Store in window for FB.login callback to use
-            window._wabaId = waba_id;
-            window._phoneNumberId = phone_number_id;
-          } else if (data.event === "CANCEL") {
-            console.log("[SessionInfo] User cancelled at step:", data.data?.current_step);
-          } else if (data.event === "ERROR") {
-            console.error("[SessionInfo] Error:", data.data);
-          }
+          console.log("[Embedded Signup] WABA ID:", wabaId);
+          console.log(
+            "[Embedded Signup] Phone Number ID:",
+            phoneNumberId
+          );
+
+          window._wabaId = wabaId || null;
+          window._phoneNumberId = phoneNumberId || null;
         }
-      } catch (e) {
-        console.log("[SessionInfo] Non-JSON message:", event.data);
+
+        if (data.event === "CANCEL") {
+          console.log(
+            "[Embedded Signup] Cancelled:",
+            data.data?.current_step
+          );
+        }
+
+        if (data.event === "ERROR") {
+          console.error(
+            "[Embedded Signup] Error:",
+            data.data
+          );
+        }
       }
-    };
-
-    window.addEventListener("message", sessionInfoListener);
-
-    window.FB.login(
-      (response: any) => {
-        // Cleanup listener
-        window.removeEventListener("message", sessionInfoListener);
-
-        console.log("[FB.login] Full response:", JSON.stringify(response, null, 2));
-
-        if (!response.authResponse) {
-          toast.error("Facebook login was cancelled or failed.");
-          setSigningUp(false);
-          return;
-        }
-
-        const code = response.authResponse.code;
-        if (!code) {
-          toast.error("No authorization code received. Please try again.");
-          setSigningUp(false);
-          return;
-        }
-
-        // ✅ Get WABA data from window (set by message listener)
-        const wabaId = window._wabaId || null;
-        const phoneNumberId = window._phoneNumberId || null;
-
-        console.log("[FB.login] Final WABA ID:", wabaId);
-        console.log("[FB.login] Final Phone Number ID:", phoneNumberId);
-
-        fetch("/api/settings/embedded-signup", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code, wabaId, phoneNumberId }),
-        })
-          .then((res) => res.json())
-          .then((data) => {
-            if (data.success) {
-              toast.success(data.message || "WhatsApp connected!");
-              // Cleanup
-              window._wabaId = null;
-              window._phoneNumberId = null;
-              fetchSettings();
-            } else {
-              toast.error(data.message || "Failed to connect.");
-            }
-          })
-          .catch((err) => {
-            console.error("[Embedded Signup] Error:", err);
-            toast.error("Error connecting WhatsApp. Please try again.");
-          })
-          .finally(() => setSigningUp(false));
-      },
-      {
-        config_id: process.env.NEXT_PUBLIC_META_CONFIG_ID || "",
-        response_type: "code",
-        override_default_response_type: true,
-        extras: {
-          setup: {},
-          featureType: "",
-          sessionInfoVersion: "3",
-        },
-      }
-    );
+    } catch (error) {
+      console.log(
+        "[Embedded Signup] Non-JSON message:",
+        event.data
+      );
+    }
   };
+
+  window.addEventListener("message", sessionInfoListener);
+
+  window.FB.login(
+    (response: any) => {
+      window.removeEventListener(
+        "message",
+        sessionInfoListener
+      );
+
+      console.log(
+        "[FB.login] Full response:",
+        JSON.stringify(response, null, 2)
+      );
+
+      if (!response.authResponse) {
+        toast.error(
+          "Facebook login was cancelled or failed."
+        );
+        setSigningUp(false);
+        return;
+      }
+
+      const code = response.authResponse.code;
+
+      if (!code) {
+        toast.error(
+          "No authorization code received. Please try again."
+        );
+        setSigningUp(false);
+        return;
+      }
+
+      const wabaId = window._wabaId || null;
+      const phoneNumberId = window._phoneNumberId || null;
+
+      console.log("[FB.login] Authorization code received");
+      console.log("[FB.login] WABA ID:", wabaId);
+      console.log(
+        "[FB.login] Phone Number ID:",
+        phoneNumberId
+      );
+
+      fetch("/api/settings/embedded-signup", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          code,
+          wabaId,
+          phoneNumberId,
+        }),
+      })
+        .then(async (res) => {
+          const data = await res.json();
+
+          if (!res.ok) {
+            throw new Error(
+              data.message ||
+                "Embedded Signup request failed"
+            );
+          }
+
+          return data;
+        })
+        .then((data) => {
+          if (data.success) {
+            toast.success(
+              data.message || "WhatsApp connected!"
+            );
+
+            window._wabaId = null;
+            window._phoneNumberId = null;
+
+            fetchSettings();
+          } else {
+            toast.error(
+              data.message ||
+                "Failed to connect WhatsApp."
+            );
+          }
+        })
+        .catch((error) => {
+          console.error(
+            "[Embedded Signup] Error:",
+            error
+          );
+
+          toast.error(
+            error.message ||
+              "Error connecting WhatsApp. Please try again."
+          );
+        })
+        .finally(() => {
+          setSigningUp(false);
+        });
+    },
+    {
+      config_id:
+        process.env.NEXT_PUBLIC_META_CONFIG_ID || "",
+
+      response_type: "code",
+
+      override_default_response_type: true,
+
+      extras: {
+        setup: {},
+
+        featureType: "whatsapp_business_app_onboarding",
+
+        sessionInfoVersion: "3",
+      },
+    }
+  );
+};
 
   const handleConnectGoogle = async () => {
     setConnectingGoogle(true);
