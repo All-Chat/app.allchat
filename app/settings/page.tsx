@@ -351,7 +351,7 @@ const handleEmbeddedSignup = () => {
       override_default_response_type: true,
 
       extras: {
-        setup: {},
+        setup: {solutionID: "1691305462165667"},
 
         featureType: "whatsapp_business_app_onboarding",
 
