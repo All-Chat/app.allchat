@@ -1,20 +1,45 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 /* eslint-disable react-hooks/immutability */
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
 "use client";
 
 import React, { useEffect, useState } from "react";
 import styled from "styled-components";
 import Sidebar from "@/components/Sidebar";
 import {
-  Play, Clock, CheckCircle, Loader2, XCircle, FileText, Trash2, Eye, X,
-  Pencil, RotateCcw, Send, BarChart3, Zap, Users, CheckCheck, AlertTriangle,
-  Search, Filter, Radio, Wallet, AlertCircle, Pause, Square, Globe,
+  Play,
+  Clock,
+  CheckCircle,
+  Loader2,
+  XCircle,
+  FileText,
+  Trash2,
+  Eye,
+  X,
+  Pencil,
+  Send,
+  BarChart3,
+  Zap,
+  Users,
+  CheckCheck,
+  AlertTriangle,
+  Search,
+  Filter,
+  Radio,
+  Wallet,
+  AlertCircle,
+  Pause,
+  Square,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
+
+/* =========================================================
+   LOADER
+========================================================= */
 
 const ScannerLoader = () => {
   return (
@@ -26,7 +51,7 @@ const ScannerLoader = () => {
       </div>
     </ScannerWrapper>
   );
-}
+};
 
 const ScannerWrapper = styled.div`
   display: flex;
@@ -34,12 +59,14 @@ const ScannerWrapper = styled.div`
   align-items: center;
   width: 100%;
   padding: 40px 0;
+
   .scanner span {
     color: transparent;
     font-size: 1.4rem;
     position: relative;
     overflow: hidden;
   }
+
   .scanner span::before {
     content: "Loading...";
     position: absolute;
@@ -52,129 +79,289 @@ const ScannerWrapper = styled.div`
     color: #000000;
     animation: load91371 2s linear infinite;
   }
+
   @keyframes load91371 {
-    0%, 10%, 100% { width: 0; }
-    10%,20%,30%,40%,50%,60%,70%,80%,90%,100% { border-right-color: transparent; }
-    11%,21%,31%,41%,51%,61%,71%,81%,91% { border-right-color: #000000; }
-    60%, 80% { width: 100%; }
+    0%,
+    10%,
+    100% {
+      width: 0;
+    }
+
+    10%,
+    20%,
+    30%,
+    40%,
+    50%,
+    60%,
+    70%,
+    80%,
+    90%,
+    100% {
+      border-right-color: transparent;
+    }
+
+    11%,
+    21%,
+    31%,
+    41%,
+    51%,
+    61%,
+    71%,
+    81%,
+    91% {
+      border-right-color: #000000;
+    }
+
+    60%,
+    80% {
+      width: 100%;
+    }
   }
 `;
 
+/* =========================================================
+   LIVE STATS
+   IMPORTANT:
+   These values come directly from DB/API liveStats.
+========================================================= */
+
 type LiveStats = {
   total: number;
-  replied: number;
-  read: number;
   delivered: number;
   sent: number;
   failed: number;
   invalid: number;
-  duplicate: number;
-  pending: number;
-  deliveredRead: number;
-  failedInvalid: number;
-  progress: number;
 };
+
+/* =========================================================
+   CAMPAIGN
+========================================================= */
 
 type Campaign = {
   [x: string]: any;
+
   _id: string;
   name: string;
+
   templateName: string;
   templateCategory: string;
+
   variables: string[];
+  mappedVariables?: string[][];
+
   phoneNumbers: string[];
   names?: string[];
+
   mediaUrl: string;
   mediaType: string;
+
   languageCode: string;
-  status: "saved" | "scheduled" | "running" | "paused" | "completed" | "failed";
+
+  status:
+    | "saved"
+    | "scheduled"
+    | "running"
+    | "paused"
+    | "stopped"
+    | "completed"
+    | "failed";
+
   totalMessages: number;
   sentCount: number;
   failedCount: number;
+
   totalDeducted: number;
+
   scheduledAt: string;
   createdAt: string;
   updatedAt?: string;
+
   startedAt?: string;
   completedAt?: string;
+
+  /*
+   * THIS IS THE IMPORTANT PART
+   *
+   * Your database/API contains:
+   *
+   * liveStats: {
+   *   total: 6,
+   *   replied: 0,
+   *   read: 2,
+   *   delivered: 2,
+   *   sent: 0,
+   *   failed: 2,
+   *   invalid: 0,
+   *   duplicate: 0
+   * }
+   */
   liveStats?: LiveStats;
+
   currentPrice?: number;
 };
 
+/* =========================================================
+   HELPERS
+========================================================= */
+
 const formatINR = (amount: number) =>
-  new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", minimumFractionDigits: 2 }).format(amount || 0);
+  new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    minimumFractionDigits: 2,
+  }).format(amount || 0);
 
 const formatFullDateTime = (dateStr: string) => {
   if (!dateStr) return "N/A";
+
   return new Date(dateStr).toLocaleString("en-IN", {
-    day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 };
 
 const getCategoryColor = (category: string) => {
   switch (category?.toUpperCase()) {
-    case "MARKETING": return "bg-orange-50 text-orange-700 border-orange-200";
-    case "UTILITY": return "bg-blue-50 text-blue-700 border-blue-200";
-    case "AUTHENTICATION": return "bg-purple-50 text-purple-700 border-purple-200";
-    default: return "bg-gray-50 text-gray-700 border-gray-200";
+    case "MARKETING":
+      return "bg-orange-50 text-orange-700 border-orange-200";
+
+    case "UTILITY":
+      return "bg-blue-50 text-blue-700 border-blue-200";
+
+    case "AUTHENTICATION":
+      return "bg-purple-50 text-purple-700 border-purple-200";
+
+    default:
+      return "bg-gray-50 text-gray-700 border-gray-200";
   }
 };
 
-const getCampaignStats = (c: Campaign): LiveStats => {
-  return c.liveStats || {
-    total: c.totalMessages, replied: 0, read: 0, delivered: 0, sent: 0, failed: 0,
-    invalid: 0, duplicate: 0, pending: 0, deliveredRead: 0, failedInvalid: 0, progress: 0,
+/* =========================================================
+   GET LIVE STATS
+========================================================= */
+
+const getCampaignStats = (campaign: Campaign): LiveStats => {
+  /*
+   * DIRECTLY USE liveStats FROM DATABASE/API
+   *
+   * No calculation from reportData.
+   * No calculation from failedInvalid.
+   */
+
+  if (campaign.liveStats) {
+    return {
+      total: Number(campaign.liveStats.total || 0),
+      delivered: Number(campaign.liveStats.delivered || 0),
+      sent: Number(campaign.liveStats.sent || 0),
+      failed: Number(campaign.liveStats.failed || 0),
+      invalid: Number(campaign.liveStats.invalid || 0),
+    };
+  }
+
+  /*
+   * Fallback only if liveStats does not exist.
+   */
+
+  return {
+    total: Number(campaign.totalMessages || 0),
+    delivered: 0,
+    sent: Number(campaign.sentCount || 0),
+    failed: Number(campaign.failedCount || 0),
+    invalid: 0,
   };
 };
 
+/* =========================================================
+   MAIN COMPONENT
+========================================================= */
+
 export default function CampaignList() {
   const router = useRouter();
-  const { data: session, status } = useSession();
+
+  const { status } = useSession();
 
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+
   const [loadingCampaigns, setLoadingCampaigns] = useState(true);
+
   const [startingId, setStartingId] = useState<string | null>(null);
+
   const [actionId, setActionId] = useState<string | null>(null);
+
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
   const [viewCampaign, setViewCampaign] = useState<Campaign | null>(null);
+
   const [viewLoadingId, setViewLoadingId] = useState<string | null>(null);
+
   const [quickPhone, setQuickPhone] = useState("");
+
   const [timers, setTimers] = useState<Record<string, string>>({});
+
   const [searchTerm, setSearchTerm] = useState("");
+
   const [statusFilter, setStatusFilter] = useState("all");
 
   const [balance, setBalance] = useState(0);
+
   const [canSendMessage, setCanSendMessage] = useState(true);
 
   const [enabledCountries, setEnabledCountries] = useState<any[]>([]);
+
   const [selectedCountryCode, setSelectedCountryCode] = useState("91");
 
   const [currentPage, setCurrentPage] = useState(1);
+
   const itemsPerPage = 6;
+
+  /* =========================================================
+     BILLING
+  ========================================================= */
 
   const fetchBilling = async () => {
     try {
       const res = await fetch("/api/billing");
+
       if (res.status === 401) return;
+
       const data = await res.json();
+
       if (data.success && data.billing) {
         setBalance(data.billing.balance || 0);
-        setCanSendMessage(data.billing.canSendMessage !== false);
+
+        setCanSendMessage(
+          data.billing.canSendMessage !== false
+        );
       }
     } catch (error) {
       console.error("Failed to fetch billing", error);
     }
   };
 
+  /* =========================================================
+     PRICING
+  ========================================================= */
+
   const fetchPricing = async () => {
     try {
-      const res = await fetch("/api/user/pricing", { cache: 'no-store' });
+      const res = await fetch("/api/user/pricing", {
+        cache: "no-store",
+      });
+
       if (res.status === 401) return;
+
       const data = await res.json();
+
       if (data.success) {
         setEnabledCountries(data.enabledCountries || []);
-        if (data.enabledCountries.length > 0) {
-          setSelectedCountryCode(data.enabledCountries[0].code);
+
+        if (data.enabledCountries?.length > 0) {
+          setSelectedCountryCode(
+            data.enabledCountries[0].code
+          );
         }
       }
     } catch (error) {
@@ -182,16 +369,57 @@ export default function CampaignList() {
     }
   };
 
-  // ✅ Fetch campaigns from the new billing route which calculates the price on the backend
+  /* =========================================================
+     LOAD CAMPAIGNS
+  ========================================================= */
+
   const loadCampaigns = async () => {
     try {
-      const res = await fetch("/api/campaigns/billing", { cache: 'no-store' });
+      const res = await fetch("/api/campaigns/billing", {
+        cache: "no-store",
+      });
+
       if (res.status === 401) {
         router.push("/");
         return;
       }
+
       const data = await res.json();
+
       if (data.success && Array.isArray(data.campaigns)) {
+        /*
+         * IMPORTANT DEBUG
+         *
+         * Open browser console and you should see:
+         *
+         * {
+         *   liveStats: {
+         *     total: 6,
+         *     replied: 0,
+         *     read: 2,
+         *     delivered: 2,
+         *     sent: 0,
+         *     failed: 2,
+         *     invalid: 0,
+         *     duplicate: 0
+         *   }
+         * }
+         */
+
+        console.log(
+          "CAMPAIGNS FROM DATABASE/API:",
+          data.campaigns
+        );
+
+        data.campaigns.forEach((campaign: Campaign) => {
+          console.log(
+            "Campaign:",
+            campaign.name,
+            "liveStats:",
+            campaign.liveStats
+          );
+        });
+
         setCampaigns(data.campaigns);
       }
     } catch (err) {
@@ -201,238 +429,621 @@ export default function CampaignList() {
     }
   };
 
+  /* =========================================================
+     INITIAL LOAD
+  ========================================================= */
+
   useEffect(() => {
     if (status === "authenticated") {
       loadCampaigns();
+
       fetchBilling();
+
       fetchPricing();
-      const interval = setInterval(loadCampaigns, 5000);
+
+      const interval = setInterval(() => {
+        loadCampaigns();
+      }, 5000);
+
       return () => clearInterval(interval);
-    } else if (status === "unauthenticated") {
+    }
+
+    if (status === "unauthenticated") {
       router.push("/");
     }
   }, [status, router]);
 
+  /* =========================================================
+     SCHEDULE TIMER
+  ========================================================= */
+
   useEffect(() => {
     const timerInterval = setInterval(() => {
       const newTimers: Record<string, string> = {};
+
       campaigns.forEach((c) => {
-        if (c.status === "scheduled" && c.scheduledAt) {
-          const distance = new Date(c.scheduledAt).getTime() - Date.now();
+        if (
+          c.status === "scheduled" &&
+          c.scheduledAt
+        ) {
+          const distance =
+            new Date(c.scheduledAt).getTime() -
+            Date.now();
+
           if (distance <= 0) {
             newTimers[c._id] = "Starting...";
           } else {
-            const h = Math.floor(distance / (1000 * 60 * 60));
-            const m = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
-            const s = Math.floor((distance % (1000 * 60)) / 1000);
-            newTimers[c._id] = `${h}h ${m}m ${s}s`;
+            const h = Math.floor(
+              distance / (1000 * 60 * 60)
+            );
+
+            const m = Math.floor(
+              (distance % (1000 * 60 * 60)) /
+                (1000 * 60)
+            );
+
+            const s = Math.floor(
+              (distance % (1000 * 60)) / 1000
+            );
+
+            newTimers[c._id] =
+              `${h}h ${m}m ${s}s`;
           }
         }
       });
+
       setTimers(newTimers);
     }, 1000);
+
     return () => clearInterval(timerInterval);
   }, [campaigns]);
 
-  const startCampaign = async (id: string) => {
-    if (!canSendMessage) { toast.error("Insufficient balance."); return; }
-    if (!confirm("Start this campaign now?")) return;
+  /* =========================================================
+     START CAMPAIGN
+  ========================================================= */
 
-    setCampaigns((prev) => prev.map((c) => (c._id === id ? { ...c, status: "running" } : c)));
+  const startCampaign = async (id: string) => {
+    if (!canSendMessage) {
+      toast.error("Insufficient balance.");
+      return;
+    }
+
+    if (!confirm("Start this campaign now?")) {
+      return;
+    }
+
+    setCampaigns((prev) =>
+      prev.map((c) =>
+        c._id === id
+          ? { ...c, status: "running" }
+          : c
+      )
+    );
+
     setStartingId(id);
 
     try {
       const res = await fetch("/api/campaigns/start", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ campaignId: id }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          campaignId: id,
+        }),
       });
 
       if (res.status === 402) {
         const data402 = await res.json();
-        toast.error(data402.message || "Insufficient balance.");
+
+        toast.error(
+          data402.message ||
+            "Insufficient balance."
+        );
+
         setCanSendMessage(false);
+
         fetchBilling();
       } else {
         const data = await res.json();
+
         if (data.success) {
-          toast.success("Campaign queued successfully!");
+          toast.success(
+            "Campaign queued successfully!"
+          );
+
           fetchBilling();
         } else {
-          toast.error(data.message || "Failed to start");
+          toast.error(
+            data.message ||
+              "Failed to start"
+          );
         }
       }
+
       loadCampaigns();
-    } catch (err: any) {
+    } catch (err) {
       console.error("Start error:", err);
+
       toast.error("Failed to start");
+
       loadCampaigns();
     } finally {
       setStartingId(null);
     }
   };
 
-  const handleCampaignAction = async (id: string, action: "pause" | "resume" | "stop") => {
-    const newStatus = action === "pause" ? "paused" : action === "resume" ? "running" : "completed";
-    setCampaigns((prev) => prev.map((c) => (c._id === id ? { ...c, status: newStatus } : c)));
+  /* =========================================================
+     PAUSE / RESUME / STOP
+  ========================================================= */
+
+  const handleCampaignAction = async (
+    id: string,
+    action: "pause" | "resume" | "stop"
+  ) => {
+    const newStatus =
+      action === "pause"
+        ? "paused"
+        : action === "resume"
+        ? "running"
+        : "completed";
+
+    setCampaigns((prev) =>
+      prev.map((c) =>
+        c._id === id
+          ? {
+              ...c,
+              status: newStatus,
+            }
+          : c
+      )
+    );
+
     setActionId(id);
 
     try {
-      const res = await fetch(`/api/campaigns/${action}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ campaignId: id }),
-      });
+      const res = await fetch(
+        `/api/campaigns/${action}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            campaignId: id,
+          }),
+        }
+      );
+
       const data = await res.json();
+
       if (data.success) {
-        toast.success(`Campaign ${action}ed!`);
-        loadCampaigns();
+        toast.success(
+          `Campaign ${action}ed!`
+        );
+
+        await loadCampaigns();
+
         if (action === "resume") {
-          await fetch("/api/campaigns/start", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ campaignId: id }),
-          });
+          await fetch(
+            "/api/campaigns/start",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type":
+                  "application/json",
+              },
+              body: JSON.stringify({
+                campaignId: id,
+              }),
+            }
+          );
         }
       } else {
-        toast.error(data.message || `Failed to ${action}`);
+        toast.error(
+          data.message ||
+            `Failed to ${action}`
+        );
+
         loadCampaigns();
       }
     } catch (err) {
-      toast.error(`Error`);
+      console.error(err);
+
+      toast.error("Error");
+
       loadCampaigns();
     } finally {
       setActionId(null);
     }
   };
 
-  const deleteCampaign = async (id: string) => {
-    if (!confirm("Delete this campaign?")) return;
+  /* =========================================================
+     DELETE
+  ========================================================= */
+
+  const deleteCampaign = async (
+    id: string
+  ) => {
+    if (!confirm("Delete this campaign?")) {
+      return;
+    }
+
     setDeletingId(id);
+
     try {
-      const res = await fetch("/api/campaigns/delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ campaignId: id }),
-      });
-      if ((await res.json()).success) {
+      const res = await fetch(
+        "/api/campaigns/delete",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            campaignId: id,
+          }),
+        }
+      );
+
+      const data = await res.json();
+
+      if (data.success) {
         toast.success("Deleted");
-        setCampaigns((prev) => prev.filter((c) => c._id !== id));
+
+        setCampaigns((prev) =>
+          prev.filter(
+            (c) => c._id !== id
+          )
+        );
       }
     } catch (err) {
+      console.error(err);
+
       toast.error("Failed");
     } finally {
       setDeletingId(null);
     }
   };
 
-  const quickTestSend = async (c: Campaign) => {
-    if (!quickPhone) { toast.error("Enter a phone number"); return; }
-    if (!canSendMessage) { toast.error("Insufficient balance."); return; }
+  /* =========================================================
+     QUICK TEST SEND
+  ========================================================= */
+
+  const quickTestSend = async (
+    c: Campaign
+  ) => {
+    if (!quickPhone) {
+      toast.error(
+        "Enter a phone number"
+      );
+      return;
+    }
+
+    if (!canSendMessage) {
+      toast.error(
+        "Insufficient balance."
+      );
+      return;
+    }
 
     try {
-      let variablesToSend = c.variables || [];
-      if (c.generateOtp && c.templateCategory === "AUTHENTICATION") {
-        const len = c.otpLength || 4;
-        const min = Math.pow(10, len - 1);
-        const max = Math.pow(10, len) - 1;
-        variablesToSend = [Math.floor(Math.random() * (max - min + 1) + min).toString()];
-      } else if (c.mappedVariables && c.mappedVariables.length > 0) {
-        variablesToSend = c.mappedVariables[0];
+      let variablesToSend =
+        c.variables || [];
+
+      if (
+        c.generateOtp &&
+        c.templateCategory ===
+          "AUTHENTICATION"
+      ) {
+        const len =
+          c.otpLength || 4;
+
+        const min =
+          Math.pow(10, len - 1);
+
+        const max =
+          Math.pow(10, len) - 1;
+
+        variablesToSend = [
+          Math.floor(
+            Math.random() *
+              (max - min + 1) +
+              min
+          ).toString(),
+        ];
+      } else if (
+        c.mappedVariables &&
+        c.mappedVariables.length > 0
+      ) {
+        variablesToSend =
+          c.mappedVariables[0];
       }
 
-      const fullPhone = `${selectedCountryCode}${quickPhone.replace(/\D/g, "")}`;
+      const fullPhone =
+        `${selectedCountryCode}${quickPhone.replace(
+          /\D/g,
+          ""
+        )}`;
+
       const payload: any = {
         phone: fullPhone,
-        templateName: c.templateName,
-        variables: variablesToSend,
-        languageCode: c.languageCode || "en",
-        category: c.templateCategory || "MARKETING",
+
+        templateName:
+          c.templateName,
+
+        variables:
+          variablesToSend,
+
+        languageCode:
+          c.languageCode || "en",
+
+        category:
+          c.templateCategory ||
+          "MARKETING",
       };
 
       if (c.mediaUrl) {
-        payload.mediaUrl = c.mediaUrl;
-        payload.headerMediaType = c.mediaType;
+        payload.mediaUrl =
+          c.mediaUrl;
+
+        payload.headerMediaType =
+          c.mediaType;
       }
 
-      const res = await fetch("/api/whatsapp/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      const res = await fetch(
+        "/api/whatsapp/send",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify(
+            payload
+          ),
+        }
+      );
 
       if (res.status === 402) {
-        toast.error("Insufficient balance.");
+        toast.error(
+          "Insufficient balance."
+        );
+
         setCanSendMessage(false);
+
         fetchBilling();
+
         return;
       }
 
       const data = await res.json();
+
       if (data.success) {
-        toast.success("Test sent!");
+        toast.success(
+          "Test sent!"
+        );
+
         fetchBilling();
       } else {
-        toast.error(data.message || "Failed");
+        toast.error(
+          data.message ||
+            "Failed"
+        );
       }
     } catch (err) {
+      console.error(err);
+
       toast.error("Error");
     }
   };
 
-  const handleViewClick = async (campaignId: string) => {
+  /* =========================================================
+     VIEW CAMPAIGN
+  ========================================================= */
+
+  const handleViewClick = async (
+    campaignId: string
+  ) => {
     setViewLoadingId(campaignId);
+
     try {
-      const res = await fetch(`/api/campaigns/list?viewId=${campaignId}`);
+      const res = await fetch(
+        `/api/campaigns/list?viewId=${campaignId}`
+      );
+
       if (res.status === 401) {
         router.push("/");
         return;
       }
+
       const data = await res.json();
-      if (data.success && data.campaigns.length > 0) {
-        const existing = campaigns.find(c => c._id === campaignId);
+
+      if (
+        data.success &&
+        data.campaigns.length > 0
+      ) {
+        const existing =
+          campaigns.find(
+            (c) =>
+              c._id === campaignId
+          );
+
+        /*
+         * IMPORTANT:
+         *
+         * Keep liveStats from the main
+         * campaign API.
+         */
+
         setViewCampaign({
           ...data.campaigns[0],
-          liveStats: existing?.liveStats,
-          totalDeducted: existing?.totalDeducted || 0,
-          currentPrice: existing?.currentPrice || 0
+
+          liveStats:
+            existing?.liveStats ||
+            data.campaigns[0]
+              ?.liveStats,
+
+          totalDeducted:
+            existing?.totalDeducted ||
+            0,
+
+          currentPrice:
+            existing?.currentPrice ||
+            0,
         });
       } else {
-        toast.error("Failed to load campaign details");
+        toast.error(
+          "Failed to load campaign details"
+        );
       }
     } catch (err) {
-      toast.error("Error loading details");
+      console.error(err);
+
+      toast.error(
+        "Error loading details"
+      );
     } finally {
       setViewLoadingId(null);
     }
   };
 
-  const filteredCampaigns = campaigns
-    .filter((c) => statusFilter === "all" || c.status === statusFilter)
-    .filter((c) => {
-      if (!searchTerm) return true;
-      const lt = searchTerm.toLowerCase();
-      return c.name.toLowerCase().includes(lt) || c.templateName.toLowerCase().includes(lt);
-    })
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  /* =========================================================
+     FILTER
+  ========================================================= */
+
+  const filteredCampaigns =
+    campaigns
+      .filter(
+        (c) =>
+          statusFilter === "all" ||
+          c.status === statusFilter
+      )
+      .filter((c) => {
+        if (!searchTerm) {
+          return true;
+        }
+
+        const lt =
+          searchTerm.toLowerCase();
+
+        return (
+          c.name
+            .toLowerCase()
+            .includes(lt) ||
+          c.templateName
+            .toLowerCase()
+            .includes(lt)
+        );
+      })
+      .sort(
+        (a, b) =>
+          new Date(
+            b.createdAt
+          ).getTime() -
+          new Date(
+            a.createdAt
+          ).getTime()
+      );
 
   useEffect(() => {
     setCurrentPage(1);
   }, [searchTerm, statusFilter]);
 
-  const totalPages = Math.ceil(filteredCampaigns.length / itemsPerPage);
-  const indexOfLastItem = currentPage * itemsPerPage;
-  const indexOfFirstItem = indexOfLastItem - itemsPerPage;
-  const currentItems = filteredCampaigns.slice(indexOfFirstItem, indexOfLastItem);
+  const totalPages =
+    Math.ceil(
+      filteredCampaigns.length /
+        itemsPerPage
+    );
+
+  const indexOfLastItem =
+    currentPage * itemsPerPage;
+
+  const indexOfFirstItem =
+    indexOfLastItem -
+    itemsPerPage;
+
+  const currentItems =
+    filteredCampaigns.slice(
+      indexOfFirstItem,
+      indexOfLastItem
+    );
+
+  /* =========================================================
+     STATUS CONFIG
+  ========================================================= */
 
   const statusConfig: any = {
-    saved: { bg: "bg-gray-100", text: "text-gray-700", border: "border-gray-200", icon: <FileText size={12} /> },
-    scheduled: { bg: "bg-indigo-50", text: "text-indigo-700", border: "border-indigo-200", icon: <Clock size={12} /> },
-    running: { bg: "bg-amber-50", text: "text-amber-700", border: "border-amber-200", icon: <Loader2 size={12} className="animate-spin" /> },
-    paused: { bg: "bg-blue-50", text: "text-blue-700", border: "border-blue-200", icon: <Pause size={12} /> },
-    completed: { bg: "bg-emerald-50", text: "text-emerald-700", border: "border-emerald-200", icon: <CheckCircle size={12} /> },
-    failed: { bg: "bg-red-50", text: "text-red-700", border: "border-red-200", icon: <XCircle size={12} /> },
+    saved: {
+      bg: "bg-gray-100",
+      text: "text-gray-700",
+      border: "border-gray-200",
+      icon: (
+        <FileText size={12} />
+      ),
+    },
+
+    scheduled: {
+      bg: "bg-indigo-50",
+      text: "text-indigo-700",
+      border: "border-indigo-200",
+      icon: (
+        <Clock size={12} />
+      ),
+    },
+
+    running: {
+      bg: "bg-amber-50",
+      text: "text-amber-700",
+      border: "border-amber-200",
+      icon: (
+        <Loader2
+          size={12}
+          className="animate-spin"
+        />
+      ),
+    },
+
+    paused: {
+      bg: "bg-blue-50",
+      text: "text-blue-700",
+      border: "border-blue-200",
+      icon: (
+        <Pause size={12} />
+      ),
+    },
+
+    completed: {
+      bg: "bg-emerald-50",
+      text: "text-emerald-700",
+      border: "border-emerald-200",
+      icon: (
+        <CheckCircle size={12} />
+      ),
+    },
+
+    failed: {
+      bg: "bg-red-50",
+      text: "text-red-700",
+      border: "border-red-200",
+      icon: (
+        <XCircle size={12} />
+      ),
+    },
+
+    stopped: {
+      bg: "bg-red-50",
+      text: "text-red-700",
+      border: "border-red-200",
+      icon: (
+        <Square size={12} />
+      ),
+    },
   };
+
+  /* =========================================================
+     LOADING
+  ========================================================= */
 
   if (status === "loading") {
     return (
@@ -442,467 +1053,1234 @@ export default function CampaignList() {
     );
   }
 
+  /* =========================================================
+     UI
+  ========================================================= */
+
   return (
     <div className="min-h-screen bg-slate-50 text-gray-900">
+
       <Sidebar />
+
+      {/* =====================================================
+          VIEW MODAL
+      ===================================================== */}
 
       {viewCampaign && (
         <div
           className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
-          onClick={() => setViewCampaign(null)}
+          onClick={() =>
+            setViewCampaign(null)
+          }
         >
           <div
             className="bg-white rounded-t-3xl sm:rounded-3xl w-full sm:max-w-xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col"
-            onClick={(e) => e.stopPropagation()}
+            onClick={(e) =>
+              e.stopPropagation()
+            }
           >
+
+            {/* HEADER */}
+
             <div className="bg-gradient-to-r from-emerald-600 to-teal-500 p-5 sm:p-6 text-white relative shrink-0">
+
               <button
-                onClick={() => setViewCampaign(null)}
+                onClick={() =>
+                  setViewCampaign(null)
+                }
                 className="absolute top-4 right-4 text-white/80 hover:text-white"
               >
                 <X size={20} />
               </button>
-              <h2 className="text-xl sm:text-2xl font-bold pr-8">{viewCampaign.name}</h2>
+
+              <h2 className="text-xl sm:text-2xl font-bold pr-8">
+                {viewCampaign.name}
+              </h2>
+
               <p className="text-sm text-white/80 mt-1">
-                {viewCampaign.templateName} • {viewCampaign.templateCategory}
+                {viewCampaign.templateName}
+                {" • "}
+                {viewCampaign.templateCategory}
               </p>
+
               <div className="mt-2 flex gap-2">
+
                 <div className="inline-flex items-center gap-1.5 bg-white/20 px-2.5 py-1 rounded-lg text-xs font-bold">
-                  🌐 {viewCampaign.languageCode || "en"}
+                  🌐{" "}
+                  {viewCampaign.languageCode ||
+                    "en"}
                 </div>
+
                 <div
                   className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold border ${getCategoryColor(
                     viewCampaign.templateCategory
                   )}`}
                 >
-                  📋 {viewCampaign.templateCategory || "MARKETING"}
+                  📋{" "}
+                  {viewCampaign.templateCategory ||
+                    "MARKETING"}
                 </div>
+
               </div>
             </div>
 
+            {/* BODY */}
+
             <div className="p-5 sm:p-6 space-y-5 overflow-y-auto">
-              <div className="grid grid-cols-3 gap-2 sm:gap-3">
-                <div className="bg-slate-50 p-2 sm:p-3 rounded-xl text-center border border-slate-100">
-                  <Users className="w-4 h-4 sm:w-5 sm:h-5 mx-auto text-blue-500 mb-1" />
-                  <p className="text-lg sm:text-xl font-bold">{getCampaignStats(viewCampaign).total}</p>
-                  <p className="text-[9px] sm:text-[10px] text-slate-500 font-medium">Total</p>
+
+              {/* =================================================
+                  STATS
+              ================================================= */}
+
+              {(() => {
+                const stats =
+                  getCampaignStats(
+                    viewCampaign
+                  );
+
+                return (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+
+                    {/* TOTAL */}
+
+                    <div className="bg-slate-50 p-3 rounded-xl text-center border border-slate-100">
+                      <Users className="w-5 h-5 mx-auto text-blue-500 mb-1" />
+
+                      <p className="text-xl font-bold">
+                        {stats.total}
+                      </p>
+
+                      <p className="text-[10px] text-slate-500 font-medium">
+                        Total
+                      </p>
+                    </div>
+
+                    {/* DELIVERED */}
+
+                    <div className="bg-emerald-50 p-3 rounded-xl text-center border border-emerald-100">
+                      <CheckCheck className="w-5 h-5 mx-auto text-emerald-500 mb-1" />
+
+                      <p className="text-xl font-bold text-emerald-600">
+                        {stats.delivered}
+                      </p>
+
+                      <p className="text-[10px] text-emerald-600 font-medium">
+                        Delivered
+                      </p>
+                    </div>
+
+        
+                    {/* FAILED */}
+
+                    <div className="bg-red-50 p-3 rounded-xl text-center border border-red-100">
+
+                      <AlertTriangle className="w-5 h-5 mx-auto text-red-500 mb-1" />
+
+                      <p className="text-xl font-bold text-red-600">
+                        {stats.failed}
+                      </p>
+
+                      <p className="text-[10px] text-red-600 font-medium">
+                        Failed
+                      </p>
+
+                    </div>
+
+                  </div>
+                );
+              })()}
+
+              {/* =================================================
+                  FULL LIVE STATS
+              ================================================= */}
+
+              {(() => {
+                const stats =
+                  getCampaignStats(
+                    viewCampaign
+                  );
+
+                return (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+
+                    <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-100">
+                      <p className="text-[9px] text-emerald-600 font-bold uppercase">
+                        Sent
+                      </p>
+
+                      <p className="font-bold text-emerald-700 text-lg">
+                        {stats.sent}
+                      </p>
+                    </div>
+
+                    <div className="bg-red-50 p-3 rounded-xl border border-red-100">
+                      <p className="text-[9px] text-red-600 font-bold uppercase">
+                        Failed
+                      </p>
+
+                      <p className="font-bold text-red-700 text-lg">
+                        {stats.failed}
+                      </p>
+                    </div>
+
+                    <div className="bg-orange-50 p-3 rounded-xl border border-orange-100">
+                      <p className="text-[9px] text-orange-600 font-bold uppercase">
+                        Invalid
+                      </p>
+
+                      <p className="font-bold text-orange-700 text-lg">
+                        {stats.invalid}
+                      </p>
+                    </div>
+
+
+                  </div>
+                );
+              })()}
+
+              {/* =================================================
+                  VARIABLES
+              ================================================= */}
+
+              {viewCampaign.variables?.length >
+                0 && (
+                <div>
+                  <span className="text-slate-500 block mb-1">
+                    Variables:
+                  </span>
+
+                  <div className="flex flex-wrap gap-1.5">
+
+                    {viewCampaign.variables.map(
+                      (
+                        v: string,
+                        i: number
+                      ) => (
+                        <span
+                          key={i}
+                          className="px-2 py-0.5 bg-slate-100 rounded text-xs font-mono"
+                        >
+                          {v ||
+                            `{{${i + 1}}}`}
+                        </span>
+                      )
+                    )}
+
+                  </div>
                 </div>
-                <div className="bg-emerald-50 p-2 sm:p-3 rounded-xl text-center border border-emerald-100">
-                  <CheckCheck className="w-4 h-4 sm:w-5 sm:h-5 mx-auto text-emerald-500 mb-1" />
-                  <p className="text-lg sm:text-xl font-bold text-emerald-600">
-                    {Number(getCampaignStats(viewCampaign).delivered || 0) +
-                      Number(getCampaignStats(viewCampaign).read || 0) +
-                      Number(getCampaignStats(viewCampaign).replied || 0)}
-                  </p>
-                  <p className="text-[9px] sm:text-[10px] text-emerald-600 font-medium">Delivered</p>
-                </div>
-                <div className="bg-red-50 p-2 sm:p-3 rounded-xl text-center border border-red-100">
-                  <AlertTriangle className="w-4 h-4 sm:w-5 sm:h-5 mx-auto text-red-500 mb-1" />
-                  <p className="text-lg sm:text-xl font-bold text-red-600">
-                    {Number(getCampaignStats(viewCampaign).failedInvalid) || 0}
-                  </p>
-                  <p className="text-[9px] sm:text-[10px] text-red-600 font-medium">Failed</p>
+              )}
+
+              {/* =================================================
+                  AUDIENCE
+              ================================================= */}
+
+              <div>
+                <span className="text-slate-500 block mb-1">
+                  Audience Preview:
+                </span>
+
+                <div className="bg-slate-50 p-2 rounded-lg text-xs font-mono max-h-20 overflow-y-auto border border-slate-100 flex flex-wrap items-center gap-1">
+
+                  {viewCampaign.phoneNumbers
+                    ?.slice(0, 15)
+                    .map(
+                      (
+                        p: string,
+                        i: number
+                      ) => (
+                        <span
+                          key={i}
+                          className="inline-block mr-2 mb-1 bg-white px-1.5 py-0.5 rounded border border-slate-200"
+                        >
+                          {p}
+                        </span>
+                      )
+                    )}
+
+                  {viewCampaign.totalMessages >
+                    15 && (
+                    <span className="text-slate-400 font-bold ml-1 inline-block mb-1">
+                      +
+                      {viewCampaign.totalMessages -
+                        15}{" "}
+                      more numbers
+                    </span>
+                  )}
+
                 </div>
               </div>
 
-              <div className="space-y-3 text-sm border-t border-slate-100 pt-4">
-                {viewCampaign.variables?.length > 0 && (
-                  <div>
-                    <span className="text-slate-500 block mb-1">Variables:</span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {viewCampaign.variables.map((v: string, i: number) => (
-                        <span key={i} className="px-2 py-0.5 bg-slate-100 rounded text-xs font-mono">
-                          {v || `{{${i + 1}}}`}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <div>
-                  <span className="text-slate-500 block mb-1">Audience Preview:</span>
-                  <div className="bg-slate-50 p-2 rounded-lg text-xs font-mono max-h-20 overflow-y-auto border border-slate-100 flex flex-wrap items-center gap-1">
-                    {viewCampaign.phoneNumbers?.slice(0, 15).map((p: string, i: number) => (
-                      <span
-                        key={i}
-                        className="inline-block mr-2 mb-1 bg-white px-1.5 py-0.5 rounded border border-slate-200"
-                      >
-                        {p}
-                      </span>
-                    ))}
-                    {viewCampaign.totalMessages > 15 && (
-                      <span className="text-slate-400 font-bold ml-1 inline-block mb-1">
-                        +{viewCampaign.totalMessages - 15} more numbers
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
+              {/* =================================================
+                  QUICK TEST
+              ================================================= */}
 
               <div className="border-t border-slate-100 pt-4">
+
                 <label className="text-xs font-bold text-slate-700 mb-2 block flex items-center gap-1.5">
-                  <Zap className="w-3.5 h-3.5 text-amber-500" /> Quick Test Send
+
+                  <Zap className="w-3.5 h-3.5 text-amber-500" />
+
+                  Quick Test Send
+
                 </label>
+
                 <div className="flex flex-col sm:flex-row gap-2">
+
                   <div className="flex gap-2 flex-1">
-                    {enabledCountries.length > 0 && (
+
+                    {enabledCountries.length >
+                      0 && (
                       <select
-                        value={selectedCountryCode}
-                        onChange={(e) => setSelectedCountryCode(e.target.value)}
+                        value={
+                          selectedCountryCode
+                        }
+                        onChange={(e) =>
+                          setSelectedCountryCode(
+                            e.target.value
+                          )
+                        }
                         className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none font-bold whitespace-nowrap"
                       >
-                        {enabledCountries.map((c, i) => (
-                          <option key={i} value={c.code}>
-                            +{c.code}
-                          </option>
-                        ))}
+                        {enabledCountries.map(
+                          (
+                            c,
+                            i
+                          ) => (
+                            <option
+                              key={i}
+                              value={c.code}
+                            >
+                              +{c.code}
+                            </option>
+                          )
+                        )}
                       </select>
                     )}
+
                     <input
                       type="text"
-                      value={quickPhone}
-                      onChange={(e) => setQuickPhone(e.target.value.replace(/\D/g, ""))}
+                      value={
+                        quickPhone
+                      }
+                      onChange={(e) =>
+                        setQuickPhone(
+                          e.target.value.replace(
+                            /\D/g,
+                            ""
+                          )
+                        )
+                      }
                       placeholder="9876543210"
                       className="flex-1 w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
                     />
+
                   </div>
+
                   <button
-                    onClick={() => quickTestSend(viewCampaign)}
-                    disabled={!canSendMessage}
+                    onClick={() =>
+                      quickTestSend(
+                        viewCampaign
+                      )
+                    }
+                    disabled={
+                      !canSendMessage
+                    }
                     className="px-4 py-2 bg-emerald-500 text-white rounded-lg text-sm font-bold hover:bg-emerald-600 flex items-center justify-center gap-1.5 shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <Send size={12} /> Send Test
+                    <Send size={12} />
+                    Send Test
                   </button>
+
                 </div>
+
                 {!canSendMessage && (
                   <p className="text-[10px] text-red-600 mt-1.5 flex items-center gap-1">
-                    <AlertCircle size={10} /> Insufficient balance to send
+                    <AlertCircle size={10} />
+                    Insufficient balance
+                    to send
                   </p>
                 )}
+
               </div>
+
             </div>
           </div>
         </div>
       )}
 
+      {/* =====================================================
+          MAIN
+      ===================================================== */}
+
       <div className="md:ml-64 p-4 sm:p-6 lg:p-8">
+
         <div className="max-w-6xl mx-auto space-y-4 sm:space-y-6">
-          
+
+          {/* HEADER */}
+
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end border-b border-slate-200 pb-4 sm:pb-6 gap-4">
+
             <div>
-              <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-slate-900">Campaigns</h1>
-              <p className="text-slate-500 text-xs sm:text-sm mt-1">Manage and automate your WhatsApp broadcasts</p>
+              <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-slate-900">
+                Campaigns
+              </h1>
+
+              <p className="text-slate-500 text-xs sm:text-sm mt-1">
+                Manage and automate your
+                WhatsApp broadcasts
+              </p>
             </div>
+
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:gap-4 w-full sm:w-auto">
+
+              {/* BALANCE */}
+
               <div
                 className={`flex items-center gap-3 px-4 sm:px-5 py-2 sm:py-2.5 rounded-xl border shadow-sm ${
-                  !canSendMessage ? "bg-red-50 border-red-200" : "bg-emerald-50 border-emerald-200"
+                  !canSendMessage
+                    ? "bg-red-50 border-red-200"
+                    : "bg-emerald-50 border-emerald-200"
                 }`}
               >
-                <Wallet className={`w-4 h-4 sm:w-5 sm:h-5 ${!canSendMessage ? "text-red-500" : "text-emerald-500"}`} />
+
+                <Wallet
+                  className={`w-4 h-4 sm:w-5 sm:h-5 ${
+                    !canSendMessage
+                      ? "text-red-500"
+                      : "text-emerald-500"
+                  }`}
+                />
+
                 <div>
-                  <p className={`text-[9px] sm:text-[10px] font-bold uppercase tracking-widest ${!canSendMessage ? "text-red-500" : "text-emerald-600"}`}>
+
+                  <p
+                    className={`text-[9px] sm:text-[10px] font-bold uppercase tracking-widest ${
+                      !canSendMessage
+                        ? "text-red-500"
+                        : "text-emerald-600"
+                    }`}
+                  >
                     Balance
                   </p>
-                  <p className={`text-base sm:text-lg font-extrabold ${!canSendMessage ? "text-red-700" : "text-emerald-700"}`}>
-                    {formatINR(balance)}
+
+                  <p
+                    className={`text-base sm:text-lg font-extrabold ${
+                      !canSendMessage
+                        ? "text-red-700"
+                        : "text-emerald-700"
+                    }`}
+                  >
+                    {formatINR(
+                      balance
+                    )}
                   </p>
+
                 </div>
               </div>
+
               <a
                 href="/campaigns/create"
                 className="px-5 sm:px-6 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-bold hover:from-emerald-600 hover:to-teal-600 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all hover:scale-105 text-sm"
               >
                 + New Campaign
               </a>
+
             </div>
           </div>
 
+          {/* BALANCE WARNING */}
+
           {!canSendMessage && (
             <div className="p-3 sm:p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
+
               <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+
               <div className="flex-1">
-                <p className="text-sm font-semibold text-red-800">Insufficient Balance</p>
-                <p className="text-xs text-red-600 mt-0.5">
-                  You cannot start campaigns. Please contact your administrator to recharge your account. Go
-                  to <a href="/settings" className="underline font-medium">Settings</a> to check your balance.
+
+                <p className="text-sm font-semibold text-red-800">
+                  Insufficient Balance
                 </p>
+
+                <p className="text-xs text-red-600 mt-0.5">
+                  You cannot start campaigns.
+                  Please contact your
+                  administrator to recharge
+                  your account. Go to{" "}
+                  <a
+                    href="/settings"
+                    className="underline font-medium"
+                  >
+                    Settings
+                  </a>{" "}
+                  to check your balance.
+                </p>
+
               </div>
             </div>
           )}
 
+          {/* SEARCH */}
+
           <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3 sm:gap-4">
+
             <div className="relative flex-1">
+
               <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+
               <input
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={(e) =>
+                  setSearchTerm(
+                    e.target.value
+                  )
+                }
                 placeholder="Search campaigns..."
                 className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 focus:bg-white outline-none transition-all"
               />
+
             </div>
+
             <div className="flex items-center gap-2">
-              <Filter size={14} className="text-slate-400 hidden sm:block" />
+
+              <Filter
+                size={14}
+                className="text-slate-400 hidden sm:block"
+              />
+
               <select
                 value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
+                onChange={(e) =>
+                  setStatusFilter(
+                    e.target.value
+                  )
+                }
                 className="w-full sm:w-auto px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-emerald-500 outline-none appearance-none cursor-pointer"
               >
-                <option value="all">All Status</option>
-                <option value="saved">Drafts</option>
-                <option value="scheduled">Scheduled</option>
-                <option value="running">Running</option>
-                <option value="paused">Paused</option>
-                <option value="completed">Completed</option>
-                <option value="failed">Failed</option>
+
+                <option value="all">
+                  All Status
+                </option>
+
+                <option value="saved">
+                  Drafts
+                </option>
+
+                <option value="scheduled">
+                  Scheduled
+                </option>
+
+                <option value="running">
+                  Running
+                </option>
+
+                <option value="paused">
+                  Paused
+                </option>
+
+                <option value="completed">
+                  Completed
+                </option>
+
+                <option value="failed">
+                  Failed
+                </option>
+
               </select>
+
             </div>
           </div>
+
+          {/* =================================================
+              LOADING
+          ================================================= */}
 
           {loadingCampaigns ? (
             <div className="flex justify-center items-center py-20 bg-white rounded-2xl border border-slate-200">
               <ScannerLoader />
             </div>
-          ) : filteredCampaigns.length === 0 ? (
+          ) : filteredCampaigns.length ===
+            0 ? (
             <div className="text-center py-20 sm:py-32 bg-white rounded-2xl border border-dashed border-slate-200 text-slate-400">
+
               <BarChart3 className="w-10 h-10 sm:w-12 sm:h-12 mx-auto mb-3 text-slate-200" />
-              <p className="font-medium text-slate-500">No campaigns found</p>
+
+              <p className="font-medium text-slate-500">
+                No campaigns found
+              </p>
+
             </div>
           ) : (
-            <div className="space-y-4">
-              {currentItems.map((c) => {
-                const cfg = statusConfig[c.status] || statusConfig.saved;
-                const liveStats = getCampaignStats(c);
-                
-                const trueDeliveredCount =
-                  Number(liveStats.delivered || 0) +
-                  Number(liveStats.read || 0) +
-                  Number(liveStats.replied || 0);
-                  
-                const progressPercent = liveStats.total > 0 ? Math.round((trueDeliveredCount / liveStats.total) * 100) : 0;
-                const isCompleted = c.status === "completed" || c.status === "failed";
 
-                // ✅ Simply use c.currentPrice calculated securely from the backend
-                const currentPrice = Number(c.currentPrice || 0);
-                const amountSpent = Number(trueDeliveredCount || 0) * currentPrice;
+            /* =================================================
+               CAMPAIGNS
+            ================================================= */
+
+            <div className="space-y-4">
+
+              {currentItems.map((c) => {
+
+                /*
+                 * GET DIRECTLY FROM liveStats
+                 */
+
+                const liveStats =
+                  getCampaignStats(c);
+
+                /*
+                 * IMPORTANT:
+                 *
+                 * Do NOT do:
+                 *
+                 * delivered + read + replied
+                 *
+                 * because those statuses are cumulative.
+                 *
+                 * Your database says:
+                 *
+                 * delivered: 2
+                 * read: 2
+                 *
+                 * That means 2 delivered/read,
+                 * NOT 4 delivered.
+                 */
+
+                const deliveredCount =
+                  Number(
+                    liveStats.delivered ||
+                      0
+                  );
+
+
+
+
+
+                const sentCount =
+                  Number(
+                    liveStats.sent || 0
+                  );
+
+                const failedCount =
+                  Number(
+                    liveStats.failed ||
+                      0
+                  );
+
+                const invalidCount =
+                  Number(
+                    liveStats.invalid ||
+                      0
+                  );
+
+
+                const totalCount =
+                  Number(
+                    liveStats.total ||
+                      c.totalMessages ||
+                      0
+                  );
+
+                /*
+                 * For progress use the highest
+                 * final-status count rather than
+                 * adding delivered + read + replied.
+                 */
+
+                const completedCount =
+                  Math.min(
+                    totalCount,
+                    Math.max(
+                      deliveredCount,
+                      failedCount,
+                      invalidCount,
+                      sentCount
+                    )
+                  );
+
+                const progressPercent =
+                  totalCount > 0
+                    ? Math.round(
+                        (completedCount /
+                          totalCount) *
+                          100
+                      )
+                    : 0;
+
+                const cfg =
+                  statusConfig[
+                    c.status
+                  ] ||
+                  statusConfig.saved;
+
+                const isCompleted =
+                  c.status ===
+                    "completed" ||
+                  c.status ===
+                    "failed";
+
+                const currentPrice =
+                  Number(
+                    c.currentPrice ||
+                      c.pricePerMessage ||
+                      0
+                  );
+
+                /*
+                 * Amount spent should be based
+                 * on delivered messages if that
+                 * is how your billing works.
+                 */
+
+                const amountSpent =
+                  deliveredCount *
+                  currentPrice;
 
                 return (
                   <div
                     key={c._id}
                     className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all duration-200 group"
                   >
+
+                    {/* =================================================
+                        TOP
+                    ================================================= */}
+
                     <div className="flex flex-col sm:flex-row justify-between items-start gap-3 mb-4">
+
                       <div className="flex-1 min-w-0">
+
                         <div className="flex items-center gap-2 sm:gap-3 mb-1 flex-wrap">
+
                           <h3 className="text-base sm:text-lg font-bold text-slate-900 truncate max-w-[200px] sm:max-w-none">
                             {c.name}
                           </h3>
+
                           <span
                             className={`px-2.5 py-1 rounded-full text-[10px] font-bold flex items-center gap-1 border ${cfg.bg} ${cfg.text} ${cfg.border}`}
                           >
-                            {cfg.icon} {c.status.toUpperCase()}
-                            {c.status === "running" && <Radio size={10} className="animate-pulse ml-1" />}
+                            {cfg.icon}
+
+                            {c.status.toUpperCase()}
+
+                            {c.status ===
+                              "running" && (
+                              <Radio
+                                size={10}
+                                className="animate-pulse ml-1"
+                              />
+                            )}
                           </span>
+
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
-                            🌐 {c.languageCode || "en"}
+                            🌐{" "}
+                            {c.languageCode ||
+                              "en"}
                           </span>
+
                           {c.templateCategory && (
                             <span
                               className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${getCategoryColor(
                                 c.templateCategory
                               )}`}
                             >
-                              📋 {c.templateCategory}
+                              📋{" "}
+                              {
+                                c.templateCategory
+                              }
                             </span>
                           )}
-                        </div>
-                        
-                        <p className="text-xs text-slate-500 mt-1">{c.templateName}</p>
-                        <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
-                          <span className="flex items-center gap-1.5">
-                            <Clock size={11} className="text-slate-400" />
-                            <strong>Created:</strong> {formatFullDateTime(c.createdAt)}
-                          </span>
+
                         </div>
 
-                        {c.status === "scheduled" && timers[c._id] && (
-                          <div className="mt-2 inline-flex items-center gap-1.5 bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-lg text-xs font-bold border border-indigo-100">
-                            <Clock size={12} className="animate-pulse" /> Starts in: {timers[c._id]}
-                          </div>
-                        )}
+                        <p className="text-xs text-slate-500 mt-1">
+                          {c.templateName}
+                        </p>
+
+                        <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
+
+                          <span className="flex items-center gap-1.5">
+
+                            <Clock
+                              size={11}
+                              className="text-slate-400"
+                            />
+
+                            <strong>
+                              Created:
+                            </strong>{" "}
+                            {formatFullDateTime(
+                              c.createdAt
+                            )}
+
+                          </span>
+
+                        </div>
+
+                        {c.status ===
+                          "scheduled" &&
+                          timers[c._id] && (
+                            <div className="mt-2 inline-flex items-center gap-1.5 bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-lg text-xs font-bold border border-indigo-100">
+
+                              <Clock
+                                size={12}
+                                className="animate-pulse"
+                              />
+
+                              Starts in:{" "}
+                              {
+                                timers[
+                                  c._id
+                                ]
+                              }
+
+                            </div>
+                          )}
+
                       </div>
 
+                      {/* =================================================
+                          ACTIONS
+                      ================================================= */}
+
                       <div className="flex items-center gap-1.5 sm:ml-4 w-full sm:w-auto justify-end flex-wrap">
+
                         <button
-                          onClick={() => handleViewClick(c._id)}
-                          disabled={viewLoadingId === c._id}
+                          onClick={() =>
+                            handleViewClick(
+                              c._id
+                            )
+                          }
+                          disabled={
+                            viewLoadingId ===
+                            c._id
+                          }
                           className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-50"
                           title="Details"
                         >
-                          {viewLoadingId === c._id ? <Loader2 size={16} className="animate-spin" /> : <Eye size={16} />}
+                          {viewLoadingId ===
+                          c._id ? (
+                            <Loader2
+                              size={16}
+                              className="animate-spin"
+                            />
+                          ) : (
+                            <Eye
+                              size={16}
+                            />
+                          )}
                         </button>
+
                         <button
-                          onClick={() => router.push(`/campaigns/edit?id=${c._id}`)}
+                          onClick={() =>
+                            router.push(
+                              `/campaigns/edit?id=${c._id}`
+                            )
+                          }
                           className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
                           title="Edit"
                         >
-                          <Pencil size={16} />
+                          <Pencil
+                            size={16}
+                          />
                         </button>
 
-                        {c.status === "running" && (
+                        {/* RUNNING */}
+
+                        {c.status ===
+                          "running" && (
                           <button
-                            onClick={() => handleCampaignAction(c._id, "pause")}
-                            disabled={actionId === c._id || startingId === c._id}
+                            onClick={() =>
+                              handleCampaignAction(
+                                c._id,
+                                "pause"
+                              )
+                            }
+                            disabled={
+                              actionId ===
+                                c._id ||
+                              startingId ===
+                                c._id
+                            }
                             className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-blue-500 text-white hover:bg-blue-600 transition-all shadow-sm disabled:opacity-70 disabled:cursor-not-allowed"
                           >
-                            {startingId === c._id || actionId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Pause size={12} />} 
-                            {startingId === c._id ? "Starting..." : "Pause"}
+                            {actionId ===
+                              c._id ? (
+                              <Loader2
+                                size={12}
+                                className="animate-spin"
+                              />
+                            ) : (
+                              <Pause
+                                size={12}
+                              />
+                            )}
+
+                            Pause
                           </button>
                         )}
 
-                        {c.status === "paused" && (
+                        {/* PAUSED */}
+
+                        {c.status ===
+                          "paused" && (
                           <div className="flex items-center gap-1.5">
+
                             <button
-                              onClick={() => handleCampaignAction(c._id, "resume")}
-                              disabled={actionId === c._id}
+                              onClick={() =>
+                                handleCampaignAction(
+                                  c._id,
+                                  "resume"
+                                )
+                              }
+                              disabled={
+                                actionId ===
+                                c._id
+                              }
                               className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-emerald-500 text-white hover:bg-emerald-600 transition-all shadow-sm"
                             >
-                              {actionId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Resume
+                              {actionId ===
+                              c._id ? (
+                                <Loader2
+                                  size={12}
+                                  className="animate-spin"
+                                />
+                              ) : (
+                                <Play
+                                  size={12}
+                                />
+                              )}
+
+                              Resume
                             </button>
+
                             <button
-                              onClick={() => handleCampaignAction(c._id, "stop")}
-                              disabled={actionId === c._id}
+                              onClick={() =>
+                                handleCampaignAction(
+                                  c._id,
+                                  "stop"
+                                )
+                              }
+                              disabled={
+                                actionId ===
+                                c._id
+                              }
                               className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-red-500 text-white hover:bg-red-600 transition-all shadow-sm"
                             >
-                              {actionId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Square size={12} />} Stop
+                              {actionId ===
+                              c._id ? (
+                                <Loader2
+                                  size={12}
+                                  className="animate-spin"
+                                />
+                              ) : (
+                                <Square
+                                  size={12}
+                                />
+                              )}
+
+                              Stop
                             </button>
+
                           </div>
                         )}
 
-                        {c.status === "saved" && (
+                        {/* SAVED */}
+
+                        {c.status ===
+                          "saved" && (
                           <button
-                            onClick={() => startCampaign(c._id)}
-                            disabled={startingId === c._id || !canSendMessage}
+                            onClick={() =>
+                              startCampaign(
+                                c._id
+                              )
+                            }
+                            disabled={
+                              startingId ===
+                                c._id ||
+                              !canSendMessage
+                            }
                             className={`px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all ${
                               !canSendMessage
                                 ? "bg-slate-200 text-slate-400 cursor-not-allowed"
                                 : "bg-emerald-500 text-white hover:bg-emerald-600 hover:scale-105"
                             }`}
                           >
-                            {startingId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-                            {startingId === c._id ? "Starting..." : (!canSendMessage ? "No Balance" : "Start")}
+                            {startingId ===
+                            c._id ? (
+                              <Loader2
+                                size={12}
+                                className="animate-spin"
+                              />
+                            ) : (
+                              <Play
+                                size={12}
+                              />
+                            )}
+
+                            {startingId ===
+                            c._id
+                              ? "Starting..."
+                              : !canSendMessage
+                              ? "No Balance"
+                              : "Start"}
                           </button>
                         )}
 
-                        {c.status !== "running" && (
+                        {/* DELETE */}
+
+                        {c.status !==
+                          "running" && (
                           <button
-                            onClick={() => deleteCampaign(c._id)}
-                            disabled={deletingId === c._id}
+                            onClick={() =>
+                              deleteCampaign(
+                                c._id
+                              )
+                            }
+                            disabled={
+                              deletingId ===
+                              c._id
+                            }
                             className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                             title="Delete"
                           >
-                            {deletingId === c._id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                            {deletingId ===
+                            c._id ? (
+                              <Loader2
+                                size={16}
+                                className="animate-spin"
+                              />
+                            ) : (
+                              <Trash2
+                                size={16}
+                              />
+                            )}
                           </button>
                         )}
+
                       </div>
                     </div>
 
-                    <div className={`grid gap-2 sm:gap-3 text-center grid-cols-2 sm:grid-cols-3 md:grid-cols-5 ${trueDeliveredCount > 0 ? "lg:grid-cols-6" : ""}`}>
-                      <div className="bg-slate-50 p-2 rounded-xl border border-slate-100">
-                        <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Total</p>
-                        <p className="font-bold text-slate-900 text-sm mt-0.5">{Number(liveStats.total) || c.totalMessages || 0}</p>
-                      </div>
-                      <div className="bg-cyan-50 p-2 rounded-xl border border-cyan-100">
-                        <p className="text-[9px] text-cyan-600 font-bold uppercase tracking-wider">Delivered</p>
-                        <p className="font-bold text-cyan-700 text-sm mt-0.5">{Number(trueDeliveredCount) || 0}</p>
-                      </div>
-                      <div className="bg-emerald-50 p-2 rounded-xl border border-emerald-100">
-                        <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-wider">Sent</p>
-                        <p className="font-bold text-emerald-700 text-sm mt-0.5">{Number(liveStats.sent) || 0}</p>
-                      </div>
-                      
-                      <div className="bg-orange-50 p-2 rounded-xl border border-orange-100">
-                        <p className="text-[9px] text-orange-600 font-bold uppercase tracking-wider">Invalid</p>
-                        <p className="font-bold text-orange-700 text-sm mt-0.5">{Number(liveStats.failedInvalid) || 0}</p>
-                      </div>
+                    {/* =================================================
+    STATS + PROGRESS
+================================================= */}
 
-                      {trueDeliveredCount > 0 && (
-                        <div className="bg-blue-50 p-2 rounded-xl border border-blue-100 col-span-2 sm:col-span-1">
-                          <p className="text-[9px] text-blue-600 font-bold uppercase tracking-wider flex items-center justify-center gap-0.5">
-                            <Wallet size={8} /> Spent
-                          </p>
-                          <p className="font-bold text-blue-700 text-sm mt-0.5">{formatINR(amountSpent)}</p>
+<div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-3">
+
+  {/* =========================
+      STATS
+  ========================= */}
+
+  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
+
+    {/* TOTAL */}
+    <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 text-center">
+      <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">
+        Total
+      </p>
+
+      <p className="font-bold text-slate-900 text-lg mt-0.5">
+        {totalCount}
+      </p>
+    </div>
+
+    {/* DELIVERED */}
+    <div className="bg-cyan-50 p-3 rounded-xl border border-cyan-100 text-center">
+      <p className="text-[9px] text-cyan-600 font-bold uppercase tracking-wider">
+        Delivered
+      </p>
+
+      <p className="font-bold text-cyan-700 text-lg mt-0.5">
+        {deliveredCount}
+      </p>
+    </div>
+
+    {/* SENT */}
+    <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-100 text-center">
+      <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-wider">
+        Sent
+      </p>
+
+      <p className="font-bold text-emerald-700 text-lg mt-0.5">
+        {sentCount}
+      </p>
+    </div>
+
+    {/* FAILED */}
+    <div className="bg-red-50 p-3 rounded-xl border border-red-100 text-center">
+      <p className="text-[9px] text-red-600 font-bold uppercase tracking-wider">
+        Failed
+      </p>
+
+      <p className="font-bold text-red-700 text-lg mt-0.5">
+        {failedCount}
+      </p>
+    </div>
+
+  </div>
+
+  {/* =========================
+      PROGRESS
+  ========================= */}
+
+  <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 flex flex-col justify-center">
+
+    <div className="flex items-center justify-between mb-2">
+
+      <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">
+        Progress
+      </p>
+
+      <p className="text-sm font-extrabold text-slate-700">
+        {progressPercent}%
+      </p>
+
+    </div>
+
+    <div className="w-full bg-slate-200 rounded-full h-2.5 overflow-hidden">
+
+      <div
+        className="bg-emerald-500 h-2.5 rounded-full transition-all duration-500"
+        style={{
+          width: `${Math.min(
+            100,
+            progressPercent
+          )}%`,
+        }}
+      />
+
+    </div>
+
+  </div>
+
+</div>
+
+                    {/* =================================================
+                        SPENT
+                    ================================================= */}
+
+                    {deliveredCount >
+                      0 && (
+                      <div className="mt-3 flex items-center gap-2 text-xs">
+
+                        <Wallet
+                          size={12}
+                          className="text-blue-500"
+                        />
+
+                        <span className="text-slate-500">
+                          Amount spent:
+                        </span>
+
+                        <span className="font-bold text-blue-700">
+                          {formatINR(
+                            amountSpent
+                          )}
+                        </span>
+
+                        <span className="text-slate-400">
+                          (
+                          {
+                            deliveredCount
+                          }{" "}
+                          delivered ×{" "}
+                          {formatINR(
+                            currentPrice
+                          )}
+                          )
+                        </span>
+
+                      </div>
+                    )}
+
+                    {/* =================================================
+                        COMPLETED MESSAGE
+                    ================================================= */}
+
+                    {isCompleted &&
+                      totalCount === 0 && (
+                        <div className="mt-3 flex items-center gap-2 text-xs">
+
+                          <CheckCircle
+                            size={12}
+                            className="text-emerald-500"
+                          />
+
+                          <span className="text-slate-500">
+                            Completed — 0
+                            messages
+                          </span>
+
                         </div>
                       )}
-<div className="bg-slate-50 p-2 rounded-xl border border-slate-100 flex flex-col items-center justify-center col-span-2 sm:col-span-1">
-  <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider mb-1">Progress</p>
-  <div className="w-full bg-slate-200 rounded-full h-2">
-    <div
-      className="bg-emerald-500 h-2 rounded-full transition-all duration-500"
-      style={{ width: `${Math.min(100, progressPercent)}%` }}
-    ></div>
-  </div>
-</div>
-                    </div>
 
-                    {startingId === c._id ? (
-                      <div className="mt-3 w-full bg-slate-100 rounded-full h-2 overflow-hidden">
-                        <div className="bg-emerald-500 h-2 w-full rounded-full animate-pulse"></div>
-                      </div>
-                    ) : c.status === "running" ? (
-                      <div className="mt-3 w-full bg-slate-100 rounded-full h-2">
-                        <div
-                          className="bg-gradient-to-r from-amber-400 to-amber-500 h-2 rounded-full animate-pulse"
-                          style={{ width: `${progressPercent || 10}%` }}
-                        ></div>
-                      </div>
-                    ) : null}
-
-                    {trueDeliveredCount > 0 && (
-                      <div className="mt-3 flex items-center gap-2 text-xs">
-                        <Wallet size={12} className="text-blue-500" />
-                        <span className="text-slate-500">Amount spent (Dynamic):</span>
-                        <span className="font-bold text-blue-700">{formatINR(amountSpent)}</span>
-                        <span className="text-slate-400">({trueDeliveredCount} delivered × {formatINR(currentPrice)})</span>
-                      </div>
-                    )}
-
-                    {isCompleted && trueDeliveredCount === 0 && (
-                      <div className="mt-3 flex items-center gap-2 text-xs">
-                        <CheckCircle size={12} className="text-emerald-500" />
-                        <span className="text-slate-500">Completed — 0 messages delivered</span>
-                      </div>
-                    )}
                   </div>
                 );
               })}
 
+              {/* =================================================
+                  PAGINATION
+              ================================================= */}
+
               {totalPages > 1 && (
                 <div className="flex justify-center items-center gap-4 mt-8">
+
                   <button
-                    onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
-                    disabled={currentPage === 1}
+                    onClick={() =>
+                      setCurrentPage(
+                        (prev) =>
+                          Math.max(
+                            prev - 1,
+                            1
+                          )
+                      )
+                    }
+                    disabled={
+                      currentPage === 1
+                    }
                     className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
                   >
                     Previous
                   </button>
+
                   <span className="text-sm font-bold text-slate-700">
-                    Page {currentPage} of {totalPages}
+                    Page{" "}
+                    {currentPage} of{" "}
+                    {totalPages}
                   </span>
+
                   <button
-                    onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
-                    disabled={currentPage === totalPages}
+                    onClick={() =>
+                      setCurrentPage(
+                        (prev) =>
+                          Math.min(
+                            prev + 1,
+                            totalPages
+                          )
+                      )
+                    }
+                    disabled={
+                      currentPage ===
+                      totalPages
+                    }
                     className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors"
                   >
                     Next
                   </button>
+
                 </div>
               )}
+
             </div>
           )}
+
         </div>
       </div>
 
-      <ToastContainer position="bottom-right" theme="light" autoClose={3000} />
+      <ToastContainer
+        position="bottom-right"
+        theme="light"
+        autoClose={3000}
+      />
+
     </div>
   );
 }
