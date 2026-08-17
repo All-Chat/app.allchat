@@ -6,11 +6,9 @@ import mongoose from "mongoose";
 
 const ADMIN_SECRET = process.env.ADMIN_SECRET_KEY || "admin123";
 
-// ✅ Same inline Transaction model as used in /api/user/transactions
-// so recharges actually get logged and show up in the user's history.
 const TransactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  type: String, // 'recharge' or 'usage'
+  type: String,
   amount: Number,
   description: String,
   status: String,
@@ -76,7 +74,6 @@ export async function POST(req: Request) {
 
     if (action === "createUser") {
       if (!validateAdminKey(req)) return NextResponse.json({ message: "Unauthorized. Invalid admin key." }, { status: 403 });
-
       await connectDB();
       const { name, password: userPassword } = body;
 
@@ -168,7 +165,8 @@ export async function GET(req: Request) {
         hideIntegrations: (u as any).hideIntegrations || false,
         maxEnabledCountries: (u as any).maxEnabledCountries || 0,
         enabledCountries: (u as any).enabledCountries || [],
-        hiddenSidebarLinks: (u as any).hiddenSidebarLinks || [], // ✅ RETURN NEW FIELD
+        hiddenSidebarLinks: (u as any).hiddenSidebarLinks || [],
+        hiddenReportActions: (u as any).hiddenReportActions || [], // ✅ RETURN NEW FIELD
       });
     }
 
@@ -189,20 +187,21 @@ export async function PUT(req: Request) {
 
     if (!userId) return NextResponse.json({ message: "User ID is required" }, { status: 400 });
 
-    // Fetch the user first so we can use .save() which prevents silent Mongoose failures
     const user = await User.findById(userId);
     if (!user) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
-    // ==========================================
-    // HANDLE INTEGRATIONS & SIDEBAR VISIBILITY
-    // ==========================================
     if (action === "integrations" || body.hideIntegrations !== undefined) {
       user.hideIntegrations = body.hideIntegrations;
     }
 
-    // ✅ HANDLE SIDEBAR VISIBILITY
     if (action === "sidebar" || body.hiddenSidebarLinks !== undefined) {
       user.hiddenSidebarLinks = body.hiddenSidebarLinks;
+    }
+
+    // ✅ HANDLE REPORTS VISIBILITY
+    if (action === "reports" || body.hiddenReportActions !== undefined) {
+      user.hiddenReportActions = Array.isArray(body.hiddenReportActions) ? body.hiddenReportActions : [];
+      user.markModified("hiddenReportActions"); // ✅ THIS IS REQUIRED TO SAVE ARRAYS IN MONGOOSE
     }
 
     if (action === "disconnectGoogle" || body.disconnectGoogle === true) {
@@ -210,19 +209,13 @@ export async function PUT(req: Request) {
       user.googleTokens = undefined;
     }
 
-    // ==========================================
-    // HANDLE TENANCY
-    // ==========================================
     if (body.isTenant !== undefined) {
       user.isTenant = body.isTenant;
       if (body.isTenant && !user.tenantId) user.tenantId = new mongoose.Types.ObjectId().toString();
     }
     if (body.maxSubUsers !== undefined) user.maxSubUsers = Number(body.maxSubUsers) || 0;
 
-    // ==========================================
-    // HANDLE BILLING (INCLUDING COUNTRIES)
-    // ==========================================
-    let rechargeAppliedAmount = 0; // track outside the if-block so we can log it after save()
+    let rechargeAppliedAmount = 0; 
 
     if (action === "billing") {
       if (body.priceMarketing !== undefined && body.priceMarketing !== null) user.priceMarketing = Math.round(Number(body.priceMarketing) * 100) / 100;
@@ -234,10 +227,9 @@ export async function PUT(req: Request) {
         const amount = Math.round(Number(body.rechargeAmount) * 100) / 100;
         user.balance = Math.round(((user.balance || 0) + amount) * 100) / 100;
         user.totalRecharged = Math.round(((user.totalRecharged || 0) + amount) * 100) / 100;
-        rechargeAppliedAmount = amount; // remember it so we can write a Transaction row below
+        rechargeAppliedAmount = amount; 
       }
 
-      // ✅ FIX: Assign array directly and mark as modified so Mongoose saves it
       if (body.maxEnabledCountries !== undefined) {
         user.maxEnabledCountries = Number(body.maxEnabledCountries) || 0;
       }
@@ -249,14 +241,10 @@ export async function PUT(req: Request) {
           priceUtility: Number(c.priceUtility) || 0,
           priceAuthentication: Number(c.priceAuthentication) || 0
         }));
-        // Explicitly mark the array as modified so Mongoose saves it
         user.markModified("enabledCountries");
       }
     }
 
-    // ==========================================
-    // HANDLE PLAN
-    // ==========================================
     if (body.activatePlan && body.planDuration) {
       user.planDuration = body.planDuration;
       user.planActivatedAt = new Date();
@@ -272,18 +260,12 @@ export async function PUT(req: Request) {
       user.accountStatus = "active"; 
     }
     
-    // ==========================================
-    // HANDLE CREDENTIALS
-    // ==========================================
     if (body.name !== undefined && body.name !== null && body.name !== "") user.name = body.name;
     if (body.password !== undefined && body.password !== null && body.password !== "") user.password = body.password;
     if (body.whatsappAccessToken !== undefined && body.whatsappAccessToken !== null && body.whatsappAccessToken !== "") user.whatsappAccessToken = body.whatsappAccessToken;
     if (body.whatsappPhoneNumberId !== undefined) user.whatsappPhoneNumberId = body.whatsappPhoneNumberId?.trim() || null;
     if (body.wabaId !== undefined) user.wabaId = body.wabaId?.trim() || null;
 
-    // ==========================================
-    // HANDLE ACCOUNT STATUS
-    // ==========================================
     if (body.suspendAccount) { 
       user.accountStatus = "suspended"; 
       user.suspendedAt = new Date(); 
@@ -295,9 +277,6 @@ export async function PUT(req: Request) {
       user.suspendedReason = null; 
     }
 
-    // ==========================================
-    // HANDLE LIMITS
-    // ==========================================
     if (body.limits && typeof body.limits === "object") {
       const currentLimits = (user as any).limits || {};
       const newLimits: any = {};
@@ -338,12 +317,8 @@ export async function PUT(req: Request) {
       user.markModified("usage");
     }
 
-    // ✅ SAVE USER (This forces Mongoose to validate and persist everything)
     await user.save();
 
-    // ==========================================
-    // ✅ LOG THE RECHARGE AS A TRANSACTION
-    // ==========================================
     if (rechargeAppliedAmount > 0) {
       try {
         await Transaction.create({
@@ -353,10 +328,7 @@ export async function PUT(req: Request) {
           description: `Wallet recharge by admin`,
           status: "success",
           createdAt: new Date(),
-          metadata: {
-            method: "admin",
-            newBalance: user.balance,
-          },
+          metadata: { method: "admin", newBalance: user.balance },
         });
       } catch (txErr) {
         console.error("Failed to log recharge transaction:", txErr);
