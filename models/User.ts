@@ -6,26 +6,14 @@ import mongoose from "mongoose";
 
 const limitItemSchema = new mongoose.Schema(
   {
-    max: {
-      type: Number,
-      default: -1,
-    },
-
+    max: { type: Number, default: -1 },
     period: {
       type: String,
-      enum: [
-        "day",
-        "month",
-        "year",
-        "total",
-        "unlimited",
-      ],
+      enum: ["day", "month", "year", "total", "unlimited"],
       default: "unlimited",
     },
   },
-  {
-    _id: false,
-  }
+  { _id: false }
 );
 
 /* =========================================================
@@ -34,19 +22,10 @@ const limitItemSchema = new mongoose.Schema(
 
 const usageItemSchema = new mongoose.Schema(
   {
-    count: {
-      type: Number,
-      default: 0,
-    },
-
-    resetAt: {
-      type: Date,
-      default: null,
-    },
+    count: { type: Number, default: 0 },
+    resetAt: { type: Date, default: null },
   },
-  {
-    _id: false,
-  }
+  { _id: false }
 );
 
 /* =========================================================
@@ -55,233 +34,56 @@ const usageItemSchema = new mongoose.Schema(
 
 const whatsappNumberSchema = new mongoose.Schema(
   {
-    /* =====================================================
-       BASIC INFORMATION
-    ===================================================== */
-
-    name: {
-      type: String,
-      default: "Default Number",
-    },
-
-    wabaId: {
-      type: String,
-      default: null,
-    },
-
-    whatsappPhoneNumberId: {
-      type: String,
-      default: null,
-    },
-
-    whatsappAccessToken: {
-      type: String,
-      default: null,
-    },
-
-    displayPhoneNumber: {
-      type: String,
-      default: null,
-    },
-
-    verifiedName: {
-      type: String,
-      default: null,
-    },
-
-    phoneStatus: {
-      type: String,
-      default: "UNKNOWN",
-    },
-
-    isActive: {
-      type: Boolean,
-      default: false,
-    },
-
-    /* =====================================================
-       SOURCE
-    ===================================================== */
-
-    source: {
-      type: String,
-      default: "manual",
-    },
-
-    addedAt: {
-      type: Date,
-      default: Date.now,
-    },
-
-    /* =====================================================
-       META BUSINESS PORTFOLIO
-    ===================================================== */
-
-    businessId: {
-      type: String,
-      default: null,
-    },
-
-    /* =====================================================
-       AUTOMATIC WHATSAPP SETUP
-    ===================================================== */
-
+    name: { type: String, default: "Default Number" },
+    wabaId: { type: String, default: null },
+    whatsappPhoneNumberId: { type: String, default: null },
+    whatsappAccessToken: { type: String, default: null },
+    displayPhoneNumber: { type: String, default: null },
+    verifiedName: { type: String, default: null },
+    phoneStatus: { type: String, default: "UNKNOWN" },
+    isActive: { type: Boolean, default: false },
+    source: { type: String, default: "manual" },
+    addedAt: { type: Date, default: Date.now },
+    businessId: { type: String, default: null },
     setupStatus: {
       type: String,
-      enum: [
-        "PROCESSING",
-        "WAITING_CREDIT_LINE",
-        "CREDIT_LINE_READY",
-        "SUBSCRIBING",
-        "REGISTERING",
-        "READY",
-        "FAILED",
-      ],
+      enum: ["PROCESSING", "WAITING_CREDIT_LINE", "CREDIT_LINE_READY", "SUBSCRIBING", "REGISTERING", "READY", "FAILED"],
       default: "PROCESSING",
     },
-
-    /* =====================================================
-       CREDIT LINE
-    ===================================================== */
-
     creditLineStatus: {
       type: String,
-      enum: [
-        "PENDING",
-        "PROCESSING",
-        "READY",
-        "FAILED",
-      ],
+      enum: ["PENDING", "PROCESSING", "READY", "FAILED"],
       default: "PENDING",
     },
-
-    creditLineId: {
-      type: String,
-      default: null,
-    },
-
-    creditLineError: {
-      type: String,
-      default: null,
-    },
-
-    /* =====================================================
-       WABA SUBSCRIPTION
-    ===================================================== */
-
+    creditLineId: { type: String, default: null },
+    creditLineError: { type: String, default: null },
     subscriptionStatus: {
       type: String,
-      enum: [
-        "PENDING",
-        "SUBSCRIBING",
-        "SUBSCRIBED",
-        "FAILED",
-      ],
+      enum: ["PENDING", "SUBSCRIBING", "SUBSCRIBED", "FAILED"],
       default: "PENDING",
     },
-
-    subscriptionError: {
-      type: String,
-      default: null,
-    },
-
-    /* =====================================================
-       PHONE REGISTRATION
-    ===================================================== */
-
+    subscriptionError: { type: String, default: null },
     registrationStatus: {
       type: String,
-      enum: [
-        "PENDING",
-        "REGISTERING",
-        "REGISTERED",
-        "FAILED",
-      ],
+      enum: ["PENDING", "REGISTERING", "REGISTERED", "FAILED"],
       default: "PENDING",
     },
-
-    registrationError: {
-      type: String,
-      default: null,
-    },
-
-    /*
-     * IMPORTANT:
-     *
-     * Do not randomly generate a registration PIN and assume
-     * Meta will accept it.
-     *
-     * Only store this when a legitimate registration flow
-     * provides/uses the PIN.
-     */
-
-    registrationPin: {
-      type: String,
-      default: null,
-    },
-
-    /* =====================================================
-       PINBOT EMBEDDED DETAIL API
-    ===================================================== */
-
+    registrationError: { type: String, default: null },
+    registrationPin: { type: String, default: null },
     pinbotEmbeddedDetailStatus: {
       type: String,
-      enum: [
-        "PENDING",
-        "PROCESSING",
-        "SUCCESS",
-        "FAILED",
-      ],
+      enum: ["PENDING", "PROCESSING", "SUCCESS", "FAILED"],
       default: "PENDING",
     },
-
-    pinbotEmbeddedDetailResponse: {
-      type: mongoose.Schema.Types.Mixed,
-      default: null,
-    },
-
-    pinbotEmbeddedDetailError: {
-      type: String,
-      default: null,
-    },
-
-    pinbotEmbeddedDetailAt: {
-      type: Date,
-      default: null,
-    },
-
-    /* =====================================================
-       SETUP ERRORS
-    ===================================================== */
-
-    setupError: {
-      type: String,
-      default: null,
-    },
-
-    /* =====================================================
-       SETUP TIMING
-    ===================================================== */
-
-    setupStartedAt: {
-      type: Date,
-      default: null,
-    },
-
-    nextSetupAttemptAt: {
-      type: Date,
-      default: null,
-    },
-
-    setupCompletedAt: {
-      type: Date,
-      default: null,
-    },
+    pinbotEmbeddedDetailResponse: { type: mongoose.Schema.Types.Mixed, default: null },
+    pinbotEmbeddedDetailError: { type: String, default: null },
+    pinbotEmbeddedDetailAt: { type: Date, default: null },
+    setupError: { type: String, default: null },
+    setupStartedAt: { type: Date, default: null },
+    nextSetupAttemptAt: { type: Date, default: null },
+    setupCompletedAt: { type: Date, default: null },
   },
-  {
-    _id: true,
-    timestamps: true,
-  }
+  { _id: true, timestamps: true }
 );
 
 /* =========================================================
@@ -290,418 +92,98 @@ const whatsappNumberSchema = new mongoose.Schema(
 
 const UserSchema = new mongoose.Schema(
   {
-    /* =====================================================
-       BASIC USER INFORMATION
-    ===================================================== */
+    name: { type: String, required: true, unique: true },
+    password: { type: String, required: true },
+    
+    isTenant: { type: Boolean, default: false },
+    tenantId: { type: String, default: null, index: true },
+    parentTenantId: { type: String, default: null, index: true },
+    maxSubUsers: { type: Number, default: 0 },
 
-    name: {
-      type: String,
-      required: true,
-      unique: true,
-    },
+    wabaId: { type: String, default: null },
+    whatsappPhoneNumberId: { type: String, default: null },
+    whatsappAccessToken: { type: String, default: null },
+    whatsappNumbers: { type: [whatsappNumberSchema], default: [] },
 
-    password: {
-      type: String,
-      required: true,
-    },
+    balance: { type: Number, default: 0 },
+    totalRecharged: { type: Number, default: 0 },
+    pricePerMessage: { type: Number, default: 0.9 },
+    priceMarketing: { type: Number, default: 0.9 },
+    priceUtility: { type: Number, default: 0.5 },
+    priceAuthentication: { type: Number, default: 0.3 },
 
-    /* =====================================================
-       TENANT SYSTEM
-    ===================================================== */
-
-    isTenant: {
-      type: Boolean,
-      default: false,
-    },
-
-    tenantId: {
-      type: String,
-      default: null,
-      index: true,
-    },
-
-    parentTenantId: {
-      type: String,
-      default: null,
-      index: true,
-    },
-
-    maxSubUsers: {
-      type: Number,
-      default: 0,
-    },
-
-    /* =====================================================
-       DEFAULT / MAIN WHATSAPP ACCOUNT
-    ===================================================== */
-
-    wabaId: {
-      type: String,
-      default: null,
-    },
-
-    whatsappPhoneNumberId: {
-      type: String,
-      default: null,
-    },
-
-    whatsappAccessToken: {
-      type: String,
-      default: null,
-    },
-
-    /* =====================================================
-       MULTIPLE WHATSAPP NUMBERS
-    ===================================================== */
-
-    whatsappNumbers: {
-      type: [whatsappNumberSchema],
-      default: [],
-    },
-
-    /* =====================================================
-       BALANCE / BILLING
-    ===================================================== */
-
-    balance: {
-      type: Number,
-      default: 0,
-    },
-
-    totalRecharged: {
-      type: Number,
-      default: 0,
-    },
-
-    pricePerMessage: {
-      type: Number,
-      default: 0.9,
-    },
-
-    priceMarketing: {
-      type: Number,
-      default: 0.9,
-    },
-
-    priceUtility: {
-      type: Number,
-      default: 0.5,
-    },
-
-    priceAuthentication: {
-      type: Number,
-      default: 0.3,
-    },
-
-    /* =====================================================
-       COUNTRY SETTINGS
-    ===================================================== */
-
-    maxEnabledCountries: {
-      type: Number,
-      default: 0,
-    },
-
+    maxEnabledCountries: { type: Number, default: 0 },
     enabledCountries: [
       {
-        name: {
-          type: String,
-          default: "",
-        },
-
-        code: {
-          type: String,
-          default: "",
-        },
-
-        priceMarketing: {
-          type: Number,
-          default: 0.9,
-        },
-
-        priceUtility: {
-          type: Number,
-          default: 0.5,
-        },
-
-        priceAuthentication: {
-          type: Number,
-          default: 0.3,
-        },
+        name: { type: String, default: "" },
+        code: { type: String, default: "" },
+        priceMarketing: { type: Number, default: 0.9 },
+        priceUtility: { type: Number, default: 0.5 },
+        priceAuthentication: { type: Number, default: 0.3 },
       },
     ],
 
-    /* =====================================================
-       ACCOUNT STATUS
-    ===================================================== */
-
     accountStatus: {
       type: String,
-      enum: [
-        "active",
-        "expired",
-        "suspended",
-      ],
+      enum: ["active", "expired", "suspended"],
       default: "active",
     },
-
-    planExpiry: {
-      type: Date,
-      default: null,
-    },
-
-    planDuration: {
-      type: String,
-      default: null,
-    },
-
-    planActivatedAt: {
-      type: Date,
-      default: null,
-    },
-
-    suspendedAt: {
-      type: Date,
-      default: null,
-    },
-
-    suspendedReason: {
-      type: String,
-      default: null,
-    },
-
-    /* =====================================================
-       WHITE LABEL
-    ===================================================== */
+    planExpiry: { type: Date, default: null },
+    planDuration: { type: String, default: null },
+    planActivatedAt: { type: Date, default: null },
+    suspendedAt: { type: Date, default: null },
+    suspendedReason: { type: String, default: null },
 
     whiteLabel: {
-      enabled: {
-        type: Boolean,
-        default: false,
-      },
-
-      appName: {
-        type: String,
-        default: "",
-      },
-
-      logoUrl: {
-        type: String,
-        default: "",
-      },
-
-      primaryColor: {
-        type: String,
-        default: "#10b981",
-      },
-
-      supportEmail: {
-        type: String,
-        default: "",
-      },
-
-      brandUrl: {
-        type: String,
-        default: "",
-      },
+      enabled: { type: Boolean, default: false },
+      appName: { type: String, default: "" },
+      logoUrl: { type: String, default: "" },
+      primaryColor: { type: String, default: "#10b981" },
+      supportEmail: { type: String, default: "" },
+      brandUrl: { type: String, default: "" },
     },
 
-    /* =====================================================
-       GOOGLE SHEETS
-    ===================================================== */
-
-    googleSheetId: {
-      type: String,
-      default: null,
-    },
-
+    googleSheetId: { type: String, default: null },
     googleTokens: {
-      access_token: {
-        type: String,
-        default: null,
-      },
-
-      refresh_token: {
-        type: String,
-        default: null,
-      },
-
-      scope: {
-        type: String,
-        default: null,
-      },
-
-      expiry_date: {
-        type: Number,
-        default: null,
-      },
+      access_token: { type: String, default: null },
+      refresh_token: { type: String, default: null },
+      scope: { type: String, default: null },
+      expiry_date: { type: Number, default: null },
     },
-
-    hideIntegrations: {
-      type: Boolean,
-      default: false,
-    },
-
+    hideIntegrations: { type: Boolean, default: false },
+    hiddenSidebarLinks: { type: [String], default: [] },
+    
     /* =====================================================
-       HIDDEN SIDEBAR LINKS
+       HIDDEN REPORT ACTIONS (NEW)
     ===================================================== */
-
-    hiddenSidebarLinks: {
+    hiddenReportActions: {
       type: [String],
       default: [],
     },
 
-    /* =====================================================
-       LIMITS
-    ===================================================== */
-
     limits: {
-      tags: {
-        type: limitItemSchema,
-        default: () => ({
-          max: -1,
-          period: "unlimited",
-        }),
-      },
-
-      workflows: {
-        type: limitItemSchema,
-        default: () => ({
-          max: -1,
-          period: "unlimited",
-        }),
-      },
-
-      templates: {
-        type: limitItemSchema,
-        default: () => ({
-          max: -1,
-          period: "unlimited",
-        }),
-      },
-
-      testMessages: {
-        type: limitItemSchema,
-        default: () => ({
-          max: -1,
-          period: "unlimited",
-        }),
-      },
-
-      campaigns: {
-        type: limitItemSchema,
-        default: () => ({
-          max: -1,
-          period: "unlimited",
-        }),
-      },
-
-      optNumbers: {
-        type: limitItemSchema,
-        default: () => ({
-          max: -1,
-          period: "unlimited",
-        }),
-      },
-
-      forms: {
-        type: limitItemSchema,
-        default: () => ({
-          max: -1,
-          period: "unlimited",
-        }),
-      },
-
-      whatsappNumbers: {
-        type: limitItemSchema,
-        default: () => ({
-          max: -1,
-          period: "unlimited",
-        }),
-      },
+      tags: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+      workflows: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+      templates: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+      testMessages: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+      campaigns: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+      optNumbers: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+      forms: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+      whatsappNumbers: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
     },
-
-    /* =====================================================
-       USAGE
-    ===================================================== */
-
     usage: {
-      tags: {
-        type: usageItemSchema,
-        default: () => ({
-          count: 0,
-          resetAt: null,
-        }),
-      },
-
-      workflows: {
-        type: usageItemSchema,
-        default: () => ({
-          count: 0,
-          resetAt: null,
-        }),
-      },
-
-      templates: {
-        type: usageItemSchema,
-        default: () => ({
-          count: 0,
-          resetAt: null,
-        }),
-      },
-
-      testMessages: {
-        type: usageItemSchema,
-        default: () => ({
-          count: 0,
-          resetAt: null,
-        }),
-      },
-
-      campaigns: {
-        type: usageItemSchema,
-        default: () => ({
-          count: 0,
-          resetAt: null,
-        }),
-      },
-
-      optNumbers: {
-        type: usageItemSchema,
-        default: () => ({
-          count: 0,
-          resetAt: null,
-        }),
-      },
-
-      forms: {
-        type: usageItemSchema,
-        default: () => ({
-          count: 0,
-          resetAt: null,
-        }),
-      },
-
-      whatsappNumbers: {
-        type: usageItemSchema,
-        default: () => ({
-          count: 0,
-          resetAt: null,
-        }),
-      },
+      tags: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
+      workflows: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
+      templates: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
+      testMessages: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
+      campaigns: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
+      optNumbers: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
+      forms: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
+      whatsappNumbers: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
     },
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
 
-/* =========================================================
-   PREVENT MODEL OVERWRITE
-========================================================= */
-
-const User =
-  mongoose.models.User ||
-  mongoose.model("User", UserSchema);
-
+const User = mongoose.models.User || mongoose.model("User", UserSchema);
 export default User;
