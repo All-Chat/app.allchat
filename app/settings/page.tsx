@@ -186,129 +186,350 @@ export default function SettingsPage() {
     setNewAccessToken("");
   };
 
-  const handleEmbeddedSignup = () => {
-    if (!fbReady || !window.FB) {
-      toast.error("Facebook SDK is not ready. Please wait.");
+const handleEmbeddedSignup = () => {
+  if (!fbReady || !window.FB) {
+    toast.error("Facebook SDK is still loading. Please wait.");
+    return;
+  }
+
+  setSigningUp(true);
+
+  // Clear previous signup information
+  window._wabaId = null;
+  window._phoneNumberId = null;
+
+  let businessId: string | null = null;
+
+  /**
+   * Meta Embedded Signup sends information through postMessage.
+   *
+   * We capture:
+   * - WABA ID
+   * - Phone Number ID
+   * - Business Portfolio ID
+   */
+  const sessionInfoListener = (event: MessageEvent) => {
+    // Only accept messages from Meta
+    if (
+      event.origin !== "https://www.facebook.com" &&
+      event.origin !== "https://web.facebook.com"
+    ) {
       return;
     }
 
-    const appId = process.env.NEXT_PUBLIC_META_APP_ID || "";
-    const configId = process.env.NEXT_PUBLIC_META_CONFIG_ID || "";
-    const solutionId = process.env.NEXT_PUBLIC_META_SOLUTION_ID || "";
+    try {
+      const data =
+        typeof event.data === "string"
+          ? JSON.parse(event.data)
+          : event.data;
 
-    if (!appId || !configId || !solutionId) {
-      toast.error("Missing Meta App ID, Config ID, or Solution ID in environment.");
-      return;
+      console.log(
+        "[Embedded Signup] Message received:",
+        JSON.stringify(data, null, 2)
+      );
+
+      // Ignore unrelated Facebook messages
+      if (data?.type !== "WA_EMBEDDED_SIGNUP") {
+        return;
+      }
+
+      // ------------------------------------------
+      // SIGNUP FINISHED
+      // ------------------------------------------
+      if (data.event === "FINISH") {
+        const wabaId = data.data?.waba_id || null;
+
+        const phoneNumberId =
+          data.data?.phone_number_id ||
+          data.data?.phone_numberid ||
+          null;
+
+        const receivedBusinessId =
+          data.data?.business_id ||
+          data.data?.businessId ||
+          null;
+
+        console.log(
+          "[Embedded Signup] FINISH received"
+        );
+
+        console.log(
+          "[Embedded Signup] WABA ID:",
+          wabaId
+        );
+
+        console.log(
+          "[Embedded Signup] Phone Number ID:",
+          phoneNumberId
+        );
+
+        console.log(
+          "[Embedded Signup] Business ID:",
+          receivedBusinessId
+        );
+
+        // Store temporarily
+        window._wabaId = wabaId;
+        window._phoneNumberId = phoneNumberId;
+
+        if (receivedBusinessId) {
+          businessId = receivedBusinessId;
+        }
+      }
+
+      // ------------------------------------------
+      // USER CANCELLED
+      // ------------------------------------------
+      else if (data.event === "CANCEL") {
+        console.log(
+          "[Embedded Signup] Cancelled at step:",
+          data.data?.current_step
+        );
+      }
+
+      // ------------------------------------------
+      // META ERROR
+      // ------------------------------------------
+      else if (data.event === "ERROR") {
+        console.error(
+          "[Embedded Signup] Meta error:",
+          JSON.stringify(data.data, null, 2)
+        );
+      }
+    } catch (error) {
+      console.log(
+        "[Embedded Signup] Non-JSON message:",
+        event.data
+      );
     }
-
-    setSigningUp(true);
-    window._wabaId = null;
-    window._phoneNumberId = null;
-    window._businessId = null;
-
-    const sessionInfoListener = (event: MessageEvent) => {
-      const allowedOrigins = [
-        "https://www.facebook.com",
-        "https://web.facebook.com",
-        "https://business.facebook.com",
-      ];
-
-      if (!allowedOrigins.includes(event.origin)) return;
-
-      let data: any;
-      try {
-        data = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
-      } catch {
-        return;
-      }
-
-      if (data?.type !== "WA_EMBEDDED_SIGNUP") return;
-
-      if (data.event === "ERROR") {
-        toast.error(data?.data?.error_message || "Meta Embedded Signup failed.");
-        cleanup();
-        return;
-      }
-
-      if (data.event === "CANCEL") {
-        toast.warn("Embedded Signup was cancelled.");
-        cleanup();
-        return;
-      }
-
-      if (data.event === "FINISH" || data.event === "FINISH_ONLY_WABA") {
-        const signupData = data.data || {};
-        window._wabaId = signupData.waba_id || signupData.wabaId || null;
-        window._phoneNumberId = signupData.phone_number_id || signupData.phoneNumberId || null;
-        window._businessId = signupData.business_id || signupData.businessId || null;
-        
-        toast.info("Meta signup completed. Connecting account...");
-        return;
-      }
-    };
-
-    const cleanup = () => {
-      window.removeEventListener("message", sessionInfoListener);
-      setSigningUp(false);
-    };
-
-    window.addEventListener("message", sessionInfoListener);
-
-    window.FB.login(
-      (response: any) => {
-        if (!response?.authResponse) {
-          toast.error("Facebook login was cancelled or failed.");
-          cleanup();
-          return;
-        }
-
-        const code = response.authResponse.code;
-        const wabaId = window._wabaId;
-        const phoneNumberId = window._phoneNumberId;
-        const businessId = window._businessId;
-
-        if (!wabaId) {
-          toast.error("Meta did not return WABA ID. Please complete the signup again.");
-          cleanup();
-          return;
-        }
-
-        (async () => {
-          try {
-            const res = await fetch("/api/settings/embedded-signup", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              credentials: "include",
-              body: JSON.stringify({ code, wabaId, phoneNumberId, businessId, solutionId }),
-            });
-
-            const result = await res.json();
-
-            if (!res.ok || !result.success) {
-              throw new Error(result.message || "Backend could not connect WhatsApp.");
-            }
-
-            toast.success(result.message || "WhatsApp connected successfully.");
-            await fetchSettings();
-          } catch (error: any) {
-            console.error("[Embedded Signup] BACKEND ERROR:", error);
-            toast.error(error?.message || "Unable to connect WhatsApp.");
-          } finally {
-            cleanup();
-          }
-        })();
-      },
-      {
-        config_id: configId,
-        response_type: "code",
-        override_default_response_type: true,
-        extras: {
-          setup: { solutionID: solutionId },
-          sessionInfoVersion: "3",
-        },
-      }
-    );
   };
+
+  // IMPORTANT:
+  // Add listener BEFORE opening Embedded Signup.
+  window.addEventListener(
+    "message",
+    sessionInfoListener
+  );
+
+  // ------------------------------------------
+  // OPEN META EMBEDDED SIGNUP
+  // ------------------------------------------
+  window.FB.login(
+    (response: any) => {
+      // Remove listener once FB.login callback fires
+      window.removeEventListener(
+        "message",
+        sessionInfoListener
+      );
+
+      console.log(
+        "[FB.login] Full response:",
+        JSON.stringify(response, null, 2)
+      );
+
+      // ------------------------------------------
+      // FACEBOOK LOGIN FAILED / CANCELLED
+      // ------------------------------------------
+      if (!response?.authResponse) {
+        toast.error(
+          "Facebook login was cancelled or failed."
+        );
+
+        setSigningUp(false);
+        return;
+      }
+
+      // ------------------------------------------
+      // GET AUTHORIZATION CODE
+      // ------------------------------------------
+      const code = response.authResponse.code;
+
+      if (!code) {
+        toast.error(
+          "No authorization code received from Meta."
+        );
+
+        setSigningUp(false);
+        return;
+      }
+
+      // ------------------------------------------
+      // GET WABA / PHONE NUMBER
+      // ------------------------------------------
+      const wabaId =
+        window._wabaId || null;
+
+      const phoneNumberId =
+        window._phoneNumberId || null;
+
+      // ------------------------------------------
+      // LOG EVERYTHING
+      // ------------------------------------------
+      console.log(
+        "[FB.login] Authorization code received:",
+        !!code
+      );
+
+      console.log(
+        "[FB.login] WABA ID:",
+        wabaId
+      );
+
+      console.log(
+        "[FB.login] Phone Number ID:",
+        phoneNumberId
+      );
+
+      console.log(
+        "[FB.login] Business ID:",
+        businessId
+      );
+
+      // ------------------------------------------
+      // WABA ID REQUIRED
+      // ------------------------------------------
+      if (!wabaId) {
+        toast.error(
+          "Meta did not return the WABA ID. Please complete Embedded Signup again."
+        );
+
+        setSigningUp(false);
+        return;
+      }
+
+      // ------------------------------------------
+      // PHONE NUMBER ID REQUIRED
+      // ------------------------------------------
+      if (!phoneNumberId) {
+        toast.error(
+          "Meta did not return the Phone Number ID. Please complete Embedded Signup again."
+        );
+
+        setSigningUp(false);
+        return;
+      }
+
+      /**
+       * IMPORTANT:
+       *
+       * Do NOT send Pinnacle's API key from the browser.
+       *
+       * The browser sends the authorization code and
+       * onboarding information to YOUR backend.
+       *
+       * YOUR backend then:
+       *
+       * 1. Exchanges the authorization code
+       * 2. Gets the access token
+       * 3. Gets the Business Portfolio ID if necessary
+       * 4. Sends the details to Pinbot/Pinnacle
+       * 5. Handles the remaining onboarding APIs
+       */
+      (async () => {
+        try {
+          const res = await fetch(
+            "/api/settings/embedded-signup",
+            {
+              method: "POST",
+
+              headers: {
+                "Content-Type": "application/json",
+              },
+
+              body: JSON.stringify({
+                code,
+
+                wabaId,
+
+                phoneNumberId,
+
+                // Meta Config ID
+                configId:
+                  process.env
+                    .NEXT_PUBLIC_META_CONFIG_ID || "",
+
+                // Your Pinnacle/Pinbot Solution ID
+                solutionId:
+                  "1691305462165667",
+
+                // Business ID if Meta provided it
+                businessId,
+
+                // Pinnacle requires this
+                mmlite: 1,
+              }),
+            }
+          );
+
+          const data = await res.json();
+
+          console.log(
+            "[Embedded Signup] Backend response:",
+            JSON.stringify(data, null, 2)
+          );
+
+          if (!res.ok || !data.success) {
+            throw new Error(
+              data.message ||
+                "Embedded Signup request failed"
+            );
+          }
+
+          // ------------------------------------------
+          // SUCCESS
+          // ------------------------------------------
+          toast.success(
+            data.message ||
+              "WhatsApp connected successfully!"
+          );
+
+          // Clear temporary information
+          window._wabaId = null;
+          window._phoneNumberId = null;
+
+          // Refresh settings / WhatsApp numbers
+          await fetchSettings();
+        } catch (error: any) {
+          console.error(
+            "[Embedded Signup] Backend error:",
+            error
+          );
+
+          toast.error(
+            error?.message ||
+              "Error connecting WhatsApp. Please try again."
+          );
+        } finally {
+          setSigningUp(false);
+        }
+      })();
+    },
+
+    // ------------------------------------------
+    // META EMBEDDED SIGNUP OPTIONS
+    // ------------------------------------------
+    {
+      config_id:
+        process.env.NEXT_PUBLIC_META_CONFIG_ID || "",
+
+      response_type: "code",
+
+      override_default_response_type: true,
+
+      extras: {
+        setup: {
+          solutionID:
+            "1691305462165667",
+        },
+
+        featureType:
+          "whatsapp_business_app_onboarding",
+
+        sessionInfoVersion: "3",
+      },
+    }
+  );
+};
 
   const handleConnectGoogle = async () => {
     setConnectingGoogle(true);
@@ -686,48 +907,140 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {!hideIntegrations && (
-            <div className="mb-6 sm:mb-8">
-              <div className="flex items-center gap-2 mb-4">
-                <div className="w-1.5 h-6 bg-gradient-to-b from-green-500 to-emerald-500 rounded-full" />
-                <h2 className="text-base sm:text-lg font-bold text-gray-900">Integrations</h2>
-              </div>
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
-                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-green-100 rounded-lg">
-                      <svg className="w-5 h-5 text-green-700" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M19.5 3h-4v4.5h7V4.5A1.5 1.5 0 0021 3h-1.5zM15 21h4.5a1.5 1.5 0 001.5-1.5V15h-7v4.5H15V21zM3 19.5A1.5 1.5 0 004.5 21H9v-4.5H3v3zM3 9h6V3H4.5A1.5 1.5 0 003 4.5V9zm0 4.5h6V9H3v4.5zM13.5 3H9v6h4.5V3zm0 9H9v4.5h4.5V12z" />
-                      </svg>
-                    </div>
-                    <div>
-                      <h3 className="font-bold text-gray-900 text-sm">Google Sheets (Live Reports)</h3>
-                      <p className="text-xs text-gray-500">Automatically export campaign reports to a Google Sheet.</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {googleSheetUrl ? (
-                      <>
-                        <a href={googleSheetUrl} target="_blank" rel="noopener noreferrer" className="px-5 py-2.5 bg-green-50 text-green-700 border border-green-200 rounded-xl text-xs font-bold flex items-center gap-2 hover:bg-green-100 transition-colors">
-                          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3m-2 16H5V5h7V3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7h-2v7z" /></svg>
-                          Open Sheet
-                        </a>
-                        <button onClick={handleDisconnectGoogle} disabled={disconnectingGoogle} className="px-4 py-2.5 bg-red-50 text-red-600 border border-red-200 rounded-xl text-xs font-bold flex items-center gap-2 hover:bg-red-100 transition-colors disabled:opacity-50">
-                          {disconnectingGoogle ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                          Disconnect
-                        </button>
-                      </>
-                    ) : (
-                      <button onClick={handleConnectGoogle} disabled={connectingGoogle} className="px-5 py-2.5 bg-slate-900 text-white rounded-xl text-xs font-bold flex items-center gap-2 hover:bg-slate-800 transition-colors disabled:opacity-50">
-                        {connectingGoogle ? <Loader2 size={14} className="animate-spin" /> : null}
-                        Connect Google Account
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
+          <div className="mb-6 sm:mb-8">
+  <div className="flex items-center gap-2 mb-4">
+    <div className="w-1.5 h-6 bg-gradient-to-b from-green-500 to-emerald-500 rounded-full" />
+    <h2 className="text-base sm:text-lg font-bold text-gray-900">
+      Integrations
+    </h2>
+
+    {hideIntegrations && (
+      <span className="ml-2 text-[10px] font-bold uppercase tracking-wide text-gray-500 bg-gray-100 border border-gray-200 px-2.5 py-1 rounded-full">
+        Disabled
+      </span>
+    )}
+  </div>
+
+  <div
+    className={`bg-white rounded-2xl border shadow-sm p-5 transition-all ${
+      hideIntegrations
+        ? "border-gray-200 opacity-60"
+        : "border-gray-200"
+    }`}
+  >
+    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+
+      <div className="flex items-center gap-3">
+        <div
+          className={`p-2 rounded-lg ${
+            hideIntegrations
+              ? "bg-gray-100"
+              : "bg-green-100"
+          }`}
+        >
+          <svg
+            className={`w-5 h-5 ${
+              hideIntegrations
+                ? "text-gray-400"
+                : "text-green-700"
+            }`}
+            viewBox="0 0 24 24"
+            fill="currentColor"
+          >
+            <path d="M19.5 3h-4v4.5h7V4.5A1.5 1.5 0 0021 4.5V3h-1.5zM15 21h4.5a1.5 1.5 0 001.5-1.5V15h-7v4.5H15V21zM3 19.5A1.5 1.5 0 004.5 21H9v-4.5H3v3zM3 9h6V3H4.5A1.5 1.5 0 003 4.5V9zm0 4.5h6V9H3v4.5zM13.5 3H9v6h4.5V3zm0 9H9v4.5h4.5V12z" />
+          </svg>
+        </div>
+
+        <div>
+          <h3 className="font-bold text-gray-900 text-sm">
+            Google Sheets (Live Reports)
+          </h3>
+
+          <p className="text-xs text-gray-500">
+            Automatically export campaign reports to a Google Sheet.
+          </p>
+
+          {hideIntegrations && (
+            <p className="text-[11px] text-red-500 font-semibold mt-1">
+              Not Included In Your Plan.
+            </p>
           )}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        {googleSheetUrl ? (
+          <>
+            <button
+              type="button"
+              disabled={hideIntegrations}
+              onClick={() => {
+                if (!hideIntegrations) {
+                  window.open(
+                    googleSheetUrl,
+                    "_blank",
+                    "noopener,noreferrer"
+                  );
+                }
+              }}
+              className={`px-5 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 border transition-colors ${
+                hideIntegrations
+                  ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
+                  : "bg-green-50 text-green-700 border-green-200 hover:bg-green-100"
+              }`}
+            >
+              <svg
+                className="w-4 h-4"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              >
+                <path d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3m-2 16H5V5h7V3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 00-2-2v7z" />
+              </svg>
+              Open Sheet
+            </button>
+
+            <button
+              type="button"
+              onClick={handleDisconnectGoogle}
+              disabled={disconnectingGoogle || hideIntegrations}
+              className={`px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 border transition-colors ${
+                hideIntegrations
+                  ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
+                  : "bg-red-50 text-red-600 border-red-200 hover:bg-red-100"
+              }`}
+            >
+              {disconnectingGoogle ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Trash2 size={14} />
+              )}
+              Disconnect
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={handleConnectGoogle}
+            disabled={connectingGoogle || hideIntegrations}
+            className={`px-5 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-colors ${
+              hideIntegrations
+                ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                : "bg-slate-900 text-white hover:bg-slate-800"
+            }`}
+          >
+            {connectingGoogle ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : null}
+
+            {hideIntegrations
+              ? "Integration Disabled"
+              : "Connect Google Account"}
+          </button>
+        )}
+      </div>
+    </div>
+  </div>
+</div>
 
         </div>
       </div>
