@@ -179,15 +179,48 @@ return [];
 };
 
 const getCampaignStats = (c: Campaign): LiveStats => {
+// ✅ FIX: If this is the SELECTED campaign, use campaignStats (same as brief)
+// This makes sidebar stats match brief stats exactly
+if (c._id === selectedId && campaignStats && (campaignStats.total || 0) > 0) {
+const cs = campaignStats;
+const processed =
+Number(cs.replied || 0) +
+Number(cs.read || 0) +
+Number(cs.delivered || 0) +
+Number(cs.sent || 0) +
+Number(cs.failed || 0) +
+Number(cs.invalid || 0) +
+Number(cs.duplicate || 0);
+return {
+total: Number(cs.total || 0),
+replied: Number(cs.replied || 0),
+read: Number(cs.read || 0),
+delivered: Number(cs.delivered || 0),
+sent: Number(cs.sent || 0),
+failed: Number(cs.failed || 0),
+invalid: Number(cs.invalid || 0),
+duplicate: Number(cs.duplicate || 0),
+pending: Math.max(0, Number(cs.total || 0) - processed),
+};
+}
+
+// For OTHER campaigns (not selected), use liveStats with fixed pending
 if (c.liveStats) {
 const ls = c.liveStats;
-// ✅ FIX: Include replied in processed count
-const processed = Number(ls.replied || 0) + Number(ls.read || 0) + Number(ls.delivered || 0) + Number(ls.sent || 0) + Number(ls.failed || 0) + Number(ls.invalid || 0) + Number(ls.duplicate || 0);
+const processed =
+Number(ls.replied || 0) +
+Number(ls.read || 0) +
+Number(ls.delivered || 0) +
+Number(ls.sent || 0) +
+Number(ls.failed || 0) +
+Number(ls.invalid || 0) +
+Number(ls.duplicate || 0);
 return {
 ...ls,
 pending: Math.max(0, Number(ls.total || c.totalMessages || 0) - processed),
 };
 }
+
 return {
 total: c.totalMessages || 0,
 replied: 0, read: 0, delivered: 0,
