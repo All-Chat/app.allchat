@@ -12,6 +12,10 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: "All Chat CRM - WhatsApp Automation",
   description: "Automate WhatsApp Marketing with AI Powered CRM",
+    icons: {
+    icon: "/icon.png",
+    apple: "/icon.png",
+  },
 };
 
 if (typeof window === "undefined") {
