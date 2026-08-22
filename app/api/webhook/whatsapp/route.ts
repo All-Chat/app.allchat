@@ -49,9 +49,10 @@ function normalizePhone(val: any): string {
   return digits.slice(-10);
 }
 
-// ✅ ADDED: Balance refund helper function
-// This is called when a message changes from "sent" to "failed" or "invalid"
-// It refunds the balance that was deducted when the message was originally sent
+// ═══════════════════════════════════════════════════════════════
+// ✅ UPDATED: Balance refund helper — now uses ACTUAL chargedAmount
+// from reportData instead of fixed pricePerMessage
+// ═══════════════════════════════════════════════════════════════
 async function processBalanceRefund(
   campaignId: any,
   reportIdx: number,
@@ -72,8 +73,15 @@ async function processBalanceRefund(
         .lean();
       if (!campaign) return;
 
-      const pricePerMessage = Number(campaign.pricePerMessage || 0);
-      if (pricePerMessage <= 0) return;
+      // ═══════════════════════════════════════════════════════════════
+      // ✅ FIX: Use ACTUAL charged amount from reportData
+      // The worker stores chargedAmount per message using
+      // getOptimizedPriceForPhone() which handles country-wise pricing
+      // Fall back to pricePerMessage if chargedAmount not available
+      // ═══════════════════════════════════════════════════════════════
+      const refundAmount = Number(reportDataItem?.chargedAmount) || Number(campaign.pricePerMessage || 0);
+
+      if (refundAmount <= 0) return;
 
       // Find payer (user or parent tenant)
       let payerId = campaign.userId;
@@ -91,22 +99,22 @@ async function processBalanceRefund(
         console.error("Refund: Failed to find payer:", e);
       }
 
-      // ✅ Refund balance (add back the price)
+      // ✅ Refund balance (add back the ACTUAL charged amount)
       try {
         await User.updateOne(
           { _id: payerId },
-          { $inc: { balance: pricePerMessage } }
+          { $inc: { balance: refundAmount } }
         );
-        console.log(`✅ Refunded ${pricePerMessage} to user ${payerId} for failed message ${wamid || "unknown"}`);
+        console.log(`✅ Refunded ${refundAmount} to user ${payerId} for failed message ${wamid || "unknown"}`);
       } catch (e) {
         console.error("Refund: Balance update failed:", e);
       }
 
-      // ✅ Reduce totalDeducted on campaign
+      // ✅ Reduce totalDeducted by the ACTUAL charged amount
       try {
         await Campaign.updateOne(
           { _id: campaignId },
-          { $inc: { totalDeducted: -pricePerMessage } }
+          { $inc: { totalDeducted: -refundAmount } }
         );
       } catch (e) {
         console.error("Refund: totalDeducted update failed:", e);
@@ -117,7 +125,7 @@ async function processBalanceRefund(
         await Transaction.create({
           userId: payerId,
           type: "refund",
-          amount: pricePerMessage,
+          amount: refundAmount,
           description: "Refund: Message failed to deliver",
           status: "success",
           createdAt: new Date(),
@@ -129,9 +137,10 @@ async function processBalanceRefund(
             reason: errorText,
             previousStatus: prevStatus,
             newStatus: newStatus,
+            chargedAmount: refundAmount,
           }
         });
-        console.log(`✅ Refund transaction created for ${wamid || "unknown"}`);
+        console.log(`✅ Refund transaction created for ${wamid || "unknown"} (amount: ${refundAmount})`);
       } catch (e) {
         console.error("Refund: Transaction creation failed:", e);
       }
@@ -1120,7 +1129,7 @@ export async function POST(req: NextRequest) {
             if (campByWamid) {
               const idx = campByWamid.reportData.findIndex((item: any) => item.sentWamid === id);
               if (idx !== -1 && shouldUpdateStatus(campByWamid.reportData[idx].status, status)) {
-                // ✅ ADDED: Capture previous status BEFORE updating
+                // ✅ Capture previous status BEFORE updating
                 const prevStatus = campByWamid.reportData[idx].status;
 
                 const updateSet: any = { "reportData.$.status": status, "reportData.$.error": errorText };
@@ -1132,7 +1141,7 @@ export async function POST(req: NextRequest) {
                   { $set: updateSet }
                 );
 
-                // ✅ ADDED: Process balance refund if message changed from sent → failed
+                // ✅ Process balance refund if message changed from sent → failed
                 await processBalanceRefund(
                   campByWamid._id,
                   idx,
@@ -1157,7 +1166,7 @@ export async function POST(req: NextRequest) {
                     }
                   }
                   if (touchedIdx !== -1) {
-                    // ✅ ADDED: Capture previous status BEFORE updating
+                    // ✅ Capture previous status BEFORE updating
                     const prevStatus = camp.reportData[touchedIdx].status;
 
                     const updateSet: any = { [`reportData.${touchedIdx}.status`]: status, [`reportData.${touchedIdx}.error`]: errorText };
@@ -1169,7 +1178,7 @@ export async function POST(req: NextRequest) {
                       { $set: updateSet }
                     );
 
-                    // ✅ ADDED: Process balance refund if message changed from sent → failed
+                    // ✅ Process balance refund if message changed from sent → failed
                     await processBalanceRefund(
                       camp._id,
                       touchedIdx,
