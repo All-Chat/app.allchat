@@ -10,12 +10,25 @@ import FormResponse from "@/models/FormResponse";
 import Campaign from "@/models/Campaign";
 import fs from "fs";
 import path from "path";
+import mongoose from "mongoose"; // ✅ ADDED: for Transaction model
 
 export const runtime = "nodejs";
 
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "watiX_webhook_verify_2024";
 const workflowTimers = new Map<string, NodeJS.Timeout>();
 const formTimers = new Map<string, NodeJS.Timeout>();
+
+// ✅ ADDED: Transaction model for refund records
+const TransactionSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  type: String,
+  amount: Number,
+  description: String,
+  status: String,
+  createdAt: { type: Date, default: Date.now },
+  metadata: Object
+});
+const Transaction = mongoose.models.Transaction || mongoose.model('Transaction', TransactionSchema);
 
 const statusPriority: Record<string, number> = {
   "pending": 1, "queued": 2, "sent": 3, "delivered": 4, "read": 5
@@ -34,6 +47,98 @@ function shouldUpdateStatus(currentStatus: string, newStatus: string): boolean {
 function normalizePhone(val: any): string {
   const digits = String(val || "").replace(/\D/g, "");
   return digits.slice(-10);
+}
+
+// ✅ ADDED: Balance refund helper function
+// This is called when a message changes from "sent" to "failed" or "invalid"
+// It refunds the balance that was deducted when the message was originally sent
+async function processBalanceRefund(
+  campaignId: any,
+  reportIdx: number,
+  prevStatus: string,
+  newStatus: string,
+  errorText: string | null,
+  wamid: string,
+  reportDataItem: any
+) {
+  try {
+    // Only refund if message was previously "sent" (balance was deducted)
+    // and now becomes "failed" or "invalid"
+    if ((newStatus === "failed" || newStatus === "invalid") &&
+        ["sent", "delivered", "read"].includes(prevStatus)) {
+
+      const campaign: any = await Campaign.findById(campaignId)
+        .select("pricePerMessage userId name templateName")
+        .lean();
+      if (!campaign) return;
+
+      const pricePerMessage = Number(campaign.pricePerMessage || 0);
+      if (pricePerMessage <= 0) return;
+
+      // Find payer (user or parent tenant)
+      let payerId = campaign.userId;
+      try {
+        const campaignUser = await User.findById(campaign.userId)
+          .select("parentTenantId")
+          .lean();
+        if (campaignUser?.parentTenantId) {
+          const parent = await User.findOne({ tenantId: campaignUser.parentTenantId })
+            .select("_id")
+            .lean();
+          if (parent) payerId = parent._id;
+        }
+      } catch (e) {
+        console.error("Refund: Failed to find payer:", e);
+      }
+
+      // ✅ Refund balance (add back the price)
+      try {
+        await User.updateOne(
+          { _id: payerId },
+          { $inc: { balance: pricePerMessage } }
+        );
+        console.log(`✅ Refunded ${pricePerMessage} to user ${payerId} for failed message ${wamid || "unknown"}`);
+      } catch (e) {
+        console.error("Refund: Balance update failed:", e);
+      }
+
+      // ✅ Reduce totalDeducted on campaign
+      try {
+        await Campaign.updateOne(
+          { _id: campaignId },
+          { $inc: { totalDeducted: -pricePerMessage } }
+        );
+      } catch (e) {
+        console.error("Refund: totalDeducted update failed:", e);
+      }
+
+      // ✅ Create refund transaction record
+      try {
+        await Transaction.create({
+          userId: payerId,
+          type: "refund",
+          amount: pricePerMessage,
+          description: "Refund: Message failed to deliver",
+          status: "success",
+          createdAt: new Date(),
+          metadata: {
+            campaignName: campaign.name,
+            templateName: campaign.templateName,
+            phone: reportDataItem?.phone,
+            wamid: wamid,
+            reason: errorText,
+            previousStatus: prevStatus,
+            newStatus: newStatus,
+          }
+        });
+        console.log(`✅ Refund transaction created for ${wamid || "unknown"}`);
+      } catch (e) {
+        console.error("Refund: Transaction creation failed:", e);
+      }
+    }
+  } catch (err) {
+    console.error("Refund: Unexpected error:", err);
+  }
 }
 
 type OutgoingPayload = {
@@ -934,6 +1039,7 @@ async function sendWorkflowWhatsAppMessage(
     },
   });
 }
+
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try {
     const { default: Contact } = await import("@/models/Contact");
@@ -983,7 +1089,6 @@ export async function POST(req: NextRequest) {
         if (contactInfo?.profile?.name && contactInfo?.wa_id) {
           try { 
             const { default: Contact } = await import("@/models/Contact"); 
-            // ✅ Profile picture code completely removed. Only saving the name.
             await Contact.findOneAndUpdate({ phone: contactInfo.wa_id, userId: num.userId }, { name: contactInfo.profile.name, phone: contactInfo.wa_id }, { upsert: true }); 
           } catch {}
         }
@@ -1015,6 +1120,9 @@ export async function POST(req: NextRequest) {
             if (campByWamid) {
               const idx = campByWamid.reportData.findIndex((item: any) => item.sentWamid === id);
               if (idx !== -1 && shouldUpdateStatus(campByWamid.reportData[idx].status, status)) {
+                // ✅ ADDED: Capture previous status BEFORE updating
+                const prevStatus = campByWamid.reportData[idx].status;
+
                 const updateSet: any = { "reportData.$.status": status, "reportData.$.error": errorText };
                 if (status === "delivered") updateSet["reportData.$.deliveredAt"] = new Date(parseInt(statusObj.timestamp) * 1000);
                 if (status === "read") updateSet["reportData.$.readAt"] = new Date(parseInt(statusObj.timestamp) * 1000);
@@ -1022,6 +1130,17 @@ export async function POST(req: NextRequest) {
                 await Campaign.updateOne(
                   { _id: campByWamid._id, "reportData.sentWamid": id },
                   { $set: updateSet }
+                );
+
+                // ✅ ADDED: Process balance refund if message changed from sent → failed
+                await processBalanceRefund(
+                  campByWamid._id,
+                  idx,
+                  prevStatus,
+                  status,
+                  errorText,
+                  id,
+                  campByWamid.reportData[idx]
                 );
               }
             } else {
@@ -1038,6 +1157,9 @@ export async function POST(req: NextRequest) {
                     }
                   }
                   if (touchedIdx !== -1) {
+                    // ✅ ADDED: Capture previous status BEFORE updating
+                    const prevStatus = camp.reportData[touchedIdx].status;
+
                     const updateSet: any = { [`reportData.${touchedIdx}.status`]: status, [`reportData.${touchedIdx}.error`]: errorText };
                     if (status === "delivered") updateSet[`reportData.${touchedIdx}.deliveredAt`] = new Date(parseInt(statusObj.timestamp) * 1000);
                     if (status === "read") updateSet[`reportData.${touchedIdx}.readAt`] = new Date(parseInt(statusObj.timestamp) * 1000);
@@ -1045,6 +1167,17 @@ export async function POST(req: NextRequest) {
                     await Campaign.updateOne(
                       { _id: camp._id },
                       { $set: updateSet }
+                    );
+
+                    // ✅ ADDED: Process balance refund if message changed from sent → failed
+                    await processBalanceRefund(
+                      camp._id,
+                      touchedIdx,
+                      prevStatus,
+                      status,
+                      errorText,
+                      id,
+                      camp.reportData[touchedIdx]
                     );
                   }
                 }
