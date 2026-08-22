@@ -413,18 +413,63 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
       const sendRes = await fetch(url, { method: "POST", headers, body: payload, signal: controller.signal });
       clearTimeout(timeoutId);
 
+      // ═══════════════════════════════════════════════════════════════
+      // ✅ FIX: Only return "sent" if we have a VALID wamid
+      // Previously: returned "sent" if sendRes.ok was true,
+      // even if wamid was null (Meta returned 200 but with error)
+      // This caused balance to be deducted for failed messages
+      // ═══════════════════════════════════════════════════════════════
       if (sendRes.ok) {
-        let wamid = null;
-        try { const d = await sendRes.json(); wamid = d?.messages?.[0]?.id || d?.message_id; } catch (e) { console.error(`[Meta API] Failed to parse success JSON for ${phone}:`, e); }
-        return { status: "sent", wamid };
+        let wamid: string | null = null;
+        let data: any = null;
+        try {
+          data = await sendRes.json();
+          wamid = data?.messages?.[0]?.id || data?.message_id || null;
+        } catch (e) {
+          console.error(`[Meta API] Failed to parse success JSON for ${phone}:`, e);
+        }
+
+        // ✅ Only return "sent" if we have a valid wamid
+        if (wamid) {
+          return { status: "sent", wamid };
+        }
+
+        // ❌ Meta returned 200 but no wamid — treat as FAILED
+        // This prevents balance deduction for messages that weren't actually sent
+        if (data?.error) {
+          const errorMsg = data.error.message || "Meta API error";
+          const errorCode = data.error.code;
+
+          // Handle media format errors
+          if (errorCode === 132012 && tc.mediaUrl) {
+            const m = (data.error?.error_data?.details || "").match(/expected\s+(\w+)/i);
+            if (m && ["IMAGE", "VIDEO", "DOCUMENT"].includes(m[1].toUpperCase())) {
+              comps = buildCampaignComponents(m[1].toUpperCase(), variables, tc.mediaUrl);
+              attempt++;
+              continue;
+            }
+          }
+          if (errorCode === 132012 && comps.length > 0 && comps[0].type === "header") {
+            comps = comps.filter((c: any) => c.type !== "header");
+            attempt++;
+            continue;
+          }
+
+          return { status: "failed", error: errorMsg };
+        }
+
+        // No wamid and no error — treat as failed
+        return { status: "failed", error: "Meta API returned 200 but no message ID" };
       }
 
+      // ❌ Non-200 response — parse error
       let sendData: any = null;
       try { sendData = await sendRes.json(); } catch { return { status: "failed", error: "Meta API invalid response" }; }
 
       const statusCode = sendRes.status;
       const errorMsg = sendData?.error?.message || "Failed to send";
 
+      // Handle media format errors (retry)
       if (sendData.error?.code === 132012 && tc.mediaUrl) {
         const m = (sendData.error?.error_data?.details || "").match(/expected\s+(\w+)/i);
         if (m && ["IMAGE", "VIDEO", "DOCUMENT"].includes(m[1].toUpperCase())) {
@@ -437,6 +482,7 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
         attempt++; continue;
       }
 
+      // Retry on 429 or 5xx
       if (statusCode === 429 || statusCode >= 500) {
         if (attempt < maxRetries) {
           await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
