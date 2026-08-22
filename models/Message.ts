@@ -25,6 +25,9 @@ export interface IMessage extends Document {
   fromPhone?: string;              
   senderNumber?: string;           
 
+  // ✅ ADDED: source field to distinguish test messages from campaign messages
+  source?: string;  // "test" for test messages, null for campaign/workflow messages
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -65,26 +68,29 @@ const MessageSchema = new Schema<IMessage>(
     templateButtons: { type: String, default: null },
     templateLanguage: { type: String, default: null },
     
-    // ✅ ADDED TO SCHEMA BODY: Now Mongoose knows to save these to MongoDB!
+    // ✅ ADDED TO SCHEMA BODY
     whatsappPhoneNumberId: { type: String, default: null },
     fromPhone: { type: String, default: null },
     senderNumber: { type: String, default: null },
+    
+    // ✅ ADDED: source field
+    source: { type: String, default: null },
   },
   { timestamps: true }
 );
 
 // ─── Indexes ───
-// Sparse index so nulls don't take up index space
 MessageSchema.index({ whatsappMessageId: 1 }, { sparse: true });
 MessageSchema.index({ metaMessageId: 1 }, { sparse: true });
-
-// ✅ ADDED INDEX: Massively speeds up the dropdown filtering
 MessageSchema.index({ whatsappPhoneNumberId: 1 }, { sparse: true });
 
-// Primary query index: Fetching chats and messages for a specific user
+// Primary query index
 MessageSchema.index({ userId: 1, phone: 1, createdAt: -1 });
 
-// Secondary index: Sorting user's messages globally by time
+// Secondary index
 MessageSchema.index({ userId: 1, createdAt: -1 });
+
+// ✅ ADDED: Index for source field — speeds up test message queries
+MessageSchema.index({ userId: 1, source: 1, createdAt: -1 });
 
 export default mongoose.models.Message || mongoose.model<IMessage>("Message", MessageSchema);
