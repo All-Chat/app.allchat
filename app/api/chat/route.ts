@@ -1,13 +1,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* =====================================================================
    GET /api/chat - UNIFIED TENANT VIEW + TRANSFERRED CHATS PERMISSIONS
+   ✅ FIX: Only returns messages if contact has replied (has incoming)
    ===================================================================== */
 
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Message from "@/models/Message";
 import User from "@/models/User";
-import ChatTransfer from "@/models/ChatTransfer"; // Import the new model
+import ChatTransfer from "@/models/ChatTransfer";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import mongoose from "mongoose";
@@ -16,7 +17,7 @@ export async function GET(req: Request) {
   try {
     await connectDB();
     const session = await getServerSession(authOptions);
-    
+
     if (!session?.user?.id) {
       return NextResponse.json({ success: false, messages: [] }, { status: 401 });
     }
@@ -30,12 +31,14 @@ export async function GET(req: Request) {
     }
     phone = phone.replace(/\+/g, "");
 
-    const currentUser = await User.findById(session.user.id).select("whatsappNumbers isTenant tenantId parentTenantId").lean();
+    const currentUser = await User.findById(session.user.id)
+      .select("whatsappNumbers isTenant tenantId parentTenantId")
+      .lean();
     if (!currentUser) {
       return NextResponse.json({ success: false, messages: [] }, { status: 404 });
     }
 
-    // ✅ STEP 1: Resolve ALL Tenant Users to allow shared visibility
+    // ✅ STEP 1: Resolve ALL Tenant Users
     const userIdsArray: mongoose.Types.ObjectId[] = [currentUser._id];
     let tenantIdToSearch = null;
 
@@ -44,11 +47,12 @@ export async function GET(req: Request) {
 
     if (tenantIdToSearch) {
       const tenantUser = await User.findOne({ tenantId: tenantIdToSearch, isTenant: true }).select("_id").lean();
-      if (tenantUser && !userIdsArray.some(id => id.equals(tenantUser._id))) userIdsArray.push(tenantUser._id);
-      
+      if (tenantUser && !userIdsArray.some((id) => id.equals(tenantUser._id)))
+        userIdsArray.push(tenantUser._id);
+
       const subUsers = await User.find({ parentTenantId: tenantIdToSearch }).select("_id").lean();
-      subUsers.forEach(u => {
-        if (!userIdsArray.some(id => id.equals(u._id))) userIdsArray.push(u._id);
+      subUsers.forEach((u) => {
+        if (!userIdsArray.some((id) => id.equals(u._id))) userIdsArray.push(u._id);
       });
     }
 
@@ -56,19 +60,23 @@ export async function GET(req: Request) {
     let targetUserIds: mongoose.Types.ObjectId[] = [];
 
     if (wabaId && wabaId !== "all") {
-      const owners = await User.find({ 
-        _id: { $in: userIdsArray }, 
-        "whatsappNumbers.whatsappPhoneNumberId": wabaId 
+      const owners = await User.find({
+        _id: { $in: userIdsArray },
+        "whatsappNumbers.whatsappPhoneNumberId": wabaId,
       }).select("_id").lean();
-      
+
       if (owners.length > 0) {
-        targetUserIds = owners.map(o => o._id);
+        targetUserIds = owners.map((o) => o._id);
       } else {
-        const adminOwnsIt = currentUser.whatsappNumbers?.some((n: any) => n.whatsappPhoneNumberId === wabaId);
+        const adminOwnsIt = currentUser.whatsappNumbers?.some(
+          (n: any) => n.whatsappPhoneNumberId === wabaId
+        );
         if (adminOwnsIt) {
           targetUserIds = [currentUser._id];
         } else {
-          const globalOwner = await User.findOne({ "whatsappNumbers.whatsappPhoneNumberId": wabaId }).select("_id").lean();
+          const globalOwner = await User.findOne({
+            "whatsappNumbers.whatsappPhoneNumberId": wabaId,
+          }).select("_id").lean();
           if (globalOwner) {
             targetUserIds = [globalOwner._id];
           } else {
@@ -77,7 +85,7 @@ export async function GET(req: Request) {
         }
       }
 
-      if (currentUser.isTenant && !targetUserIds.some(id => id.equals(currentUser._id))) {
+      if (currentUser.isTenant && !targetUserIds.some((id) => id.equals(currentUser._id))) {
         targetUserIds.push(currentUser._id);
       }
     } else {
@@ -86,34 +94,57 @@ export async function GET(req: Request) {
 
     // ✅ STEP 3: Check if this chat was transferred to the current user
     const transferRecord = await ChatTransfer.findOne({ phone }).lean();
-    const isTransferredToMe = transferRecord && transferRecord.transferredTo.toString() === session.user.id;
+    const isTransferredToMe =
+      transferRecord && transferRecord.transferredTo.toString() === session.user.id;
 
-    // ✅ STEP 4: Build the Database Filter
+    // ✅ STEP 4: WABA Isolation Filter
+    const wabaIsolationFilter = wabaId && wabaId !== "all"
+      ? {
+          $or: [
+            { whatsappPhoneNumberId: { $exists: false } },
+            { whatsappPhoneNumberId: null },
+            { whatsappPhoneNumberId: "" },
+            { whatsappPhoneNumberId: wabaId },
+          ],
+        }
+      : {};
+
+    // ✅ FIX: Check if the contact has replied (has at least one incoming message)
+    // If not, return empty — they shouldn't be in chat view
+    const hasReplied = await Message.exists({
+      phone: phone,
+      direction: "in",
+      userId: { $in: targetUserIds },
+      ...wabaIsolationFilter,
+    });
+
+    if (!hasReplied) {
+      return NextResponse.json({ success: true, messages: [] });
+    }
+
+    // ✅ STEP 5: Build the Database Filter
     let filter: Record<string, unknown> = { phone: phone };
 
     if (wabaId && wabaId !== "all") {
-      // If a specific WABA is selected, we use an $or condition to catch perfectly tagged messages AND corrupted/untagged messages.
-      // OR if the chat is transferred to me, I get full access to the shared history.
       filter = {
         phone: phone,
         $or: [
-          { whatsappPhoneNumberId: wabaId }, 
-          { 
-            userId: { $in: targetUserIds }, 
-            whatsappPhoneNumberId: { $in: [null, undefined, ""] } 
+          { whatsappPhoneNumberId: wabaId },
+          {
+            userId: { $in: targetUserIds },
+            whatsappPhoneNumberId: { $in: [null, undefined, ""] },
           },
-          ...(isTransferredToMe ? [{ userId: { $in: targetUserIds } }] : []) // Full shared history if transferred to me
-        ]
+          ...(isTransferredToMe ? [{ userId: { $in: targetUserIds } }] : []),
+        ],
       };
     } else {
-      // If viewing "All Numbers", we must filter by the tenant's user IDs to prevent data bleed
       filter = {
         phone: phone,
-        userId: { $in: targetUserIds }
+        userId: { $in: targetUserIds },
       };
     }
 
-    // ✅ STEP 5: Fetch messages
+    // ✅ STEP 6: Fetch messages
     const messages = await Message.find(filter).sort({ createdAt: 1 }).lean();
 
     const mapped = messages.map((m) => ({
