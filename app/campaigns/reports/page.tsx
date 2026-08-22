@@ -179,7 +179,15 @@ return [];
 };
 
 const getCampaignStats = (c: Campaign): LiveStats => {
-if (c.liveStats) return c.liveStats;
+if (c.liveStats) {
+const ls = c.liveStats;
+// ✅ FIX: Include replied in processed count
+const processed = Number(ls.replied || 0) + Number(ls.read || 0) + Number(ls.delivered || 0) + Number(ls.sent || 0) + Number(ls.failed || 0) + Number(ls.invalid || 0) + Number(ls.duplicate || 0);
+return {
+...ls,
+pending: Math.max(0, Number(ls.total || c.totalMessages || 0) - processed),
+};
+}
 return {
 total: c.totalMessages || 0,
 replied: 0, read: 0, delivered: 0,
@@ -520,10 +528,13 @@ const repliedCount = campaignStats.replied || 0;
 const readCount = campaignStats.read || 0;
 const deliveredCount = campaignStats.delivered || 0;
 const sentOnlyCount = campaignStats.sent || 0;
-const pendingCount = campaignStats.pending || 0;
 const failedCount = campaignStats.failed || 0;
 const invalidCount = campaignStats.invalid || 0;
 const duplicateCount = campaignStats.duplicate || 0;
+
+// ✅ FIX: Calculate pending correctly — include ALL processed statuses
+const totalProcessed = repliedCount + readCount + deliveredCount + sentOnlyCount + failedCount + invalidCount + duplicateCount;
+const pendingCount = Math.max(0, totalMessages - totalProcessed);
 
 const getPercentage = (count: number) => totalMessages > 0 ? ((count / totalMessages) * 100).toFixed(1) : "0.0";
 
@@ -677,11 +688,11 @@ return (
                   </span> 
                 </div> 
                 <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px]"> 
-                  {stats.replied > 0 && <span className="flex items-center gap-1 text-indigo-600 font-medium"><MessageSquare size={10}/> {stats.replied} Total</span>} 
+                  {stats.replied > 0 && <span className="flex items-center gap-1 text-indigo-600 font-medium"><MessageSquare size={10}/> {stats.replied} Replied</span>} 
                   {stats.read > 0 && <span className="flex items-center gap-1 text-blue-600 font-medium"><Eye size={10}/> {stats.read} Read</span>} 
                   {stats.delivered > 0 && <span className="flex items-center gap-1 text-cyan-600 font-medium"><CheckCheck size={10}/> {stats.delivered} Delivered</span>} 
                   {stats.sent > 0 && <span className="flex items-center gap-1 text-emerald-600 font-medium"><CheckCircle size={10}/> {stats.sent} Sent</span>} 
-                  {/* {stats.pending > 0 && <span className="flex items-center gap-1 text-amber-600 font-medium"><Clock size={10}/> {stats.pending} Replied</span>}  */}
+                  {stats.pending > 0 && <span className="flex items-center gap-1 text-amber-600 font-medium"><Clock size={10}/> {stats.pending} Pending</span>}
                   {stats.failed > 0 && <span className="flex items-center gap-1 text-red-600 font-medium"><XCircle size={10}/> {stats.failed} Failed</span>} 
                   {stats.invalid > 0 && <span className="flex items-center gap-1 text-orange-600 font-medium"><AlertTriangle size={10}/> {stats.invalid} Invalid</span>} 
                 </div> 
