@@ -61,7 +61,7 @@ export async function GET(req: Request) {
     const userObjId = new mongoose.Types.ObjectId(userId);
     const userDoc = await User.findById(userObjId).select("parentTenantId").lean();
     const parentTenantId = (userDoc as any)?.parentTenantId;
-    
+
     const userIdsToQuery = [userObjId];
     if (parentTenantId) {
       userIdsToQuery.push(new mongoose.Types.ObjectId(parentTenantId));
@@ -106,22 +106,69 @@ export async function GET(req: Request) {
         }
       }));
 
-      // 2. Fetch Campaigns and use the SAVED totalDeducted from DB
+      // 2. Fetch Campaigns
       const campaigns = await Campaign.find({
         userId: { $in: userIdsToQuery },
         status: { $in: ["running", "paused", "completed", "failed", "stopped"] }
       }).sort({ createdAt: -1 }).lean();
 
+      // ═══════════════════════════════════════════════════════════════
+      // ✅ FIX: Calculate REAL stats from reportData using aggregation
+      // This counts the ACTUAL status of each message in reportData
+      // — same approach as the billing API
+      // ═══════════════════════════════════════════════════════════════
+      const campaignIds = campaigns.map((c: any) =>
+        new mongoose.Types.ObjectId(c._id)
+      );
+
+      const statsAgg = await Campaign.aggregate([
+        { $match: { _id: { $in: campaignIds } } },
+        { $unwind: "$reportData" },
+        {
+          $group: {
+            _id: { campaignId: "$_id", status: "$reportData.status" },
+            count: { $sum: 1 },
+          },
+        },
+      ]);
+
+      // Build stats map: campaignId -> { sent, delivered, read, replied, failed, ... }
+      const statsMap: Record<string, any> = {};
+      statsAgg.forEach((item: any) => {
+        const cid = item._id.campaignId.toString();
+        const status = (item._id.status || "pending").toLowerCase();
+        if (!statsMap[cid]) {
+          statsMap[cid] = {
+            total: 0, sent: 0, delivered: 0, read: 0, replied: 0,
+            failed: 0, invalid: 0, pending: 0, duplicate: 0
+          };
+        }
+        if (statsMap[cid].hasOwnProperty(status)) {
+          statsMap[cid][status] += item.count;
+        }
+        statsMap[cid].total += item.count;
+      });
+
+      // ═══════════════════════════════════════════════════════════════
+      // ✅ FIX: Amount = DELIVERED (combined) × price
+      // deliveredCombined = sent + delivered + read + replied
+      // ═══════════════════════════════════════════════════════════════
       const campaignUsages = campaigns.map((camp: any) => {
-        const trueDeliveredCount = 
-          Number(camp.stats?.delivered || 0) + 
-          Number(camp.stats?.read || 0) + 
-          Number(camp.stats?.replied || 0);
-        
-        // ✅ Read directly from the saved DB fields
+        // ✅ Use calculated stats from reportData (accurate)
+        const calcStats = statsMap[camp._id.toString()] || camp.stats || {};
+
+        // ✅ Delivered = sent + delivered + read + replied (ALL successful statuses)
+        const deliveredCombined = 
+          Number(calcStats.sent || 0) +
+          Number(calcStats.delivered || 0) +
+          Number(calcStats.read || 0) +
+          Number(calcStats.replied || 0);
+
         const price = camp.pricePerMessage || 0;
-        const amount = camp.totalDeducted || 0;
-        
+
+        // ✅ Amount = delivered (combined) × price — NOT totalDeducted
+        const amount = deliveredCombined * price;
+
         return {
           _id: camp._id,
           type: "usage",
@@ -132,7 +179,7 @@ export async function GET(req: Request) {
           metadata: {
             campaignName: camp.name,
             templateName: camp.templateName,
-            phone: `${trueDeliveredCount} delivered`
+            phone: `${deliveredCombined} delivered`,
           }
         };
       });
@@ -215,8 +262,4 @@ export async function GET(req: Request) {
       { status: 500 }
     );
   }
-}
-
-function formatINR(amount: number) {
-  return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", minimumFractionDigits: 2 }).format(amount || 0);
 }
