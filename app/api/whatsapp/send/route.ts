@@ -14,12 +14,9 @@ import path from "path";
 
 export const runtime = "nodejs";
 
-// ✅ Same inline Transaction model used by the billing route and the
-// transactions API, so test message deductions get logged and show up
-// in the user's transaction history.
 const TransactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  type: String, // 'recharge' or 'usage' or 'test_message'
+  type: String,
   amount: Number,
   description: String,
   status: String,
@@ -28,7 +25,6 @@ const TransactionSchema = new mongoose.Schema({
 });
 const Transaction = mongoose.models.Transaction || mongoose.model('Transaction', TransactionSchema);
 
-// ✅ Strip extra quotes from strings
 function cleanStr(val: any): string {
   if (val == null) return "";
   let s = String(val).trim();
@@ -38,7 +34,6 @@ function cleanStr(val: any): string {
   return s;
 }
 
-// ✅ UNIVERSAL CREDENTIAL RESOLVER
 function resolveCredentials(
   user: any,
   payer: any,
@@ -99,7 +94,6 @@ function resolveCredentials(
   return { PHONE_NUMBER_ID, ACCESS_TOKEN };
 }
 
-// ✅ Fetch template from Meta
 async function fetchFullTemplate(
   phoneNumberId: string,
   accessToken: string,
@@ -188,7 +182,6 @@ function extractTemplateDisplayData(
   return result;
 }
 
-// ✅ Build components array for templates
 function buildComponents(
   headerFormat: string,
   variables: string[],
@@ -221,13 +214,11 @@ function buildComponents(
   return components;
 }
 
-// ✅ Extract WAMID regardless of HTTP status code
 function extractWamid(data: any): string | null {
   if (data?.messages?.[0]?.id) return data.messages[0].id;
   return null;
 }
 
-// ✅ Send template to WhatsApp API
 async function sendToWhatsApp(
   phoneNumberId: string,
   accessToken: string,
@@ -250,12 +241,9 @@ async function sendToWhatsApp(
   });
   const data = await res.json();
   const wamid = extractWamid(data);
-  return { ok: res.ok || !!wamid, data, wamid };
+  return { ok: res.ok && !!wamid, data, wamid };
 }
 
-// ═══════════════════════════════════════════════════════════════
-// ✅ Upload file to Meta's media API
-// ═══════════════════════════════════════════════════════════════
 async function uploadFileToMeta(
   phoneNumberId: string,
   accessToken: string,
@@ -285,21 +273,17 @@ async function uploadFileToMeta(
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// ✅ Resolve Local/Remote URL to Meta Media ID
-// ═══════════════════════════════════════════════════════════════
 async function uploadMediaToMetaFromUrl(
   phoneNumberId: string,
   accessToken: string,
   mediaUrl: string
 ): Promise<string | null> {
   try {
-    if (/^\d+$/.test(mediaUrl)) return mediaUrl; // Already a Meta ID
+    if (/^\d+$/.test(mediaUrl)) return mediaUrl;
 
     let blob: Blob | null = null;
     let filename = "media";
 
-    // Check if it's a local file path
     if (mediaUrl.startsWith("/uploads/") || mediaUrl.startsWith("/public/")) {
       const localPath = path.join(process.cwd(), "public", mediaUrl);
       if (fs.existsSync(localPath)) {
@@ -352,9 +336,6 @@ async function uploadMediaToMetaFromUrl(
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// ✅ Build payload for direct (non-template) media messages
-// ═══════════════════════════════════════════════════════════════
 function buildDirectPayload(
   to: string,
   messageType: string,
@@ -367,67 +348,22 @@ function buildDirectPayload(
 
   switch (messageType) {
     case "text":
-      return {
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: { body: caption || "", preview_url: true },
-      };
+      return { messaging_product: "whatsapp", to, type: "text", text: { body: caption || "", preview_url: true } };
     case "image":
-      return {
-        messaging_product: "whatsapp",
-        to,
-        type: "image",
-        image: { ...mediaObj, ...(caption ? { caption } : {}) },
-      };
+      return { messaging_product: "whatsapp", to, type: "image", image: { ...mediaObj, ...(caption ? { caption } : {}) } };
     case "video":
-      return {
-        messaging_product: "whatsapp",
-        to,
-        type: "video",
-        video: { ...mediaObj, ...(caption ? { caption } : {}) },
-      };
+      return { messaging_product: "whatsapp", to, type: "video", video: { ...mediaObj, ...(caption ? { caption } : {}) } };
     case "audio":
-      return {
-        messaging_product: "whatsapp",
-        to,
-        type: "audio",
-        audio: mediaObj,
-      };
+      return { messaging_product: "whatsapp", to, type: "audio", audio: mediaObj };
     case "document":
-      return {
-        messaging_product: "whatsapp",
-        to,
-        type: "document",
-        document: {
-          ...mediaObj,
-          filename: filename || "document.pdf",
-          ...(caption ? { caption } : {}),
-        },
-      };
+      return { messaging_product: "whatsapp", to, type: "document", document: { ...mediaObj, filename: filename || "document.pdf", ...(caption ? { caption } : {}) } };
     case "link":
-      return {
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: {
-          body: caption ? `${caption}\n\n${mediaRef}` : mediaRef,
-          preview_url: true,
-        },
-      };
+      return { messaging_product: "whatsapp", to, type: "text", text: { body: caption ? `${caption}\n\n${mediaRef}` : mediaRef, preview_url: true } };
     default:
-      return {
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: { body: caption || "", preview_url: true },
-      };
+      return { messaging_product: "whatsapp", to, type: "text", text: { body: caption || "", preview_url: true } };
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// ✅ Send direct (non-template) media message
-// ═══════════════════════════════════════════════════════════════
 async function sendDirectMessage(
   phoneNumberId: string,
   accessToken: string,
@@ -448,7 +384,7 @@ async function sendDirectMessage(
   const data = await res.json();
   const wamid = extractWamid(data);
 
-  return { ok: res.ok || !!wamid, data, wamid };
+  return { ok: res.ok && !!wamid, data, wamid };
 }
 
 export async function POST(req: Request) {
@@ -526,7 +462,7 @@ export async function POST(req: Request) {
     const sanitizedPhone = phone.replace(/\+/g, "");
 
     // ═══════════════════════════════════════════════════════════════
-    // ✅ DIRECT MEDIA/TEXT MESSAGE (non-template)
+    // DIRECT MEDIA/TEXT MESSAGE (non-template)
     // ═══════════════════════════════════════════════════════════════
     if (messageType !== "template") {
       const message = cleanStr(formData?.get("message") || body.message || "");
@@ -552,7 +488,6 @@ export async function POST(req: Request) {
         }
         mediaRef = uploadedId;
       } else if (mediaUrl) {
-        // ✅ FIX: Resolve URL to Meta ID if it's not already one
         if (!/^\d+$/.test(mediaUrl)) {
           const uploadedId = await uploadMediaToMetaFromUrl(PHONE_NUMBER_ID, ACCESS_TOKEN, mediaUrl);
           if (uploadedId) {
@@ -584,7 +519,6 @@ export async function POST(req: Request) {
           payer.balance = Math.max(0, Math.round((currentBalance - messagePrice) * 100) / 100);
           await payer.save();
 
-          // ✅ Log this deduction as a transaction so it shows up in history
           try {
             await Transaction.create({
               userId: payer._id,
@@ -626,6 +560,7 @@ export async function POST(req: Request) {
           whatsappMessageId: result.wamid,
           status: "sent",
           whatsappPhoneNumberId: PHONE_NUMBER_ID,
+          source: "test",  // ✅ ADDED — marks as test message
         });
       } catch (dbErr) {
         console.error("⚠️ DB save failed (message still sent):", dbErr);
@@ -643,7 +578,7 @@ export async function POST(req: Request) {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // ✅ TEMPLATE MESSAGE
+    // TEMPLATE MESSAGE
     // ═══════════════════════════════════════════════════════════════
     const templateName = cleanStr(formData?.get("templateName") || body.templateName || "");
     const languageCode = cleanStr(formData?.get("languageCode") || body.languageCode || "en");
@@ -680,7 +615,6 @@ export async function POST(req: Request) {
       }
       uploadedMediaId = uploadedId;
     } else if (needsMedia && mediaUrl) {
-      // ✅ FIX: Convert URLs to Meta IDs before sending templates
       if (!/^\d+$/.test(mediaUrl)) {
         uploadedMediaId = await uploadMediaToMetaFromUrl(PHONE_NUMBER_ID, ACCESS_TOKEN, mediaUrl);
       } else {
@@ -743,7 +677,6 @@ export async function POST(req: Request) {
         payer.balance = Math.max(0, Math.round((currentBalance - messagePrice) * 100) / 100);
         await payer.save();
 
-        // ✅ Log this deduction as a transaction so it shows up in history
         try {
           await Transaction.create({
             userId: payer._id,
@@ -795,6 +728,7 @@ export async function POST(req: Request) {
         templateFooter: displayData.templateFooter || undefined,
         templateButtons: displayData.templateButtons?.length > 0 ? displayData.templateButtons : undefined,
         whatsappPhoneNumberId: PHONE_NUMBER_ID,
+        source: "test",  // ✅ ADDED — marks as test message
       });
     } catch (dbErr) {
       console.error("⚠️ DB save failed (message still sent):", dbErr);
