@@ -23,19 +23,46 @@ export async function GET() {
 
     const userObjId = new mongoose.Types.ObjectId(userId);
 
-    // ✅ FIX 1: Run all independent database queries CONCURRENTLY
-    // This prevents waiting 5x in a row for sequential queries.
+    // ✅ STEP 1: Fetch user FIRST (needed for tenant resolution + billing)
+    const user = await User.findById(userObjId).select(
+      "balance totalRecharged pricePerMessage whatsappAccessToken whatsappPhoneNumberId parentTenantId isTenant tenantId"
+    );
+
+    if (!user) {
+      return NextResponse.json({ success: false, message: "User not found" }, { status: 404 });
+    }
+
+    // ✅ STEP 2: Resolve ALL Tenant Users (same logic as chat page)
+    const userIdsArray: mongoose.Types.ObjectId[] = [userObjId];
+    let tenantIdToSearch = null;
+
+    if (user.isTenant) tenantIdToSearch = user.tenantId || user._id.toString();
+    else if (user.parentTenantId) tenantIdToSearch = user.parentTenantId;
+
+    if (tenantIdToSearch) {
+      const tenantUser = await User.findOne({ tenantId: tenantIdToSearch, isTenant: true }).select("_id").lean();
+      if (tenantUser && !userIdsArray.some((id) => id.equals(tenantUser._id))) {
+        userIdsArray.push(tenantUser._id);
+      }
+
+      const subUsers = await User.find({ parentTenantId: tenantIdToSearch }).select("_id").lean();
+      subUsers.forEach((u) => {
+        if (!userIdsArray.some((id) => id.equals(u._id))) userIdsArray.push(u._id);
+      });
+    }
+
+    // ✅ FIX: Only count chats where contact has REPLIED (direction: "in")
+    // This matches the chat list which only shows replied contacts
     const totalChatsAggPromise = Message.aggregate([
-      { $match: { userId: userObjId } },
+      { $match: { userId: { $in: userIdsArray }, direction: "in" } },
       { $group: { _id: "$phone" } },
-      { $count: "totalChats" }
+      { $count: "totalChats" },
     ]);
 
     const totalWorkflowsPromise = Workflow.countDocuments({ userId: userObjId });
     const totalCampaignsPromise = Campaign.countDocuments({ userId: userObjId });
 
-    // ✅ FIX 2: Use DB Aggregation to calculate read/sent counts INSIDE MongoDB
-    // This completely prevents downloading the massive reportData array into Node.js memory!
+    // ✅ Use DB Aggregation to calculate read/sent counts INSIDE MongoDB
     const activeCampaignsPromise = Campaign.aggregate([
       { $match: { userId: userObjId, status: { $in: ["running", "scheduled", "completed"] } } },
       { $sort: { createdAt: -1 } },
@@ -51,28 +78,21 @@ export async function GET() {
               $filter: {
                 input: { $ifNull: ["$reportData", []] },
                 as: "r",
-                cond: { $eq: ["$$r.status", "read"] }
-              }
-            }
+                cond: { $eq: ["$$r.status", "read"] },
+              },
+            },
           },
           totalDeducted: { $ifNull: ["$totalDeducted", 0] },
-        }
-      }
+        },
+      },
     ]);
 
-    const userPromise = User.findById(userObjId).select("balance totalRecharged pricePerMessage whatsappAccessToken whatsappPhoneNumberId parentTenantId");
-
-    const [totalChatsAgg, totalWorkflows, totalCampaigns, activeCampaigns, user] = await Promise.all([
+    const [totalChatsAgg, totalWorkflows, totalCampaigns, activeCampaigns] = await Promise.all([
       totalChatsAggPromise,
       totalWorkflowsPromise,
       totalCampaignsPromise,
       activeCampaignsPromise,
-      userPromise
     ]);
-
-    if (!user) {
-      return NextResponse.json({ success: false, message: "User not found" }, { status: 404 });
-    }
 
     const totalChats = totalChatsAgg[0]?.totalChats || 0;
 
@@ -98,14 +118,16 @@ export async function GET() {
     // ==========================================
     let billingUser: any = user;
     if (user.parentTenantId) {
-      const parent = await User.findOne({ tenantId: user.parentTenantId }).select("balance totalRecharged priceMarketing priceUtility priceAuthentication");
+      const parent = await User.findOne({ tenantId: user.parentTenantId }).select(
+        "balance totalRecharged priceMarketing priceUtility priceAuthentication"
+      );
       if (parent) billingUser = parent;
     }
 
     const balance = billingUser?.balance || 0;
     const totalRecharged = billingUser?.totalRecharged || 0;
     const totalSpent = Math.round((totalRecharged - balance) * 100) / 100;
-    
+
     const minPrice = getMinPrice(billingUser);
     const canSendMessage = minPrice === 0 || balance >= minPrice;
 
@@ -123,8 +145,7 @@ export async function GET() {
 
     if (user.whatsappAccessToken && user.whatsappPhoneNumberId) {
       try {
-        // ✅ FIX 3: Add AbortController with a 5-second timeout
-        // If Meta API hangs, this will abort and prevent the 57-minute load time!
+        // ✅ AbortController with 5-second timeout
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 5000);
 
@@ -133,11 +154,11 @@ export async function GET() {
           {
             headers: { Authorization: `Bearer ${user.whatsappAccessToken}` },
             cache: "no-store",
-            signal: controller.signal 
+            signal: controller.signal,
           }
         );
-        
-        clearTimeout(timeoutId); // Clear timeout if fetch succeeds
+
+        clearTimeout(timeoutId);
         const metaJson = await metaRes.json();
 
         if (metaRes.ok) {
@@ -147,7 +168,12 @@ export async function GET() {
             qualityRating: metaJson.quality_rating || "N/A",
             status: metaJson.status || "N/A",
             messagingLimitTier: metaJson.whatsapp_business_manager_messaging_limit || "N/A",
-            twoFactorEnabled: metaJson.is_pin_enabled === true ? true : (metaJson.is_pin_enabled === false ? false : "N/A"),
+            twoFactorEnabled:
+              metaJson.is_pin_enabled === true
+                ? true
+                : metaJson.is_pin_enabled === false
+                ? false
+                : "N/A",
           };
         } else {
           phoneDetails = {
@@ -160,7 +186,7 @@ export async function GET() {
           };
         }
       } catch (err: any) {
-        const isTimeout = err.name === 'AbortError';
+        const isTimeout = err.name === "AbortError";
         phoneDetails = {
           displayPhoneNumber: "Error",
           verifiedName: isTimeout ? "Meta API Timeout (5s)" : "Fetch Failed",
