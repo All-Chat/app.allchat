@@ -262,8 +262,20 @@ export default function SendMessagePage() {
     if (!selectedTemplate) { toast.error("Please select a template"); return; }
     if (headerMediaType !== "none" && !mediaFile) { toast.error("Please upload the required media file"); return; }
     if (!allVariablesFilled) { toast.error("Please fill in all template variables"); return; }
-    if (!canSendMessage) { toast.error(`Insufficient balance. ${parentTenantName ? `Please contact ${parentTenantName} to recharge.` : "Please recharge your account to send messages."}`); return; }
-    if (isAtLimit) { toast.error("Test message limit reached. Contact admin to increase your limit."); return; }
+    if (!canSendMessage) {
+      toast.error(
+        `Insufficient balance. ${
+          parentTenantName
+            ? `Please contact ${parentTenantName} to recharge.`
+            : "Please recharge your account to send messages."
+        }`
+      );
+      return;
+    }
+    if (isAtLimit) {
+      toast.error("Test message limit reached. Contact admin to increase your limit.");
+      return;
+    }
 
     setSending(true);
     try {
@@ -286,35 +298,83 @@ export default function SendMessagePage() {
 
       const res = await fetch("/api/whatsapp/send", { method: "POST", body: formData });
 
-      if (res.status === 401) { toast.error("Session expired. Please log in again."); setTimeout(() => (window.location.href = "/"), 1500); return; }
-      if (res.status === 402) { const data402 = await res.json(); toast.error(data402.message || "Insufficient balance. Please recharge."); setCanSendMessage(false); fetchBilling(); return; }
-      if (res.status === 403) { const data403 = await res.json(); toast.error(data403.message || "Country not allowed."); return; }
+      // ✅ Handle specific status codes FIRST
+      if (res.status === 401) {
+        toast.error("Session expired. Please log in again.");
+        setTimeout(() => (window.location.href = "/"), 1500);
+        return;
+      }
+
+      if (res.status === 402) {
+        const data402 = await res.json().catch(() => ({}));
+        toast.error(data402?.message || "Insufficient balance. Please recharge.");
+        setCanSendMessage(false);
+        fetchBilling();
+        return;
+      }
+
+      if (res.status === 403) {
+        const data403 = await res.json().catch(() => ({}));
+        toast.error(data403?.message || "Country not allowed.");
+        return;
+      }
+
       if (res.status === 429) {
-        const data429 = await res.json();
-        toast.error(data429.message || "Test message limit reached", { autoClose: 8000 });
-        if (data429.limitInfo) { setTestMessageLimit((prev: any) => prev ? { ...prev, allowed: false, usage: { count: data429.limitInfo.currentUsage, resetAt: null }, remaining: 0 } : prev); }
+        const data429 = await res.json().catch(() => ({}));
+        toast.error(data429?.message || "Test message limit reached", { autoClose: 8000 });
+        if (data429?.limitInfo) {
+          setTestMessageLimit((prev: any) =>
+            prev
+              ? {
+                  ...prev,
+                  allowed: false,
+                  usage: { count: data429.limitInfo.currentUsage, resetAt: null },
+                  remaining: 0,
+                }
+              : prev
+          );
+        }
+        fetchLimits();
         return;
       }
 
-      const data = await res.json();
+      // ✅ Parse JSON response
+      const data = await res.json().catch(() => ({}));
 
-      if (!res.ok) {
-        const errorMsg = data?.message || data?.error?.error?.message || data?.error?.message || "Failed to send message";
-        toast.error(errorMsg);
-        return;
+      // ✅ Check data.success — NOT res.ok
+      if (data.success) {
+        // ✅ Show success toast with redirect message
+        toast.success("Message sent successfully! 🚀 Redirecting to report...", {
+          autoClose: 2000,
+        });
+
+        fetchBilling();
+        fetchLimits();
+
+        // ✅ Auto-redirect to test messages report page after 2 seconds
+        setTimeout(() => {
+          window.location.href = "/test-messages";
+        }, 2000);
+      } else {
+        // ✅ Robust error extraction — covers all Meta error shapes
+        const errorMsg =
+          data?.message ||
+          data?.error?.error?.message ||
+          data?.error?.message ||
+          data?.error?.error_data?.details ||
+          "Failed to send message. Please try again.";
+
+        console.error("❌ Send failed:", JSON.stringify(data, null, 2));
+        toast.error(errorMsg, { autoClose: 6000 });
+
+        // If balance issue surfaced, refresh billing
+        if (data?.error?.code === 4101 || data?.error?.code === 9) {
+          fetchBilling();
+        }
       }
-
-      toast.success("Message sent successfully! 🚀");
-      fetchBilling();
-      fetchLimits();
-      setPhone("");
-      setSelectedTemplate(null);
-      setHeaderMediaType("none");
-      setVariables(["", "", ""]);
-      clearMedia();
     } catch (err: any) {
       console.error("CLIENT ERROR:", err);
-      toast.error(err.message || "Request failed");
+      toast.error(err.message || "Request failed. Please check your connection.");
     } finally {
       setSending(false);
     }
@@ -343,6 +403,7 @@ export default function SendMessagePage() {
               <h1 className="text-2xl sm:text-3xl font-extrabold text-gray-900 tracking-tight">Send Message</h1>
               <p className="text-gray-500 mt-1 text-xs sm:text-sm">Deliver approved WhatsApp template messages to your customers instantly.</p>
             </div>
+            
 
             <div className="flex items-center gap-3">
               {testMessageLimit && (
