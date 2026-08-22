@@ -3,7 +3,6 @@
 
 // workers/mainWorker.ts
 
-// Force load environment variables BEFORE any other imports
 require('dotenv').config({ path: '.env.local' });
 
 // ============================================================================
@@ -14,7 +13,7 @@ import { connectDB } from '../lib/mongodb';
 import Campaign from '../models/Campaign';
 import User from '../models/User';
 import Message from '../models/Message';
-import Session from '../models/Session'; // ✅ ADDED: for inactivity timer worker
+import Session from '../models/Session';
 import mongoose from 'mongoose';
 import { getPriceForCategory } from '../lib/billing';
 import { syncCampaignToGoogleSheet } from '../lib/googleSheetSync';
@@ -30,18 +29,12 @@ connectDB()
     console.log('✅ Worker process connected to MongoDB');
 
     // Start all background workers
-    startInactivityWorker(); // ✅ ADDED: Inactivity timer worker
+    startInactivityWorker();
     startCampaignWorker();
 
     startWorker('counts-processing', async (job) => {
       if (job.name === 'generate-counts') {
-        return await generateCountsData(
-          job.data.userId,
-          job.data.page,
-          job.data.limit,
-          job.data.cacheKey,
-          job.data.lockKey
-        );
+        return await generateCountsData(job.data.userId, job.data.page, job.data.limit, job.data.cacheKey, job.data.lockKey);
       }
     }, 5);
 
@@ -52,72 +45,40 @@ connectDB()
     }, 5);
 
     startWorker('stats-processing', async (job) => {
-      if (job.name === 'sync-user-stats') {
-        return await syncUserStats(job.data.userId);
-      }
-      if (job.name === 'sync-all-stats') {
-        return await syncAllStats();
-      }
+      if (job.name === 'sync-user-stats') return await syncUserStats(job.data.userId);
+      if (job.name === 'sync-all-stats') return await syncAllStats();
     }, 1);
 
-    // ✅ Fast interval (15 seconds) for active campaigns
+    // Fast interval (15 seconds) for active campaigns
     setInterval(async () => {
       try {
         await ensureDbConnected();
-
-        // Only find users who have currently running or paused campaigns
-        const activeUsers = await Campaign.distinct('userId', {
-          status: { $in: ['running', 'paused'] }
-        }).catch(() => []);
-
+        const activeUsers = await Campaign.distinct('userId', { status: { $in: ['running', 'paused'] } }).catch(() => []);
         for (const userIdObj of activeUsers) {
-          await statsQueue.add(
-            'sync-user-stats',
-            { userId: userIdObj.toString() },
-            { removeOnComplete: true, removeOnFail: true }
-          ).catch(() => {});
+          await statsQueue.add('sync-user-stats', { userId: userIdObj.toString() }, { removeOnComplete: true, removeOnFail: true }).catch(() => {});
         }
-      } catch (e) {
-        console.error('Failed to queue fast periodic stats', e);
-      }
-    }, 15 * 1000); // 15 seconds
+      } catch (e) { console.error('Failed to queue fast periodic stats', e); }
+    }, 15 * 1000);
 
-    // Keep the 10-minute full sweep for all users/stats
+    // 10-minute full sweep
     setInterval(async () => {
-      try {
-        await statsQueue.add('sync-all-stats', {}, { removeOnComplete: true, removeOnFail: true });
-        console.log('⏰ Queued periodic sync-all-stats');
-      } catch (e) {
-        console.error('Failed to queue periodic stats', e);
-      }
-    }, 10 * 60 * 1000); // 10 minutes
+      try { await statsQueue.add('sync-all-stats', {}, { removeOnComplete: true, removeOnFail: true }); console.log('⏰ Queued periodic sync-all-stats'); }
+      catch (e) { console.error('Failed to queue periodic stats', e); }
+    }, 10 * 60 * 1000);
 
-    console.log('🚀 Standalone worker process started — campaign / counts / report / stats / inactivity workers running using MongoDB.');
+    console.log('🚀 Standalone worker process started — campaign / counts / report / stats / inactivity workers running.');
   })
-  .catch((err) => {
-    console.error('❌ Worker process failed to connect to MongoDB:', err);
-    process.exit(1);
-  });
-
-// ============================================================================
-// HELPER: Ensure DB is connected
-// ============================================================================
+  .catch((err) => { console.error('❌ Worker process failed to connect to MongoDB:', err); process.exit(1); });
 
 export async function ensureDbConnected() {
-  if (mongoose.connection.readyState !== 1) {
-    await connectDB();
-  }
+  if (mongoose.connection.readyState !== 1) await connectDB();
 }
 
 // ============================================================================
 // 1. MONGODB QUEUE WORKER LOGIC (Generic)
 // ============================================================================
 
-async function startWorker(
-  queueName: string,
-  processor: (job: any) => Promise<any>,
-  concurrency: number = 1
-) {
+async function startWorker(queueName: string, processor: (job: any) => Promise<any>, concurrency: number = 1) {
   
   console.log(`🚀 Worker started for queue: ${queueName} (Concurrency: ${concurrency})`);
 
@@ -126,15 +87,8 @@ async function startWorker(
       while (true) {
         try {
           
-          // Find a pending job and mark it as processing
           const job = await Job.findOneAndUpdate(
-            {
-              queue: queueName,
-              $or: [
-                { status: "pending" },
-                { status: "processing", lockedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } }
-              ]
-            },
+            { queue: queueName, $or: [{ status: "pending" }, { status: "processing", lockedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } }] },
             { $set: { status: "processing", lockedAt: new Date() } },
             { sort: { createdAt: 1 }, returnDocument: "after" }
           ).lean();
@@ -144,37 +98,19 @@ async function startWorker(
             console.log(`▶️ Processing job ${job.name} (${job._id}) in ${queueName}`);
             
             try {
-              const result = await processor({
-                id: job._id.toString(),
-                name: job.name,
-                data: job.data
-              });
-
+              const result = await processor({ id: job._id.toString(), name: job.name, data: job.data });
               const shouldRemove = job.opts?.removeOnComplete || job.opts?.removeOnFail;
-              if (shouldRemove) {
-                await Job.deleteOne({ _id: job._id });
-              } else {
-                await Job.updateOne({ _id: job._id }, { $set: { status: "completed", result } });
-              }
-
+              if (shouldRemove) await Job.deleteOne({ _id: job._id });
+              else await Job.updateOne({ _id: job._id }, { $set: { status: "completed", result } });
               console.log(`✅ Completed job ${job.name} (${job._id})`);
-
             } catch (err: any) {
-              
               console.error(`❌ Failed job ${job.name} (${job._id}):`, err.message);
-
               const shouldRemove = job.opts?.removeOnFail || job.opts?.removeOnComplete;
-              if (shouldRemove) {
-                await Job.deleteOne({ _id: job._id });
-              } else {
-                await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
-              }
+              if (shouldRemove) await Job.deleteOne({ _id: job._id });
+              else await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
             }
-
-          } else {
-            await new Promise((r) => setTimeout(r, 1000));
-          }
-
+          } else { await new Promise((r) => setTimeout(r, 1000)); }
+          
         } catch (err) {
           console.error(`Polling error for ${queueName}:`, err);
           await new Promise((r) => setTimeout(r, 2000));
@@ -185,7 +121,7 @@ async function startWorker(
 }
 
 // ============================================================================
-// 1.5 CAMPAIGN WORKER (Dedicated)
+// 1.5 CAMPAIGN WORKER
 // ============================================================================
 
 async function startCampaignWorker() {
@@ -196,13 +132,7 @@ async function startCampaignWorker() {
     try {
       
       const job = await Job.findOneAndUpdate(
-        {
-          queue: 'campaign-processing',
-          $or: [
-            { status: "pending" },
-            { status: "processing", lockedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } }
-          ]
-        },
+        { queue: 'campaign-processing', $or: [{ status: "pending" }, { status: "processing", lockedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } }] },
         { $set: { status: "processing", lockedAt: new Date() } },
         { sort: { createdAt: 1 }, returnDocument: "after" }
       ).lean();
@@ -219,13 +149,10 @@ async function startCampaignWorker() {
           console.error(`❌ Chunk ${job.data.startIdx}-${job.data.endIdx} failed:`, err.message);
           await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
         }
-
-        await new Promise(r => setTimeout(r, 1000)); // Rate limit: 1 message per second
-
-      } else {
+        
         await new Promise(r => setTimeout(r, 1000));
-      }
-
+      } else { await new Promise(r => setTimeout(r, 1000)); }
+      
     } catch (err) {
       console.error('Polling error for campaign-processing:', err);
       await new Promise(r => setTimeout(r, 2000));
@@ -234,45 +161,23 @@ async function startCampaignWorker() {
 }
 
 // ============================================================================
-// 1.6 INACTIVITY TIMER WORKER ✅ NEW
+// 1.6 INACTIVITY TIMER WORKER ✅
 // ============================================================================
-// This worker polls MongoDB for pending inactivity jobs.
-// When the delay time has passed, it checks if the user still has
-// an active session. If yes, it sends the inactivity message.
-// If the user already replied, the job was deleted by the webhook.
+// Polls MongoDB for pending inactivity jobs where delay has passed.
+// If the user hasn't responded, sends the inactivity message.
 // ============================================================================
 
-async function sendInactivityMessage(
-  accessToken: string,
-  phoneNumberId: string,
-  phone: string,
-  message: string
-) {
+async function sendInactivityMessage(accessToken: string, phoneNumberId: string, phone: string, message: string) {
   try {
     const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to: phone,
-        type: "text",
-        text: { body: message, preview_url: true }
-      }),
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "text", text: { body: message, preview_url: true } }),
     });
-
     const data = await res.json();
-
-    if (!res.ok) {
-      console.error("❌ Inactivity message failed:", JSON.stringify(data));
-    } else {
-      console.log(`✅ Inactivity message sent to ${phone}`);
-    }
-  } catch (err) {
-    console.error("❌ Inactivity message error:", err);
-  }
+    if (!res.ok) console.error("❌ Inactivity message failed:", JSON.stringify(data));
+    else console.log(`✅ Inactivity message sent to ${phone}`);
+  } catch (err) { console.error("❌ Inactivity message error:", err); }
 }
 
 async function startInactivityWorker() {
@@ -281,25 +186,14 @@ async function startInactivityWorker() {
 
   while (true) {
     try {
+      
       await ensureDbConnected();
 
-      // Find a pending inactivity job where enough time has passed
-      // The job is ready when: createdAt + (delaySeconds × 1000) < now
+      // Find pending inactivity jobs where enough time has passed
       const job = await Job.findOneAndUpdate(
         {
-          queue: "workflow-inactivity",
-          status: "pending",
-          $expr: {
-            $lt: [
-              {
-                $add: [
-                  "$createdAt",
-                  { $multiply: [{ $ifNull: ["$data.delaySeconds", 30] }, 1000] }
-                ]
-              },
-              new Date()
-            ]
-          }
+          queue: "workflow-inactivity", status: "pending",
+          $expr: { $lt: [{ $add: ["$createdAt", { $multiply: [{ $ifNull: ["$data.delaySeconds", 30] }, 1000] }] }, new Date()] }
         },
         { $set: { status: "processing", lockedAt: new Date() } },
         { sort: { createdAt: 1 }, returnDocument: "after" }
@@ -310,77 +204,50 @@ async function startInactivityWorker() {
         console.log(`▶️ Processing inactivity job for ${job.data.phone}`);
 
         try {
+          
           const data = job.data;
 
-          // Check if the user still has an active session
-          // (meaning they haven't moved on to a different flow)
-          const session = await Session.findOne({
-            phone: data.phone,
-            userId: data.userId
-          });
+          // Check if user still has an active session
+          const session = await Session.findOne({ phone: data.phone, userId: data.userId });
 
           if (session && session.formId) {
-            // User is in a form flow — skip the inactivity message
-            console.log(`⏭️ Skipping inactivity for ${data.phone} — in form flow`);
+            // User is in a form flow — skip
             await Job.deleteOne({ _id: job._id });
-
           } else if (data.sentCount < data.repeatCount) {
             
-            // Time to send the inactivity message!
-            await sendInactivityMessage(
-              data.accessToken,
-              data.phoneNumberId,
-              data.phone,
-              data.message
-            );
+            // Send the inactivity message!
+            await sendInactivityMessage(data.accessToken, data.phoneNumberId, data.phone, data.message);
 
-            // Save the outgoing message to the database
+            // Save the outgoing message
             await Message.create({
-              userId: data.userId,
-              phone: data.phone,
-              text: data.message,
-              direction: "out",
-              messageType: "text",
-              status: "sent",
-              whatsappPhoneNumberId: data.phoneNumberId,
-              senderNumber: data.phoneNumberId,
+              userId: data.userId, phone: data.phone, text: data.message,
+              direction: "out", messageType: "text", status: "sent",
+              whatsappPhoneNumberId: data.phoneNumberId, senderNumber: data.phoneNumberId,
             });
 
-            // If more repeats are needed, create a new job
+            // If more repeats needed, create a new job
             if (data.sentCount + 1 < data.repeatCount) {
               await Job.create({
-                queue: "workflow-inactivity",
-                name: "send-inactivity-message",
+                queue: "workflow-inactivity", name: "send-inactivity-message",
                 data: { ...data, sentCount: data.sentCount + 1 },
-                status: "pending",
-                createdAt: new Date(),
+                status: "pending", createdAt: new Date(),
               });
-              console.log(`⏰ Rescheduled inactivity for ${data.phone} (repeat ${data.sentCount + 2}/${data.repeatCount})`);
             }
 
-            // Delete the current job (it's been processed)
             await Job.deleteOne({ _id: job._id });
             console.log(`✅ Inactivity job completed for ${data.phone}`);
 
           } else {
-            // No more repeats needed — just delete the job
             await Job.deleteOne({ _id: job._id });
           }
 
         } catch (err: any) {
           console.error(`❌ Inactivity job failed:`, err.message);
-          await Job.updateOne(
-            { _id: job._id },
-            { $set: { status: "failed", error: err.message } }
-          );
+          await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
         }
 
         await new Promise(r => setTimeout(r, 1000));
-
-      } else {
-        // No jobs ready — wait 2 seconds before checking again
-        await new Promise(r => setTimeout(r, 2000));
-      }
+      } else { await new Promise(r => setTimeout(r, 2000)); }
 
     } catch (err) {
       console.error("Polling error for workflow-inactivity:", err);
@@ -402,83 +269,36 @@ function cleanStr(val: any): string {
   return s;
 }
 
-async function fetchTemplateHeaderFormat(
-  phoneNumberId: string,
-  accessToken: string,
-  templateName: string,
-  languageCode: string,
-  userProvidedMediaType: string
-): Promise<string> {
-  
+async function fetchTemplateHeaderFormat(phoneNumberId: string, accessToken: string, templateName: string, languageCode: string, userProvidedMediaType: string): Promise<string> {
   const valid = ["image", "video", "document"];
   const clean = cleanStr(userProvidedMediaType).toLowerCase().trim();
-
   try {
-    let res = await fetch(
-      `https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}&language=${encodeURIComponent(languageCode)}`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    if (res.ok) {
-      const d = await res.json();
-      const t = d?.data?.[0];
-      if (t?.components) {
-        for (const c of t.components) {
-          if (c.type === "HEADER") return (c.format || "none").toUpperCase();
-        }
-      }
-    }
-
-    res = await fetch(
-      `https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    if (res.ok) {
-      const d = await res.json();
-      const t = d?.data?.[0];
-      if (t?.components) {
-        for (const c of t.components) {
-          if (c.type === "HEADER") return (c.format || "none").toUpperCase();
-        }
-      }
-    }
+    let res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}&language=${encodeURIComponent(languageCode)}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (res.ok) { const d = await res.json(); const t = d?.data?.[0]; if (t?.components) for (const c of t.components) if (c.type === "HEADER") return (c.format || "none").toUpperCase(); }
+    res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (res.ok) { const d = await res.json(); const t = d?.data?.[0]; if (t?.components) for (const c of t.components) if (c.type === "HEADER") return (c.format || "none").toUpperCase(); }
   } catch (e) {}
-
   if (valid.includes(clean)) return clean.toUpperCase();
   return "none";
 }
 
-function buildCampaignComponents(
-  headerFormat: string,
-  variables: string[],
-  mediaUrl: string
-): any[] {
-  
+function buildCampaignComponents(headerFormat: string, variables: string[], mediaUrl: string): any[] {
   const comps: any[] = [];
   const valid = ["image", "video", "document"];
-
-  // Add header component if media is needed
   if (valid.includes(headerFormat.toLowerCase()) && mediaUrl) {
-    
     const hType = headerFormat.toLowerCase();
     const mObj: any = mediaUrl.startsWith("http") ? { link: mediaUrl } : { id: mediaUrl };
     const param: any = { type: hType };
-
     if (hType === "image") param.image = mObj;
     else if (hType === "video") param.video = mObj;
     else if (hType === "document") param.document = { ...mObj, filename: "document.pdf" };
-
     comps.push({ type: "header", parameters: [param] });
   }
-
-  // Add body component with variables
   if (variables.length > 0) {
     const params = new Array(variables.length);
-    for (let i = 0; i < variables.length; i++) {
-      params[i] = { type: "text", text: String(variables[i]) };
-    }
+    for (let i = 0; i < variables.length; i++) params[i] = { type: "text", text: String(variables[i]) };
     comps.push({ type: "body", parameters: params });
   }
-
   return comps;
 }
 
@@ -487,24 +307,16 @@ function buildCampaignComponents(
 // ============================================================================
 
 const priceMapCache = new Map<string, { map: Map<string, number>, defaultPrice: number, timestamp: number }>();
-const PRICE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const PRICE_CACHE_TTL = 5 * 60 * 1000;
 
-function getOptimizedPriceForPhone(
-  payerId: string,
-  payer: any,
-  phone: string,
-  category: string
-): number {
+function getOptimizedPriceForPhone(payerId: string, payer: any, phone: string, category: string): number {
   
   const now = Date.now();
   let cache = priceMapCache.get(payerId);
 
-  // Rebuild cache if it doesn't exist or is expired
   if (!cache || (now - cache.timestamp > PRICE_CACHE_TTL)) {
-    
     const map = new Map<string, number>();
     const defaultPrice = getPriceForCategory(payer, category);
-
     if (payer.enabledCountries && payer.enabledCountries.length > 0) {
       payer.enabledCountries.forEach((c: any) => {
         if (c.code) {
@@ -515,12 +327,10 @@ function getOptimizedPriceForPhone(
         }
       });
     }
-
     cache = { map, defaultPrice, timestamp: now };
     priceMapCache.set(payerId, cache);
   }
 
-  // Try to match the phone number's country code (up to 4 digits)
   const catPrefix = category.charAt(0) + '-';
   for (let i = 1; i <= 4; i++) {
     if (phone.length < i) break;
@@ -528,7 +338,6 @@ function getOptimizedPriceForPhone(
     const price = cache.map.get(catPrefix + prefix);
     if (price !== undefined) return price;
   }
-
   return cache.defaultPrice;
 }
 
@@ -540,20 +349,15 @@ async function processCampaignChunk(data: any) {
   
   const { campaignId, userId, payerId, startIdx, endIdx, PHONE_NUMBER_ID, ACCESS_TOKEN } = data;
   const chunkSize = endIdx - startIdx;
-  
   await ensureDbConnected();
 
-  // Fetch the payer (user who pays for messages)
   const payer = await User.findById(payerId).lean();
   if (!payer) throw new Error("User not found");
 
-  // Fetch the campaign (only the chunk we need)
   const campaign = await Campaign.findById(campaignId, {
-    phoneNumbers: { $slice: [startIdx, chunkSize] },
-    reportData: { $slice: [startIdx, chunkSize] },
-    mappedVariables: { $slice: [startIdx, chunkSize] },
-    templateName: 1, templateCategory: 1, languageCode: 1, mediaType: 1, mediaUrl: 1,
-    templateHeaderFormat: 1, generateOtp: 1, otpLength: 1, variables: 1, status: 1, totalMessages: 1
+    phoneNumbers: { $slice: [startIdx, chunkSize] }, reportData: { $slice: [startIdx, chunkSize] },
+    mappedVariables: { $slice: [startIdx, chunkSize] }, templateName: 1, templateCategory: 1, languageCode: 1,
+    mediaType: 1, mediaUrl: 1, templateHeaderFormat: 1, generateOtp: 1, otpLength: 1, variables: 1, status: 1, totalMessages: 1
   }).lean();
 
   if (!campaign) throw new Error("Campaign not found");
@@ -564,7 +368,6 @@ async function processCampaignChunk(data: any) {
   const cMedia = cleanStr(campaign.mediaType || "none");
   const cat = (campaign.templateCategory || "MARKETING").toUpperCase();
 
-  // Fetch template header format if not cached
   let thf = campaign.templateHeaderFormat || "";
   if (!thf) {
     thf = await fetchTemplateHeaderFormat(PHONE_NUMBER_ID, ACCESS_TOKEN, cTName, cLang, cMedia);
@@ -572,30 +375,21 @@ async function processCampaignChunk(data: any) {
   }
 
   const tc = {
-    templateName: cTName,
-    languageCode: cLang,
-    templateCategory: campaign.templateCategory,
-    generateOtp: campaign.generateOtp,
-    otpLength: campaign.otpLength || 4,
-    mediaUrl: campaign.mediaUrl
+    templateName: cTName, languageCode: cLang, templateCategory: campaign.templateCategory,
+    generateOtp: campaign.generateOtp, otpLength: campaign.otpLength || 4, mediaUrl: campaign.mediaUrl
   };
 
-  // Prepare batch sending
   const metaPromises: Promise<any>[] = [];
   const batchAbsoluteIndices: number[] = [];
   const batchPhones: string[] = [];
   const claimOps: any[] = [];
 
   for (let i = 0; i < chunkSize; i++) {
-    
     const absoluteIndex = startIdx + i;
     const ph = campaign.phoneNumbers[i];
     const cs = campaign.reportData[i]?.status;
-
-    // Skip if already processed
     if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(cs)) continue;
 
-    // Claim the phone number (mark as queued)
     claimOps.push({
       updateOne: {
         filter: { _id: campaignId, [`reportData.${absoluteIndex}.status`]: "pending" },
@@ -603,7 +397,6 @@ async function processCampaignChunk(data: any) {
       }
     });
 
-    // Prepare variables
     let cv: string[] = [];
     if (campaign.templateCategory === "AUTHENTICATION") {
       if (campaign.generateOtp || !campaign.mappedVariables?.[i]?.length) {
@@ -611,157 +404,68 @@ async function processCampaignChunk(data: any) {
         const min = Math.pow(10, l - 1);
         const max = Math.pow(10, l) - 1;
         cv = [Math.floor(Math.random() * (max - min + 1) + min).toString()];
-      } else {
-        cv = campaign.mappedVariables[i];
-      }
-    } else {
-      cv = (campaign.mappedVariables?.[i]?.length > 0) ? campaign.mappedVariables[i] : (campaign.variables || []);
-    }
+      } else cv = campaign.mappedVariables[i];
+    } else cv = (campaign.mappedVariables?.[i]?.length > 0) ? campaign.mappedVariables[i] : (campaign.variables || []);
 
     cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
-
-    // Add to batch
     metaPromises.push(metaSenderWorker(ph, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
     batchAbsoluteIndices.push(absoluteIndex);
     batchPhones.push(ph);
   }
 
-  // Bulk claim
   if (claimOps.length > 0) {
     try { await Campaign.bulkWrite(claimOps); } catch (e) { console.error(`[Worker] BulkWrite claim error:`, e); }
   }
 
-  // Wait for all sends to complete
   const metaResults = await Promise.allSettled(metaPromises);
-  
   let bd = 0, sent = 0, failed = 0, ded = 0;
   const campaignBulkOps: any[] = [];
   const messagesToCreate: any[] = [];
 
   for (let i = 0; i < metaResults.length; i++) {
-    
     const res = metaResults[i];
-
     if (res.status !== 'fulfilled') {
       failed++;
       const absoluteIndex = batchAbsoluteIndices[i];
-      campaignBulkOps.push({
-        updateOne: {
-          filter: { _id: campaignId, [`reportData.${absoluteIndex}.status`]: "queued" },
-          update: { $set: { [`reportData.${absoluteIndex}.status`]: "failed", [`reportData.${absoluteIndex}.error`]: "System Error: Promise rejected" } }
-        }
-      });
+      campaignBulkOps.push({ updateOne: { filter: { _id: campaignId, [`reportData.${absoluteIndex}.status`]: "queued" }, update: { $set: { [`reportData.${absoluteIndex}.status`]: "failed", [`reportData.${absoluteIndex}.error`]: "System Error: Promise rejected" } } } });
       continue;
     }
-
     const r = res.value;
     const absoluteIndex = batchAbsoluteIndices[i];
     const ph = batchPhones[i].replace(/\+/g, "");
 
     if (r.status === "sent") {
-      
       sent++;
       const pp = getOptimizedPriceForPhone(payerId, payer, ph, cat);
       bd += pp;
-
-      campaignBulkOps.push({
-        updateOne: {
-          filter: { _id: campaignId, [`reportData.${absoluteIndex}.status`]: "queued" },
-          update: { $set: {
-            [`reportData.${absoluteIndex}.status`]: "sent",
-            [`reportData.${absoluteIndex}.sentWamid`]: r.wamid,
-            [`reportData.${absoluteIndex}.charged`]: true,
-            [`reportData.${absoluteIndex}.chargedAmount`]: pp
-          }}
-        }
-      });
-
-      messagesToCreate.push({
-        userId, phone: ph, text: "", direction: "out", messageType: "template",
-        mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent",
-        templateName: tc.templateName, templateLanguage: tc.languageCode,
-        whatsappPhoneNumberId: PHONE_NUMBER_ID
-      });
-
+      campaignBulkOps.push({ updateOne: { filter: { _id: campaignId, [`reportData.${absoluteIndex}.status`]: "queued" }, update: { $set: { [`reportData.${absoluteIndex}.status`]: "sent", [`reportData.${absoluteIndex}.sentWamid`]: r.wamid, [`reportData.${absoluteIndex}.charged`]: true, [`reportData.${absoluteIndex}.chargedAmount`]: pp } } } });
+      messagesToCreate.push({ userId, phone: ph, text: "", direction: "out", messageType: "template", mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID });
     } else if (r.status === "failed") {
-      
       failed++;
-      campaignBulkOps.push({
-        updateOne: {
-          filter: { _id: campaignId, [`reportData.${absoluteIndex}.status`]: "queued" },
-          update: { $set: {
-            [`reportData.${absoluteIndex}.status`]: "failed",
-            [`reportData.${absoluteIndex}.error`]: r.error || "Unknown error"
-          }}
-        }
-      });
+      campaignBulkOps.push({ updateOne: { filter: { _id: campaignId, [`reportData.${absoluteIndex}.status`]: "queued" }, update: { $set: { [`reportData.${absoluteIndex}.status`]: "failed", [`reportData.${absoluteIndex}.error`]: r.error || "Unknown error" } } } });
     }
   }
 
-  // Calculate total deduction
   if (bd > 0) ded = Math.round((ded + bd) * 100) / 100;
+  if (campaignBulkOps.length > 0) try { await Campaign.bulkWrite(campaignBulkOps); } catch (e) { console.error(`[Worker] Campaign bulkWrite error:`, e); }
+  if (messagesToCreate.length > 0) try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) { console.error(`[Worker] Message insertMany error:`, e); }
+  if (bd > 0) try { await User.updateOne({ _id: payerId }, { $inc: { balance: -bd } }); } catch (e) { console.error(`[Worker] User balance deduction error:`, e); }
+  try { await Campaign.updateOne({ _id: campaignId }, { $inc: { sentCount: sent, failedCount: failed, totalDeducted: ded } }); } catch (e) { console.error(`[Worker] Campaign counter increment error:`, e); }
+  try { await statsQueue.add('sync-user-stats', { userId }, { removeOnComplete: true, removeOnFail: true }); } catch (e) { console.error(`[Worker] Failed to queue stats sync:`, e); }
 
-  // Bulk update campaign reportData
-  if (campaignBulkOps.length > 0) {
-    try { await Campaign.bulkWrite(campaignBulkOps); } catch (e) { console.error(`[Worker] Campaign bulkWrite error:`, e); }
-  }
-
-  // Bulk insert messages
-  if (messagesToCreate.length > 0) {
-    try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) { console.error(`[Worker] Message insertMany error:`, e); }
-  }
-
-  // Deduct balance
-  if (bd > 0) {
-    try { await User.updateOne({ _id: payerId }, { $inc: { balance: -bd } }); } catch (e) { console.error(`[Worker] User balance deduction error:`, e); }
-  }
-
-  // Update campaign counters
-  try {
-    await Campaign.updateOne({ _id: campaignId }, { $inc: { sentCount: sent, failedCount: failed, totalDeducted: ded } });
-  } catch (e) { console.error(`[Worker] Campaign counter increment error:`, e); }
-
-  // Queue stats sync
-  try {
-    await statsQueue.add('sync-user-stats', { userId }, { removeOnComplete: true, removeOnFail: true });
-  } catch (e) { console.error(`[Worker] Failed to queue stats sync:`, e); }
-
-  // Check if campaign is complete
   try {
     const [statResult] = await Campaign.aggregate([
       { $match: { _id: new mongoose.Types.ObjectId(campaignId) } },
-      { $project: {
-        status: 1,
-        totalMessages: 1,
-        processedCount: {
-          $size: {
-            $filter: {
-              input: { $ifNull: ["$reportData", []] },
-              as: "r",
-              cond: { $in: ["$$r.status", ["sent", "delivered", "read", "failed", "invalid", "duplicate"]] }
-            }
-          }
-        }
-      }}
+      { $project: { status: 1, totalMessages: 1, processedCount: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $in: ["$$r.status", ["sent", "delivered", "read", "failed", "invalid", "duplicate"]] } } } } } }
     ]);
-
     let completedCampaign: any = null;
     if (statResult && statResult.status !== "completed" && statResult.processedCount >= (statResult.totalMessages || 0)) {
-      completedCampaign = await Campaign.findOneAndUpdate(
-        { _id: campaignId, status: { $ne: "completed" } },
-        { $set: { status: "completed", completedAt: new Date() } },
-        { new: true, fields: "status" }
-      );
+      completedCampaign = await Campaign.findOneAndUpdate({ _id: campaignId, status: { $ne: "completed" } }, { $set: { status: "completed", completedAt: new Date() } }, { new: true, fields: "status" });
     }
-
     if (completedCampaign && completedCampaign.status === "completed") {
       try {
         const finalCampaign = await Campaign.findById(campaignId).lean();
-        const plainReportData = (finalCampaign?.reportData || []).map((r: any) => ({
-          name: r.name || "", phone: r.phone || "", status: r.status || "",
-          error: r.error || "", replies: r.replies || [], reply: r.reply || null,
-          tags: r.tags || [], additionalData: r.additionalData || []
-        }));
+        const plainReportData = (finalCampaign?.reportData || []).map((r: any) => ({ name: r.name || "", phone: r.phone || "", status: r.status || "", error: r.error || "", replies: r.replies || [], reply: r.reply || null, tags: r.tags || [], additionalData: r.additionalData || [] }));
         await syncCampaignToGoogleSheet(userId, { name: finalCampaign?.name || "Campaign", reportData: plainReportData });
       } catch (e) { console.error("[Worker] Sheet sync failed:", e); }
     }
@@ -772,14 +476,7 @@ async function processCampaignChunk(data: any) {
 // 5. META API WORKER FUNCTION
 // ============================================================================
 
-async function metaSenderWorker(
-  phone: string,
-  variables: string[],
-  tc: any,
-  token: string,
-  pnId: string,
-  thf: string
-): Promise<{ status: string; wamid?: string | null; error?: string }> {
+async function metaSenderWorker(phone: string, variables: string[], tc: any, token: string, pnId: string, thf: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
   
   let comps = buildCampaignComponents(thf, variables, tc.mediaUrl || "");
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
@@ -794,110 +491,48 @@ async function metaSenderWorker(
 
     try {
       
-      const payload = JSON.stringify({
-        messaging_product: "whatsapp",
-        to: phone,
-        type: "template",
-        template: {
-          name: tc.templateName,
-          language: { code: tc.languageCode || "en" },
-          components: comps
-        }
-      });
-
-      const sendRes = await fetch(url, {
-        method: "POST",
-        headers,
-        body: payload,
-        signal: controller.signal
-      });
-      
+      const payload = JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } });
+      const sendRes = await fetch(url, { method: "POST", headers, body: payload, signal: controller.signal });
       clearTimeout(timeoutId);
 
-      // ═══════════════════════════════════════════════════════════════
-      // ✅ FIX: Only return "sent" if we have a VALID wamid
-      // Previously: returned "sent" if sendRes.ok was true,
-      // even if wamid was null (Meta returned 200 but with error)
-      // This caused balance to be deducted for failed messages
-      // ═══════════════════════════════════════════════════════════════
-      
+      // ✅ Only return "sent" if we have a VALID wamid
       if (sendRes.ok) {
         
         let wamid: string | null = null;
         let data: any = null;
-        
-        try {
-          data = await sendRes.json();
-          wamid = data?.messages?.[0]?.id || data?.message_id || null;
-        } catch (e) {
-          console.error(`[Meta API] Failed to parse success JSON for ${phone}:`, e);
-        }
+        try { data = await sendRes.json(); wamid = data?.messages?.[0]?.id || data?.message_id || null; }
+        catch (e) { console.error(`[Meta API] Failed to parse success JSON for ${phone}:`, e); }
 
-        // ✅ Only return "sent" if we have a valid wamid
-        if (wamid) {
-          return { status: "sent", wamid };
-        }
+        if (wamid) return { status: "sent", wamid };
 
-        // ❌ Meta returned 200 but no wamid — treat as FAILED
         if (data?.error) {
-          
           const errorMsg = data.error.message || "Meta API error";
           const errorCode = data.error.code;
-
-          // Handle media format errors (retry)
           if (errorCode === 132012 && tc.mediaUrl) {
             const m = (data.error?.error_data?.details || "").match(/expected\s+(\w+)/i);
-            if (m && ["IMAGE", "VIDEO", "DOCUMENT"].includes(m[1].toUpperCase())) {
-              comps = buildCampaignComponents(m[1].toUpperCase(), variables, tc.mediaUrl);
-              attempt++;
-              continue;
-            }
+            if (m && ["IMAGE", "VIDEO", "DOCUMENT"].includes(m[1].toUpperCase())) { comps = buildCampaignComponents(m[1].toUpperCase(), variables, tc.mediaUrl); attempt++; continue; }
           }
-          
-          if (errorCode === 132012 && comps.length > 0 && comps[0].type === "header") {
-            comps = comps.filter((c: any) => c.type !== "header");
-            attempt++;
-            continue;
-          }
-
+          if (errorCode === 132012 && comps.length > 0 && comps[0].type === "header") { comps = comps.filter((c: any) => c.type !== "header"); attempt++; continue; }
           return { status: "failed", error: errorMsg };
         }
 
-        // No wamid and no error — treat as failed
         return { status: "failed", error: "Meta API returned 200 but no message ID" };
       }
 
-      // ❌ Non-200 response — parse error
       let sendData: any = null;
-      try { sendData = await sendRes.json(); }
-      catch { return { status: "failed", error: "Meta API invalid response" }; }
+      try { sendData = await sendRes.json(); } catch { return { status: "failed", error: "Meta API invalid response" }; }
 
       const statusCode = sendRes.status;
       const errorMsg = sendData?.error?.message || "Failed to send";
 
-      // Handle media format errors (retry)
       if (sendData.error?.code === 132012 && tc.mediaUrl) {
         const m = (sendData.error?.error_data?.details || "").match(/expected\s+(\w+)/i);
-        if (m && ["IMAGE", "VIDEO", "DOCUMENT"].includes(m[1].toUpperCase())) {
-          comps = buildCampaignComponents(m[1].toUpperCase(), variables, tc.mediaUrl);
-          attempt++;
-          continue;
-        }
+        if (m && ["IMAGE", "VIDEO", "DOCUMENT"].includes(m[1].toUpperCase())) { comps = buildCampaignComponents(m[1].toUpperCase(), variables, tc.mediaUrl); attempt++; continue; }
       }
-      
-      if (sendData.error?.code === 132012 && comps.length > 0 && comps[0].type === "header") {
-        comps = comps.filter((c: any) => c.type !== "header");
-        attempt++;
-        continue;
-      }
+      if (sendData.error?.code === 132012 && comps.length > 0 && comps[0].type === "header") { comps = comps.filter((c: any) => c.type !== "header"); attempt++; continue; }
 
-      // Retry on 429 or 5xx
       if (statusCode === 429 || statusCode >= 500) {
-        if (attempt < maxRetries) {
-          await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
-          attempt++;
-          continue;
-        }
+        if (attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000)); attempt++; continue; }
         return { status: "failed", error: `Retry limit reached: ${errorMsg}` };
       }
 
@@ -908,20 +543,11 @@ async function metaSenderWorker(
       clearTimeout(timeoutId);
       
       if (err.name === 'AbortError') {
-        if (attempt < maxRetries) {
-          await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
-          attempt++;
-          continue;
-        }
+        if (attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000)); attempt++; continue; }
         return { status: "failed", error: "Meta API Timeout (30s)" };
       }
       
-      if (attempt < maxRetries) {
-        await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
-        attempt++;
-        continue;
-      }
-      
+      if (attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000)); attempt++; continue; }
       return { status: "failed", error: err.message || "System error" };
     }
   }
@@ -933,13 +559,7 @@ async function metaSenderWorker(
 // 6. COUNTS WORKER
 // ============================================================================
 
-async function generateCountsData(
-  userId: string,
-  page: number,
-  limit: number,
-  cacheKey: string,
-  lockKey: string
-) {
+async function generateCountsData(userId: string, page: number, limit: number, cacheKey: string, lockKey: string) {
   
   try {
     await ensureDbConnected();
@@ -947,19 +567,13 @@ async function generateCountsData(
 
     const campaigns = await Campaign.aggregate([
       { $match: { userId: new mongoose.Types.ObjectId(userId) } },
-      { $sort: { createdAt: -1 } },
-      { $skip: skip },
-      { $limit: limit },
+      { $sort: { createdAt: -1 } }, { $skip: skip }, { $limit: limit },
       {
         $project: {
-          name: 1, templateName: 1, templateCategory: 1, variables: 1,
-          mappedVariables: 1, generateOtp: 1, otpLength: 1,
-          phoneNumbers: { $slice: [{ $ifNull: ["$phoneNumbers", []] }, 15] },
-          names: { $slice: [{ $ifNull: ["$names", []] }, 15] },
-          additionalFieldsData: { $slice: [{ $ifNull: ["$additionalFieldsData", []] }, 15] },
-          mediaUrl: 1, mediaType: 1, languageCode: 1, status: 1,
-          totalMessages: 1, totalDeducted: 1, scheduledAt: 1, createdAt: 1,
-          additionalFields: 1, sentCount: 1, failedCount: 1, skippedCount: 1,
+          name: 1, templateName: 1, templateCategory: 1, variables: 1, mappedVariables: 1, generateOtp: 1, otpLength: 1,
+          phoneNumbers: { $slice: [{ $ifNull: ["$phoneNumbers", []] }, 15] }, names: { $slice: [{ $ifNull: ["$names", []] }, 15] },
+          additionalFieldsData: { $slice: [{ $ifNull: ["$additionalFieldsData", []] }, 15] }, mediaUrl: 1, mediaType: 1, languageCode: 1,
+          status: 1, totalMessages: 1, totalDeducted: 1, scheduledAt: 1, createdAt: 1, additionalFields: 1, sentCount: 1, failedCount: 1, skippedCount: 1,
           liveStats: {
             $let: {
               vars: {
@@ -968,23 +582,7 @@ async function generateCountsData(
                     input: { $ifNull: ["$reportData", []] },
                     initialValue: { replied: 0, read: 0, delivered: 0, sent: 0, failed: 0, invalid: 0, duplicate: 0 },
                     in: {
-                      replied: {
-                        $add: [
-                          "$$value.replied",
-                          {
-                            $cond: [
-                              {
-                                $or: [
-                                  { $ne: [{ $ifNull: ["$$this.reply", ""] }, ""] },
-                                  { $gt: [{ $size: { $filter: { input: { $ifNull: ["$$this.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0] }
-                                ]
-                              },
-                              1,
-                              0
-                            ]
-                          }
-                        ]
-                      },
+                      replied: { $add: ["$$value.replied", { $cond: [{ $or: [{ $ne: [{ $ifNull: ["$$this.reply", ""] }, ""] }, { $gt: [{ $size: { $filter: { input: { $ifNull: ["$$this.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0] }] }, 1, 0] }] },
                       read: { $add: ["$$value.read", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "read"] }, 1, 0] }] },
                       delivered: { $add: ["$$value.delivered", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "delivered"] }, 1, 0] }] },
                       sent: { $add: ["$$value.sent", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "sent"] }, 1, 0] }] },
@@ -995,13 +593,7 @@ async function generateCountsData(
                   }
                 }
               },
-              in: {
-                total: { $ifNull: ["$totalMessages", 0] },
-                replied: "$$counts.replied", read: "$$counts.read",
-                delivered: "$$counts.delivered", sent: "$$counts.sent",
-                failed: "$$counts.failed", invalid: "$$counts.invalid",
-                duplicate: "$$counts.duplicate"
-              }
+              in: { total: { $ifNull: ["$totalMessages", 0] }, replied: "$$counts.replied", read: "$$counts.read", delivered: "$$counts.delivered", sent: "$$counts.sent", failed: "$$counts.failed", invalid: "$$counts.invalid", duplicate: "$$counts.duplicate" }
             }
           }
         }
@@ -1009,40 +601,20 @@ async function generateCountsData(
     ]).allowDiskUse(false);
 
     const fixedCampaigns = campaigns.map((c: any) => {
-      
       const ls = c.liveStats || {};
-      const total = ls.total || 0;
-      const read = ls.read || 0;
-      const delivered = ls.delivered || 0;
-      const sent = ls.sent || 0;
-      const failed = ls.failed || 0;
-      const invalid = ls.invalid || 0;
-      const duplicate = ls.duplicate || 0;
-
+      const total = ls.total || 0; const read = ls.read || 0; const delivered = ls.delivered || 0;
+      const sent = ls.sent || 0; const failed = ls.failed || 0; const invalid = ls.invalid || 0; const duplicate = ls.duplicate || 0;
       const processed = read + delivered + sent + failed + invalid + duplicate;
       const pending = Math.max(0, total - processed);
       const progress = total > 0 ? Math.min(100, Math.round(((delivered + read + sent) / total) * 100)) : 0;
-
-      return {
-        ...c,
-        liveStats: { ...ls, pending, deliveredRead: delivered + read, failedInvalid: failed + invalid, progress },
-        languageCode: c.languageCode || "en",
-        totalDeducted: c.totalDeducted || 0,
-      };
+      return { ...c, liveStats: { ...ls, pending, deliveredRead: delivered + read, failedInvalid: failed + invalid, progress }, languageCode: c.languageCode || "en", totalDeducted: c.totalDeducted || 0 };
     });
 
     const result = { success: true, campaigns: fixedCampaigns, page, limit };
     const cachePayload = JSON.stringify(result);
-
-    await Cache.updateOne(
-      { key: cacheKey },
-      { $set: { value: cachePayload, expireAt: new Date(Date.now() + 3600 * 1000) } },
-      { upsert: true }
-    );
+    await Cache.updateOne({ key: cacheKey }, { $set: { value: cachePayload, expireAt: new Date(Date.now() + 3600 * 1000) } }, { upsert: true });
     await Cache.deleteOne({ key: lockKey }).catch(() => {});
-
     return result;
-
   } catch (error) {
     console.error("❌ Counts generation error:", error);
     await Cache.deleteOne({ key: lockKey }).catch(() => {});
@@ -1055,34 +627,22 @@ async function generateCountsData(
 // ============================================================================
 
 async function refreshReportCache(data: any) {
-  
   const { campaignId, userId, cacheKey, lockKey } = data;
-
   try {
     await ensureDbConnected();
-
     const pipeline: any[] = [
       { $match: { _id: new mongoose.Types.ObjectId(campaignId), userId: new mongoose.Types.ObjectId(userId) } },
       { $lookup: { from: "messages", let: { camp_createdAt: "$createdAt", user_id: "$userId" }, pipeline: [ { $match: { $expr: { $and: [ { $eq: ["$userId", "$$user_id"] }, { $eq: ["$direction", "in"] }, { $gte: ["$createdAt", "$$camp_createdAt"] } ] } } }, { $project: { phone: 1, _id: 0 } } ], as: "inboundMsgs" } },
       { $addFields: { repliedPhonesArr: { $map: { input: { $filter: { input: "$inboundMsgs", as: "msg", cond: { $ne: [{ $toString: { $ifNull: ["$$msg.phone", ""] } }, ""] } } }, as: "msg", in: { $toString: "$$msg.phone" } } } } },
       { $project: { name: 1, templateName: 1, additionalFields: 1, languageCode: 1, totalDeducted: 1, mappedReportData: { $map: { input: { $ifNull: ["$reportData", []] }, as: "r", in: { $mergeObjects: [ "$$r", { _effStatus: { $switch: { branches: [ { case: { $or: [ { $ne: [ { $ifNull: ["$$r.reply", ""] }, "" ] }, { $gt: [ { $size: { $filter: { input: { $ifNull: ["$$r.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0 ] }, { $in: [{ $toString: { $ifNull: ["$$r.phone", ""] } }, "$repliedPhonesArr"] } ] }, then: "replied" }, { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "read"] }, then: "read" }, { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "delivered"] }, then: "delivered" }, { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "sent"] }, then: "sent" }, { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "failed"] }, then: "failed" }, { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "invalid"] }, then: "invalid" }, { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "duplicate"] }, then: "duplicate" } ], default: "pending" } } } ] } } } } },
-      { $project: { name: 1, templateName: 1, additionalFields: 1, languageCode: 1, totalDeducted: 1, campaignStats: { total: { $size: { $ifNull: ["$mappedReportData", []] } }, replied: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "replied"] } } } }, read: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "read"] } } } }, delivered: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "delivered"] } } } }, sent: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "sent"] } } } }, failed: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "failed"] } } } }, invalid: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "invalid"] } } } }, duplicate: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "duplicate"] } } } } } } }
+      { $project: { name: 1, templateName: 1, additionalFields: 1, languageCode: 1, totalDeducted: 1, campaignStats: { total: { $size: { $ifNull: ["$mappedReportData", []] } }, replied: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "replied"] } } } }, read: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "read"] } } } }, delivered: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "delivered"] } } } }, sent: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "sent"] } } } }, failed: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effeffStatus", "failed"] } } } }, invalid: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "invalid"] } } } }, duplicate: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "duplicate"] } } } } } } }
     ];
-
     const result = await Campaign.aggregate(pipeline);
     if (!result || result.length === 0) return { success: false, message: "Campaign not found", status: 404 };
-
     const campaign = result[0];
-
-    await Cache.updateOne(
-      { key: cacheKey },
-      { $set: { value: JSON.stringify({ stats: campaign.campaignStats, data: campaign.mappedReportData, meta: { name: campaign.name, templateName: campaign.templateName, additionalFields: campaign.additionalFields, languageCode: campaign.languageCode, totalDeducted: campaign.totalDeducted } }), expireAt: new Date(Date.now() + 3600 * 1000) } },
-      { upsert: true }
-    );
+    await Cache.updateOne({ key: cacheKey }, { $set: { value: JSON.stringify({ stats: campaign.campaignStats, data: campaign.mappedReportData, meta: { name: campaign.name, templateName: campaign.templateName, additionalFields: campaign.additionalFields, languageCode: campaign.languageCode, totalDeducted: campaign.totalDeducted } }), expireAt: new Date(Date.now() + 3600 * 1000) } }, { upsert: true });
     await Cache.deleteOne({ key: lockKey }).catch(() => {});
-
     return { success: true };
-
   } catch (error: any) {
     console.error("❌ Report Worker Error:", error);
     return { success: false, message: error.message, status: 500 };
@@ -1094,10 +654,8 @@ async function refreshReportCache(data: any) {
 // ============================================================================
 
 async function syncUserStats(userId: string) {
-  
   try {
     await ensureDbConnected();
-
     await Campaign.aggregate([
       { $match: { userId: new mongoose.Types.ObjectId(userId) } },
       {
@@ -1110,23 +668,7 @@ async function syncUserStats(userId: string) {
                     input: { $ifNull: ["$reportData", []] },
                     initialValue: { replied: 0, read: 0, delivered: 0, sent: 0, failed: 0, invalid: 0, duplicate: 0 },
                     in: {
-                      replied: {
-                        $add: [
-                          "$$value.replied",
-                          {
-                            $cond: [
-                              {
-                                $or: [
-                                  { $ne: [{ $ifNull: ["$$this.reply", ""] }, ""] },
-                                  { $gt: [{ $size: { $filter: { input: { $ifNull: ["$$this.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0] }
-                                ]
-                              },
-                              1,
-                              0
-                            ]
-                          }
-                        ]
-                      },
+                      replied: { $add: ["$$value.replied", { $cond: [{ $or: [{ $ne: [{ $ifNull: ["$$this.reply", ""] }, ""] }, { $gt: [{ $size: { $filter: { input: { $ifNull: ["$$this.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0] }] }, 1, 0] }] },
                       read: { $add: ["$$value.read", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "read"] }, 1, 0] }] },
                       delivered: { $add: ["$$value.delivered", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "delivered"] }, 1, 0] }] },
                       sent: { $add: ["$$value.sent", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "sent"] }, 1, 0] }] },
@@ -1137,62 +679,25 @@ async function syncUserStats(userId: string) {
                   }
                 }
               },
-              in: {
-                total: { $ifNull: ["$totalMessages", 0] },
-                replied: "$$counts.replied", read: "$$counts.read",
-                delivered: "$$counts.delivered", sent: "$$counts.sent",
-                failed: "$$counts.failed", invalid: "$$counts.invalid",
-                duplicate: "$$counts.duplicate"
-              }
+              in: { total: { $ifNull: ["$totalMessages", 0] }, replied: "$$counts.replied", read: "$$counts.read", delivered: "$$counts.delivered", sent: "$$counts.sent", failed: "$$counts.failed", invalid: "$$counts.invalid", duplicate: "$$counts.duplicate" }
             }
           }
         }
       },
-      {
-        $merge: {
-          into: "campaigns",
-          on: "_id",
-          whenMatched: "merge",
-          whenNotMatched: "discard"
-        }
-      }
+      { $merge: { into: "campaigns", on: "_id", whenMatched: "merge", whenNotMatched: "discard" } }
     ]);
-
-    // ✅ CRITICAL: Bust the count caches for this user
-    // so the API fetches fresh data on next poll
-    try {
-      await Cache.deleteMany({ key: { $regex: `^counts:${userId}:` } });
-    } catch (e) {}
-
+    try { await Cache.deleteMany({ key: { $regex: `^counts:${userId}:` } }); } catch (e) {}
     return { success: true };
-
-  } catch (error) {
-    console.error(`❌ Stats sync error for user ${userId}:`, error);
-    return { success: false };
-  }
+  } catch (error) { console.error(`❌ Stats sync error for user ${userId}:`, error); return { success: false }; }
 }
 
 async function syncAllStats() {
-  
   try {
     await ensureDbConnected();
-    
     const users = await User.find({}, { _id: 1 }).lean();
-    
-    for (const user of users) {
-      await statsQueue.add(
-        'sync-user-stats',
-        { userId: user._id.toString() },
-        { removeOnComplete: true, removeOnFail: true }
-      );
-    }
-    
+    for (const user of users) { await statsQueue.add('sync-user-stats', { userId: user._id.toString() }, { removeOnComplete: true, removeOnFail: true }); }
     return { success: true, queued: users.length };
-
-  } catch (error) {
-    console.error("❌ Sync all stats error:", error);
-    return { success: false };
-  }
+  } catch (error) { console.error("❌ Sync all stats error:", error); return { success: false }; }
 }
 
 // ============================================================================
