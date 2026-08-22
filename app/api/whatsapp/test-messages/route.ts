@@ -27,9 +27,14 @@ export async function GET(req: Request) {
 
     const skip = (page - 1) * limit;
 
-    // ✅ Build query for messages list — NO direction filter
-    // (in case the direction field doesn't exist in the schema)
-    const query: any = { userId: session.user.id };
+    // ═══════════════════════════════════════════════════════════════
+    // ✅ FIX: Only fetch TEST messages (source: "test")
+    // This filters OUT campaign messages and workflow messages
+    // ═══════════════════════════════════════════════════════════════
+    const query: any = {
+      userId: session.user.id,
+      source: "test",
+    };
 
     if (search) {
       query.$or = [
@@ -50,17 +55,12 @@ export async function GET(req: Request) {
 
     const total = await Message.countDocuments(query);
 
-    // ═══════════════════════════════════════════════════════════════
-    // ✅ FIX: Use find() for stats — NOT aggregate()
-    // aggregate() does NOT do ObjectId casting, so userId (string)
-    // doesn't match ObjectId stored in DB → stats return 0
-    // find() DOES handle casting properly
-    // ═══════════════════════════════════════════════════════════════
-    const allMessages = await Message.find({
+    // ✅ Stats: Only count TEST messages
+    const allTestMessages = await Message.find({
       userId: session.user.id,
+      source: "test",
     }).lean();
 
-    // ✅ Calculate stats manually (case-insensitive)
     const statsObj: any = {
       sent: 0,
       delivered: 0,
@@ -69,7 +69,7 @@ export async function GET(req: Request) {
       total: 0,
     };
 
-    allMessages.forEach((msg: any) => {
+    allTestMessages.forEach((msg: any) => {
       const status = (msg.status || "").toLowerCase().trim();
       if (statsObj.hasOwnProperty(status)) {
         statsObj[status]++;
@@ -80,14 +80,10 @@ export async function GET(req: Request) {
     console.log(
       "📊 Test Messages — Total:",
       statsObj.total,
-      "| Sent:",
-      statsObj.sent,
-      "| Delivered:",
-      statsObj.delivered,
-      "| Read:",
-      statsObj.read,
-      "| Failed:",
-      statsObj.failed
+      "| Sent:", statsObj.sent,
+      "| Delivered:", statsObj.delivered,
+      "| Read:", statsObj.read,
+      "| Failed:", statsObj.failed
     );
 
     return NextResponse.json({
