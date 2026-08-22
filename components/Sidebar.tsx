@@ -34,6 +34,7 @@ import {
   UserCog,
   MessagesSquare,
   FileSpreadsheet, 
+  MessageSquareText,
   Database,
   // ✅ NEW UNIQUE ICONS ADDED BELOW
   SlidersHorizontal, 
@@ -69,6 +70,7 @@ const categories: NavCategory[] = [
       { name: "Create Templates", icon: LayoutTemplate, href: "/dashboard/templates" },
       { name: "View Templates", icon: ScanEye, href: "/dashboard/view-templates" },
       { name: "Send Test Message", icon: FlaskConical, href: "/send-message" },
+      { name: "Test Message Report", icon: MessageSquareText, href: "/test-messages" },
     ],
   },
   {
