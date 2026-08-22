@@ -1943,7 +1943,7 @@ export default function Home() {
     (wf) =>
       wf.triggers.some((t) => t.keyword?.toLowerCase().includes(searchQuery.toLowerCase())) ||
       Object.values(wf.steps).some((s) => s.message?.toLowerCase().includes(searchQuery.toLowerCase()))
-  );
+  ).reverse();
 
   const totalPages = Math.max(1, Math.ceil(filteredWorkflows.length / ITEMS_PER_PAGE));
   const safeCurrentPage = Math.min(currentPage, totalPages);
