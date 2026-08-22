@@ -1059,7 +1059,7 @@ export default function ReportsPage() {
                       }`}
                     >
                       {syncingSheet ? <Loader2 size={12} className="animate-spin" /> : sheetUrl ? <Check size={12} /> : <ExternalLink size={12} />}
-                      {sheetUrl ? "Sheet" : "Load Sheet"}
+                      {sheetUrl ? "Synced" : "Sync Sheets"}
                     </button>
                     <button
                       onClick={() => handleCreateStandaloneSheet(selectedCamp._id)}
@@ -1071,7 +1071,7 @@ export default function ReportsPage() {
                       }`}
                     >
                       {syncingStandaloneSheet ? <Loader2 size={12} className="animate-spin" /> : standaloneSheetUrl ? <Check size={12} /> : <FileSpreadsheet size={12} />}
-                      {standaloneSheetUrl ? "Standalone Report" : "Generate Standalone Report"}
+                      {standaloneSheetUrl ? "Exported" : "Export Report"}
                     </button>
                     <button
                       onClick={downloadExcel}
@@ -1110,7 +1110,7 @@ export default function ReportsPage() {
                           rel="noopener noreferrer"
                           className="flex items-center gap-1.5 text-xs font-bold text-indigo-600 hover:text-indigo-800 hover:underline truncate"
                         >
-                          <Link2 size={12} className="shrink-0" /> Open Shared Sheet
+                          <Link2 size={12} className="shrink-0" /> All Reports Sheet
                         </a>
                       )}
                       {standaloneSheetUrl && (
@@ -1120,7 +1120,7 @@ export default function ReportsPage() {
                           rel="noopener noreferrer"
                           className="flex items-center gap-1.5 text-xs font-bold text-purple-600 hover:text-purple-800 hover:underline truncate"
                         >
-                          <Link2 size={12} className="shrink-0" /> Open Standalone Report Sheet
+                          <Link2 size={12} className="shrink-0" /> Reports Sheet
                         </a>
                       )}
                     </div>
@@ -1230,8 +1230,12 @@ export default function ReportsPage() {
                         })}
                         {reportData.length === 0 && (
                           <tr>
-                            <td colSpan={5 + additionalFieldsCount} className="text-center py-8 text-slate-400 text-xs">
-                              <ScannerLoader />
+                            <td colSpan={5 + additionalFieldsCount} className="text-center py-16 text-slate-400">
+                              <div className="flex flex-col items-center gap-2">
+                                <Search size={32} className="text-slate-200" />
+                                <p className="text-sm font-semibold text-slate-500">No results found</p>
+                                <p className="text-xs text-slate-400">Try changing your filters or search query</p>
+                              </div>
                             </td>
                           </tr>
                         )}
