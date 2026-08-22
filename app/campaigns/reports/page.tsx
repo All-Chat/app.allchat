@@ -681,7 +681,7 @@ return (
                   {stats.read > 0 && <span className="flex items-center gap-1 text-blue-600 font-medium"><Eye size={10}/> {stats.read} Read</span>} 
                   {stats.delivered > 0 && <span className="flex items-center gap-1 text-cyan-600 font-medium"><CheckCheck size={10}/> {stats.delivered} Delivered</span>} 
                   {stats.sent > 0 && <span className="flex items-center gap-1 text-emerald-600 font-medium"><CheckCircle size={10}/> {stats.sent} Sent</span>} 
-                  {stats.pending > 0 && <span className="flex items-center gap-1 text-amber-600 font-medium"><Clock size={10}/> {stats.pending} Pending</span>} 
+                  {/* {stats.pending > 0 && <span className="flex items-center gap-1 text-amber-600 font-medium"><Clock size={10}/> {stats.pending} Replied</span>}  */}
                   {stats.failed > 0 && <span className="flex items-center gap-1 text-red-600 font-medium"><XCircle size={10}/> {stats.failed} Failed</span>} 
                   {stats.invalid > 0 && <span className="flex items-center gap-1 text-orange-600 font-medium"><AlertTriangle size={10}/> {stats.invalid} Invalid</span>} 
                 </div> 
