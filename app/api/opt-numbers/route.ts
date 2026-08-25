@@ -6,41 +6,16 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { checkLimit, incrementUsage } from "@/lib/limits";
 
-export async function GET(req: Request) {
+export async function GET() {
   try {
-    // ✅ Run DB connection and session check in parallel for faster boot
-    const [, session] = await Promise.all([
-      connectDB(),
-      getServerSession(authOptions)
-    ]);
+    await connectDB();
+    const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
 
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    // ✅ PAGINATION LOGIC
-    const { searchParams } = new URL(req.url);
-    const page = parseInt(searchParams.get("page") || "1");
-    const limit = parseInt(searchParams.get("limit") || "10");
-    const skip = (page - 1) * limit;
-
-    // ✅ Fetch numbers and total count in parallel for speed
-    // ✅ Added .select() to only pull necessary fields, reducing memory payload
-    const [numbers, totalNumbers] = await Promise.all([
-      OptNumber.find({ userId })
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .select("phoneNumber createdAt") 
-        .lean(), 
-      OptNumber.countDocuments({ userId })
-    ]);
-
-    return NextResponse.json({ 
-      numbers,
-      currentPage: page,
-      totalPages: Math.ceil(totalNumbers / limit),
-      totalNumbers
-    });
+    const numbers = await OptNumber.find({ userId }).sort({ createdAt: -1 });
+    return NextResponse.json({ numbers });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -48,11 +23,8 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    // ✅ Run DB connection and session check in parallel
-    const [, session] = await Promise.all([
-      connectDB(),
-      getServerSession(authOptions)
-    ]);
+    await connectDB();
+    const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
 
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -81,8 +53,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Phone number is required" }, { status: 400 });
     }
 
-    // ✅ Prevent duplicates - use .select("_id").lean() for ultra-fast check
-    const existing = await OptNumber.findOne({ userId, phoneNumber: phoneNumber.trim() }).select("_id").lean();
+    // Prevent duplicates
+    const existing = await OptNumber.findOne({ userId, phoneNumber: phoneNumber.trim() });
     if (existing) return NextResponse.json({ error: "Number already exists" }, { status: 400 });
 
     // ==========================================
@@ -92,13 +64,13 @@ export async function POST(req: Request) {
 
     const optNumber = await OptNumber.create({ 
       userId, 
-      tenantId, 
-      createdBy: userId, 
+      tenantId, // ✅ ATTACH TENANT ID FOR AGGREGATED VIEWS
+      createdBy: userId, // ✅ TRACK WHO CREATED IT
       phoneNumber: phoneNumber.trim() 
     });
 
-    // ✅ Fire-and-forget usage increment (don't block the API response)
-    incrementUsage(userId, "optNumbers").catch(() => {});
+    // ✅ INCREMENT USAGE AFTER SUCCESSFUL CREATION
+    await incrementUsage(userId, "optNumbers");
 
     return NextResponse.json({ success: true, optNumber });
   } catch (error: any) {
