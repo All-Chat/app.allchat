@@ -7,13 +7,16 @@ import { authOptions } from "@/lib/auth";
 
 export async function GET() {
   try {
-    await connectDB();
-    const session = await getServerSession(authOptions);
+    // ✅ Run DB connection and session check in parallel
+    const [, session] = await Promise.all([
+      connectDB(),
+      getServerSession(authOptions)
+    ]);
     const userId = session?.user?.id;
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    // Fetch all responses for this user
-    const responses = await FormResponse.find({ userId }).sort({ createdAt: -1 });
+    // ✅ Use .lean() for faster query and lower memory usage
+    const responses = await FormResponse.find({ userId }).sort({ createdAt: -1 }).lean();
     return NextResponse.json({ responses });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
