@@ -17,7 +17,7 @@ import Session from '../models/Session';
 import mongoose from 'mongoose';
 import { getPriceForCategory } from '../lib/billing';
 import { syncCampaignToGoogleSheet } from '../lib/googleSheetSync';
-import { Job, Cache, statsQueue } from '../lib/queue';
+import { Job, Cache } from '../lib/queue'; // Removed statsQueue import
 
 // ============================================================================
 // 0. CONNECT TO MONGO ON STARTUP
@@ -26,7 +26,7 @@ import { Job, Cache, statsQueue } from '../lib/queue';
 connectDB()
   .then(async () => {
     
-    console.log('✅ Worker process connected to MongoDB');
+    console.log('✅ Main Worker process connected to MongoDB');
 
     // Start all background workers
     startInactivityWorker();
@@ -44,15 +44,7 @@ connectDB()
       }
     }, 5);
 
-    startWorker('stats-processing', async (job) => {
-      if (job.name === 'sync-user-stats') return await syncUserStats(job.data.userId);
-      if (job.name === 'sync-all-stats') return await syncAllStats();
-    }, 1);
-
-    // REMOVED: Automatic 15-second and 10-minute stat syncs to reduce DB load.
-    // Stats will only be generated when the user clicks "Load Latest Status" in the UI.
-
-    console.log('🚀 Standalone worker process started — campaign / counts / report / stats / inactivity workers running.');
+    console.log('🚀 Standalone main worker process started — campaign / counts / report / inactivity workers running.');
   })
   .catch((err) => { console.error('❌ Worker process failed to connect to MongoDB:', err); process.exit(1); });
 
@@ -136,7 +128,7 @@ async function startCampaignWorker() {
           await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
         }
         
-        // 500ms delay = 2 chunks per second (assuming chunk size of 10, this is 20 msgs/sec)
+        // 500ms delay = 2 chunks per second (20 msgs/sec)
         await new Promise(r => setTimeout(r, 500)); 
       } else { await new Promise(r => setTimeout(r, 1000)); }
       
@@ -430,8 +422,6 @@ async function processCampaignChunk(data: any) {
   if (messagesToCreate.length > 0) try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) { console.error(`[Worker] Message insertMany error:`, e); }
   if (bd > 0) try { await User.updateOne({ _id: payerId }, { $inc: { balance: -bd } }); } catch (e) { console.error(`[Worker] User balance deduction error:`, e); }
   try { await Campaign.updateOne({ _id: campaignId }, { $inc: { sentCount: sent, failedCount: failed, totalDeducted: ded } }); } catch (e) { console.error(`[Worker] Campaign counter increment error:`, e); }
-  
-  // REMOVED: Automatic stats queue addition. Stats will only be fetched when UI requests them.
 
   try {
     const [statResult] = await Campaign.aggregate([
@@ -629,61 +619,10 @@ async function refreshReportCache(data: any) {
 }
 
 // ============================================================================
-// 8. STATS WORKER
-// ============================================================================
-
-async function syncUserStats(userId: string) {
-  try {
-    await ensureDbConnected();
-    await Campaign.aggregate([
-      { $match: { userId: new mongoose.Types.ObjectId(userId) } },
-      {
-        $project: {
-          liveStats: {
-            $let: {
-              vars: {
-                counts: {
-                  $reduce: {
-                    input: { $ifNull: ["$reportData", []] },
-                    initialValue: { replied: 0, read: 0, delivered: 0, sent: 0, failed: 0, invalid: 0, duplicate: 0 },
-                    in: {
-                      replied: { $add: ["$$value.replied", { $cond: [{ $or: [{ $ne: [{ $ifNull: ["$$this.reply", ""] }, ""] }, { $gt: [{ $size: { $filter: { input: { $ifNull: ["$$this.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0] }] }, 1, 0] }] },
-                      read: { $add: ["$$value.read", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "read"] }, 1, 0] }] },
-                      delivered: { $add: ["$$value.delivered", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "delivered"] }, 1, 0] }] },
-                      sent: { $add: ["$$value.sent", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "sent"] }, 1, 0] }] },
-                      failed: { $add: ["$$value.failed", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "failed"] }, 1, 0] }] },
-                      invalid: { $add: ["$$value.invalid", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "invalid"] }, 1, 0] }] },
-                      duplicate: { $add: ["$$value.duplicate", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "duplicate"] }, 1, 0] }] }
-                    }
-                  }
-                }
-              },
-              in: { total: { $ifNull: ["$totalMessages", 0] }, replied: "$$counts.replied", read: "$$counts.read", delivered: "$$counts.delivered", sent: "$$counts.sent", failed: "$$counts.failed", invalid: "$$counts.invalid", duplicate: "$$counts.duplicate" }
-            }
-          }
-        }
-      },
-      { $merge: { into: "campaigns", on: "_id", whenMatched: "merge", whenNotMatched: "discard" } }
-    ]);
-    try { await Cache.deleteMany({ key: { $regex: `^counts:${userId}:` } }); } catch (e) {}
-    return { success: true };
-  } catch (error) { console.error(`❌ Stats sync error for user ${userId}:`, error); return { success: false }; }
-}
-
-async function syncAllStats() {
-  try {
-    await ensureDbConnected();
-    const users = await User.find({}, { _id: 1 }).lean();
-    for (const user of users) { await statsQueue.add('sync-user-stats', { userId: user._id.toString() }, { removeOnComplete: true, removeOnFail: true }); }
-    return { success: true, queued: users.length };
-  } catch (error) { console.error("❌ Sync all stats error:", error); return { success: false }; }
-}
-
-// ============================================================================
 // SHUTDOWN
 // ============================================================================
 
 process.on('SIGTERM', async () => {
-  console.log('Worker process shutting down...');
+  console.log('Main Worker process shutting down...');
   process.exit(0);
 });
