@@ -5,6 +5,7 @@ import Tag from "@/models/Tag";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { checkLimit, incrementUsage } from "@/lib/limits";
+import mongoose from "mongoose";
 
 const TAG_PROJECTION = {
   name: 1,
@@ -16,7 +17,7 @@ const TAG_PROJECTION = {
   createdAt: 1,
 };
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
     const [, session] = await Promise.all([connectDB(), getServerSession(authOptions)]);
     const userId = session?.user?.id;
@@ -24,7 +25,57 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // ✅ lean + projection + sort in one pass
+    const { searchParams } = new URL(req.url);
+    const tagId = searchParams.get("id");
+    const page = parseInt(searchParams.get("page") || "1");
+    const limit = 10;
+    const skip = (page - 1) * limit;
+
+    // ==========================================
+    // ✅ MODE 2: Fetch Paginated Contacts for a Specific Tag (ULTRA FAST)
+    // ==========================================
+    if (tagId) {
+      // ✅ FIX: Use an Aggregation Pipeline to get the sliced array AND the total count in ONE single query.
+      // This prevents downloading 100,000 items into memory just to do .length
+      const pipeline = [
+        { 
+          $match: { 
+            _id: new mongoose.Types.ObjectId(tagId), 
+            userId: new mongoose.Types.ObjectId(userId) 
+          } 
+        },
+        {
+          $project: {
+            _id: 0, // We don't need the tag ID itself in the response
+            // ✅ Slice the array in MongoDB to get only the 10 items we want
+            contacts: { $slice: [{ $ifNull: ["$contacts", []] }, skip, limit] },
+            // ✅ Use $size to count the array length in MongoDB without pulling it to Node.js
+            totalContacts: { $size: { $ifNull: ["$contacts", []] } }
+          }
+        }
+      ];
+
+      const result = await Tag.aggregate(pipeline);
+      
+      if (!result || result.length === 0) {
+        return NextResponse.json({ error: "Tag not found" }, { status: 404 });
+      }
+
+      const tagData = result[0];
+      const contacts = tagData.contacts || [];
+      const totalContacts = tagData.totalContacts || 0;
+
+      return NextResponse.json({
+        contacts,
+        currentPage: page,
+        totalPages: Math.ceil(totalContacts / limit),
+        totalContacts
+      });
+    }
+
+    // ==========================================
+    // ✅ MODE 1: Fetch All Tags Metadata (FAST - NO NUMBERS LOADED)
+    // ==========================================
     const tags = await Tag.find({ userId }, TAG_PROJECTION)
       .sort({ createdAt: -1 })
       .lean();
@@ -78,7 +129,7 @@ export async function POST(req: Request) {
       query.campaignId = campaignId;
     }
 
-    // ✅ Use countDocuments + exists check in parallel with lean projection
+    // ✅ Use .lean() for faster existence check
     const existing = await Tag.findOne(query).select("_id").lean();
     if (existing) {
       return NextResponse.json({ error: "Tag already exists" }, { status: 400 });
@@ -87,7 +138,7 @@ export async function POST(req: Request) {
     const tenantId =
       (session.user as any)?.parentTenantId || (session.user as any)?.tenantId || null;
 
-    // ✅ Create with lean-friendly return
+    // ✅ Create tag
     const tag = await Tag.create({
       userId,
       tenantId,
