@@ -12,7 +12,7 @@ import {
   Trash2, Eye, X, Pencil, Send, BarChart3, Zap, Users,
   CheckCheck, AlertTriangle, Search, Filter, Radio, Wallet,
   AlertCircle, Pause, Square, MessageSquare, TrendingUp,
-  TrendingDown, Mail, MessageCircle, Copy, Hourglass, MailX,
+  TrendingDown, Mail, MessageCircle, Copy, Hourglass, MailX, RefreshCw,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -206,6 +206,7 @@ export default function CampaignList() {
   const [startingId, setStartingId] = useState<string | null>(null);
   const [actionId, setActionId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [refreshingId, setRefreshingId] = useState<string | null>(null); // New state for per-card refresh
   const [viewCampaign, setViewCampaign] = useState<Campaign | null>(null);
   const [viewLoadingId, setViewLoadingId] = useState<string | null>(null);
   const [quickPhone, setQuickPhone] = useState("");
@@ -270,6 +271,40 @@ export default function CampaignList() {
     }
   };
 
+  // New function to load status for ONLY ONE campaign
+  const loadSingleCampaignStatus = async (id: string) => {
+    setRefreshingId(id);
+    try {
+      const res = await fetch(`/api/campaigns/list?viewId=${id}`, { cache: "no-store" });
+      if (res.status === 401) return;
+      const data = await res.json();
+      if (data.success && data.campaigns.length > 0) {
+        const updatedCampaign = data.campaigns[0];
+        // Update only this campaign in the state array
+        setCampaigns((prev) =>
+          prev.map((c) =>
+            c._id === id
+              ? {
+                  ...c,
+                  liveStats: updatedCampaign.liveStats,
+                  status: updatedCampaign.status,
+                  totalDeducted: updatedCampaign.totalDeducted,
+                  sentCount: updatedCampaign.sentCount,
+                  failedCount: updatedCampaign.failedCount,
+                }
+              : c
+          )
+        );
+        toast.success("Status updated");
+      }
+    } catch (err) {
+      console.error("Failed to load status", err);
+      toast.error("Failed to load status");
+    } finally {
+      setRefreshingId(null);
+    }
+  };
+
   /* -------------------- EFFECTS -------------------- */
 
   // Initial load (NO AUTO-REFRESH)
@@ -278,7 +313,6 @@ export default function CampaignList() {
       loadCampaigns();
       fetchBilling();
       fetchPricing();
-      // REMOVED: setInterval. Data is fetched only on initial load and button click.
     }
     if (status === "unauthenticated") {
       router.push("/");
@@ -905,14 +939,6 @@ export default function CampaignList() {
               />
             </div>
             <div className="flex items-center gap-2">
-              {/* Load Status Button */}
-              <button 
-                onClick={() => loadCampaigns()}
-                className="px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-bold hover:bg-emerald-100 transition-colors flex items-center gap-2 whitespace-nowrap"
-              >
-                <Loader2 size={14} /> Load Latest Status
-              </button>
-
               <Filter size={14} className="text-slate-400 hidden sm:block" />
               <select
                 value={statusFilter}
@@ -1009,6 +1035,17 @@ export default function CampaignList() {
 
                       {/* Action Buttons */}
                       <div className="flex items-center gap-1.5 sm:ml-4 w-full sm:w-auto justify-end flex-wrap">
+                        
+                        {/* NEW: Per-Campaign Load Status Button */}
+                        <button
+                          onClick={() => loadSingleCampaignStatus(c._id)}
+                          disabled={refreshingId === c._id}
+                          className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors disabled:opacity-50"
+                          title="Load Latest Status"
+                        >
+                          {refreshingId === c._id ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+                        </button>
+
                         <button
                           onClick={() => handleViewClick(c._id)}
                           disabled={viewLoadingId === c._id}
