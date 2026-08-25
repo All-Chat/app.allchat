@@ -10,10 +10,9 @@ import Sidebar from "@/components/Sidebar";
 import {
   Play, Clock, CheckCircle, Loader2, XCircle, FileText,
   Trash2, Eye, X, Pencil, Send, BarChart3, Zap, Users,
-  CheckCheck, AlertTriangle, Search, Filter, Radio,
-  Pause, Square, TrendingUp,
-  TrendingDown, MailX, Copy, Hourglass, MessageCircle,
-  Download, RefreshCw,
+  CheckCheck, AlertTriangle, Search, Filter, Radio, Wallet,
+  AlertCircle, Pause, Square, MessageSquare, TrendingUp,
+  TrendingDown, Mail, MessageCircle, Copy, Hourglass, MailX,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -110,15 +109,21 @@ type Campaign = {
   updatedAt?: string;
   startedAt?: string;
   completedAt?: string;
-  liveStats?: LiveStats | null; 
+  liveStats?: LiveStats;
   currentPrice?: number;
   pricePerMessage?: number;
-  statsLoaded?: boolean; 
 };
 
 /* =========================================================
    HELPER FUNCTIONS
 ========================================================= */
+
+const formatINR = (amount: number) =>
+  new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    minimumFractionDigits: 2,
+  }).format(amount || 0);
 
 const formatFullDateTime = (dateStr: string) => {
   if (!dateStr) return "N/A";
@@ -146,6 +151,9 @@ const getCategoryColor = (category: any) => {
 
 /* =========================================================
    COMPUTE STATS
+   ✅ FIX: Pending now recalculated correctly
+   - Includes ALL processed statuses (replied + read + delivered + sent + failed + invalid + duplicate)
+   - Same calculation as Reports page
 ========================================================= */
 
 type ComputedStats = LiveStats & {
@@ -165,8 +173,14 @@ const getCampaignStats = (campaign: Campaign): ComputedStats => {
   const duplicate = Number(ls.duplicate || 0);
   const total = Number(ls.total || campaign.totalMessages || 0);
 
+  // Delivered = sent + delivered + read + replied (all successful)
   const deliveredCombined = sent + delivered + read + replied;
+
+  // Failed = invalid + failed + duplicate
   const failedCombined = failed + invalid + duplicate;
+
+  // ✅ FIX: Recalculate pending (same as Reports page)
+  // Include ALL processed statuses including replied
   const totalProcessed = replied + read + delivered + sent + failed + invalid + duplicate;
   const pendingCount = Math.max(0, total - totalProcessed);
 
@@ -202,11 +216,12 @@ export default function CampaignList() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [viewCampaign, setViewCampaign] = useState<Campaign | null>(null);
   const [viewLoadingId, setViewLoadingId] = useState<string | null>(null);
-  const [statsLoadingId, setStatsLoadingId] = useState<string | null>(null); 
   const [quickPhone, setQuickPhone] = useState("");
   const [timers, setTimers] = useState<Record<string, string>>({});
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [balance, setBalance] = useState(0);
+  const [canSendMessage, setCanSendMessage] = useState(true);
   const [enabledCountries, setEnabledCountries] = useState<any[]>([]);
   const [selectedCountryCode, setSelectedCountryCode] = useState("91");
   const [currentPage, setCurrentPage] = useState(1);
@@ -214,6 +229,20 @@ export default function CampaignList() {
   const itemsPerPage = 6;
 
   /* -------------------- FETCH FUNCTIONS -------------------- */
+
+  const fetchBilling = async () => {
+    try {
+      const res = await fetch("/api/billing");
+      if (res.status === 401) return;
+      const data = await res.json();
+      if (data.success && data.billing) {
+        setBalance(data.billing.balance || 0);
+        setCanSendMessage(data.billing.canSendMessage !== false);
+      }
+    } catch (error) {
+      console.error("Failed to fetch billing", error);
+    }
+  };
 
   const fetchPricing = async () => {
     try {
@@ -240,14 +269,7 @@ export default function CampaignList() {
       }
       const data = await res.json();
       if (data.success && Array.isArray(data.campaigns)) {
-        setCampaigns(
-          data.campaigns.map((c: Campaign) => ({
-            ...c,
-            liveStats: null,
-            totalDeducted: 0,
-            statsLoaded: false,
-          }))
-        );
+        setCampaigns(data.campaigns);
       }
     } catch (err) {
       console.error("Failed to load campaigns", err);
@@ -256,56 +278,25 @@ export default function CampaignList() {
     }
   };
 
-  // ✅ Fetch ONLY Stats (Triggered by Load/Refresh Stats button)
-  const refreshStatsForCampaign = async (campaignId: string) => {
-    setStatsLoadingId(campaignId);
-    try {
-      const res = await fetch(`/api/campaigns/list?viewId=${campaignId}&stats=true`, { cache: "no-store" });
-      const data = await res.json();
-      if (data.success && data.campaigns.length > 0) {
-        const freshData = data.campaigns[0];
-        const updatedStats = {
-          liveStats: freshData.liveStats || null,
-          totalDeducted: freshData.totalDeducted ?? 0,
-          currentPrice: freshData.currentPrice ?? 0,
-          pricePerMessage: freshData.pricePerMessage ?? 0,
-          status: freshData.status || "saved",
-          statsLoaded: true,
-        };
-
-        setCampaigns((prev) =>
-          prev.map((c) => (c._id === campaignId ? { ...c, ...updatedStats } : c))
-        );
-
-        setViewCampaign((prev) => {
-          if (prev?._id === campaignId) {
-            return { ...prev, ...updatedStats };
-          }
-          return prev;
-        });
-      } else {
-        toast.error("Failed to fetch stats");
-      }
-    } catch (err) {
-      console.error("Failed to fetch stats", err);
-      toast.error("Error fetching stats");
-    } finally {
-      setStatsLoadingId(null);
-    }
-  };
-
   /* -------------------- EFFECTS -------------------- */
 
+  // Initial load + auto-refresh every 5 seconds
   useEffect(() => {
     if (status === "authenticated") {
       loadCampaigns();
+      fetchBilling();
       fetchPricing();
+      const interval = setInterval(() => {
+        loadCampaigns();
+      }, 5000);
+      return () => clearInterval(interval);
     }
     if (status === "unauthenticated") {
       router.push("/");
     }
   }, [status, router]);
 
+  // Schedule timer countdown
   useEffect(() => {
     const timerInterval = setInterval(() => {
       const newTimers: Record<string, string> = {};
@@ -327,9 +318,45 @@ export default function CampaignList() {
     return () => clearInterval(timerInterval);
   }, [campaigns]);
 
+  // ✅ FIX: Auto-sync viewCampaign with updated campaigns data
+  // When campaigns refresh every 5 seconds, this updates the modal
+  // with the latest stats, status, totalDeducted — even after completion
+  useEffect(() => {
+    if (!viewCampaign?._id) return;
+    const updated = campaigns.find((c) => c._id === viewCampaign._id);
+    if (!updated) return;
+
+    // Only update if there's actually new data
+    const oldStats = JSON.stringify(viewCampaign.liveStats);
+    const newStats = JSON.stringify(updated.liveStats);
+    const hasChanges =
+      oldStats !== newStats ||
+      (viewCampaign.status || "") !== (updated.status || "") ||
+      Number(viewCampaign.totalDeducted || 0) !== Number(updated.totalDeducted || 0);
+
+    if (hasChanges) {
+      setViewCampaign((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          liveStats: updated.liveStats || prev.liveStats,
+          totalDeducted: updated.totalDeducted ?? prev.totalDeducted,
+          currentPrice: updated.currentPrice ?? prev.currentPrice,
+          pricePerMessage: updated.pricePerMessage ?? prev.pricePerMessage,
+          status: updated.status || prev.status,
+        };
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campaigns]);
+
   /* -------------------- CAMPAIGN ACTIONS -------------------- */
 
   const startCampaign = async (id: string) => {
+    if (!canSendMessage) {
+      toast.error("Insufficient balance.");
+      return;
+    }
     if (!confirm("Start this campaign now?")) return;
 
     setCampaigns((prev) => prev.map((c) => (c._id === id ? { ...c, status: "running" } : c)));
@@ -345,18 +372,22 @@ export default function CampaignList() {
       if (res.status === 402) {
         const data402 = await res.json();
         toast.error(data402.message || "Insufficient balance.");
+        setCanSendMessage(false);
+        fetchBilling();
       } else {
         const data = await res.json();
         if (data.success) {
           toast.success("Campaign queued successfully!");
-          refreshStatsForCampaign(id); 
+          fetchBilling();
         } else {
           toast.error(data.message || "Failed to start");
         }
       }
+      loadCampaigns();
     } catch (err) {
       console.error("Start error:", err);
       toast.error("Failed to start");
+      loadCampaigns();
     } finally {
       setStartingId(null);
     }
@@ -378,7 +409,7 @@ export default function CampaignList() {
 
       if (data.success) {
         toast.success(`Campaign ${action}ed!`);
-        refreshStatsForCampaign(id); 
+        await loadCampaigns();
         if (action === "resume") {
           await fetch("/api/campaigns/start", {
             method: "POST",
@@ -388,10 +419,12 @@ export default function CampaignList() {
         }
       } else {
         toast.error(data.message || `Failed to ${action}`);
+        loadCampaigns();
       }
     } catch (err) {
       console.error(err);
       toast.error("Error");
+      loadCampaigns();
     } finally {
       setActionId(null);
     }
@@ -424,6 +457,10 @@ export default function CampaignList() {
   const quickTestSend = async (c: Campaign) => {
     if (!quickPhone) {
       toast.error("Enter a phone number");
+      return;
+    }
+    if (!canSendMessage) {
+      toast.error("Insufficient balance.");
       return;
     }
 
@@ -459,8 +496,9 @@ export default function CampaignList() {
       });
 
       if (res.status === 402) {
-        const data402 = await res.json();
-        toast.error(data402.message || "Insufficient balance.");
+        toast.error("Insufficient balance.");
+        setCanSendMessage(false);
+        fetchBilling();
         return;
       }
 
@@ -468,6 +506,7 @@ export default function CampaignList() {
 
       if (data.success) {
         toast.success("Test sent!");
+        fetchBilling();
       } else {
         toast.error(data.message || "Failed");
       }
@@ -477,19 +516,11 @@ export default function CampaignList() {
     }
   };
 
-  /* -------------------- VIEW CAMPAIGN (FAST) -------------------- */
+  /* -------------------- VIEW CAMPAIGN -------------------- */
 
   const handleViewClick = async (campaignId: string) => {
-    const existing = campaigns.find((c) => c._id === campaignId);
-    
-    // ✅ INSTANTLY OPEN MODAL with existing basic data (no waiting for API)
-    if (existing) {
-      setViewCampaign({ ...existing });
-    }
-
     setViewLoadingId(campaignId);
     try {
-      // ✅ Fetch ONLY the missing lightweight data (variables, mappedVariables) without stats
       const res = await fetch(`/api/campaigns/list?viewId=${campaignId}`);
       if (res.status === 401) {
         router.push("/");
@@ -497,22 +528,14 @@ export default function CampaignList() {
       }
       const data = await res.json();
       if (data.success && data.campaigns.length > 0) {
-        const freshData = data.campaigns[0];
-        
-        const updatedData = {
-          ...freshData,
-          // Retain the stats status from the card
-          liveStats: existing?.liveStats,
-          totalDeducted: existing?.totalDeducted ?? 0,
-          currentPrice: existing?.currentPrice ?? 0,
-          pricePerMessage: existing?.pricePerMessage ?? 0,
-          statsLoaded: existing?.statsLoaded ?? false,
-        };
-
-        setViewCampaign(updatedData);
-        
-        // Also update the main array so we don't need to fetch variables again next time
-        setCampaigns((prev) => prev.map((c) => (c._id === campaignId ? { ...c, ...updatedData } : c)));
+        const existing = campaigns.find((c) => c._id === campaignId);
+        setViewCampaign({
+          ...data.campaigns[0],
+          liveStats: existing?.liveStats || data.campaigns[0]?.liveStats,
+          totalDeducted: existing?.totalDeducted || 0,
+          currentPrice: existing?.currentPrice || 0,
+          pricePerMessage: existing?.pricePerMessage || 0,
+        });
       } else {
         toast.error("Failed to load campaign details");
       }
@@ -591,27 +614,11 @@ export default function CampaignList() {
             <div className="bg-gradient-to-r from-emerald-600 to-teal-500 p-5 sm:p-6 text-white relative shrink-0">
               <button
                 onClick={() => setViewCampaign(null)}
-                className="absolute top-4 right-4 text-white/80 hover:text-white p-1.5 hover:bg-white/10 rounded-lg transition-colors"
+                className="absolute top-4 right-4 text-white/80 hover:text-white"
               >
                 <X size={20} />
               </button>
-              
-              <button
-                onClick={() => refreshStatsForCampaign(viewCampaign._id)}
-                disabled={statsLoadingId === viewCampaign._id}
-                className="absolute top-4 right-12 text-white/80 hover:text-white flex items-center gap-1.5 bg-white/20 px-2.5 py-1.5 rounded-lg text-[11px] font-bold disabled:opacity-60"
-              >
-                {statsLoadingId === viewCampaign._id ? (
-                  <Loader2 size={12} className="animate-spin" />
-                ) : viewCampaign.statsLoaded ? (
-                  <RefreshCw size={12} />
-                ) : (
-                  <Download size={12} />
-                )}
-                {viewCampaign.statsLoaded ? "Refresh" : "Load Stats"}
-              </button>
-
-              <h2 className="text-xl sm:text-2xl font-bold pr-28">{viewCampaign.name}</h2>
+              <h2 className="text-xl sm:text-2xl font-bold pr-8">{viewCampaign.name}</h2>
               <p className="text-sm text-white/80 mt-1">
                 {viewCampaign.templateName} • {viewCampaign.templateCategory}
               </p>
@@ -629,52 +636,79 @@ export default function CampaignList() {
             <div className="p-5 sm:p-6 space-y-5 overflow-y-auto">
 
               {(() => {
-                const stats = viewCampaign.statsLoaded ? getCampaignStats(viewCampaign) : null;
+                const stats = getCampaignStats(viewCampaign);
+
+                // ✅ FIX: Use actual totalDeducted from DB (not calculated)
+                const currentPrice = Number(viewCampaign.currentPrice || viewCampaign.pricePerMessage || 0);
+                const amountSpent = Number(viewCampaign.totalDeducted || 0);
 
                 return (
                   <>
-                    {/* Summary Stats */}
+                    {/* Summary Stats — 4 compact boxes */}
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+
+                      {/* Total */}
                       <div className="bg-slate-50 px-3 py-2.5 rounded-lg border border-slate-100 flex items-center gap-2">
                         <div className="w-7 h-7 rounded-lg bg-slate-200 flex items-center justify-center shrink-0">
                           <Users className="w-3.5 h-3.5 text-slate-600" />
                         </div>
                         <div className="min-w-0">
-                          <p className="text-lg font-extrabold text-slate-900 leading-none">{stats ? stats.total : "-"}</p>
+                          <p className="text-lg font-extrabold text-slate-900 leading-none">{stats.total}</p>
                           <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">Total</p>
                         </div>
                       </div>
 
+                      {/* Delivered (Combined) */}
                       <div className="bg-cyan-50 px-3 py-2.5 rounded-lg border border-cyan-100 flex items-center gap-2">
                         <div className="w-7 h-7 rounded-lg bg-cyan-200 flex items-center justify-center shrink-0">
                           <CheckCheck className="w-3.5 h-3.5 text-cyan-600" />
                         </div>
                         <div className="min-w-0">
-                          <p className="text-lg font-extrabold text-cyan-700 leading-none">{stats ? stats.deliveredCombined : "-"}</p>
+                          <p className="text-lg font-extrabold text-cyan-700 leading-none">{stats.deliveredCombined}</p>
                           <p className="text-[9px] text-cyan-500 font-bold uppercase tracking-wider mt-0.5">Delivered</p>
                         </div>
                       </div>
 
+                      {/* Pending */}
                       <div className="bg-amber-50 px-3 py-2.5 rounded-lg border border-amber-100 flex items-center gap-2">
                         <div className="w-7 h-7 rounded-lg bg-amber-200 flex items-center justify-center shrink-0">
                           <Clock className="w-3.5 h-3.5 text-amber-600" />
                         </div>
                         <div className="min-w-0">
-                          <p className="text-lg font-extrabold text-amber-700 leading-none">{stats ? stats.pending : "-"}</p>
+                          <p className="text-lg font-extrabold text-amber-700 leading-none">{stats.pending}</p>
                           <p className="text-[9px] text-amber-500 font-bold uppercase tracking-wider mt-0.5">Pending</p>
                         </div>
                       </div>
 
+                      {/* Failed (Combined) */}
                       <div className="bg-red-50 px-3 py-2.5 rounded-lg border border-red-100 flex items-center gap-2">
                         <div className="w-7 h-7 rounded-lg bg-red-200 flex items-center justify-center shrink-0">
                           <AlertTriangle className="w-3.5 h-3.5 text-red-600" />
                         </div>
                         <div className="min-w-0">
-                          <p className="text-lg font-extrabold text-red-700 leading-none">{stats ? stats.failedCombined : "-"}</p>
+                          <p className="text-lg font-extrabold text-red-700 leading-none">{stats.failedCombined}</p>
                           <p className="text-[9px] text-red-500 font-bold uppercase tracking-wider mt-0.5">Failed</p>
                         </div>
                       </div>
+
                     </div>
+
+                    {/* Amount Deducted — uses actual totalDeducted from DB */}
+                    {amountSpent > 0 && (
+                      <div className="bg-gradient-to-r from-blue-50 to-cyan-50 px-4 py-3 rounded-xl border border-blue-100 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Wallet className="w-4 h-4 text-blue-500" />
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-blue-500">Amount Deducted</p>
+                            <p className="text-base font-extrabold text-blue-700">{formatINR(amountSpent)}</p>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[10px] text-slate-400">{stats.deliveredCombined} delivered</p>
+                          {currentPrice > 0 && <p className="text-[10px] text-slate-400">@ {formatINR(currentPrice)} / msg</p>}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Status Breakdown */}
                     <div>
@@ -682,6 +716,7 @@ export default function CampaignList() {
                         Status Breakdown
                       </p>
 
+                      {/* Delivered Breakdown */}
                       <div className="mb-2">
                         <p className="text-[10px] font-bold text-cyan-600 uppercase mb-1.5 flex items-center gap-1">
                           <TrendingUp size={10} /> Delivered Breakdown
@@ -689,27 +724,28 @@ export default function CampaignList() {
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                           <div className="bg-cyan-50 px-2.5 py-2 rounded-lg border border-cyan-100 flex items-center gap-1.5">
                             <CheckCircle className="w-3.5 h-3.5 text-cyan-500 shrink-0" />
-                            <span className="font-bold text-cyan-700 text-sm">{stats ? stats.sent : "-"}</span>
+                            <span className="font-bold text-cyan-700 text-sm">{stats.sent}</span>
                             <span className="text-[9px] text-cyan-400 font-bold uppercase">Sent</span>
                           </div>
                           <div className="bg-cyan-50 px-2.5 py-2 rounded-lg border border-cyan-100 flex items-center gap-1.5">
                             <CheckCheck className="w-3.5 h-3.5 text-cyan-500 shrink-0" />
-                            <span className="font-bold text-cyan-700 text-sm">{stats ? stats.delivered : "-"}</span>
+                            <span className="font-bold text-cyan-700 text-sm">{stats.delivered}</span>
                             <span className="text-[9px] text-cyan-400 font-bold uppercase">Dlvd</span>
                           </div>
                           <div className="bg-cyan-50 px-2.5 py-2 rounded-lg border border-cyan-100 flex items-center gap-1.5">
                             <Eye className="w-3.5 h-3.5 text-cyan-500 shrink-0" />
-                            <span className="font-bold text-cyan-700 text-sm">{stats ? stats.read : "-"}</span>
+                            <span className="font-bold text-cyan-700 text-sm">{stats.read}</span>
                             <span className="text-[9px] text-cyan-400 font-bold uppercase">Read</span>
                           </div>
                           <div className="bg-cyan-50 px-2.5 py-2 rounded-lg border border-cyan-100 flex items-center gap-1.5">
                             <MessageCircle className="w-3.5 h-3.5 text-cyan-500 shrink-0" />
-                            <span className="font-bold text-cyan-700 text-sm">{stats ? stats.replied : "-"}</span>
+                            <span className="font-bold text-cyan-700 text-sm">{stats.replied}</span>
                             <span className="text-[9px] text-cyan-400 font-bold uppercase">Reply</span>
                           </div>
                         </div>
                       </div>
 
+                      {/* Failed Breakdown */}
                       <div>
                         <p className="text-[10px] font-bold text-red-600 uppercase mb-1.5 flex items-center gap-1">
                           <TrendingDown size={10} /> Failed Breakdown
@@ -717,22 +753,22 @@ export default function CampaignList() {
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                           <div className="bg-red-50 px-2.5 py-2 rounded-lg border border-red-100 flex items-center gap-1.5">
                             <XCircle className="w-3.5 h-3.5 text-red-500 shrink-0" />
-                            <span className="font-bold text-red-700 text-sm">{stats ? stats.failed : "-"}</span>
+                            <span className="font-bold text-red-700 text-sm">{stats.failed}</span>
                             <span className="text-[9px] text-red-400 font-bold uppercase">Fail</span>
                           </div>
                           <div className="bg-red-50 px-2.5 py-2 rounded-lg border border-red-100 flex items-center gap-1.5">
                             <MailX className="w-3.5 h-3.5 text-red-500 shrink-0" />
-                            <span className="font-bold text-red-700 text-sm">{stats ? stats.invalid : "-"}</span>
+                            <span className="font-bold text-red-700 text-sm">{stats.invalid}</span>
                             <span className="text-[9px] text-red-400 font-bold uppercase">Invld</span>
                           </div>
                           <div className="bg-red-50 px-2.5 py-2 rounded-lg border border-red-100 flex items-center gap-1.5">
                             <Hourglass className="w-3.5 h-3.5 text-red-500 shrink-0" />
-                            <span className="font-bold text-red-700 text-sm">{stats ? stats.pending : "-"}</span>
+                            <span className="font-bold text-red-700 text-sm">{stats.pending}</span>
                             <span className="text-[9px] text-red-400 font-bold uppercase">Pend</span>
                           </div>
                           <div className="bg-red-50 px-2.5 py-2 rounded-lg border border-red-100 flex items-center gap-1.5">
                             <Copy className="w-3.5 h-3.5 text-red-500 shrink-0" />
-                            <span className="font-bold text-red-700 text-sm">{stats ? stats.duplicate : "-"}</span>
+                            <span className="font-bold text-red-700 text-sm">{stats.duplicate}</span>
                             <span className="text-[9px] text-red-400 font-bold uppercase">Dupl</span>
                           </div>
                         </div>
@@ -755,6 +791,23 @@ export default function CampaignList() {
                   </div>
                 </div>
               )}
+
+              {/* Audience Preview */}
+              <div>
+                <span className="text-slate-500 block mb-1">Audience Preview:</span>
+                <div className="bg-slate-50 p-2 rounded-lg text-xs font-mono max-h-20 overflow-y-auto border border-slate-100 flex flex-wrap items-center gap-1">
+                  {viewCampaign.phoneNumbers?.slice(0, 15).map((p: string, i: number) => (
+                    <span key={i} className="inline-block mr-2 mb-1 bg-white px-1.5 py-0.5 rounded border border-slate-200">
+                      {p}
+                    </span>
+                  ))}
+                  {viewCampaign.totalMessages > 15 && (
+                    <span className="text-slate-400 font-bold ml-1 inline-block mb-1">
+                      +{viewCampaign.totalMessages - 15} more numbers
+                    </span>
+                  )}
+                </div>
+              </div>
 
               {/* Quick Test Send */}
               <div className="border-t border-slate-100 pt-4">
@@ -784,11 +837,17 @@ export default function CampaignList() {
                   </div>
                   <button
                     onClick={() => quickTestSend(viewCampaign)}
-                    className="px-4 py-2 bg-emerald-500 text-white rounded-lg text-sm font-bold hover:bg-emerald-600 flex items-center justify-center gap-1.5 shadow-sm transition-colors"
+                    disabled={!canSendMessage}
+                    className="px-4 py-2 bg-emerald-500 text-white rounded-lg text-sm font-bold hover:bg-emerald-600 flex items-center justify-center gap-1.5 shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Send size={12} /> Send Test
                   </button>
                 </div>
+                {!canSendMessage && (
+                  <p className="text-[10px] text-red-600 mt-1.5 flex items-center gap-1">
+                    <AlertCircle size={10} /> Insufficient balance to send
+                  </p>
+                )}
               </div>
 
             </div>
@@ -813,13 +872,42 @@ export default function CampaignList() {
                 Manage and automate your WhatsApp broadcasts
               </p>
             </div>
-            <a
-              href="/campaigns/create"
-              className="px-5 sm:px-6 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-bold hover:from-emerald-600 hover:to-teal-600 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all hover:scale-105 text-sm"
-            >
-              + New Campaign
-            </a>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:gap-4 w-full sm:w-auto">
+              <div className={`flex items-center gap-3 px-4 sm:px-5 py-2 sm:py-2.5 rounded-xl border shadow-sm ${
+                !canSendMessage ? "bg-red-50 border-red-200" : "bg-emerald-50 border-emerald-200"
+              }`}>
+                <Wallet className={`w-4 h-4 sm:w-5 sm:h-5 ${!canSendMessage ? "text-red-500" : "text-emerald-500"}`} />
+                <div>
+                  <p className={`text-[9px] sm:text-[10px] font-bold uppercase tracking-widest ${!canSendMessage ? "text-red-500" : "text-emerald-600"}`}>
+                    Balance
+                  </p>
+                  <p className={`text-base sm:text-lg font-extrabold ${!canSendMessage ? "text-red-700" : "text-emerald-700"}`}>
+                    {formatINR(balance)}
+                  </p>
+                </div>
+              </div>
+              <a
+                href="/campaigns/create"
+                className="px-5 sm:px-6 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-bold hover:from-emerald-600 hover:to-teal-600 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all hover:scale-105 text-sm"
+              >
+                + New Campaign
+              </a>
+            </div>
           </div>
+
+          {/* Balance Warning */}
+          {!canSendMessage && (
+            <div className="p-3 sm:p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-red-800">Insufficient Balance</p>
+                <p className="text-xs text-red-600 mt-0.5">
+                  You cannot start campaigns. Please contact your administrator to recharge your account. Go to{" "}
+                  <a href="/settings" className="underline font-medium">Settings</a> to check your balance.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Search & Filter */}
           <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3 sm:gap-4">
@@ -864,21 +952,30 @@ export default function CampaignList() {
             <div className="space-y-4">
 
               {currentItems.map((c) => {
-                const stats = c.statsLoaded ? getCampaignStats(c) : null;
+                const stats = getCampaignStats(c);
 
-                const deliveredCount = stats?.deliveredCombined ?? 0;
-                const failedCount = stats?.failedCombined ?? 0;
-                const pendingCount = stats?.pending ?? 0;
-                const totalCount = stats?.total ?? 0;
-                const completedCount = stats ? Math.min(totalCount, deliveredCount + failedCount) : 0;
-                const progressPercent = stats && totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+                const deliveredCount = stats.deliveredCombined;
+                const failedCount = stats.failedCombined;
+                const pendingCount = stats.pending;
+                const totalCount = stats.total;
+                const completedCount = Math.min(totalCount, deliveredCount + failedCount);
+                const progressPercent = totalCount > 0
+                  ? Math.round((completedCount / totalCount) * 100)
+                  : 0;
 
+                // ✅ FIX: If pending is 0 and status is running/paused → show "completed"
+                // Also default to "saved" if status is undefined (prevents toUpperCase crash)
                 const displayStatus =
-                  (stats && stats.pending === 0 && stats.total > 0 && (c.status === "running" || c.status === "paused"))
+                  (pendingCount === 0 && totalCount > 0 && (c.status === "running" || c.status === "paused"))
                     ? "completed"
                     : (c.status || "saved");
 
                 const cfg = statusConfig[displayStatus] || statusConfig.saved;
+                const isCompleted = displayStatus === "completed" || displayStatus === "failed";
+
+                // ✅ FIX: Use actual totalDeducted from DB (not calculated)
+                const currentPrice = Number(c.currentPrice || c.pricePerMessage || 0);
+                const amountSpent = Number(c.totalDeducted || 0);
 
                 return (
                   <div
@@ -923,22 +1020,6 @@ export default function CampaignList() {
 
                       {/* Action Buttons */}
                       <div className="flex items-center gap-1.5 sm:ml-4 w-full sm:w-auto justify-end flex-wrap">
-                        
-                        <button
-                          onClick={() => refreshStatsForCampaign(c._id)}
-                          disabled={statsLoadingId === c._id}
-                          className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors disabled:opacity-50"
-                          title={c.statsLoaded ? "Refresh Stats" : "Load Stats"}
-                        >
-                          {statsLoadingId === c._id ? (
-                            <Loader2 size={16} className="animate-spin" />
-                          ) : c.statsLoaded ? (
-                            <RefreshCw size={16} />
-                          ) : (
-                            <Download size={16} />
-                          )}
-                        </button>
-
                         <button
                           onClick={() => handleViewClick(c._id)}
                           disabled={viewLoadingId === c._id}
@@ -990,11 +1071,15 @@ export default function CampaignList() {
                         {displayStatus === "saved" && (
                           <button
                             onClick={() => startCampaign(c._id)}
-                            disabled={startingId === c._id}
-                            className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all bg-emerald-500 text-white hover:bg-emerald-600 hover:scale-105"
+                            disabled={startingId === c._id || !canSendMessage}
+                            className={`px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all ${
+                              !canSendMessage
+                                ? "bg-slate-200 text-slate-400 cursor-not-allowed"
+                                : "bg-emerald-500 text-white hover:bg-emerald-600 hover:scale-105"
+                            }`}
                           >
                             {startingId === c._id ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-                            {startingId === c._id ? "Starting..." : "Start"}
+                            {startingId === c._id ? "Starting..." : !canSendMessage ? "No Balance" : "Start"}
                           </button>
                         )}
 
@@ -1016,42 +1101,46 @@ export default function CampaignList() {
 
                       {/* 4 Compact Stat Boxes */}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {/* Total */}
                         <div className="bg-slate-50 px-3 py-2.5 rounded-lg border border-slate-100 flex items-center gap-2">
                           <div className="w-7 h-7 rounded-lg bg-slate-200 flex items-center justify-center shrink-0">
                             <Users className="w-3.5 h-3.5 text-slate-600" />
                           </div>
                           <div className="min-w-0">
-                            <p className="text-lg font-extrabold text-slate-900 leading-none">{totalCount === undefined ? "-" : totalCount}</p>
+                            <p className="text-lg font-extrabold text-slate-900 leading-none">{totalCount}</p>
                             <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">Total</p>
                           </div>
                         </div>
 
+                        {/* Delivered */}
                         <div className="bg-cyan-50 px-3 py-2.5 rounded-lg border border-cyan-100 flex items-center gap-2">
                           <div className="w-7 h-7 rounded-lg bg-cyan-200 flex items-center justify-center shrink-0">
                             <CheckCheck className="w-3.5 h-3.5 text-cyan-600" />
                           </div>
                           <div className="min-w-0">
-                            <p className="text-lg font-extrabold text-cyan-700 leading-none">{deliveredCount === undefined ? "-" : deliveredCount}</p>
+                            <p className="text-lg font-extrabold text-cyan-700 leading-none">{deliveredCount}</p>
                             <p className="text-[9px] text-cyan-500 font-bold uppercase tracking-wider mt-0.5">Delivered</p>
                           </div>
                         </div>
 
+                        {/* Pending */}
                         <div className="bg-amber-50 px-3 py-2.5 rounded-lg border border-amber-100 flex items-center gap-2">
                           <div className="w-7 h-7 rounded-lg bg-amber-200 flex items-center justify-center shrink-0">
                             <Clock className="w-3.5 h-3.5 text-amber-600" />
                           </div>
                           <div className="min-w-0">
-                            <p className="text-lg font-extrabold text-amber-700 leading-none">{pendingCount === undefined ? "-" : pendingCount}</p>
+                            <p className="text-lg font-extrabold text-amber-700 leading-none">{pendingCount}</p>
                             <p className="text-[9px] text-amber-500 font-bold uppercase tracking-wider mt-0.5">Pending</p>
                           </div>
                         </div>
 
+                        {/* Failed */}
                         <div className="bg-red-50 px-3 py-2.5 rounded-lg border border-red-100 flex items-center gap-2">
                           <div className="w-7 h-7 rounded-lg bg-red-200 flex items-center justify-center shrink-0">
                             <AlertTriangle className="w-3.5 h-3.5 text-red-600" />
                           </div>
                           <div className="min-w-0">
-                            <p className="text-lg font-extrabold text-red-700 leading-none">{failedCount === undefined ? "-" : failedCount}</p>
+                            <p className="text-lg font-extrabold text-red-700 leading-none">{failedCount}</p>
                             <p className="text-[9px] text-red-500 font-bold uppercase tracking-wider mt-0.5">Failed</p>
                           </div>
                         </div>
@@ -1061,7 +1150,7 @@ export default function CampaignList() {
                       <div className="bg-slate-50 px-3 py-2.5 rounded-lg border border-slate-100 flex flex-col justify-center">
                         <div className="flex items-center justify-between mb-2">
                           <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Progress</p>
-                          <p className="text-sm font-extrabold text-slate-700">{stats ? `${progressPercent}%` : "-"}</p>
+                          <p className="text-sm font-extrabold text-slate-700">{progressPercent}%</p>
                         </div>
                         <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
                           <div
@@ -1072,6 +1161,26 @@ export default function CampaignList() {
                       </div>
 
                     </div>
+
+                    {/* ✅ FIX: Amount Deducted — uses actual totalDeducted from DB */}
+                    {amountSpent > 0 && (
+                      <div className="mt-3 flex items-center gap-2 text-xs">
+                        <Wallet size={12} className="text-blue-500" />
+                        <span className="text-slate-500">Amount deducted:</span>
+                        <span className="font-bold text-blue-700">{formatINR(amountSpent)}</span>
+                        {currentPrice > 0 && (
+                          <span className="text-slate-400">(₹{currentPrice}/msg)</span>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Completed Message */}
+                    {isCompleted && totalCount === 0 && (
+                      <div className="mt-3 flex items-center gap-2 text-xs">
+                        <CheckCircle size={12} className="text-emerald-500" />
+                        <span className="text-slate-500">Completed — 0 messages</span>
+                      </div>
+                    )}
 
                   </div>
                 );
