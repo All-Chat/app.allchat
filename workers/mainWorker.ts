@@ -346,8 +346,8 @@ function getOptimizedPriceForPhone(payerId: string, payer: any, phone: string, c
 // ============================================================================
 
 async function processCampaignChunk(data: any) {
-  
-  const { campaignId, userId, payerId, startIdx, endIdx, PHONE_NUMBER_ID, ACCESS_TOKEN } = data;
+  // ✅ FIX: Extract pricePerMessage from data
+  const { campaignId, userId, payerId, startIdx, endIdx, PHONE_NUMBER_ID, ACCESS_TOKEN, pricePerMessage } = data;
   const chunkSize = endIdx - startIdx;
   await ensureDbConnected();
 
@@ -357,7 +357,8 @@ async function processCampaignChunk(data: any) {
   const campaign = await Campaign.findById(campaignId, {
     phoneNumbers: { $slice: [startIdx, chunkSize] }, reportData: { $slice: [startIdx, chunkSize] },
     mappedVariables: { $slice: [startIdx, chunkSize] }, templateName: 1, templateCategory: 1, languageCode: 1,
-    mediaType: 1, mediaUrl: 1, templateHeaderFormat: 1, generateOtp: 1, otpLength: 1, variables: 1, status: 1, totalMessages: 1
+    mediaType: 1, mediaUrl: 1, templateHeaderFormat: 1, generateOtp: 1, otpLength: 1, variables: 1, status: 1, totalMessages: 1,
+    pricePerMessage: 1 // ✅ Ensure we fetch the locked-in price from DB as fallback
   }).lean();
 
   if (!campaign) throw new Error("Campaign not found");
@@ -436,7 +437,13 @@ async function processCampaignChunk(data: any) {
 
     if (r.status === "sent") {
       sent++;
-      const pp = getOptimizedPriceForPhone(payerId, payer, ph, cat);
+      
+      // ✅ FIX: Use the exact same locked-in price that is showcased on the frontend UI
+      // Fallback to campaign.pricePerMessage just in case data.pricePerMessage is missing
+      const pp = Number(pricePerMessage) > 0 
+        ? Number(pricePerMessage) 
+        : (Number(campaign.pricePerMessage) || 0);
+
       bd += pp;
       campaignBulkOps.push({ updateOne: { filter: { _id: campaignId, [`reportData.${absoluteIndex}.status`]: "queued" }, update: { $set: { [`reportData.${absoluteIndex}.status`]: "sent", [`reportData.${absoluteIndex}.sentWamid`]: r.wamid, [`reportData.${absoluteIndex}.charged`]: true, [`reportData.${absoluteIndex}.chargedAmount`]: pp } } } });
       messagesToCreate.push({ userId, phone: ph, text: "", direction: "out", messageType: "template", mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID });
