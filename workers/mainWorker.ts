@@ -49,22 +49,8 @@ connectDB()
       if (job.name === 'sync-all-stats') return await syncAllStats();
     }, 1);
 
-    // Fast interval (15 seconds) for active campaigns
-    setInterval(async () => {
-      try {
-        await ensureDbConnected();
-        const activeUsers = await Campaign.distinct('userId', { status: { $in: ['running', 'paused'] } }).catch(() => []);
-        for (const userIdObj of activeUsers) {
-          await statsQueue.add('sync-user-stats', { userId: userIdObj.toString() }, { removeOnComplete: true, removeOnFail: true }).catch(() => {});
-        }
-      } catch (e) { console.error('Failed to queue fast periodic stats', e); }
-    }, 15 * 1000);
-
-    // 10-minute full sweep
-    setInterval(async () => {
-      try { await statsQueue.add('sync-all-stats', {}, { removeOnComplete: true, removeOnFail: true }); console.log('⏰ Queued periodic sync-all-stats'); }
-      catch (e) { console.error('Failed to queue periodic stats', e); }
-    }, 10 * 60 * 1000);
+    // REMOVED: Automatic 15-second and 10-minute stat syncs to reduce DB load.
+    // Stats will only be generated when the user clicks "Load Latest Status" in the UI.
 
     console.log('🚀 Standalone worker process started — campaign / counts / report / stats / inactivity workers running.');
   })
@@ -126,7 +112,7 @@ async function startWorker(queueName: string, processor: (job: any) => Promise<a
 
 async function startCampaignWorker() {
   
-  console.log('🚀 Worker started for queue: campaign-processing (Concurrency: 1, Rate: 1/sec)');
+  console.log('🚀 Worker started for queue: campaign-processing (Concurrency: 1, Rate: 2 chunks/sec = 20 msgs/sec)');
 
   while (true) {
     try {
@@ -150,7 +136,8 @@ async function startCampaignWorker() {
           await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
         }
         
-        await new Promise(r => setTimeout(r, 1000));
+        // 500ms delay = 2 chunks per second (assuming chunk size of 10, this is 20 msgs/sec)
+        await new Promise(r => setTimeout(r, 500)); 
       } else { await new Promise(r => setTimeout(r, 1000)); }
       
     } catch (err) {
@@ -162,9 +149,6 @@ async function startCampaignWorker() {
 
 // ============================================================================
 // 1.6 INACTIVITY TIMER WORKER ✅
-// ============================================================================
-// Polls MongoDB for pending inactivity jobs where delay has passed.
-// If the user hasn't responded, sends the inactivity message.
 // ============================================================================
 
 async function sendInactivityMessage(accessToken: string, phoneNumberId: string, phone: string, message: string) {
@@ -189,7 +173,6 @@ async function startInactivityWorker() {
       
       await ensureDbConnected();
 
-      // Find pending inactivity jobs where enough time has passed
       const job = await Job.findOneAndUpdate(
         {
           queue: "workflow-inactivity", status: "pending",
@@ -206,26 +189,19 @@ async function startInactivityWorker() {
         try {
           
           const data = job.data;
-
-          // Check if user still has an active session
           const session = await Session.findOne({ phone: data.phone, userId: data.userId });
 
           if (session && session.formId) {
-            // User is in a form flow — skip
             await Job.deleteOne({ _id: job._id });
           } else if (data.sentCount < data.repeatCount) {
             
-            // Send the inactivity message!
             await sendInactivityMessage(data.accessToken, data.phoneNumberId, data.phone, data.message);
-
-            // Save the outgoing message
             await Message.create({
               userId: data.userId, phone: data.phone, text: data.message,
               direction: "out", messageType: "text", status: "sent",
               whatsappPhoneNumberId: data.phoneNumberId, senderNumber: data.phoneNumberId,
             });
 
-            // If more repeats needed, create a new job
             if (data.sentCount + 1 < data.repeatCount) {
               await Job.create({
                 queue: "workflow-inactivity", name: "send-inactivity-message",
@@ -346,7 +322,6 @@ function getOptimizedPriceForPhone(payerId: string, payer: any, phone: string, c
 // ============================================================================
 
 async function processCampaignChunk(data: any) {
-  // ✅ FIX: Extract pricePerMessage from data
   const { campaignId, userId, payerId, startIdx, endIdx, PHONE_NUMBER_ID, ACCESS_TOKEN, pricePerMessage } = data;
   const chunkSize = endIdx - startIdx;
   await ensureDbConnected();
@@ -358,7 +333,7 @@ async function processCampaignChunk(data: any) {
     phoneNumbers: { $slice: [startIdx, chunkSize] }, reportData: { $slice: [startIdx, chunkSize] },
     mappedVariables: { $slice: [startIdx, chunkSize] }, templateName: 1, templateCategory: 1, languageCode: 1,
     mediaType: 1, mediaUrl: 1, templateHeaderFormat: 1, generateOtp: 1, otpLength: 1, variables: 1, status: 1, totalMessages: 1,
-    pricePerMessage: 1 // ✅ Ensure we fetch the locked-in price from DB as fallback
+    pricePerMessage: 1 
   }).lean();
 
   if (!campaign) throw new Error("Campaign not found");
@@ -437,9 +412,6 @@ async function processCampaignChunk(data: any) {
 
     if (r.status === "sent") {
       sent++;
-      
-      // ✅ FIX: Use the exact same locked-in price that is showcased on the frontend UI
-      // Fallback to campaign.pricePerMessage just in case data.pricePerMessage is missing
       const pp = Number(pricePerMessage) > 0 
         ? Number(pricePerMessage) 
         : (Number(campaign.pricePerMessage) || 0);
@@ -458,7 +430,8 @@ async function processCampaignChunk(data: any) {
   if (messagesToCreate.length > 0) try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) { console.error(`[Worker] Message insertMany error:`, e); }
   if (bd > 0) try { await User.updateOne({ _id: payerId }, { $inc: { balance: -bd } }); } catch (e) { console.error(`[Worker] User balance deduction error:`, e); }
   try { await Campaign.updateOne({ _id: campaignId }, { $inc: { sentCount: sent, failedCount: failed, totalDeducted: ded } }); } catch (e) { console.error(`[Worker] Campaign counter increment error:`, e); }
-  try { await statsQueue.add('sync-user-stats', { userId }, { removeOnComplete: true, removeOnFail: true }); } catch (e) { console.error(`[Worker] Failed to queue stats sync:`, e); }
+  
+  // REMOVED: Automatic stats queue addition. Stats will only be fetched when UI requests them.
 
   try {
     const [statResult] = await Campaign.aggregate([
@@ -502,7 +475,6 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
       const sendRes = await fetch(url, { method: "POST", headers, body: payload, signal: controller.signal });
       clearTimeout(timeoutId);
 
-      // ✅ Only return "sent" if we have a VALID wamid
       if (sendRes.ok) {
         
         let wamid: string | null = null;
