@@ -57,7 +57,7 @@ export async function GET() {
         .select("whatsappNumbers name")
         .lean();
         
-      subUsers.forEach(subUser => addNumbers(subUser, subUser.name));
+      subUsers.forEach((subUser: { name: string | undefined; }) => addNumbers(subUser, subUser.name));
     }
 
     // ✅ THE SECRET WEAPON: Client-side Caching
