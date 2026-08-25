@@ -10,7 +10,7 @@ import {
   Upload, FileSpreadsheet, Clock, Globe, CheckCircle2,
   Users, Sparkles, Send, RotateCcw, AlertCircle,
   FileText, Film, Image as ImageIcon, Loader2, X, Link, Tag as TagIcon,
-  Ban, ShieldCheck, Plus,
+  Ban, ShieldCheck, Plus, ChevronDown,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -24,6 +24,11 @@ function EditCampaignContent() {
   const [tags, setTags] = useState<any[]>([]);
   const [selectedTag, setSelectedTag] = useState("");
   
+  // ✅ ADDED: State for excluding tags with Dropdown
+  const [isExcludeDropdownOpen, setIsExcludeDropdownOpen] = useState(false);
+  const [selectedExcludeTags, setSelectedExcludeTags] = useState<string[]>([]);
+  const [excludedTagNumbers, setExcludedTagNumbers] = useState<Set<string>>(new Set());
+
   const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
   const [rawNumbers, setRawNumbers] = useState<string[]>([]);
   const [rawNames, setRawNames] = useState<string[]>([]);
@@ -46,9 +51,8 @@ function EditCampaignContent() {
   const [loadingData, setLoadingData] = useState(true);
   const [languageCode, setLanguageCode] = useState("en");
 
-  // ✅ ADDED: State for Modal and Checkboxes
   const [showComplianceModal, setShowComplianceModal] = useState(false);
-  const [pendingAction, setPendingAction] = useState<boolean>(false); // false = draft, true = schedule
+  const [pendingAction, setPendingAction] = useState<boolean>(false);
   const [consentChecked, setConsentChecked] = useState(false);
   const [responsibilityChecked, setResponsibilityChecked] = useState(false);
 
@@ -103,7 +107,6 @@ function EditCampaignContent() {
         if (fallback) {
           handleTemplateSelect(fallback.name, fallback.language, initialCampaignData.variables);
         } else {
-          // If template is missing from Meta, manually set basic info so dropdown doesn't break
           setSelectedTemplate({ 
             name: initialCampaignData.templateName, 
             language: initialCampaignData.languageCode,
@@ -114,12 +117,10 @@ function EditCampaignContent() {
         }
       }
 
-      // ✅ Restore specific data
       setUseRandomOtp(initialCampaignData.generateOtp || false);
       setOtpLength(initialCampaignData.otpLength || 4);
       setRawVariables(initialCampaignData.mappedVariables || []);
       
-      // ✅ Force restore media
       setMediaType(initialCampaignData.mediaType || "");
       setMediaUrl(initialCampaignData.mediaUrl || "");
       if (initialCampaignData.mediaUrl) setMediaInputType("url");
@@ -198,6 +199,47 @@ function EditCampaignContent() {
         setSelectedCountryCode(data.settings.enabledCountries[0].code);
       }
     } catch (error) { console.error("Failed to fetch settings", error); }
+  };
+
+  // ✅ ADDED: Handle selecting/deselecting tags for exclusion
+  const handleExcludeTagChange = async (tagName: string) => {
+    let newSelectedTags: string[] = [];
+    if (selectedExcludeTags.includes(tagName)) {
+      newSelectedTags = selectedExcludeTags.filter(t => t !== tagName);
+    } else {
+      newSelectedTags = [...selectedExcludeTags, tagName];
+    }
+    setSelectedExcludeTags(newSelectedTags);
+
+    if (newSelectedTags.length === 0) {
+      setExcludedTagNumbers(new Set());
+      return;
+    }
+
+    try {
+      const fetchPromises = newSelectedTags.map(tag =>
+        fetch(`/api/contacts?tag=${encodeURIComponent(tag)}`).then(res => res.json())
+      );
+      const results = await Promise.all(fetchPromises);
+
+      const allExcluded = new Set<string>();
+      results.forEach(data => {
+        if (data.success && data.contacts) {
+          data.contacts.forEach((c: any) => {
+            let clean = String(c.phone || "").replace(/[^\d+]/g, "");
+            if (clean.startsWith("+")) clean = clean.substring(1);
+            if (clean.startsWith("0")) clean = clean.substring(1);
+            if (!clean.startsWith(selectedCountryCode) && clean.length <= 10) {
+              clean = selectedCountryCode + clean;
+            }
+            if (clean) allExcluded.add(clean);
+          });
+        }
+      });
+      setExcludedTagNumbers(allExcluded);
+    } catch (err) {
+      toast.error("Error loading excluded contacts.");
+    }
   };
 
   const handleTagSelect = async (tagName: string) => {
@@ -373,6 +415,11 @@ function EditCampaignContent() {
       }
 
       if (!clean) continue;
+
+      // ✅ Exclude numbers that match the selected excluded tags
+      if (excludedTagNumbers.has(clean)) {
+        continue;
+      }
 
       if (seen.has(clean)) { 
         duplicates++; 
@@ -892,11 +939,58 @@ function EditCampaignContent() {
                 </div>
 
                 <div className="bg-purple-50/50 border border-purple-100 rounded-xl p-4 space-y-2">
-                  <label className="text-[11px] font-extrabold text-purple-800 uppercase tracking-widest flex items-center gap-2"><TagIcon size={14} /> Load from Tags</label>
+                  <label className="text-[11px] font-extrabold text-purple-800 uppercase tracking-widest flex items-center gap-2"><TagIcon size={14} /> Include Contacts from Tag</label>
                   <select value={selectedTag} onChange={(e) => handleTagSelect(e.target.value)} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-purple-100 focus:border-purple-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]">
                     <option value="">-- Select a Tag to Load Contacts --</option>
                     {tags.map((t) => (<option key={t._id} value={t.name}>{t.name}</option>))}
                   </select>
+                </div>
+
+                {/* ✅ ADDED: Exclude by Tags Dropdown UI */}
+                <div className="bg-red-50/50 border border-red-100 rounded-xl p-4 space-y-2 relative">
+                  <label className="text-[11px] font-extrabold text-red-800 uppercase tracking-widest flex items-center gap-2">
+                    <Ban size={14} /> Exclude Contacts by Tags
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setIsExcludeDropdownOpen(!isExcludeDropdownOpen)}
+                    className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm font-medium flex items-center justify-between focus:ring-4 focus:ring-red-100 focus:border-red-500 transition-all"
+                  >
+                    <span className="truncate">
+                      {selectedExcludeTags.length > 0 ? `${selectedExcludeTags.length} tags selected` : "Select tags to exclude"}
+                    </span>
+                    <ChevronDown size={16} className={`text-slate-400 transition-transform ${isExcludeDropdownOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {isExcludeDropdownOpen && (
+                    <div className="absolute z-10 mt-1 w-full bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                      {tags.length > 0 ? tags.map((t) => (
+                        <label key={t._id} className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer capitalize">
+                          <input
+                            type="checkbox"
+                            checked={selectedExcludeTags.includes(t.name)}
+                            onChange={() => handleExcludeTagChange(t.name)}
+                            className="w-4 h-4 accent-red-500"
+                          />
+                          {t.name}
+                        </label>
+                      )) : (
+                        <p className="px-4 py-2 text-xs text-slate-400 italic">No tags available</p>
+                      )}
+                    </div>
+                  )}
+                  {selectedExcludeTags.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {selectedExcludeTags.map(tag => (
+                        <span key={tag} className="px-2 py-1 bg-red-100 text-red-800 rounded-md text-[10px] font-semibold flex items-center gap-1 capitalize">
+                          {tag}
+                          <button type="button" onClick={() => handleExcludeTagChange(tag)}><X size={10} /></button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {excludedTagNumbers.size > 0 && (
+                    <p className="text-xs text-red-600 font-medium pt-1">{excludedTagNumbers.size} contacts marked for exclusion.</p>
+                  )}
                 </div>
 
                 {uploadStep === 1 && additionalFields.length > 0 && (
@@ -1021,7 +1115,6 @@ function EditCampaignContent() {
                     <p className="text-[10px] text-amber-600 bg-amber-50 p-2 rounded-lg border border-amber-100 flex items-center gap-1.5 mt-2 font-bold"><AlertCircle size={10} /> Must be at least 15 mins in advance.</p>
                   </div>
 
-                  {/* ✅ Removed inline checkboxes, buttons now trigger the modal */}
                   <div className="flex flex-col sm:flex-row gap-3">
                     <button 
                       onClick={() => promptSave(false)} 
@@ -1045,7 +1138,6 @@ function EditCampaignContent() {
         </div>
       </div>
 
-      {/* ✅ COMPLIANCE MODAL (Premium & Full Screen on Mobile) */}
       {showComplianceModal && (
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-300">
           <div className="bg-white rounded-none sm:rounded-3xl shadow-2xl w-full h-full sm:w-auto sm:h-auto sm:max-w-lg sm:max-h-[70vh] flex flex-col overflow-hidden border border-slate-100">
