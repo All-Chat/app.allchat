@@ -4,7 +4,7 @@ import { connectDB } from "@/lib/mongodb";
 import Campaign from "@/models/Campaign";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { statsQueue, reportQueue, Cache } from "@/lib/queue"; // ✅ Added queues & cache
+import { statsQueue, reportQueue, Cache } from "@/lib/queue";
 import mongoose from "mongoose";
 
 function normalizePhoneExpr(phoneFieldExpr: any) {
@@ -178,76 +178,51 @@ export async function GET(req: Request) {
       return NextResponse.json({ success: true, exists: !!existing });
     }
 
-    // ==========================================
-    // 5. SINGLE CAMPAIGN REPORT MODE (FAST CACHE)
+          // ==========================================
+    // 5. SINGLE CAMPAIGN REPORT MODE (OPTIMIZED PAGINATION)
     // ==========================================
     if (campaignId) {
-      const limit = 50;
+      const limit = 10; // ✅ Only 10 contacts per page
       const page = parseInt(searchParams.get("page") || "1");
       const skip = (page - 1) * limit;
 
       const showOnly = searchParams.get("showOnly")?.split(",").filter(Boolean) || [];
       const filterOut = searchParams.get("filterOut")?.split(",").filter(Boolean) || [];
       const search = searchParams.get("search") || "";
+      const forceRefresh = searchParams.get("refresh") === "true";
 
-      // 1. Check Cache First
-      const cacheKey = `report:${userId}:${campaignId}`;
-      const lockKey = `lock:${cacheKey}`;
-      const cachedDoc = await Cache.findOne({ key: cacheKey }).lean();
-      
-      if (cachedDoc && cachedDoc.value) {
-        // Cache hit! Apply filters in memory (Super fast)
-        const cachedData = JSON.parse(cachedDoc.value);
-        let filteredData = cachedData.data || [];
-
-        if (search) {
-          const searchLower = search.toLowerCase();
-          filteredData = filteredData.filter((r: any) => 
-            (r.phone && String(r.phone).includes(search)) || 
-            (r.name && String(r.name).toLowerCase().includes(searchLower))
-          );
+      // 1. Check Cache First (Short 1-minute cache just to prevent spamming)
+      const cacheKey = `report_page:${userId}:${campaignId}:${page}:${search}:${showOnly.join("")}:${filterOut.join("")}`;
+      if (!forceRefresh) {
+        const cachedDoc = await Cache.findOne({ key: cacheKey }).lean();
+        if (cachedDoc && cachedDoc.value) {
+          const cachedData = JSON.parse(cachedDoc.value);
+          return NextResponse.json({
+            success: true,
+            campaigns: [{
+              ...cachedData.meta,
+              reportData: cachedData.data,
+              campaignStats: cachedData.stats
+            }],
+            currentPage: page,
+            totalPages: cachedData.totalPages,
+            campaignStats: cachedData.stats,
+            fromCache: true
+          });
         }
-        if (showOnly.length > 0) {
-          filteredData = filteredData.filter((r: any) => showOnly.includes(r.status));
-        }
-        if (filterOut.length > 0) {
-          filteredData = filteredData.filter((r: any) => !filterOut.includes(r.status));
-        }
-
-        const totalPages = Math.max(1, Math.ceil(filteredData.length / limit));
-        const paginatedData = isDownload ? filteredData : filteredData.slice(skip, skip + limit);
-
-        return NextResponse.json({
-          success: true,
-          campaigns: [{
-            ...cachedData.meta,
-            reportData: paginatedData,
-            campaignStats: cachedData.stats
-          }],
-          currentPage: page,
-          totalPages: totalPages,
-          campaignStats: cachedData.stats,
-          fromCache: true
-        });
       }
 
-      // 2. Cache Miss: Queue the report worker to generate it in background
-      try {
-        const existingLock = await Cache.findOne({ key: lockKey }).lean();
-        if (!existingLock) {
-          await Cache.updateOne({ key: lockKey }, { $set: { value: "1", expireAt: new Date(Date.now() + 30000) } }, { upsert: true });
-          await reportQueue.add('refresh-report-cache', { campaignId, userId, cacheKey, lockKey });
-        }
-      } catch (e) {
-        console.error("Failed to queue report cache:", e);
+      // 2. If Refresh clicked, delete this specific page cache
+      if (forceRefresh) {
+        await Cache.deleteOne({ key: cacheKey });
       }
 
-      // 3. Fallback: Run live aggregation ONCE so the user isn't stuck waiting
+      // 3. Run Optimized Aggregation (Fetches ONLY 10 items and their replies)
       const isRepliedExpr = {
         $or: [
           { $ne: [{ $ifNull: ["$$r.reply", ""] }, ""] },
           { $gt: [ { $size: { $filter: { input: { $ifNull: ["$$r.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0 ] },
-          { $in: [normalizePhoneExpr("$$r.phone"), "$repliedPhonesSet"] }
+          { $in: [normalizePhoneExpr("$$r.phone"), "$pagePhonesSet"] }
         ]
       };
 
@@ -301,13 +276,32 @@ export async function GET(req: Request) {
             userId: new mongoose.Types.ObjectId(userId),
           },
         },
+        // Step 1: Filter the reportData array based on search/filters
         {
           $addFields: {
-            campPhonesNormalized: {
+            filteredData: {
+              $filter: {
+                input: { $ifNull: ["$reportData", []] },
+                as: "r",
+                cond: finalFilterCond,
+              },
+            },
+          },
+        },
+        // Step 2: Slice to get ONLY the 10 items for the current page
+        {
+          $addFields: {
+            paginatedData: { $slice: ["$filteredData", skip, limit] }
+          }
+        },
+        // Step 3: Extract phone numbers for ONLY those 10 items
+        {
+          $addFields: {
+            pagePhonesNormalized: {
               $setUnion: [
                 {
                   $map: {
-                    input: { $ifNull: ["$reportData", []] },
+                    input: "$paginatedData",
                     as: "r",
                     in: normalizePhoneExpr("$$r.phone"),
                   },
@@ -317,10 +311,11 @@ export async function GET(req: Request) {
             },
           },
         },
+        // Step 4: Lookup inbound messages ONLY for those 10 phone numbers (SUPER FAST!)
         {
           $lookup: {
             from: "messages",
-            let: { camp_createdAt: "$createdAt", user_id: "$userId", camp_phones: "$campPhonesNormalized" },
+            let: { camp_createdAt: "$createdAt", user_id: "$userId", page_phones: "$pagePhonesNormalized" },
             pipeline: [
               {
                 $match: {
@@ -334,7 +329,7 @@ export async function GET(req: Request) {
                 },
               },
               { $addFields: { normalizedPhone: normalizePhoneExpr("$phone") } },
-              { $match: { $expr: { $in: ["$normalizedPhone", "$$camp_phones"] } } },
+              { $match: { $expr: { $in: ["$normalizedPhone", "$$page_phones"] } } },
               { $project: { _id: 0, normalizedPhone: 1, text: 1, messageType: 1 } },
             ],
             as: "inboundMsgs",
@@ -342,46 +337,10 @@ export async function GET(req: Request) {
         },
         {
           $addFields: {
-            repliedPhonesSet: { $setUnion: ["$inboundMsgs.normalizedPhone", []] },
+            pagePhonesSet: { $setUnion: ["$inboundMsgs.normalizedPhone", []] },
           },
         },
-        {
-          $addFields: {
-            campaignStats: {
-              total: { $size: { $ifNull: ["$reportData", []] } },
-              replied: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: isRepliedExpr } } },
-              read: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "read"] }, { $not: isRepliedExpr } ] } } } },
-              delivered: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "delivered"] }, { $not: isRepliedExpr } ] } } } },
-              sent: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "sent"] }, { $not: isRepliedExpr } ] } } } },
-              failed: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "failed"] }, { $not: isRepliedExpr } ] } } } },
-              invalid: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "invalid"] }, { $not: isRepliedExpr } ] } } } },
-              duplicate: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "duplicate"] }, { $not: isRepliedExpr } ] } } } },
-              pending: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $or: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "pending"] }, { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "queued"] }, { $eq: [{ $ifNull: ["$$r.status", ""] }, ""] } ] }, { $not: isRepliedExpr } ] } } } },
-            }
-          }
-        },
-        {
-          $addFields: {
-            filteredData: {
-              $filter: {
-                input: { $ifNull: ["$reportData", []] },
-                as: "r",
-                cond: finalFilterCond,
-              },
-            },
-          },
-        },
-        {
-          $addFields: {
-            paginatedData: {
-              $cond: {
-                if: isDownload,
-                then: "$filteredData",
-                else: { $slice: ["$filteredData", skip, limit] }
-              }
-            }
-          }
-        },
+        // Step 5: Map the replies to the 10 items and calculate stats
         {
           $project: {
             name: 1,
@@ -389,9 +348,7 @@ export async function GET(req: Request) {
             additionalFields: 1,
             languageCode: 1,
             totalDeducted: 1,
-            campaignStats: 1,
-            sheetUrl: 1,
-            standaloneSheetUrl: 1,
+            liveStats: 1, // Return liveStats for the Brief modal
             totalFiltered: { $size: "$filteredData" },
             reportData: {
               $map: {
@@ -463,7 +420,7 @@ export async function GET(req: Request) {
       const campaign = result[0];
       const totalPages = Math.max(1, Math.ceil(campaign.totalFiltered / limit));
 
-      return NextResponse.json({
+      const responseData = {
         success: true,
         campaigns: [
           {
@@ -474,10 +431,23 @@ export async function GET(req: Request) {
         ],
         currentPage: page,
         totalPages: totalPages,
-        campaignStats: campaign.campaignStats,
-      });
-    }
+        campaignStats: campaign.liveStats || {}, // Use liveStats for Brief modal
+      };
 
+      // Save to cache for 1 minute to prevent spamming
+      await Cache.updateOne(
+        { key: cacheKey },
+        { $set: { value: JSON.stringify({ 
+          meta: { name: campaign.name, templateName: campaign.templateName, additionalFields: campaign.additionalFields, languageCode: campaign.languageCode, totalDeducted: campaign.totalDeducted }, 
+          data: campaign.reportData, 
+          stats: campaign.liveStats || {},
+          totalPages: totalPages
+        }), expireAt: new Date(Date.now() + 60 * 1000) } }, // 1 minute cache
+        { upsert: true }
+      );
+
+      return NextResponse.json(responseData);
+    }
     // ==========================================
     // 6. PAGINATED LIST MODE
     // ==========================================
