@@ -124,6 +124,29 @@ type Campaign = {
 };
 
 /* ========================================================= *
+   HELPER FUNCTIONS
+ * ========================================================= */
+
+const normalizePhone = (p: string) => String(p || "").replace(/\D/g, "");
+
+const formatExcelDate = (dateStr: string | null | undefined) => {
+  if (!dateStr) return "";
+  try {
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return "";
+    return date.toLocaleString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+};
+
+/* ========================================================= *
    MAIN COMPONENT
  * ========================================================= */
 
@@ -139,6 +162,8 @@ export default function ReportsPage() {
   const [reportData, setReportData] = useState<ReportItem[]>([]);
   const [loadingReport, setLoadingReport] = useState(false);
 
+  // ✅ FIX: Track which campaign the stats belong to + cache per campaign
+  // Prevents flash AND prevents stats from changing when switching tabs
   const [campaignStats, setCampaignStats] = useState<any>({});
   const [campaignStatsCampaignId, setCampaignStatsCampaignId] = useState<string | null>(null);
   const [campaignStatsCache, setCampaignStatsCache] = useState<Record<string, any>>({});
@@ -162,12 +187,12 @@ export default function ReportsPage() {
   const [reportCurrentPage, setReportCurrentPage] = useState(1);
   const [reportTotalPages, setReportTotalPages] = useState(1);
 
+  // ✅ State for hidden report actions
   const [hiddenActions, setHiddenActions] = useState<string[]>([]);
+
   const fetchReportController = useRef<AbortController | null>(null);
 
   /* -------------------- HELPER FUNCTIONS -------------------- */
-
-  const normalizePhone = (p: string) => String(p || "").replace(/\D/g, "");
 
   const getRepliesList = (d: ReportItem): string[] => {
     if (d.phone) {
@@ -186,7 +211,14 @@ export default function ReportsPage() {
     return [];
   };
 
+  // ✅ FIX: getCampaignStats — 4-tier priority system
+  // 1. Fresh campaignStats (if belongs to THIS campaign)
+  // 2. Cached campaignStats (from when this campaign was viewed before)
+  // 3. liveStats fallback (for campaigns never viewed)
+  // 4. Default fallback
+  // This prevents BOTH flash AND stats changing when switching tabs
   const getCampaignStats = (c: Campaign): LiveStats => {
+    // Helper: build LiveStats from any stats object
     const buildStats = (cs: any): LiveStats => {
       const processed =
         Number(cs.replied || 0) +
@@ -209,6 +241,7 @@ export default function ReportsPage() {
       };
     };
 
+    // Priority 1: Fresh campaignStats (only for the currently-selected campaign)
     if (
       c._id === selectedId &&
       c._id === campaignStatsCampaignId &&
@@ -218,11 +251,14 @@ export default function ReportsPage() {
       return buildStats(campaignStats);
     }
 
+    // Priority 2: Cached campaignStats (from when this campaign was viewed before)
+    // ✅ This prevents stats from changing when switching to another tab
     const cached = campaignStatsCache[c._id];
     if (cached && (cached.total || 0) > 0) {
       return buildStats(cached);
     }
 
+    // Priority 3: liveStats fallback (for campaigns never viewed before)
     if (c.liveStats) {
       const ls = c.liveStats;
       const processed =
@@ -239,6 +275,7 @@ export default function ReportsPage() {
       };
     }
 
+    // Priority 4: Default fallback
     return {
       total: c.totalMessages || 0,
       replied: 0, read: 0, delivered: 0,
@@ -276,6 +313,7 @@ export default function ReportsPage() {
 
   /* -------------------- EFFECTS -------------------- */
 
+  // Initial load
   useEffect(() => {
     if (status === "authenticated") {
       fetchCampaigns();
@@ -287,13 +325,14 @@ export default function ReportsPage() {
     }
   }, [status]);
 
+  // Fetch report when selected campaign changes
   useEffect(() => {
     if (!selectedId) return;
-    // ✅ FIX: Removed fetchReplies(selectedId) which was taking 69 seconds!
-    // The replies are already embedded in the 25 paginated items returned by the API.
     fetchReportData(selectedId, 1);
+    fetchReplies(selectedId);
   }, [selectedId]);
 
+  // Refetch when filters change
   useEffect(() => {
     if (selectedId) {
       fetchReportData(selectedId, 1);
@@ -304,6 +343,7 @@ export default function ReportsPage() {
   const sheetUrl = selectedCamp?.sheetUrl || null;
   const standaloneSheetUrl = selectedCamp?.standaloneSheetUrl || null;
 
+  // Auto-sync shared sheet
   useEffect(() => {
     if (!sheetUrl || !selectedId) return;
     const interval = setInterval(() => {
@@ -312,6 +352,7 @@ export default function ReportsPage() {
     return () => clearInterval(interval);
   }, [sheetUrl, selectedId]);
 
+  // Auto-sync standalone sheet
   useEffect(() => {
     if (!standaloneSheetUrl || !selectedId) return;
     const interval = setInterval(() => {
@@ -344,6 +385,16 @@ export default function ReportsPage() {
       console.error("Failed to fetch campaigns", error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchReplies = async (id: string) => {
+    try {
+      const res = await fetch(`/api/campaigns/report-replies?campaignId=${id}`);
+      const data = await res.json();
+      if (data.success) setRepliesMap(data.replies || {});
+    } catch (err) {
+      console.error("Failed to fetch replies", err);
     }
   };
 
@@ -433,6 +484,7 @@ export default function ReportsPage() {
         setReportTotalPages(data.totalPages || 1);
         setCampaignStats(data.campaignStats || {});
         setCampaignStatsCampaignId(id);
+        // ✅ FIX: Cache stats for this campaign so they don't change when switching tabs
         setCampaignStatsCache((prev) => ({ ...prev, [id]: data.campaignStats || {} }));
       } else {
         setReportData([]);
@@ -473,6 +525,8 @@ export default function ReportsPage() {
 
   /* -------------------- BRIEF STATS CALCULATION -------------------- */
 
+  // ✅ FIX: Use fresh stats → cached stats → liveStats (same priority as sidebar)
+  // This prevents flash AND prevents stats from changing when switching tabs
   const selectedCampData = campaigns.find((c) => c._id === selectedId);
   const useCampaignStats =
     selectedId === campaignStatsCampaignId && campaignStats && (campaignStats.total || 0) > 0
@@ -490,6 +544,7 @@ export default function ReportsPage() {
   const invalidCount = useCampaignStats.invalid || 0;
   const duplicateCount = useCampaignStats.duplicate || 0;
 
+  // ✅ FIX: Calculate pending — include ALL processed statuses
   const totalProcessed =
     repliedCount + readCount + deliveredCount + sentOnlyCount +
     failedCount + invalidCount + duplicateCount;
@@ -538,23 +593,6 @@ export default function ReportsPage() {
   );
 
   /* -------------------- DOWNLOAD EXCEL -------------------- */
-
-  const formatExcelDate = (dateStr: string | null | undefined) => {
-    if (!dateStr) return "";
-    try {
-      const date = new Date(dateStr);
-      if (isNaN(date.getTime())) return "";
-      return date.toLocaleString("en-IN", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    } catch {
-      return "";
-    }
-  };
 
   const downloadExcel = async () => {
     if (!selectedId) {
@@ -715,7 +753,7 @@ export default function ReportsPage() {
   if (status === "loading" || (status === "authenticated" && loading)) {
     return (
       <div className="flex min-h-screen bg-slate-50 items-center justify-center">
-        <ScannerLoader />
+        <Loader2 className="w-8 h-8 animate-spin text-emerald-600" />
       </div>
     );
   }
@@ -866,39 +904,82 @@ export default function ReportsPage() {
             </h2>
           </div>
 
-          {/* ✅ Redesigned Campaign List */}
-          <div className="flex-1 overflow-y-auto p-2">
+          {/* Campaign List */}
+          <div className="flex-1 overflow-y-auto">
             {campaigns.length === 0 ? (
               <p className="p-4 text-sm text-slate-400 text-center">
                 No completed campaigns yet
               </p>
             ) : (
               campaigns.map((c) => {
+                const stats = getCampaignStats(c);
                 return (
                   <button
                     key={c._id}
                     onClick={() => handleSelectCampaign(c._id)}
-                    className={`w-full text-left p-3 mb-2 rounded-xl border transition-all ${
+                    className={`w-full text-left p-4 border-b border-slate-50 transition-colors ${
                       selectedId === c._id
-                        ? "bg-emerald-50 border-emerald-200 shadow-sm"
-                        : "bg-white border-slate-100 hover:bg-slate-50 hover:border-slate-200"
+                        ? "bg-emerald-50 border-l-4 border-l-emerald-500"
+                        : "hover:bg-slate-50 border-l-4 border-l-transparent"
                     }`}
                   >
+                    {/* Campaign Name + Status */}
                     <div className="flex items-center justify-between gap-2 mb-1">
-                      <p className="font-semibold text-sm truncate flex-1 text-slate-800">{c.name}</p>
-                      <span className={`text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full shrink-0 ${
-                        c.status === "running" ? "bg-emerald-100 text-emerald-700" :
-                        c.status === "paused" ? "bg-blue-100 text-blue-700" :
-                        c.status === "failed" ? "bg-red-100 text-red-700" :
-                        "bg-slate-100 text-slate-600"
-                      }`}>
+                      <p className="font-semibold text-sm truncate flex-1">
+                        {c.name}
+                      </p>
+                      <span
+                        className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md shrink-0 ${
+                          c.status === "running"
+                            ? "bg-emerald-100 text-emerald-700"
+                            : c.status === "paused"
+                            ? "bg-blue-100 text-blue-700"
+                            : c.status === "failed"
+                            ? "bg-red-100 text-red-700"
+                            : "bg-slate-100 text-slate-600"
+                        }`}
+                      >
                         {c.status}
                       </span>
                     </div>
-                    <div className="flex items-center gap-x-3 text-[11px] text-slate-500">
-                      <span className="flex items-center gap-1">
-                        <Users size={10} /> {c.totalMessages} Contacts
-                      </span>
+
+                    {/* Stats Badges */}
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px]">
+                      {stats.replied > 0 && (
+                        <span className="flex items-center gap-1 text-indigo-600 font-medium">
+                          <MessageSquare size={10} /> {stats.replied} Replied
+                        </span>
+                      )}
+                      {stats.read > 0 && (
+                        <span className="flex items-center gap-1 text-blue-600 font-medium">
+                          <Eye size={10} /> {stats.read} Read
+                        </span>
+                      )}
+                      {stats.delivered > 0 && (
+                        <span className="flex items-center gap-1 text-cyan-600 font-medium">
+                          <CheckCheck size={10} /> {stats.delivered} Delivered
+                        </span>
+                      )}
+                      {stats.sent > 0 && (
+                        <span className="flex items-center gap-1 text-emerald-600 font-medium">
+                          <CheckCircle size={10} /> {stats.sent} Sent
+                        </span>
+                      )}
+                      {stats.pending > 0 && (
+                        <span className="flex items-center gap-1 text-amber-600 font-medium">
+                          <Clock size={10} /> {stats.pending} Pending
+                        </span>
+                      )}
+                      {stats.failed > 0 && (
+                        <span className="flex items-center gap-1 text-red-600 font-medium">
+                          <XCircle size={10} /> {stats.failed} Failed
+                        </span>
+                      )}
+                      {stats.invalid > 0 && (
+                        <span className="flex items-center gap-1 text-orange-600 font-medium">
+                          <AlertTriangle size={10} /> {stats.invalid} Invalid
+                        </span>
+                      )}
                     </div>
                   </button>
                 );
@@ -1065,7 +1146,7 @@ export default function ReportsPage() {
                   </div>
                 </div>
 
-                {/* ✅ Report Table - Using ScannerLoader for data loading */}
+                {/* Report Table */}
                 <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden min-w-[640px]">
                   {loadingReport ? (
                     <div className="flex justify-center items-center h-64">
@@ -1095,9 +1176,8 @@ export default function ReportsPage() {
                           const statusConfig = getStatusConfig(currentStatus, replies, d.error);
                           return (
                             <tr key={`${d.phone}-${i}`} className="hover:bg-slate-50 transition-colors">
-                              {/* ✅ FIX: Updated calculation to use 25 instead of 50 */}
                               <td className="px-4 py-3 text-xs text-slate-400">
-                                {((reportCurrentPage - 1) * 25) + i + 1}
+                                {((reportCurrentPage - 1) * 50) + i + 1}
                               </td>
                               <td className="px-4 py-3 font-medium text-slate-900 text-xs sm:text-sm">
                                 {d.name || "—"}
