@@ -10,35 +10,20 @@ import mongoose from "mongoose";
 
 export async function GET() {
   try {
-    const [, session] = await Promise.all([
-      connectDB(),
-      getServerSession(authOptions)
-    ]);
-    
+    await connectDB();
+    const session = await getServerSession(authOptions);
     if (!session?.user?.id) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
-    const user = await User.findById(session.user.id)
-      .select("parentTenantId wabaId whatsappPhoneNumberId whatsappAccessToken whatsappNumbers balance totalRecharged googleSheetId hideIntegrations enabledCountries hiddenSidebarLinks")
-      .lean();
-
+    const user = await User.findById(session.user.id);
     if (!user) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
-    // ✅ Fetch latest request in parallel with parent tenant if needed
-    const fetchLatestRequest = SettingsRequest.findOne({ userId: session.user.id }).sort({ createdAt: -1 }).lean();
-    
-    let billingUser: any = user;
-    let latestRequest: any = null;
-
+    let billingUser = user;
     if (user.parentTenantId) {
-      const [parent, req] = await Promise.all([
-        User.findOne({ tenantId: user.parentTenantId }).select("balance totalRecharged").lean(),
-        fetchLatestRequest
-      ]);
+      const parent = await User.findOne({ tenantId: user.parentTenantId });
       if (parent) billingUser = parent;
-      latestRequest = req;
-    } else {
-      latestRequest = await fetchLatestRequest;
     }
+
+    const latestRequest = await SettingsRequest.findOne({ userId: session.user.id }).sort({ createdAt: -1 }).lean();
 
     return NextResponse.json({
       success: true,
@@ -54,7 +39,7 @@ export async function GET() {
         googleSheetId: user.googleSheetId || null,
         hideIntegrations: user.hideIntegrations || false,
         enabledCountries: user.enabledCountries || [], 
-        hiddenSidebarLinks: user.hiddenSidebarLinks || [],
+        hiddenSidebarLinks: user.hiddenSidebarLinks || [], // ✅ ADDED THIS LINE
       },
     });
   } catch (error) {
@@ -63,22 +48,17 @@ export async function GET() {
   }
 }
 
+// POST: Request to ADD a new number
 export async function POST(req: Request) {
   try {
-    const [, session] = await Promise.all([
-      connectDB(),
-      getServerSession(authOptions)
-    ]);
+    await connectDB();
+    const session = await getServerSession(authOptions);
     if (!session?.user?.id) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
     const body = await req.json();
     const { name, wabaId, whatsappPhoneNumberId, whatsappAccessToken } = body;
 
-    const [user, existingPending] = await Promise.all([
-      User.findById(session.user.id).select("name").lean(),
-      SettingsRequest.findOne({ userId: session.user.id, status: "pending" }).select("_id").lean()
-    ]);
-
+    const user = await User.findById(session.user.id);
     if (!user) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
     const limitCheck = await checkLimit(session.user.id, "whatsappNumbers");
@@ -86,6 +66,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: `WhatsApp Number limit reached. You can only add ${limitCheck.limit} numbers.` }, { status: 429 });
     }
 
+    const existingPending = await SettingsRequest.findOne({ userId: session.user.id, status: "pending" });
     if (existingPending) {
       return NextResponse.json({ message: "You already have a pending request. Please wait for admin approval." }, { status: 400 });
     }
@@ -107,29 +88,25 @@ export async function POST(req: Request) {
   }
 }
 
+// PUT: Request to EDIT an existing number
 export async function PUT(req: Request) {
   try {
-    const [, session] = await Promise.all([
-      connectDB(),
-      getServerSession(authOptions)
-    ]);
+    await connectDB();
+    const session = await getServerSession(authOptions);
     if (!session?.user?.id) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
     const body = await req.json();
     const { numberId, name, wabaId, whatsappPhoneNumberId, whatsappAccessToken } = body;
 
-    const [user, existingPending] = await Promise.all([
-      User.findById(session.user.id).select("whatsappNumbers name").lean(),
-      SettingsRequest.findOne({ userId: session.user.id, status: "pending" }).select("_id").lean()
-    ]);
-
+    const user = await User.findById(session.user.id);
     if (!user) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
+    const existingPending = await SettingsRequest.findOne({ userId: session.user.id, status: "pending" });
     if (existingPending) {
       return NextResponse.json({ message: "You already have a pending request. Please wait for admin approval." }, { status: 400 });
     }
 
-    const numberToEdit = user.whatsappNumbers?.find((n: any) => n._id.toString() === numberId);
+    const numberToEdit = user.whatsappNumbers.find((n: any) => n._id.toString() === numberId);
     if (!numberToEdit) return NextResponse.json({ message: "Number not found" }, { status: 404 });
 
     await SettingsRequest.create({
@@ -150,51 +127,28 @@ export async function PUT(req: Request) {
   }
 }
 
-// PATCH: Switch Active Number (✅ ATOMIC UPDATE - NO .save())
+// PATCH: Switch Active Number
 export async function PATCH(req: Request) {
   try {
-    const [, session] = await Promise.all([
-      connectDB(),
-      getServerSession(authOptions)
-    ]);
+    await connectDB();
+    const session = await getServerSession(authOptions);
     if (!session?.user?.id) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
     const { numberId } = await req.json();
-    const userId = session.user.id;
-
-    // 1. Verify number exists and get its details using .lean()
-    const user = await User.findById(userId).select("whatsappNumbers").lean();
+    const user = await User.findById(session.user.id);
     if (!user) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
     const selectedNumber = user.whatsappNumbers.find((n: any) => n._id.toString() === numberId);
     if (!selectedNumber) return NextResponse.json({ message: "Number not found" }, { status: 404 });
 
-    // 2. Perform an atomic update directly in the database (Super Fast)
-    await User.updateOne(
-      { _id: userId },
-      {
-        $set: {
-          "wabaId": selectedNumber.wabaId,
-          "whatsappPhoneNumberId": selectedNumber.whatsappPhoneNumberId,
-          "whatsappAccessToken": selectedNumber.whatsappAccessToken,
-        }
-      }
-    );
+    user.whatsappNumbers.forEach((n: any) => n.isActive = false);
+    selectedNumber.isActive = true;
 
-    // 3. Update isActive status for all numbers atomically
-    // Set all to false first
-    await User.updateOne(
-      { _id: userId },
-      { $set: { "whatsappNumbers.$[elem].isActive": false } },
-      { arrayFilters: [{ "elem._id": { $ne: new mongoose.Types.ObjectId(numberId) } }] }
-    );
-    
-    // Set the selected one to true
-    await User.updateOne(
-      { _id: userId, "whatsappNumbers._id": numberId },
-      { $set: { "whatsappNumbers.$.isActive": true } }
-    );
+    user.wabaId = selectedNumber.wabaId;
+    user.whatsappPhoneNumberId = selectedNumber.whatsappPhoneNumberId;
+    user.whatsappAccessToken = selectedNumber.whatsappAccessToken;
 
+    await user.save();
     return NextResponse.json({ success: true, message: `Switched active number to ${selectedNumber.name}` });
   } catch (error) {
     console.error("Error switching number:", error);
@@ -202,70 +156,41 @@ export async function PATCH(req: Request) {
   }
 }
 
-// DELETE: Remove a WhatsApp Number (✅ ATOMIC UPDATE - NO .save())
+// DELETE: Remove a WhatsApp Number
 export async function DELETE(req: Request) {
   try {
-    const [, session] = await Promise.all([
-      connectDB(),
-      getServerSession(authOptions)
-    ]);
+    await connectDB();
+    const session = await getServerSession(authOptions);
     if (!session?.user?.id) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
     const { searchParams } = new URL(req.url);
     const numberId = searchParams.get("numberId");
-    const userId = session.user.id;
 
     if (!numberId) return NextResponse.json({ message: "Number ID is required" }, { status: 400 });
 
-    // 1. Check if the number being deleted is currently active
-    const user = await User.findById(userId).select("whatsappNumbers").lean();
+    const user = await User.findById(session.user.id);
     if (!user) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
     const numberToDelete = user.whatsappNumbers.find((n: any) => n._id.toString() === numberId);
     if (!numberToDelete) return NextResponse.json({ message: "Number not found" }, { status: 404 });
 
     const wasActive = numberToDelete.isActive;
+    user.whatsappNumbers = user.whatsappNumbers.filter((n: any) => n._id.toString() !== numberId) as any;
 
-    // 2. Remove the number atomically using $pull (Super Fast)
-    await User.updateOne(
-      { _id: userId },
-      { $pull: { whatsappNumbers: { _id: new mongoose.Types.ObjectId(numberId) } } }
-    );
-
-    // 3. If the deleted number was active, assign a new active number atomically
     if (wasActive) {
-      // Fetch the first remaining number
-      const updatedUser = await User.findById(userId).select("whatsappNumbers").lean();
-      const newActiveNumber = updatedUser?.whatsappNumbers?.[0];
-
-      if (newActiveNumber) {
-        // Set top-level credentials and mark as active
-        await User.updateOne(
-          { _id: userId, "whatsappNumbers._id": newActiveNumber._id },
-          {
-            $set: {
-              "wabaId": newActiveNumber.wabaId,
-              "whatsappPhoneNumberId": newActiveNumber.whatsappPhoneNumberId,
-              "whatsappAccessToken": newActiveNumber.whatsappAccessToken,
-              "whatsappNumbers.$.isActive": true
-            }
-          }
-        );
+      if (user.whatsappNumbers.length > 0) {
+        user.whatsappNumbers[0].isActive = true;
+        user.wabaId = user.whatsappNumbers[0].wabaId;
+        user.whatsappPhoneNumberId = user.whatsappNumbers[0].whatsappPhoneNumberId;
+        user.whatsappAccessToken = user.whatsappNumbers[0].whatsappAccessToken;
       } else {
-        // No numbers left, clear credentials
-        await User.updateOne(
-          { _id: userId },
-          {
-            $set: {
-              "wabaId": null,
-              "whatsappPhoneNumberId": null,
-              "whatsappAccessToken": null
-            }
-          }
-        );
+        user.wabaId = null;
+        user.whatsappPhoneNumberId = null;
+        user.whatsappAccessToken = null;
       }
     }
 
+    await user.save();
     return NextResponse.json({ success: true, message: "Number deleted successfully" });
   } catch (error) {
     console.error("Error deleting number:", error);
