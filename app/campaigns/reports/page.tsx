@@ -12,7 +12,7 @@ import {
   MessageSquare, Eye, CheckCheck, AlertTriangle, Copy, Ban, Radio,
   ArrowLeft, X, Tag as TagIcon, Users, PieChart, Database, Filter,
   FilterX, ChevronLeft, ChevronRight, ExternalLink, FileSpreadsheet,
-  Link2, Check,
+  Link2, Check, RefreshCw, // ✅ Added RefreshCw
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -312,7 +312,6 @@ export default function ReportsPage() {
   useEffect(() => {
     if (!selectedId) return;
     fetchReportData(selectedId, 1);
-    fetchReplies(selectedId);
   }, [selectedId]);
 
   useEffect(() => {
@@ -365,16 +364,6 @@ export default function ReportsPage() {
       console.error("Failed to fetch campaigns", error);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const fetchReplies = async (id: string) => {
-    try {
-      const res = await fetch(`/api/campaigns/report-replies?campaignId=${id}`);
-      const data = await res.json();
-      if (data.success) setRepliesMap(data.replies || {});
-    } catch (err) {
-      console.error("Failed to fetch replies", err);
     }
   };
 
@@ -435,7 +424,7 @@ export default function ReportsPage() {
     }
   };
 
-  const fetchReportData = async (id: string, page: number = 1) => {
+  const fetchReportData = async (id: string, page: number = 1, forceRefresh = false) => {
     if (fetchReportController.current) {
       fetchReportController.current.abort();
     }
@@ -453,6 +442,7 @@ export default function ReportsPage() {
       if (showOnly.length > 0) params.set("showOnly", showOnly.join(","));
       if (filterOut.length > 0) params.set("filterOut", filterOut.join(","));
       if (search) params.set("search", search);
+      if (forceRefresh) params.set("refresh", "true"); // ✅ Trigger cache clear
 
       const res = await fetch(`/api/campaigns/list?${params.toString()}`, {
         signal: controller.signal,
@@ -465,6 +455,14 @@ export default function ReportsPage() {
         setCampaignStats(data.campaignStats || {});
         setCampaignStatsCampaignId(id);
         setCampaignStatsCache((prev) => ({ ...prev, [id]: data.campaignStats || {} }));
+        
+        const newRepliesMap: Record<string, string[]> = {};
+        (data.campaigns[0].reportData || []).forEach((d: ReportItem) => {
+          if (d.phone && d.replies && d.replies.length > 0) {
+            newRepliesMap[d.phone] = d.replies;
+          }
+        });
+        setRepliesMap(newRepliesMap);
       } else {
         setReportData([]);
         setReportTotalPages(1);
@@ -983,7 +981,7 @@ export default function ReportsPage() {
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                                     <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                     <div className="relative flex-1 sm:flex-none">
                       <Search className="absolute left-2.5 top-2.5 w-4 h-4 text-slate-400" />
                       <input
@@ -993,6 +991,19 @@ export default function ReportsPage() {
                         className="w-full sm:w-48 pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none"
                       />
                     </div>
+
+                    {/* ✅ NEW: Refresh Data Button */}
+                    <button
+                      onClick={() => {
+                        if (selectedId) fetchReportData(selectedId, reportCurrentPage, true);
+                      }}
+                      disabled={loadingReport}
+                      className="px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                      title="Refresh current page"
+                    >
+                      {loadingReport ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Refresh
+                    </button>
+
                     <button
                       onClick={() => setIsBriefOpen(true)}
                       disabled={hiddenActions.includes("brief")}
@@ -1004,6 +1015,7 @@ export default function ReportsPage() {
                     >
                       <BarChart3 size={12} /> Brief
                     </button>
+                    {/* ... rest of the buttons (Sync Sheets, Export Report, Excel) ... */}
                     <button
                       onClick={() => handleSyncSheet(selectedCamp._id)}
                       disabled={syncingSheet || !!sheetUrl || hiddenActions.includes("loadSheet")}
