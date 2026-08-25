@@ -206,7 +206,7 @@ export default function CampaignList() {
   const [startingId, setStartingId] = useState<string | null>(null);
   const [actionId, setActionId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [refreshingId, setRefreshingId] = useState<string | null>(null); // New state for per-card refresh
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [viewCampaign, setViewCampaign] = useState<Campaign | null>(null);
   const [viewLoadingId, setViewLoadingId] = useState<string | null>(null);
   const [quickPhone, setQuickPhone] = useState("");
@@ -271,7 +271,6 @@ export default function CampaignList() {
     }
   };
 
-  // New function to load status for ONLY ONE campaign
   const loadSingleCampaignStatus = async (id: string) => {
     setRefreshingId(id);
     try {
@@ -280,7 +279,6 @@ export default function CampaignList() {
       const data = await res.json();
       if (data.success && data.campaigns.length > 0) {
         const updatedCampaign = data.campaigns[0];
-        // Update only this campaign in the state array
         setCampaigns((prev) =>
           prev.map((c) =>
             c._id === id
@@ -307,7 +305,6 @@ export default function CampaignList() {
 
   /* -------------------- EFFECTS -------------------- */
 
-  // Initial load (NO AUTO-REFRESH)
   useEffect(() => {
     if (status === "authenticated") {
       loadCampaigns();
@@ -319,7 +316,6 @@ export default function CampaignList() {
     }
   }, [status, router]);
 
-  // Schedule timer countdown
   useEffect(() => {
     const timerInterval = setInterval(() => {
       const newTimers: Record<string, string> = {};
@@ -598,8 +594,6 @@ export default function CampaignList() {
     stopped: { bg: "bg-red-50", text: "text-red-700", border: "border-red-200", icon: <Square size={12} /> },
   };
 
-  /* -------------------- LOADING STATE -------------------- */
-
   if (status === "loading") {
     return (
       <div className="flex min-h-screen bg-slate-50 items-center justify-center">
@@ -616,10 +610,6 @@ export default function CampaignList() {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-emerald-50/30 text-gray-900">
       <Sidebar />
 
-      {/* =====================================================
-          VIEW MODAL
-      ===================================================== */}
-
       {viewCampaign && (
         <div
           className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
@@ -629,7 +619,6 @@ export default function CampaignList() {
             className="bg-white rounded-t-3xl sm:rounded-3xl w-full sm:max-w-xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header */}
             <div className="bg-gradient-to-r from-emerald-600 to-teal-500 p-5 sm:p-6 text-white relative shrink-0">
               <button
                 onClick={() => setViewCampaign(null)}
@@ -651,21 +640,15 @@ export default function CampaignList() {
               </div>
             </div>
 
-            {/* Modal Body */}
             <div className="p-5 sm:p-6 space-y-5 overflow-y-auto">
-
               {(() => {
                 const stats = getCampaignStats(viewCampaign);
-
                 const currentPrice = Number(viewCampaign.currentPrice || viewCampaign.pricePerMessage || 0);
                 const amountSpent = Number(viewCampaign.totalDeducted || 0);
 
                 return (
                   <>
-                    {/* Summary Stats — 4 compact boxes */}
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-
-                      {/* Total */}
                       <div className="bg-slate-50 px-3 py-2.5 rounded-lg border border-slate-100 flex items-center gap-2">
                         <div className="w-7 h-7 rounded-lg bg-slate-200 flex items-center justify-center shrink-0">
                           <Users className="w-3.5 h-3.5 text-slate-600" />
@@ -675,8 +658,6 @@ export default function CampaignList() {
                           <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">Total</p>
                         </div>
                       </div>
-
-                      {/* Delivered (Combined) */}
                       <div className="bg-cyan-50 px-3 py-2.5 rounded-lg border border-cyan-100 flex items-center gap-2">
                         <div className="w-7 h-7 rounded-lg bg-cyan-200 flex items-center justify-center shrink-0">
                           <CheckCheck className="w-3.5 h-3.5 text-cyan-600" />
@@ -686,8 +667,6 @@ export default function CampaignList() {
                           <p className="text-[9px] text-cyan-500 font-bold uppercase tracking-wider mt-0.5">Delivered</p>
                         </div>
                       </div>
-
-                      {/* Pending */}
                       <div className="bg-amber-50 px-3 py-2.5 rounded-lg border border-amber-100 flex items-center gap-2">
                         <div className="w-7 h-7 rounded-lg bg-amber-200 flex items-center justify-center shrink-0">
                           <Clock className="w-3.5 h-3.5 text-amber-600" />
@@ -697,8 +676,6 @@ export default function CampaignList() {
                           <p className="text-[9px] text-amber-500 font-bold uppercase tracking-wider mt-0.5">Pending</p>
                         </div>
                       </div>
-
-                      {/* Failed (Combined) */}
                       <div className="bg-red-50 px-3 py-2.5 rounded-lg border border-red-100 flex items-center gap-2">
                         <div className="w-7 h-7 rounded-lg bg-red-200 flex items-center justify-center shrink-0">
                           <AlertTriangle className="w-3.5 h-3.5 text-red-600" />
@@ -708,10 +685,8 @@ export default function CampaignList() {
                           <p className="text-[9px] text-red-500 font-bold uppercase tracking-wider mt-0.5">Failed</p>
                         </div>
                       </div>
-
                     </div>
 
-                    {/* Amount Deducted */}
                     {amountSpent > 0 && (
                       <div className="bg-gradient-to-r from-blue-50 to-cyan-50 px-4 py-3 rounded-xl border border-blue-100 flex items-center justify-between">
                         <div className="flex items-center gap-2">
@@ -728,13 +703,8 @@ export default function CampaignList() {
                       </div>
                     )}
 
-                    {/* Status Breakdown */}
                     <div>
-                      <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-                        Status Breakdown
-                      </p>
-
-                      {/* Delivered Breakdown */}
+                      <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Status Breakdown</p>
                       <div className="mb-2">
                         <p className="text-[10px] font-bold text-cyan-600 uppercase mb-1.5 flex items-center gap-1">
                           <TrendingUp size={10} /> Delivered Breakdown
@@ -762,8 +732,6 @@ export default function CampaignList() {
                           </div>
                         </div>
                       </div>
-
-                      {/* Failed Breakdown */}
                       <div>
                         <p className="text-[10px] font-bold text-red-600 uppercase mb-1.5 flex items-center gap-1">
                           <TrendingDown size={10} /> Failed Breakdown
@@ -796,7 +764,6 @@ export default function CampaignList() {
                 );
               })()}
 
-              {/* Variables */}
               {viewCampaign.variables?.length > 0 && (
                 <div>
                   <span className="text-slate-500 block mb-1">Variables:</span>
@@ -810,7 +777,6 @@ export default function CampaignList() {
                 </div>
               )}
 
-              {/* Audience Preview */}
               <div>
                 <span className="text-slate-500 block mb-1">Audience Preview:</span>
                 <div className="bg-slate-50 p-2 rounded-lg text-xs font-mono max-h-20 overflow-y-auto border border-slate-100 flex flex-wrap items-center gap-1">
@@ -827,7 +793,6 @@ export default function CampaignList() {
                 </div>
               </div>
 
-              {/* Quick Test Send */}
               <div className="border-t border-slate-100 pt-4">
                 <label className="text-xs font-bold text-slate-700 mb-2 block flex items-center gap-1.5">
                   <Zap className="w-3.5 h-3.5 text-amber-500" /> Quick Test Send
@@ -867,20 +832,14 @@ export default function CampaignList() {
                   </p>
                 )}
               </div>
-
             </div>
           </div>
         </div>
       )}
 
-      {/* =====================================================
-          MAIN CONTENT
-      ===================================================== */}
-
       <div className="md:ml-64 p-4 sm:p-6 lg:p-8">
         <div className="max-w-6xl mx-auto space-y-4 sm:space-y-6">
 
-          {/* Page Header */}
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end border-b border-slate-200 pb-4 sm:pb-6 gap-4">
             <div>
               <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-slate-900">
@@ -913,7 +872,6 @@ export default function CampaignList() {
             </div>
           </div>
 
-          {/* Balance Warning */}
           {!canSendMessage && (
             <div className="p-3 sm:p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
               <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
@@ -927,7 +885,6 @@ export default function CampaignList() {
             </div>
           )}
 
-          {/* Search & Filter */}
           <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3 sm:gap-4">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
@@ -956,7 +913,6 @@ export default function CampaignList() {
             </div>
           </div>
 
-          {/* Loading / Empty / Campaign List */}
           {loadingCampaigns ? (
             <div className="flex justify-center items-center py-20 bg-white rounded-2xl border border-slate-200">
               <ScannerLoader />
@@ -968,7 +924,6 @@ export default function CampaignList() {
             </div>
           ) : (
             <div className="space-y-4">
-
               {currentItems.map((c) => {
                 const stats = getCampaignStats(c);
 
@@ -997,7 +952,6 @@ export default function CampaignList() {
                     key={c._id}
                     className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all duration-200 group"
                   >
-                    {/* Card Header */}
                     <div className="flex flex-col sm:flex-row justify-between items-start gap-3 mb-4">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 sm:gap-3 mb-1 flex-wrap">
@@ -1033,10 +987,7 @@ export default function CampaignList() {
                         )}
                       </div>
 
-                      {/* Action Buttons */}
                       <div className="flex items-center gap-1.5 sm:ml-4 w-full sm:w-auto justify-end flex-wrap">
-                        
-                        {/* NEW: Per-Campaign Load Status Button */}
                         <button
                           onClick={() => loadSingleCampaignStatus(c._id)}
                           disabled={refreshingId === c._id}
@@ -1122,12 +1073,8 @@ export default function CampaignList() {
                       </div>
                     </div>
 
-                    {/* Stats + Progress */}
                     <div className="grid grid-cols-1 lg:grid-cols-[1fr_260px] gap-3">
-
-                      {/* 4 Compact Stat Boxes */}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                        {/* Total */}
                         <div className="bg-slate-50 px-3 py-2.5 rounded-lg border border-slate-100 flex items-center gap-2">
                           <div className="w-7 h-7 rounded-lg bg-slate-200 flex items-center justify-center shrink-0">
                             <Users className="w-3.5 h-3.5 text-slate-600" />
@@ -1137,8 +1084,6 @@ export default function CampaignList() {
                             <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">Total</p>
                           </div>
                         </div>
-
-                        {/* Delivered */}
                         <div className="bg-cyan-50 px-3 py-2.5 rounded-lg border border-cyan-100 flex items-center gap-2">
                           <div className="w-7 h-7 rounded-lg bg-cyan-200 flex items-center justify-center shrink-0">
                             <CheckCheck className="w-3.5 h-3.5 text-cyan-600" />
@@ -1148,8 +1093,6 @@ export default function CampaignList() {
                             <p className="text-[9px] text-cyan-500 font-bold uppercase tracking-wider mt-0.5">Delivered</p>
                           </div>
                         </div>
-
-                        {/* Pending */}
                         <div className="bg-amber-50 px-3 py-2.5 rounded-lg border border-amber-100 flex items-center gap-2">
                           <div className="w-7 h-7 rounded-lg bg-amber-200 flex items-center justify-center shrink-0">
                             <Clock className="w-3.5 h-3.5 text-amber-600" />
@@ -1159,8 +1102,6 @@ export default function CampaignList() {
                             <p className="text-[9px] text-amber-500 font-bold uppercase tracking-wider mt-0.5">Pending</p>
                           </div>
                         </div>
-
-                        {/* Failed */}
                         <div className="bg-red-50 px-3 py-2.5 rounded-lg border border-red-100 flex items-center gap-2">
                           <div className="w-7 h-7 rounded-lg bg-red-200 flex items-center justify-center shrink-0">
                             <AlertTriangle className="w-3.5 h-3.5 text-red-600" />
@@ -1172,7 +1113,6 @@ export default function CampaignList() {
                         </div>
                       </div>
 
-                      {/* Progress Bar */}
                       <div className="bg-slate-50 px-3 py-2.5 rounded-lg border border-slate-100 flex flex-col justify-center">
                         <div className="flex items-center justify-between mb-2">
                           <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">Progress</p>
@@ -1185,10 +1125,8 @@ export default function CampaignList() {
                           />
                         </div>
                       </div>
-
                     </div>
 
-                    {/* Amount Deducted */}
                     {amountSpent > 0 && (
                       <div className="mt-3 flex items-center gap-2 text-xs">
                         <Wallet size={12} className="text-blue-500" />
@@ -1200,19 +1138,16 @@ export default function CampaignList() {
                       </div>
                     )}
 
-                    {/* Completed Message */}
                     {isCompleted && totalCount === 0 && (
                       <div className="mt-3 flex items-center gap-2 text-xs">
                         <CheckCircle size={12} className="text-emerald-500" />
                         <span className="text-slate-500">Completed — 0 messages</span>
                       </div>
                     )}
-
                   </div>
                 );
               })}
 
-              {/* Pagination */}
               {totalPages > 1 && (
                 <div className="flex justify-center items-center gap-4 mt-8">
                   <button
@@ -1234,10 +1169,8 @@ export default function CampaignList() {
                   </button>
                 </div>
               )}
-
             </div>
           )}
-
         </div>
       </div>
 
