@@ -145,9 +145,12 @@ export async function GET(request: Request) {
       })
         .select("_id")
         .lean();
-      subUsers.forEach((u) => {
-        if (!userIdsArray.some((id) => id.equals(u._id)))
-          userIdsArray.push(u._id);
+      subUsers.forEach((u: { _id: string | mongoose.mongo.ObjectId | mongoose.mongo.BSON.ObjectIdLike | null | undefined; }) => {
+        if (u._id) {
+          const subUserId = new mongoose.Types.ObjectId(u._id.toString());
+          if (!userIdsArray.some((id) => id.equals(subUserId)))
+            userIdsArray.push(subUserId);
+        }
       });
     }
 
