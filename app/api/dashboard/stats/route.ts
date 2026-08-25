@@ -10,119 +10,29 @@ import { authOptions } from "@/lib/auth";
 import { getMinPrice } from "@/lib/billing";
 import mongoose from "mongoose";
 
-// ✅ Helper: Fetch WhatsApp phone details from Meta
-async function fetchPhoneDetails(user: any): Promise<any> {
-  let phoneDetails: any = {
-    displayPhoneNumber: "Not Configured",
-    verifiedName: "Add Credentials in Settings",
-    qualityRating: "N/A",
-    status: "DISCONNECTED",
-    messagingLimitTier: "N/A",
-    twoFactorEnabled: "N/A",
-  };
-
-  if (user.whatsappAccessToken && user.whatsappPhoneNumberId) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-      const metaRes = await fetch(
-        `https://graph.facebook.com/v21.0/${user.whatsappPhoneNumberId}?fields=display_phone_number,verified_name,quality_rating,status,whatsapp_business_manager_messaging_limit,is_pin_enabled`,
-        {
-          headers: { Authorization: `Bearer ${user.whatsappAccessToken}` },
-          cache: "no-store",
-          signal: controller.signal,
-        }
-      );
-
-      clearTimeout(timeoutId);
-      const metaJson = await metaRes.json();
-
-      if (metaRes.ok) {
-        phoneDetails = {
-          displayPhoneNumber: metaJson.display_phone_number || "Not Available",
-          verifiedName: metaJson.verified_name || "Not Available",
-          qualityRating: metaJson.quality_rating || "N/A",
-          status: metaJson.status || "N/A",
-          messagingLimitTier:
-            metaJson.whatsapp_business_manager_messaging_limit || "N/A",
-          twoFactorEnabled:
-            metaJson.is_pin_enabled === true
-              ? true
-              : metaJson.is_pin_enabled === false
-              ? false
-              : "N/A",
-        };
-      } else {
-        phoneDetails = {
-          displayPhoneNumber: "Error",
-          verifiedName:
-            metaJson?.error?.message ||
-            "Token lacks whatsapp_business_management permission",
-          qualityRating: "N/A",
-          status: "ERROR",
-          messagingLimitTier: "N/A",
-          twoFactorEnabled: "N/A",
-        };
-      }
-    } catch (err: any) {
-      const isTimeout = err.name === "AbortError";
-      phoneDetails = {
-        displayPhoneNumber: "Error",
-        verifiedName: isTimeout ? "Meta API Timeout (5s)" : "Fetch Failed",
-        qualityRating: "N/A",
-        status: "ERROR",
-        messagingLimitTier: "N/A",
-        twoFactorEnabled: "N/A",
-      };
-    }
-  }
-
-  return phoneDetails;
-}
-
-export async function GET(request: Request) {
+export async function GET() {
   try {
-    const { searchParams } = new URL(request.url);
-    // ✅ Query flags to control phone details fetching
-    const phoneOnly = searchParams.get("phoneOnly") === "true"; // Only return phone details
-    const skipPhone = searchParams.get("skipPhone") === "true"; // Skip phone details fetch entirely
-
     await connectDB();
 
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
 
     if (!userId) {
-      return NextResponse.json(
-        { success: false, message: "Unauthorized" },
-        { status: 401 }
-      );
+      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
     }
 
     const userObjId = new mongoose.Types.ObjectId(userId);
 
-    // ✅ STEP 1: Fetch user FIRST
+    // ✅ STEP 1: Fetch user FIRST (needed for tenant resolution + billing)
     const user = await User.findById(userObjId).select(
       "balance totalRecharged pricePerMessage whatsappAccessToken whatsappPhoneNumberId parentTenantId isTenant tenantId"
     );
 
     if (!user) {
-      return NextResponse.json(
-        { success: false, message: "User not found" },
-        { status: 404 }
-      );
+      return NextResponse.json({ success: false, message: "User not found" }, { status: 404 });
     }
 
-    // ==========================================
-    // ✅ PHONE ONLY MODE: Return only phone details
-    // ==========================================
-    if (phoneOnly) {
-      const phoneDetails = await fetchPhoneDetails(user);
-      return NextResponse.json({ success: true, phoneDetails });
-    }
-
-    // ✅ STEP 2: Resolve ALL Tenant Users
+    // ✅ STEP 2: Resolve ALL Tenant Users (same logic as chat page)
     const userIdsArray: mongoose.Types.ObjectId[] = [userObjId];
     let tenantIdToSearch = null;
 
@@ -130,51 +40,31 @@ export async function GET(request: Request) {
     else if (user.parentTenantId) tenantIdToSearch = user.parentTenantId;
 
     if (tenantIdToSearch) {
-      const tenantUser = await User.findOne({
-        tenantId: tenantIdToSearch,
-        isTenant: true,
-      })
-        .select("_id")
-        .lean();
+      const tenantUser = await User.findOne({ tenantId: tenantIdToSearch, isTenant: true }).select("_id").lean();
       if (tenantUser && !userIdsArray.some((id) => id.equals(tenantUser._id))) {
         userIdsArray.push(tenantUser._id);
       }
 
-      const subUsers = await User.find({
-        parentTenantId: tenantIdToSearch,
-      })
-        .select("_id")
-        .lean();
-      subUsers.forEach((u: { _id: string | mongoose.mongo.ObjectId | mongoose.mongo.BSON.ObjectIdLike | null | undefined; }) => {
-        if (u._id) {
-          const subUserId = new mongoose.Types.ObjectId(u._id.toString());
-          if (!userIdsArray.some((id) => id.equals(subUserId)))
-            userIdsArray.push(subUserId);
-        }
+      const subUsers = await User.find({ parentTenantId: tenantIdToSearch }).select("_id").lean();
+      subUsers.forEach((u) => {
+        if (!userIdsArray.some((id) => id.equals(u._id))) userIdsArray.push(u._id);
       });
     }
 
-    // ✅ Only count chats where contact has REPLIED
+    // ✅ FIX: Only count chats where contact has REPLIED (direction: "in")
+    // This matches the chat list which only shows replied contacts
     const totalChatsAggPromise = Message.aggregate([
       { $match: { userId: { $in: userIdsArray }, direction: "in" } },
       { $group: { _id: "$phone" } },
       { $count: "totalChats" },
     ]);
 
-    const totalWorkflowsPromise = Workflow.countDocuments({
-      userId: userObjId,
-    });
-    const totalCampaignsPromise = Campaign.countDocuments({
-      userId: userObjId,
-    });
+    const totalWorkflowsPromise = Workflow.countDocuments({ userId: userObjId });
+    const totalCampaignsPromise = Campaign.countDocuments({ userId: userObjId });
 
+    // ✅ Use DB Aggregation to calculate read/sent counts INSIDE MongoDB
     const activeCampaignsPromise = Campaign.aggregate([
-      {
-        $match: {
-          userId: userObjId,
-          status: { $in: ["running", "scheduled", "completed"] },
-        },
-      },
+      { $match: { userId: userObjId, status: { $in: ["running", "scheduled", "completed"] } } },
       { $sort: { createdAt: -1 } },
       { $limit: 5 },
       {
@@ -197,12 +87,7 @@ export async function GET(request: Request) {
       },
     ]);
 
-    const [
-      totalChatsAgg,
-      totalWorkflows,
-      totalCampaigns,
-      activeCampaigns,
-    ] = await Promise.all([
+    const [totalChatsAgg, totalWorkflows, totalCampaigns, activeCampaigns] = await Promise.all([
       totalChatsAggPromise,
       totalWorkflowsPromise,
       totalCampaignsPromise,
@@ -233,9 +118,7 @@ export async function GET(request: Request) {
     // ==========================================
     let billingUser: any = user;
     if (user.parentTenantId) {
-      const parent = await User.findOne({
-        tenantId: user.parentTenantId,
-      }).select(
+      const parent = await User.findOne({ tenantId: user.parentTenantId }).select(
         "balance totalRecharged priceMarketing priceUtility priceAuthentication"
       );
       if (parent) billingUser = parent;
@@ -249,11 +132,70 @@ export async function GET(request: Request) {
     const canSendMessage = minPrice === 0 || balance >= minPrice;
 
     // ==========================================
-    // ✅ Phone Details: Only fetch if NOT skipPhone
+    // ✅ FETCH WHATSAPP PHONE NUMBER DETAILS FROM META
     // ==========================================
-    let phoneDetails: any = null;
-    if (!skipPhone) {
-      phoneDetails = await fetchPhoneDetails(user);
+    let phoneDetails: any = {
+      displayPhoneNumber: "Not Configured",
+      verifiedName: "Add Credentials in Settings",
+      qualityRating: "N/A",
+      status: "DISCONNECTED",
+      messagingLimitTier: "N/A",
+      twoFactorEnabled: "N/A",
+    };
+
+    if (user.whatsappAccessToken && user.whatsappPhoneNumberId) {
+      try {
+        // ✅ AbortController with 5-second timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+        const metaRes = await fetch(
+          `https://graph.facebook.com/v21.0/${user.whatsappPhoneNumberId}?fields=display_phone_number,verified_name,quality_rating,status,whatsapp_business_manager_messaging_limit,is_pin_enabled`,
+          {
+            headers: { Authorization: `Bearer ${user.whatsappAccessToken}` },
+            cache: "no-store",
+            signal: controller.signal,
+          }
+        );
+
+        clearTimeout(timeoutId);
+        const metaJson = await metaRes.json();
+
+        if (metaRes.ok) {
+          phoneDetails = {
+            displayPhoneNumber: metaJson.display_phone_number || "Not Available",
+            verifiedName: metaJson.verified_name || "Not Available",
+            qualityRating: metaJson.quality_rating || "N/A",
+            status: metaJson.status || "N/A",
+            messagingLimitTier: metaJson.whatsapp_business_manager_messaging_limit || "N/A",
+            twoFactorEnabled:
+              metaJson.is_pin_enabled === true
+                ? true
+                : metaJson.is_pin_enabled === false
+                ? false
+                : "N/A",
+          };
+        } else {
+          phoneDetails = {
+            displayPhoneNumber: "Error",
+            verifiedName: metaJson?.error?.message || "Token lacks whatsapp_business_management permission",
+            qualityRating: "N/A",
+            status: "ERROR",
+            messagingLimitTier: "N/A",
+            twoFactorEnabled: "N/A",
+          };
+        }
+      } catch (err: any) {
+        const isTimeout = err.name === "AbortError";
+        phoneDetails = {
+          displayPhoneNumber: "Error",
+          verifiedName: isTimeout ? "Meta API Timeout (5s)" : "Fetch Failed",
+          qualityRating: "N/A",
+          status: "ERROR",
+          messagingLimitTier: "N/A",
+          twoFactorEnabled: "N/A",
+        };
+      }
     }
 
     return NextResponse.json({
