@@ -8,23 +8,24 @@ import { authOptions } from "@/lib/auth";
 
 export async function GET(request: Request) {
   try {
-    const session = await getServerSession(authOptions);
-    const userId = session?.user?.id;
+    // ✅ Run DB connection and session check in parallel
+    const [, session] = await Promise.all([
+      connectDB(),
+      getServerSession(authOptions)
+    ]);
 
+    const userId = session?.user?.id;
     if (!userId) {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
     }
-
-    await connectDB();
 
     const { searchParams } = new URL(request.url);
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "25", 10)));
     const skip = (page - 1) * limit;
 
-    // 🚀 LIVE STATS FIX: Use aggregation to calculate stats directly from reportData 
-    // for ONLY the current page items. This bypasses the need for a background worker 
-    // and guarantees real-time Delivered/Read counts.
+    // 🚀 LIVE STATS FIX: Use $reduce to calculate stats directly from reportData 
+    // ✅ Fixes the overlap bug where "replied" messages were also counted as "read/delivered"
     const campaigns = await Campaign.aggregate([
       { $match: { userId: new mongoose.Types.ObjectId(userId) } },
       { $sort: { createdAt: -1 } },
@@ -41,36 +42,37 @@ export async function GET(request: Request) {
           totalDeducted: 1,
           scheduledAt: 1,
           createdAt: 1,
-          // ✅ NEW: Include the sheet URLs so frontend buttons stay disabled on refresh
           sheetUrl: 1,
           standaloneSheetUrl: 1,
-          // Calculate live stats directly in the DB
           liveStats: {
             $let: {
               vars: {
                 counts: {
                   $reduce: {
                     input: { $ifNull: ["$reportData", []] },
-                    initialValue: { replied: 0, read: 0, delivered: 0, sent: 0, failed: 0, invalid: 0, duplicate: 0 },
+                    initialValue: { replied: 0, read: 0, delivered: 0, sent: 0, failed: 0, invalid: 0, duplicate: 0, pending: 0 },
                     in: {
-                      replied: { 
-                        $add: [
-                          "$$value.replied", 
-                          { 
-                            $cond: [
-                              { $gt: [{ $size: { $ifNull: ["$$this.replies", []] } }, 0] }, 
-                              1, 
-                              0
+                      $let: {
+                        vars: {
+                          isReplied: {
+                            $or: [
+                              { $ne: [{ $ifNull: ["$$this.reply", ""] }, ""] },
+                              { $gt: [{ $size: { $ifNull: ["$$this.replies", []] } }, 0] }
                             ]
-                          }
-                        ]
-                      },
-                      read: { $add: ["$$value.read", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "read"] }, 1, 0] }] },
-                      delivered: { $add: ["$$value.delivered", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "delivered"] }, 1, 0] }] },
-                      sent: { $add: ["$$value.sent", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "sent"] }, 1, 0] }] },
-                      failed: { $add: ["$$value.failed", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "failed"] }, 1, 0] }] },
-                      invalid: { $add: ["$$value.invalid", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "invalid"] }, 1, 0] }] },
-                      duplicate: { $add: ["$$value.duplicate", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "duplicate"] }, 1, 0] }] }
+                          },
+                          stat: { $toLower: { $ifNull: ["$$this.status", ""] } }
+                        },
+                        in: {
+                          replied: { $add: ["$$value.replied", { $cond: { if: "$$isReplied", then: 1, else: 0 } }] },
+                          read: { $add: ["$$value.read", { $cond: { if: { $and: [{ $eq: ["$$stat", "read"] }, { $not: "$$isReplied" }] }, then: 1, else: 0 } }] },
+                          delivered: { $add: ["$$value.delivered", { $cond: { if: { $and: [{ $eq: ["$$stat", "delivered"] }, { $not: "$$isReplied" }] }, then: 1, else: 0 } }] },
+                          sent: { $add: ["$$value.sent", { $cond: { if: { $and: [{ $eq: ["$$stat", "sent"] }, { $not: "$$isReplied" }] }, then: 1, else: 0 } }] },
+                          failed: { $add: ["$$value.failed", { $cond: { if: { $and: [{ $eq: ["$$stat", "failed"] }, { $not: "$$isReplied" }] }, then: 1, else: 0 } }] },
+                          invalid: { $add: ["$$value.invalid", { $cond: { if: { $and: [{ $eq: ["$$stat", "invalid"] }, { $not: "$$isReplied" }] }, then: 1, else: 0 } }] },
+                          duplicate: { $add: ["$$value.duplicate", { $cond: { if: { $and: [{ $eq: ["$$stat", "duplicate"] }, { $not: "$$isReplied" }] }, then: 1, else: 0 } }] },
+                          pending: { $add: ["$$value.pending", { $cond: { if: { $and: [{ $not: "$$isReplied" }, { $or: [{ $eq: ["$$stat", "pending"] }, { $eq: ["$$stat", "queued"] }, { $eq: ["$$stat", ""] }] }] }, then: 1, else: 0 } }] }
+                        }
+                      }
                     }
                   }
                 }
@@ -83,7 +85,8 @@ export async function GET(request: Request) {
                 sent: "$$counts.sent",
                 failed: "$$counts.failed",
                 invalid: "$$counts.invalid",
-                duplicate: "$$counts.duplicate"
+                duplicate: "$$counts.duplicate",
+                pending: "$$counts.pending"
               }
             }
           }
@@ -95,7 +98,6 @@ export async function GET(request: Request) {
       return NextResponse.json({ success: true, campaigns: [], page, limit });
     }
 
-    // Format the calculated stats to match exactly what the frontend expects
     const fixedCampaigns = campaigns.map((c: any) => {
       const ls = c.liveStats || {};
       const total = ls.total || 0;
@@ -107,10 +109,9 @@ export async function GET(request: Request) {
       const invalid = ls.invalid || 0;
       const duplicate = ls.duplicate || 0;
 
-      const processed = read + delivered + sent + failed + invalid + duplicate;
+      const processed = read + delivered + sent + failed + invalid + duplicate + replied;
       const pending = Math.max(0, total - processed);
-      const progress =
-        total > 0 ? Math.min(100, Math.round(((delivered + read + sent) / total) * 100)) : 0;
+      const progress = total > 0 ? Math.min(100, Math.round(((delivered + read + sent) / total) * 100)) : 0;
 
       return {
         ...c,
