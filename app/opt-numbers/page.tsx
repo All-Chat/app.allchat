@@ -18,8 +18,7 @@ interface LimitInfo {
   allowed: boolean;
 }
 
-// ✅ Changed to 10 per page as requested
-const ITEMS_PER_PAGE = 10;
+const ITEMS_PER_PAGE = 6;
 
 export default function OptNumbersPage() {
   const { status } = useSession();
@@ -30,8 +29,6 @@ export default function OptNumbersPage() {
 
   // ✅ Pagination State
   const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalNumbers, setTotalNumbers] = useState(0);
 
   // ✅ Limit State
   const [optLimit, setOptLimit] = useState<LimitInfo | null>(null);
@@ -57,11 +54,10 @@ export default function OptNumbersPage() {
     });
   };
 
-  // ✅ Updated loadData to fetch specific page from backend
-  const loadData = async (page = currentPage) => {
+  const loadData = async () => {
     try {
       const [numbersRes, limitsRes] = await Promise.all([
-        fetch(`/api/opt-numbers?page=${page}&limit=${ITEMS_PER_PAGE}`),
+        fetch("/api/opt-numbers"),
         fetch("/api/user/limits?resource=optNumbers"),
       ]);
 
@@ -72,10 +68,8 @@ export default function OptNumbersPage() {
 
       const numbersData = await numbersRes.json();
       setNumbers(numbersData.numbers || []);
-      setTotalPages(numbersData.totalPages || 1);
-      setTotalNumbers(numbersData.totalNumbers || 0);
 
-      // Load limit info
+      // ✅ Load limit info
       if (limitsRes.ok) {
         const limitsData = await limitsRes.json();
         if (limitsData.success) {
@@ -95,7 +89,7 @@ export default function OptNumbersPage() {
   };
 
   useEffect(() => {
-    if (status === "authenticated") loadData(1);
+    if (status === "authenticated") loadData();
     if (status === "unauthenticated") window.location.href = "/";
   }, [status]);
 
@@ -112,6 +106,7 @@ export default function OptNumbersPage() {
       });
       const data = await res.json();
 
+      // ✅ Handle limit exceeded response
       if (res.status === 429 && data.limitExceeded) {
         showToast(data.error, "error");
         if (data.limitInfo) {
@@ -130,10 +125,12 @@ export default function OptNumbersPage() {
       }
 
       if (res.ok) {
+        setNumbers([data.optNumber, ...numbers]);
         setNewNumber("");
         showToast("Number added successfully!");
         setCurrentPage(1); // ✅ Reset to first page to show the new number
-        loadData(1); // ✅ Refetch page 1
+        // Refresh limits
+        loadData();
       } else {
         showToast(data.error || "Failed to add number", "error");
       }
@@ -148,19 +145,22 @@ export default function OptNumbersPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const handleDelete = async (id: string) => {
+    const previousNumbersLength = numbers.length;
     try {
       const res = await fetch(`/api/opt-numbers/${id}`, { method: "DELETE" });
       if (res.ok) {
+        const updatedNumbers = numbers.filter((n) => n._id !== id);
+        setNumbers(updatedNumbers);
         showToast("Number deleted");
         
-        // ✅ If we deleted the last item on a page, go back one page
-        if (numbers.length === 1 && currentPage > 1) {
-          const newPage = currentPage - 1;
-          setCurrentPage(newPage);
-          loadData(newPage);
-        } else {
-          loadData(currentPage);
+        // ✅ Pagination Fix: If deleting the last item on a page, go back one page
+        const totalPages = Math.ceil((previousNumbersLength - 1) / ITEMS_PER_PAGE);
+        if (currentPage > totalPages && totalPages > 0) {
+          setCurrentPage(totalPages);
         }
+
+        // Refresh limits after deletion
+        loadData();
       } else {
         const data = await res.json();
         showToast(data.error || "Failed to delete number", "error");
@@ -170,12 +170,6 @@ export default function OptNumbersPage() {
     }
   };
 
-  // ✅ Handle Page Change
-  const handlePageChange = (newPage: number) => {
-    setCurrentPage(newPage);
-    loadData(newPage);
-  };
-
   if (status === "loading" || loading) {
     return (
       <div className="flex min-h-screen bg-slate-50 items-center justify-center">
@@ -183,6 +177,12 @@ export default function OptNumbersPage() {
       </div>
     );
   }
+
+  // ✅ Pagination Calculations
+  const totalPages = Math.ceil(numbers.length / ITEMS_PER_PAGE);
+  const indexOfLastNumber = currentPage * ITEMS_PER_PAGE;
+  const indexOfFirstNumber = indexOfLastNumber - ITEMS_PER_PAGE;
+  const currentNumbers = numbers.slice(indexOfFirstNumber, indexOfLastNumber);
 
   return (
     <div className="min-h-screen bg-slate-50 text-gray-900">
@@ -236,7 +236,7 @@ export default function OptNumbersPage() {
                 </div>
               </div>
 
-              {/* Limit Badge in Header */}
+              {/* ✅ Limit Badge in Header */}
               {optLimit && (
                 <div
                   className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold shrink-0 ${
@@ -270,7 +270,7 @@ export default function OptNumbersPage() {
             </div>
           </div>
 
-          {/* Limit Warning Bar */}
+          {/* ✅ Limit Warning Bar */}
           {isLimitActive && (
             <div
               className={`rounded-xl p-3 flex items-center gap-3 text-sm border animate-slide-in ${
@@ -304,6 +304,7 @@ export default function OptNumbersPage() {
                   )}
                 </span>
               </div>
+              {/* Progress bar */}
               <div className="w-24 h-2 bg-white/60 rounded-full overflow-hidden shrink-0">
                 <div
                   className={`h-full rounded-full transition-all ${
@@ -330,6 +331,7 @@ export default function OptNumbersPage() {
                 </h2>
               </div>
 
+              {/* ✅ Limit Reached Warning in Form */}
               {isAtLimit && (
                 <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2 animate-slide-in">
                   <AlertTriangle size={16} className="text-red-500 shrink-0 mt-0.5" />
@@ -388,9 +390,8 @@ export default function OptNumbersPage() {
                 <PhoneCall size={14} className="text-slate-500" />
                 Phone Numbers
               </h2>
-              {/* ✅ Uses totalNumbers from backend */}
               <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full">
-                {totalNumbers} Total
+                {numbers.length} Total
                 {isLimitActive && (
                   <span className="text-slate-400 ml-1">/ {optLimit?.limit.max}</span>
                 )}
@@ -410,7 +411,7 @@ export default function OptNumbersPage() {
             ) : (
               <>
                 <ul className="divide-y divide-slate-100">
-                  {numbers.map((num) => {
+                  {currentNumbers.map((num) => {
                     const isDeleting = deletingId === num._id;
 
                     return (
@@ -467,11 +468,11 @@ export default function OptNumbersPage() {
                   })}
                 </ul>
 
-                {/* ✅ Pagination Controls - Backend Driven */}
+                {/* ✅ Pagination Controls */}
                 {totalPages > 1 && (
                   <div className="flex items-center justify-between px-5 sm:px-6 py-4 border-t border-slate-100 bg-slate-50/50">
                     <button
-                      onClick={() => handlePageChange(currentPage - 1)}
+                      onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
                       disabled={currentPage === 1}
                       className="flex items-center gap-1 text-xs font-bold text-slate-600 hover:text-cyan-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                     >
@@ -483,7 +484,7 @@ export default function OptNumbersPage() {
                       {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
                         <button
                           key={page}
-                          onClick={() => handlePageChange(page)}
+                          onClick={() => setCurrentPage(page)}
                           className={`w-7 h-7 flex items-center justify-center rounded-lg text-[11px] font-bold transition-all ${
                             currentPage === page
                               ? "bg-cyan-500 text-white shadow-md scale-105"
@@ -496,7 +497,7 @@ export default function OptNumbersPage() {
                     </div>
 
                     <button
-                      onClick={() => handlePageChange(currentPage + 1)}
+                      onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
                       disabled={currentPage === totalPages}
                       className="flex items-center gap-1 text-xs font-bold text-slate-600 hover:text-cyan-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                     >
