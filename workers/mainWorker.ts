@@ -17,7 +17,7 @@ import Session from '../models/Session';
 import mongoose from 'mongoose';
 import { getPriceForCategory } from '../lib/billing';
 import { syncCampaignToGoogleSheet } from '../lib/googleSheetSync';
-import { Job, Cache } from '../lib/queue'; // Removed statsQueue import
+import { Job, Cache } from '../lib/queue';
 
 // ============================================================================
 // 0. CONNECT TO MONGO ON STARTUP
@@ -25,7 +25,6 @@ import { Job, Cache } from '../lib/queue'; // Removed statsQueue import
 
 connectDB()
   .then(async () => {
-    
     console.log('✅ Main Worker process connected to MongoDB');
 
     // Start all background workers
@@ -38,13 +37,7 @@ connectDB()
       }
     }, 5);
 
-    startWorker('report-processing', async (job) => {
-      if (job.name === 'refresh-report-cache') {
-        return await refreshReportCache(job.data);
-      }
-    }, 5);
-
-    console.log('🚀 Standalone main worker process started — campaign / counts / report / inactivity workers running.');
+    console.log('🚀 Standalone main worker process started — campaign / counts / inactivity workers running.');
   })
   .catch((err) => { console.error('❌ Worker process failed to connect to MongoDB:', err); process.exit(1); });
 
@@ -72,9 +65,7 @@ async function startWorker(queueName: string, processor: (job: any) => Promise<a
           ).lean();
 
           if (job) {
-            
             console.log(`▶️ Processing job ${job.name} (${job._id}) in ${queueName}`);
-            
             try {
               const result = await processor({ id: job._id.toString(), name: job.name, data: job.data });
               const shouldRemove = job.opts?.removeOnComplete || job.opts?.removeOnFail;
@@ -88,7 +79,6 @@ async function startWorker(queueName: string, processor: (job: any) => Promise<a
               else await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
             }
           } else { await new Promise((r) => setTimeout(r, 1000)); }
-          
         } catch (err) {
           console.error(`Polling error for ${queueName}:`, err);
           await new Promise((r) => setTimeout(r, 2000));
@@ -108,7 +98,6 @@ async function startCampaignWorker() {
 
   while (true) {
     try {
-      
       const job = await Job.findOneAndUpdate(
         { queue: 'campaign-processing', $or: [{ status: "pending" }, { status: "processing", lockedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } }] },
         { $set: { status: "processing", lockedAt: new Date() } },
@@ -116,9 +105,7 @@ async function startCampaignWorker() {
       ).lean();
 
       if (job) {
-        
         console.log(`▶️ Processing chunk ${job.data.startIdx}-${job.data.endIdx} (${job._id})`);
-        
         try {
           await processCampaignChunk(job.data);
           await Job.deleteOne({ _id: job._id });
@@ -127,11 +114,8 @@ async function startCampaignWorker() {
           console.error(`❌ Chunk ${job.data.startIdx}-${job.data.endIdx} failed:`, err.message);
           await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
         }
-        
-        // 500ms delay = 2 chunks per second (20 msgs/sec)
-        await new Promise(r => setTimeout(r, 500)); 
+        await new Promise(r => setTimeout(r, 500)); // 500ms delay = 20 msgs/sec
       } else { await new Promise(r => setTimeout(r, 1000)); }
-      
     } catch (err) {
       console.error('Polling error for campaign-processing:', err);
       await new Promise(r => setTimeout(r, 2000));
@@ -157,14 +141,10 @@ async function sendInactivityMessage(accessToken: string, phoneNumberId: string,
 }
 
 async function startInactivityWorker() {
-  
   console.log("🚀 Worker started for queue: workflow-inactivity");
-
   while (true) {
     try {
-      
       await ensureDbConnected();
-
       const job = await Job.findOneAndUpdate(
         {
           queue: "workflow-inactivity", status: "pending",
@@ -175,25 +155,19 @@ async function startInactivityWorker() {
       ).lean();
 
       if (job) {
-        
         console.log(`▶️ Processing inactivity job for ${job.data.phone}`);
-
         try {
-          
           const data = job.data;
           const session = await Session.findOne({ phone: data.phone, userId: data.userId });
-
           if (session && session.formId) {
             await Job.deleteOne({ _id: job._id });
           } else if (data.sentCount < data.repeatCount) {
-            
             await sendInactivityMessage(data.accessToken, data.phoneNumberId, data.phone, data.message);
             await Message.create({
               userId: data.userId, phone: data.phone, text: data.message,
               direction: "out", messageType: "text", status: "sent",
               whatsappPhoneNumberId: data.phoneNumberId, senderNumber: data.phoneNumberId,
             });
-
             if (data.sentCount + 1 < data.repeatCount) {
               await Job.create({
                 queue: "workflow-inactivity", name: "send-inactivity-message",
@@ -201,22 +175,17 @@ async function startInactivityWorker() {
                 status: "pending", createdAt: new Date(),
               });
             }
-
             await Job.deleteOne({ _id: job._id });
             console.log(`✅ Inactivity job completed for ${data.phone}`);
-
           } else {
             await Job.deleteOne({ _id: job._id });
           }
-
         } catch (err: any) {
           console.error(`❌ Inactivity job failed:`, err.message);
           await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
         }
-
         await new Promise(r => setTimeout(r, 1000));
       } else { await new Promise(r => setTimeout(r, 2000)); }
-
     } catch (err) {
       console.error("Polling error for workflow-inactivity:", err);
       await new Promise(r => setTimeout(r, 2000));
@@ -278,10 +247,8 @@ const priceMapCache = new Map<string, { map: Map<string, number>, defaultPrice: 
 const PRICE_CACHE_TTL = 5 * 60 * 1000;
 
 function getOptimizedPriceForPhone(payerId: string, payer: any, phone: string, category: string): number {
-  
   const now = Date.now();
   let cache = priceMapCache.get(payerId);
-
   if (!cache || (now - cache.timestamp > PRICE_CACHE_TTL)) {
     const map = new Map<string, number>();
     const defaultPrice = getPriceForCategory(payer, category);
@@ -298,7 +265,6 @@ function getOptimizedPriceForPhone(payerId: string, payer: any, phone: string, c
     cache = { map, defaultPrice, timestamp: now };
     priceMapCache.set(payerId, cache);
   }
-
   const catPrefix = category.charAt(0) + '-';
   for (let i = 1; i <= 4; i++) {
     if (phone.length < i) break;
@@ -447,7 +413,6 @@ async function processCampaignChunk(data: any) {
 // ============================================================================
 
 async function metaSenderWorker(phone: string, variables: string[], tc: any, token: string, pnId: string, thf: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
-  
   let comps = buildCampaignComponents(thf, variables, tc.mediaUrl || "");
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   const url = `https://graph.facebook.com/v21.0/${pnId}/messages`;
@@ -455,18 +420,14 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
   let attempt = 0;
 
   while (attempt <= maxRetries) {
-    
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 30000);
-
     try {
-      
       const payload = JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } });
       const sendRes = await fetch(url, { method: "POST", headers, body: payload, signal: controller.signal });
       clearTimeout(timeoutId);
 
       if (sendRes.ok) {
-        
         let wamid: string | null = null;
         let data: any = null;
         try { data = await sendRes.json(); wamid = data?.messages?.[0]?.id || data?.message_id || null; }
@@ -484,7 +445,6 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
           if (errorCode === 132012 && comps.length > 0 && comps[0].type === "header") { comps = comps.filter((c: any) => c.type !== "header"); attempt++; continue; }
           return { status: "failed", error: errorMsg };
         }
-
         return { status: "failed", error: "Meta API returned 200 but no message ID" };
       }
 
@@ -504,23 +464,18 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
         if (attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000)); attempt++; continue; }
         return { status: "failed", error: `Retry limit reached: ${errorMsg}` };
       }
-
       return { status: "failed", error: errorMsg };
 
     } catch (err: any) {
-      
       clearTimeout(timeoutId);
-      
       if (err.name === 'AbortError') {
         if (attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000)); attempt++; continue; }
         return { status: "failed", error: "Meta API Timeout (30s)" };
       }
-      
       if (attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000)); attempt++; continue; }
       return { status: "failed", error: err.message || "System error" };
     }
   }
-  
   return { status: "failed", error: "Exited retry loop unexpectedly" };
 }
 
@@ -529,7 +484,6 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
 // ============================================================================
 
 async function generateCountsData(userId: string, page: number, limit: number, cacheKey: string, lockKey: string) {
-  
   try {
     await ensureDbConnected();
     const skip = (page - 1) * limit;
@@ -588,33 +542,6 @@ async function generateCountsData(userId: string, page: number, limit: number, c
     console.error("❌ Counts generation error:", error);
     await Cache.deleteOne({ key: lockKey }).catch(() => {});
     return { success: false, message: "Failed to generate counts" };
-  }
-}
-
-// ============================================================================
-// 7. REPORT WORKER
-// ============================================================================
-
-async function refreshReportCache(data: any) {
-  const { campaignId, userId, cacheKey, lockKey } = data;
-  try {
-    await ensureDbConnected();
-    const pipeline: any[] = [
-      { $match: { _id: new mongoose.Types.ObjectId(campaignId), userId: new mongoose.Types.ObjectId(userId) } },
-      { $lookup: { from: "messages", let: { camp_createdAt: "$createdAt", user_id: "$userId" }, pipeline: [ { $match: { $expr: { $and: [ { $eq: ["$userId", "$$user_id"] }, { $eq: ["$direction", "in"] }, { $gte: ["$createdAt", "$$camp_createdAt"] } ] } } }, { $project: { phone: 1, _id: 0 } } ], as: "inboundMsgs" } },
-      { $addFields: { repliedPhonesArr: { $map: { input: { $filter: { input: "$inboundMsgs", as: "msg", cond: { $ne: [{ $toString: { $ifNull: ["$$msg.phone", ""] } }, ""] } } }, as: "msg", in: { $toString: "$$msg.phone" } } } } },
-      { $project: { name: 1, templateName: 1, additionalFields: 1, languageCode: 1, totalDeducted: 1, mappedReportData: { $map: { input: { $ifNull: ["$reportData", []] }, as: "r", in: { $mergeObjects: [ "$$r", { _effStatus: { $switch: { branches: [ { case: { $or: [ { $ne: [ { $ifNull: ["$$r.reply", ""] }, "" ] }, { $gt: [ { $size: { $filter: { input: { $ifNull: ["$$r.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0 ] }, { $in: [{ $toString: { $ifNull: ["$$r.phone", ""] } }, "$repliedPhonesArr"] } ] }, then: "replied" }, { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "read"] }, then: "read" }, { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "delivered"] }, then: "delivered" }, { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "sent"] }, then: "sent" }, { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "failed"] }, then: "failed" }, { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "invalid"] }, then: "invalid" }, { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "duplicate"] }, then: "duplicate" } ], default: "pending" } } } ] } } } } },
-      { $project: { name: 1, templateName: 1, additionalFields: 1, languageCode: 1, totalDeducted: 1, campaignStats: { total: { $size: { $ifNull: ["$mappedReportData", []] } }, replied: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "replied"] } } } }, read: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "read"] } } } }, delivered: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "delivered"] } } } }, sent: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "sent"] } } } }, failed: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effeffStatus", "failed"] } } } }, invalid: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "invalid"] } } } }, duplicate: { $size: { $filter: { input: "$mappedReportData", as: "r", cond: { $eq: ["$$r._effStatus", "duplicate"] } } } } } } }
-    ];
-    const result = await Campaign.aggregate(pipeline);
-    if (!result || result.length === 0) return { success: false, message: "Campaign not found", status: 404 };
-    const campaign = result[0];
-    await Cache.updateOne({ key: cacheKey }, { $set: { value: JSON.stringify({ stats: campaign.campaignStats, data: campaign.mappedReportData, meta: { name: campaign.name, templateName: campaign.templateName, additionalFields: campaign.additionalFields, languageCode: campaign.languageCode, totalDeducted: campaign.totalDeducted } }), expireAt: new Date(Date.now() + 3600 * 1000) } }, { upsert: true });
-    await Cache.deleteOne({ key: lockKey }).catch(() => {});
-    return { success: true };
-  } catch (error: any) {
-    console.error("❌ Report Worker Error:", error);
-    return { success: false, message: error.message, status: 500 };
   }
 }
 
