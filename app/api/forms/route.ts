@@ -8,12 +8,16 @@ import { checkLimit, incrementUsage } from "@/lib/limits";
 
 export async function GET() {
   try {
-    await connectDB();
-    const session = await getServerSession(authOptions);
+    // ✅ Run DB connection and session check in parallel
+    const [, session] = await Promise.all([
+      connectDB(),
+      getServerSession(authOptions)
+    ]);
     const userId = session?.user?.id;
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const forms = await Form.find({ userId }).sort({ createdAt: -1 });
+    // ✅ Use .lean() for faster query and lower memory usage
+    const forms = await Form.find({ userId }).sort({ createdAt: -1 }).lean();
     return NextResponse.json({ forms });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -22,8 +26,11 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    await connectDB();
-    const session = await getServerSession(authOptions);
+    // ✅ Run DB connection and session check in parallel
+    const [, session] = await Promise.all([
+      connectDB(),
+      getServerSession(authOptions)
+    ]);
     const userId = session?.user?.id;
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -56,16 +63,16 @@ export async function POST(req: Request) {
 
     const form = await Form.create({
       userId,
-      tenantId, // ✅ ATTACH TENANT ID FOR AGGREGATED VIEWS
-      createdBy: userId, // ✅ TRACK WHO CREATED IT
+      tenantId, 
+      createdBy: userId, 
       name,
       fields,
       completionMessage: completionMessage || "✅ Thank you! Your form has been submitted successfully.",
       abandonmentMessage: abandonmentMessage || "It seems you are busy right now. We have paused the form. Click the button below whenever you are ready to start over.",
     });
 
-    // ✅ INCREMENT USAGE AFTER SUCCESSFUL CREATION
-    await incrementUsage(userId, "forms");
+    // ✅ Fire-and-forget usage increment (don't block the API response)
+    incrementUsage(userId, "forms").catch(() => {});
 
     return NextResponse.json({ success: true, form });
   } catch (error: any) {
