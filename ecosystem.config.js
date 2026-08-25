@@ -9,9 +9,7 @@ module.exports = {
       exec_mode: "fork",
       autorestart: true,
       max_memory_restart: "1G",
-      env: {
-        NODE_ENV: "production"
-      }
+      env: { NODE_ENV: "production" }
     },
     {
       name: "main-worker",
@@ -22,9 +20,7 @@ module.exports = {
       exec_mode: "fork",
       autorestart: true,
       max_memory_restart: "1G",
-      env: {
-        NODE_ENV: "production"
-      }
+      env: { NODE_ENV: "production" }
     },
     {
       name: "stats-worker",
@@ -35,9 +31,29 @@ module.exports = {
       exec_mode: "fork",
       autorestart: true,
       max_memory_restart: "1G",
-      env: {
-        NODE_ENV: "production"
-      }
+      env: { NODE_ENV: "production" }
+    },
+    {
+      name: "sheet-worker",
+      cwd: __dirname,
+      script: "npx",
+      args: "tsx workers/sheetWorker.ts",
+      instances: 1,
+      exec_mode: "fork",
+      autorestart: true,
+      max_memory_restart: "1G",
+      env: { NODE_ENV: "production" }
+    },
+    {
+      name: "report-worker",
+      cwd: __dirname,
+      script: "npx",
+      args: "tsx workers/reportWorker.ts",
+      instances: 1,
+      exec_mode: "fork",
+      autorestart: true,
+      max_memory_restart: "1G",
+      env: { NODE_ENV: "production" }
     }
   ]
 };
