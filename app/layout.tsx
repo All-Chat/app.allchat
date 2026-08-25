@@ -4,6 +4,7 @@ import "./globals.css";
 import Navbar from "@/components/Navbar";
 import Providers from "@/components/Providers";
 import BrandManager from "@/components/BrandManager"; // ✅ ADDED
+import Chatbot from "@/components/Chatbot"; // ✅ ADDED Chatbot import
 
 import { startInternalScheduler } from "@/lib/scheduler";
 
@@ -12,7 +13,7 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: "All Chat CRM - WhatsApp Automation",
   description: "Automate WhatsApp Marketing with AI Powered CRM",
-    icons: {
+  icons: {
     icon: "/icon.png",
     apple: "/icon.png",
   },
@@ -34,6 +35,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <BrandManager /> {/* ✅ ADDED */}
           <Navbar />
           {children}
+          <Chatbot /> {/* ✅ ADDED Chatbot component here */}
         </Providers>
       </body>
     </html>
