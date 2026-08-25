@@ -150,9 +150,8 @@ export default function DashboardPage() {
     totalCampaigns: 0,
   });
   const [campaignsData, setCampaignsData] = useState<any[]>([]);
-const [phoneDetails, setPhoneDetails] = useState<any>(null);
-const [phoneStatusLoaded, setPhoneStatusLoaded] = useState(false);
-const [phoneStatusLoading, setPhoneStatusLoading] = useState(false);
+  const [phoneDetails, setPhoneDetails] = useState<any>(null);
+
   const [billingData, setBillingData] = useState({
     balance: 0,
     totalRecharged: 0,
@@ -171,57 +170,35 @@ const [phoneStatusLoading, setPhoneStatusLoading] = useState(false);
     }
   };
 
-const fetchDashboardStats = async () => {
-  try {
-    // ✅ Skip phone fetch on dashboard load - phone status loads on demand
-    const res = await fetch("/api/dashboard/stats?skipPhone=true", {
-      cache: "no-store",
-    });
-    const data = await res.json();
-    if (res.status === 401) return;
-    if (data.success) {
-      setStatsData({
-        totalChats: data.totalChats,
-        totalWorkflows: data.totalWorkflows,
-        totalCampaigns: data.totalCampaigns,
-      });
-      setCampaignsData(data.campaigns);
-      // ✅ Do NOT overwrite phoneDetails - it loads only on button click
-
-      if (data.billing) {
-        setBillingData({
-          balance: data.billing.balance || 0,
-          totalRecharged: data.billing.totalRecharged || 0,
-          totalSpent: data.billing.totalSpent || 0,
-          canSendMessage: data.billing.canSendMessage !== false,
+  const fetchDashboardStats = async () => {
+    try {
+      const res = await fetch("/api/dashboard/stats", { cache: "no-store" });
+      const data = await res.json();
+      if (res.status === 401) return;
+      if (data.success) {
+        setStatsData({
+          totalChats: data.totalChats,
+          totalWorkflows: data.totalWorkflows,
+          totalCampaigns: data.totalCampaigns,
         });
-      }
-    }
-  } catch (error) {
-    console.error(error);
-  } finally {
-    setLoading(false);
-  }
-};
+        setCampaignsData(data.campaigns);
+        setPhoneDetails(data.phoneDetails);
 
-// ✅ New function: Load phone status ONLY on button click
-const loadPhoneStatus = async () => {
-  setPhoneStatusLoading(true);
-  try {
-    const res = await fetch("/api/dashboard/stats?phoneOnly=true", {
-      cache: "no-store",
-    });
-    const data = await res.json();
-    if (data.success) {
-      setPhoneDetails(data.phoneDetails);
-      setPhoneStatusLoaded(true);
+        if (data.billing) {
+          setBillingData({
+            balance: data.billing.balance || 0,
+            totalRecharged: data.billing.totalRecharged || 0,
+            totalSpent: data.billing.totalSpent || 0,
+            canSendMessage: data.billing.canSendMessage !== false,
+          });
+        }
+      }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setLoading(false);
     }
-  } catch (error) {
-    console.error(error);
-  } finally {
-    setPhoneStatusLoading(false);
-  }
-};
+  };
 
   useEffect(() => {
     if (status === "authenticated") {
@@ -333,123 +310,87 @@ const loadPhoneStatus = async () => {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8">
             
             {/* WHATSAPP NUMBER STATUS CARD */}
-<div className="relative overflow-hidden bg-white border border-gray-200 rounded-2xl shadow-sm">
-  <div className="p-4 sm:p-6">
-    {/* ✅ Header remains fully visible */}
-    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-4">
-      <div className="flex items-center gap-3">
-        <div className="p-2.5 rounded-xl bg-emerald-100">
-          <Phone className="w-5 h-5 text-emerald-600" />
-        </div>
-        <div>
-          <h2 className="font-bold text-gray-900 text-sm sm:text-base">WhatsApp Number Status</h2>
-          <p className="text-[11px] sm:text-xs text-gray-500">
-            {phoneStatusLoaded && phoneDetails ? (
-              <>
-                {phoneDetails.displayPhoneNumber} <span className="text-gray-400 mx-1">•</span> {phoneDetails.verifiedName}
-              </>
-            ) : "Click load to fetch live status"}
-          </p>
-        </div>
-      </div>
-    </div>
+            <div className="relative overflow-hidden bg-white border border-gray-200 rounded-2xl shadow-sm">
+              <div className="p-4 sm:p-6">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 rounded-xl bg-emerald-100">
+                      <Phone className="w-5 h-5 text-emerald-600" />
+                    </div>
+                    <div>
+                      <h2 className="font-bold text-gray-900 text-sm sm:text-base">WhatsApp Number Status</h2>
+                      <p className="text-[11px] sm:text-xs text-gray-500">
+                        {phoneDetails ? (
+                          <>
+                            {phoneDetails.displayPhoneNumber} <span className="text-gray-400 mx-1">•</span> {phoneDetails.verifiedName}
+                          </>
+                        ) : "Loading number details..."}
+                      </p>
+                    </div>
+                  </div>
+                </div>
 
-    {/* ✅ Wrapper for Stats Grid + Overlay */}
-    <div className="relative">
-      {/* Render the stats grid - shown behind overlay until loaded */}
-      <div className={`grid grid-cols-2 gap-3 sm:gap-4 transition-opacity duration-300 ${
-        phoneStatusLoaded ? "opacity-100" : "opacity-40"
-      }`}>
-        {/* Status */}
-        <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
-          <Activity size={16} className={
-            phoneDetails?.status === "CONNECTED" ? "text-emerald-500" :
-            phoneDetails?.status === "DISCONNECTED" ? "text-gray-400" :
-            phoneDetails ? "text-red-500" : "text-gray-300"
-          } />
-          <div>
-            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Status</p>
-            <p className={`text-xs font-bold ${
-              phoneDetails?.status === "CONNECTED" ? "text-emerald-700" :
-              phoneDetails?.status === "DISCONNECTED" ? "text-gray-600" :
-              phoneDetails ? "text-red-700" : "text-gray-400"
-            }`}>
-              {phoneDetails?.status || "—"}
-            </p>
-          </div>
-        </div>
+                {phoneDetails ? (
+                  <div className="grid grid-cols-2 gap-3 sm:gap-4">
+                    <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
+                      <Activity size={16} className={
+                        phoneDetails.status === "CONNECTED" ? "text-emerald-500" : 
+                        phoneDetails.status === "DISCONNECTED" ? "text-gray-400" : "text-red-500"
+                      } />
+                      <div>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Status</p>
+                        <p className={`text-xs font-bold ${
+                          phoneDetails.status === "CONNECTED" ? "text-emerald-700" : 
+                          phoneDetails.status === "DISCONNECTED" ? "text-gray-600" : "text-red-700"
+                        }`}>
+                          {phoneDetails.status}
+                        </p>
+                      </div>
+                    </div>
 
-        {/* Quality Score */}
-        <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
-          <Gauge size={16} className={
-            phoneDetails?.qualityRating === "GREEN" || phoneDetails?.qualityRating === "HIGH" ? "text-emerald-500" :
-            phoneDetails?.qualityRating === "YELLOW" || phoneDetails?.qualityRating === "MEDIUM" ? "text-amber-500" :
-            phoneDetails?.qualityRating === "RED" || phoneDetails?.qualityRating === "LOW" ? "text-red-500" :
-            "text-gray-300"
-          } />
-          <div>
-            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Quality Score</p>
-            <p className={`text-xs font-bold ${
-              phoneDetails?.qualityRating === "GREEN" || phoneDetails?.qualityRating === "HIGH" ? "text-emerald-700" :
-              phoneDetails?.qualityRating === "YELLOW" || phoneDetails?.qualityRating === "MEDIUM" ? "text-amber-700" :
-              phoneDetails?.qualityRating === "RED" || phoneDetails?.qualityRating === "LOW" ? "text-red-700" :
-              "text-gray-400"
-            }`}>
-              {phoneDetails?.qualityRating || "—"}
-            </p>
-          </div>
-        </div>
+                    <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
+                      <Gauge size={16} className={
+                        phoneDetails.qualityRating === "GREEN" || phoneDetails.qualityRating === "HIGH" ? "text-emerald-500" :
+                        phoneDetails.qualityRating === "YELLOW" || phoneDetails.qualityRating === "MEDIUM" ? "text-amber-500" :
+                        phoneDetails.qualityRating === "RED" || phoneDetails.qualityRating === "LOW" ? "text-red-500" : "text-gray-400"
+                      } />
+                      <div>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Quality Score</p>
+                        <p className={`text-xs font-bold ${
+                          phoneDetails.qualityRating === "GREEN" || phoneDetails.qualityRating === "HIGH" ? "text-emerald-700" :
+                          phoneDetails.qualityRating === "YELLOW" || phoneDetails.qualityRating === "MEDIUM" ? "text-amber-700" :
+                          phoneDetails.qualityRating === "RED" || phoneDetails.qualityRating === "LOW" ? "text-red-700" : "text-gray-700"
+                        }`}>
+                          {phoneDetails.qualityRating}
+                        </p>
+                      </div>
+                    </div>
 
-        {/* Msg Limit */}
-        <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
-          <Send size={16} className="text-blue-500" />
-          <div>
-            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Msg Limit</p>
-            <p className="text-xs font-bold text-blue-700">
-              {phoneDetails ? formatTier(phoneDetails.messagingLimitTier) : "—"}
-            </p>
-          </div>
-        </div>
+                    <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
+                      <Send size={16} className="text-blue-500" />
+                      <div>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Msg Limit</p>
+                        <p className="text-xs font-bold text-blue-700">{formatTier(phoneDetails.messagingLimitTier)}</p>
+                      </div>
+                    </div>
 
-        {/* Two-Factor Auth */}
-        <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
-          <ShieldCheck size={16} className={phoneDetails?.twoFactorEnabled === true ? "text-emerald-500" : "text-gray-300"} />
-          <div>
-            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Two-Factor Auth</p>
-            <p className={`text-xs font-bold ${phoneDetails?.twoFactorEnabled === true ? "text-emerald-700" : "text-gray-400"}`}>
-              {!phoneDetails ? "—" :
-                phoneDetails.twoFactorEnabled === true ? "Enabled" :
-                phoneDetails.twoFactorEnabled === false ? "Disabled" : "N/A"}
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* ✅ Very light blurred overlay - text is still visible behind it */}
-      {!phoneStatusLoaded && (
-        <div className="absolute inset-0 bg-white/20 backdrop-blur-sm flex items-center justify-center z-10 rounded-xl">
-          <button
-            onClick={loadPhoneStatus}
-            disabled={phoneStatusLoading}
-            className="px-6 py-2.5 bg-white text-gray-900 rounded-xl font-bold text-sm shadow-xl hover:bg-gray-50 hover:scale-105 transition-all flex items-center gap-2 disabled:opacity-60 disabled:hover:scale-100"
-          >
-            {phoneStatusLoading ? (
-              <>
-                <Loader2 size={16} className="animate-spin" />
-                Loading Status...
-              </>
-            ) : (
-              <>
-                <RefreshCw size={16} className="text-emerald-600" />
-                Load Status
-              </>
-            )}
-          </button>
-        </div>
-      )}
-    </div>
-  </div>
-</div>
+                    <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
+                      <ShieldCheck size={16} className={phoneDetails.twoFactorEnabled === true ? "text-emerald-500" : "text-gray-400"} />
+                      <div>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Two-Factor Auth</p>
+                        <p className={`text-xs font-bold ${phoneDetails.twoFactorEnabled === true ? "text-emerald-700" : "text-gray-700"}`}>
+                          {phoneDetails.twoFactorEnabled === true ? "Enabled" : phoneDetails.twoFactorEnabled === false ? "Disabled" : "N/A"}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex justify-center items-center py-4 text-gray-400 text-xs">
+                    <Loader2 size={14} className="animate-spin mr-2" /> Fetching live data from Meta...
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* BILLING OVERVIEW CARD */}
             <div className="relative overflow-hidden bg-white border border-gray-200 rounded-2xl shadow-sm">
