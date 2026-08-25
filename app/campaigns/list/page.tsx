@@ -151,9 +151,6 @@ const getCategoryColor = (category: any) => {
 
 /* =========================================================
    COMPUTE STATS
-   ✅ FIX: Pending now recalculated correctly
-   - Includes ALL processed statuses (replied + read + delivered + sent + failed + invalid + duplicate)
-   - Same calculation as Reports page
 ========================================================= */
 
 type ComputedStats = LiveStats & {
@@ -173,14 +170,9 @@ const getCampaignStats = (campaign: Campaign): ComputedStats => {
   const duplicate = Number(ls.duplicate || 0);
   const total = Number(ls.total || campaign.totalMessages || 0);
 
-  // Delivered = sent + delivered + read + replied (all successful)
   const deliveredCombined = sent + delivered + read + replied;
-
-  // Failed = invalid + failed + duplicate
   const failedCombined = failed + invalid + duplicate;
 
-  // ✅ FIX: Recalculate pending (same as Reports page)
-  // Include ALL processed statuses including replied
   const totalProcessed = replied + read + delivered + sent + failed + invalid + duplicate;
   const pendingCount = Math.max(0, total - totalProcessed);
 
@@ -280,16 +272,13 @@ export default function CampaignList() {
 
   /* -------------------- EFFECTS -------------------- */
 
-  // Initial load + auto-refresh every 5 seconds
+  // Initial load (NO AUTO-REFRESH)
   useEffect(() => {
     if (status === "authenticated") {
       loadCampaigns();
       fetchBilling();
       fetchPricing();
-      const interval = setInterval(() => {
-        loadCampaigns();
-      }, 5000);
-      return () => clearInterval(interval);
+      // REMOVED: setInterval. Data is fetched only on initial load and button click.
     }
     if (status === "unauthenticated") {
       router.push("/");
@@ -318,15 +307,11 @@ export default function CampaignList() {
     return () => clearInterval(timerInterval);
   }, [campaigns]);
 
-  // ✅ FIX: Auto-sync viewCampaign with updated campaigns data
-  // When campaigns refresh every 5 seconds, this updates the modal
-  // with the latest stats, status, totalDeducted — even after completion
   useEffect(() => {
     if (!viewCampaign?._id) return;
     const updated = campaigns.find((c) => c._id === viewCampaign._id);
     if (!updated) return;
 
-    // Only update if there's actually new data
     const oldStats = JSON.stringify(viewCampaign.liveStats);
     const newStats = JSON.stringify(updated.liveStats);
     const hasChanges =
@@ -638,7 +623,6 @@ export default function CampaignList() {
               {(() => {
                 const stats = getCampaignStats(viewCampaign);
 
-                // ✅ FIX: Use actual totalDeducted from DB (not calculated)
                 const currentPrice = Number(viewCampaign.currentPrice || viewCampaign.pricePerMessage || 0);
                 const amountSpent = Number(viewCampaign.totalDeducted || 0);
 
@@ -693,7 +677,7 @@ export default function CampaignList() {
 
                     </div>
 
-                    {/* Amount Deducted — uses actual totalDeducted from DB */}
+                    {/* Amount Deducted */}
                     {amountSpent > 0 && (
                       <div className="bg-gradient-to-r from-blue-50 to-cyan-50 px-4 py-3 rounded-xl border border-blue-100 flex items-center justify-between">
                         <div className="flex items-center gap-2">
@@ -921,6 +905,14 @@ export default function CampaignList() {
               />
             </div>
             <div className="flex items-center gap-2">
+              {/* Load Status Button */}
+              <button 
+                onClick={() => loadCampaigns()}
+                className="px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-bold hover:bg-emerald-100 transition-colors flex items-center gap-2 whitespace-nowrap"
+              >
+                <Loader2 size={14} /> Load Latest Status
+              </button>
+
               <Filter size={14} className="text-slate-400 hidden sm:block" />
               <select
                 value={statusFilter}
@@ -963,8 +955,6 @@ export default function CampaignList() {
                   ? Math.round((completedCount / totalCount) * 100)
                   : 0;
 
-                // ✅ FIX: If pending is 0 and status is running/paused → show "completed"
-                // Also default to "saved" if status is undefined (prevents toUpperCase crash)
                 const displayStatus =
                   (pendingCount === 0 && totalCount > 0 && (c.status === "running" || c.status === "paused"))
                     ? "completed"
@@ -973,7 +963,6 @@ export default function CampaignList() {
                 const cfg = statusConfig[displayStatus] || statusConfig.saved;
                 const isCompleted = displayStatus === "completed" || displayStatus === "failed";
 
-                // ✅ FIX: Use actual totalDeducted from DB (not calculated)
                 const currentPrice = Number(c.currentPrice || c.pricePerMessage || 0);
                 const amountSpent = Number(c.totalDeducted || 0);
 
@@ -1162,7 +1151,7 @@ export default function CampaignList() {
 
                     </div>
 
-                    {/* ✅ FIX: Amount Deducted — uses actual totalDeducted from DB */}
+                    {/* Amount Deducted */}
                     {amountSpent > 0 && (
                       <div className="mt-3 flex items-center gap-2 text-xs">
                         <Wallet size={12} className="text-blue-500" />
