@@ -162,8 +162,6 @@ export default function ReportsPage() {
   const [reportData, setReportData] = useState<ReportItem[]>([]);
   const [loadingReport, setLoadingReport] = useState(false);
 
-  // ✅ FIX: Track which campaign the stats belong to + cache per campaign
-  // Prevents flash AND prevents stats from changing when switching tabs
   const [campaignStats, setCampaignStats] = useState<any>({});
   const [campaignStatsCampaignId, setCampaignStatsCampaignId] = useState<string | null>(null);
   const [campaignStatsCache, setCampaignStatsCache] = useState<Record<string, any>>({});
@@ -187,7 +185,6 @@ export default function ReportsPage() {
   const [reportCurrentPage, setReportCurrentPage] = useState(1);
   const [reportTotalPages, setReportTotalPages] = useState(1);
 
-  // ✅ State for hidden report actions
   const [hiddenActions, setHiddenActions] = useState<string[]>([]);
 
   const fetchReportController = useRef<AbortController | null>(null);
@@ -211,14 +208,7 @@ export default function ReportsPage() {
     return [];
   };
 
-  // ✅ FIX: getCampaignStats — 4-tier priority system
-  // 1. Fresh campaignStats (if belongs to THIS campaign)
-  // 2. Cached campaignStats (from when this campaign was viewed before)
-  // 3. liveStats fallback (for campaigns never viewed)
-  // 4. Default fallback
-  // This prevents BOTH flash AND stats changing when switching tabs
   const getCampaignStats = (c: Campaign): LiveStats => {
-    // Helper: build LiveStats from any stats object
     const buildStats = (cs: any): LiveStats => {
       const processed =
         Number(cs.replied || 0) +
@@ -241,7 +231,6 @@ export default function ReportsPage() {
       };
     };
 
-    // Priority 1: Fresh campaignStats (only for the currently-selected campaign)
     if (
       c._id === selectedId &&
       c._id === campaignStatsCampaignId &&
@@ -251,14 +240,11 @@ export default function ReportsPage() {
       return buildStats(campaignStats);
     }
 
-    // Priority 2: Cached campaignStats (from when this campaign was viewed before)
-    // ✅ This prevents stats from changing when switching to another tab
     const cached = campaignStatsCache[c._id];
     if (cached && (cached.total || 0) > 0) {
       return buildStats(cached);
     }
 
-    // Priority 3: liveStats fallback (for campaigns never viewed before)
     if (c.liveStats) {
       const ls = c.liveStats;
       const processed =
@@ -275,7 +261,6 @@ export default function ReportsPage() {
       };
     }
 
-    // Priority 4: Default fallback
     return {
       total: c.totalMessages || 0,
       replied: 0, read: 0, delivered: 0,
@@ -313,7 +298,6 @@ export default function ReportsPage() {
 
   /* -------------------- EFFECTS -------------------- */
 
-  // Initial load
   useEffect(() => {
     if (status === "authenticated") {
       fetchCampaigns();
@@ -325,14 +309,12 @@ export default function ReportsPage() {
     }
   }, [status]);
 
-  // Fetch report when selected campaign changes
   useEffect(() => {
     if (!selectedId) return;
     fetchReportData(selectedId, 1);
     fetchReplies(selectedId);
   }, [selectedId]);
 
-  // Refetch when filters change
   useEffect(() => {
     if (selectedId) {
       fetchReportData(selectedId, 1);
@@ -343,7 +325,6 @@ export default function ReportsPage() {
   const sheetUrl = selectedCamp?.sheetUrl || null;
   const standaloneSheetUrl = selectedCamp?.standaloneSheetUrl || null;
 
-  // Auto-sync shared sheet
   useEffect(() => {
     if (!sheetUrl || !selectedId) return;
     const interval = setInterval(() => {
@@ -352,7 +333,6 @@ export default function ReportsPage() {
     return () => clearInterval(interval);
   }, [sheetUrl, selectedId]);
 
-  // Auto-sync standalone sheet
   useEffect(() => {
     if (!standaloneSheetUrl || !selectedId) return;
     const interval = setInterval(() => {
@@ -484,7 +464,6 @@ export default function ReportsPage() {
         setReportTotalPages(data.totalPages || 1);
         setCampaignStats(data.campaignStats || {});
         setCampaignStatsCampaignId(id);
-        // ✅ FIX: Cache stats for this campaign so they don't change when switching tabs
         setCampaignStatsCache((prev) => ({ ...prev, [id]: data.campaignStats || {} }));
       } else {
         setReportData([]);
@@ -525,8 +504,6 @@ export default function ReportsPage() {
 
   /* -------------------- BRIEF STATS CALCULATION -------------------- */
 
-  // ✅ FIX: Use fresh stats → cached stats → liveStats (same priority as sidebar)
-  // This prevents flash AND prevents stats from changing when switching tabs
   const selectedCampData = campaigns.find((c) => c._id === selectedId);
   const useCampaignStats =
     selectedId === campaignStatsCampaignId && campaignStats && (campaignStats.total || 0) > 0
@@ -544,7 +521,6 @@ export default function ReportsPage() {
   const invalidCount = useCampaignStats.invalid || 0;
   const duplicateCount = useCampaignStats.duplicate || 0;
 
-  // ✅ FIX: Calculate pending — include ALL processed statuses
   const totalProcessed =
     repliedCount + readCount + deliveredCount + sentOnlyCount +
     failedCount + invalidCount + duplicateCount;
@@ -766,10 +742,6 @@ export default function ReportsPage() {
     <div className="min-h-screen bg-slate-50 text-gray-900">
       <Sidebar />
 
-      {/* ===================================================== *
-          BRIEF REPORT MODAL
-       * ===================================================== */}
-
       {isBriefOpen && (
         <div
           className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
@@ -779,7 +751,6 @@ export default function ReportsPage() {
             className="bg-white rounded-3xl w-full max-w-4xl shadow-2xl overflow-hidden flex flex-col border border-slate-100 max-h-[90vh]"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header */}
             <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-4 sm:p-5 text-slate-800 relative shrink-0 border-b border-indigo-100">
               <button
                 onClick={() => setIsBriefOpen(false)}
@@ -802,9 +773,7 @@ export default function ReportsPage() {
               </div>
             </div>
 
-            {/* Modal Body */}
             <div className="p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 overflow-y-auto flex-1">
-              {/* Left: Summary + Breakdown */}
               <div className="flex flex-col gap-4">
                 <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 shrink-0">
                   <p className="text-xs text-slate-600 leading-relaxed">
@@ -845,7 +814,6 @@ export default function ReportsPage() {
                 </div>
               </div>
 
-              {/* Right: Exact Numbers */}
               <div className="flex flex-col gap-2 border-t lg:border-t-0 lg:border-l border-slate-200 lg:pl-6 pt-4 lg:pt-0">
                 <h3 className="text-[11px] font-extrabold text-slate-500 uppercase tracking-widest mb-2 shrink-0">
                   Exact Numbers
@@ -879,32 +847,24 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {/* ===================================================== *
-          MAIN LAYOUT
-       * ===================================================== */}
-
       <div className="md:ml-64 flex h-screen overflow-hidden">
-        {/* ---------- Campaign List Sidebar ---------- */}
         <div
           className={`w-full md:w-80 bg-white md:border-r border-slate-200 flex flex-col shadow-sm flex-shrink-0 ${
             showCampaignList ? "flex" : "hidden md:flex"
           }`}
         >
-          {/* Mobile Header */}
           <div className="md:hidden h-14 bg-[#f0f2f5] flex items-center px-4 border-b border-slate-200 flex-shrink-0">
             <span className="font-bold text-gray-800 text-lg tracking-tight flex-1">
               Reports
             </span>
           </div>
 
-          {/* Desktop Header */}
           <div className="hidden md:block p-4 border-b border-slate-100 bg-slate-50">
             <h2 className="font-bold text-slate-800 flex items-center gap-2">
               <BarChart3 size={16} /> Campaign Reports
             </h2>
           </div>
 
-          {/* Campaign List */}
           <div className="flex-1 overflow-y-auto">
             {campaigns.length === 0 ? (
               <p className="p-4 text-sm text-slate-400 text-center">
@@ -923,7 +883,6 @@ export default function ReportsPage() {
                         : "hover:bg-slate-50 border-l-4 border-l-transparent"
                     }`}
                   >
-                    {/* Campaign Name + Status */}
                     <div className="flex items-center justify-between gap-2 mb-1">
                       <p className="font-semibold text-sm truncate flex-1">
                         {c.name}
@@ -943,7 +902,6 @@ export default function ReportsPage() {
                       </span>
                     </div>
 
-                    {/* Stats Badges */}
                     <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px]">
                       {stats.replied > 0 && (
                         <span className="flex items-center gap-1 text-indigo-600 font-medium">
@@ -988,7 +946,6 @@ export default function ReportsPage() {
           </div>
         </div>
 
-        {/* ---------- Report Content ---------- */}
         <div
           className={`flex-1 flex flex-col bg-slate-50 overflow-hidden ${
             !showCampaignList ? "flex" : "hidden md:flex"
@@ -1003,9 +960,7 @@ export default function ReportsPage() {
             </div>
           ) : (
             <>
-              {/* ---------- Header (Symmetrical) ---------- */}
               <div className="bg-white border-b border-slate-200 shadow-sm shrink-0">
-                {/* Row 1: Campaign name + Actions */}
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 px-4 sm:px-6 pt-4">
                   <div className="flex items-center gap-2 w-full sm:w-auto min-w-0">
                     <button
@@ -1087,7 +1042,6 @@ export default function ReportsPage() {
                   </div>
                 </div>
 
-                {/* Row 2: Template info + Sheet links */}
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 px-4 sm:px-6 pb-3 pt-2">
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
                     <span>
@@ -1128,9 +1082,7 @@ export default function ReportsPage() {
                 </div>
               </div>
 
-              {/* ---------- Report Body ---------- */}
               <div className="flex-1 overflow-y-auto overflow-x-auto p-4 sm:p-6 space-y-4">
-                {/* Filter Pills */}
                 <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
                   <div>
                     <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest flex items-center gap-2 mb-2">
@@ -1146,7 +1098,6 @@ export default function ReportsPage() {
                   </div>
                 </div>
 
-                {/* Report Table */}
                 <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden min-w-[640px]">
                   {loadingReport ? (
                     <div className="flex justify-center items-center h-64">
@@ -1244,7 +1195,6 @@ export default function ReportsPage() {
                   )}
                 </div>
 
-                {/* Pagination */}
                 {reportTotalPages > 1 && (
                   <div className="flex justify-center items-center gap-4 mt-8">
                     <button
@@ -1271,10 +1221,6 @@ export default function ReportsPage() {
           )}
         </div>
       </div>
-
-      {/* ===================================================== *
-          AUDIENCE DETAILS MODAL
-       * ===================================================== */}
 
       {isModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
