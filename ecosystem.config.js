@@ -18,7 +18,7 @@ module.exports = {
       cwd: __dirname,
       script: "npx",
       args: "tsx workers/mainWorker.ts",
-      instances: 1,
+      instances: 1, // Keep 1 for now. The internal loop handles concurrency.
       exec_mode: "fork",
       autorestart: true,
       max_memory_restart: "1G",
