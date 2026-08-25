@@ -4,7 +4,7 @@ import { connectDB } from "@/lib/mongodb";
 import Campaign from "@/models/Campaign";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { statsQueue } from "@/lib/queue"; // ✅ Added statsQueue
+import { statsQueue, reportQueue, Cache } from "@/lib/queue"; // ✅ Added queues & cache
 import mongoose from "mongoose";
 
 function normalizePhoneExpr(phoneFieldExpr: any) {
@@ -101,7 +101,6 @@ export async function GET(req: Request) {
           additionalFields: 1,
           sheetUrl: 1, 
           standaloneSheetUrl: 1,
-          // ✅ Added missing fields required by the List Page card to update UI
           liveStats: 1,
           status: 1,
           totalDeducted: 1,
@@ -109,7 +108,6 @@ export async function GET(req: Request) {
           failedCount: 1,
           currentPrice: 1,
           pricePerMessage: 1,
-          // ✅ Only fetch 15 elements for instant loading
           phoneNumbers: { $slice: 15 },
           names: { $slice: 15 },
           additionalFieldsData: { $slice: 15 }
@@ -181,7 +179,7 @@ export async function GET(req: Request) {
     }
 
     // ==========================================
-    // 5. SINGLE CAMPAIGN REPORT MODE
+    // 5. SINGLE CAMPAIGN REPORT MODE (FAST CACHE)
     // ==========================================
     if (campaignId) {
       const limit = 50;
@@ -192,6 +190,59 @@ export async function GET(req: Request) {
       const filterOut = searchParams.get("filterOut")?.split(",").filter(Boolean) || [];
       const search = searchParams.get("search") || "";
 
+      // 1. Check Cache First
+      const cacheKey = `report:${userId}:${campaignId}`;
+      const lockKey = `lock:${cacheKey}`;
+      const cachedDoc = await Cache.findOne({ key: cacheKey }).lean();
+      
+      if (cachedDoc && cachedDoc.value) {
+        // Cache hit! Apply filters in memory (Super fast)
+        const cachedData = JSON.parse(cachedDoc.value);
+        let filteredData = cachedData.data || [];
+
+        if (search) {
+          const searchLower = search.toLowerCase();
+          filteredData = filteredData.filter((r: any) => 
+            (r.phone && String(r.phone).includes(search)) || 
+            (r.name && String(r.name).toLowerCase().includes(searchLower))
+          );
+        }
+        if (showOnly.length > 0) {
+          filteredData = filteredData.filter((r: any) => showOnly.includes(r.status));
+        }
+        if (filterOut.length > 0) {
+          filteredData = filteredData.filter((r: any) => !filterOut.includes(r.status));
+        }
+
+        const totalPages = Math.max(1, Math.ceil(filteredData.length / limit));
+        const paginatedData = isDownload ? filteredData : filteredData.slice(skip, skip + limit);
+
+        return NextResponse.json({
+          success: true,
+          campaigns: [{
+            ...cachedData.meta,
+            reportData: paginatedData,
+            campaignStats: cachedData.stats
+          }],
+          currentPage: page,
+          totalPages: totalPages,
+          campaignStats: cachedData.stats,
+          fromCache: true
+        });
+      }
+
+      // 2. Cache Miss: Queue the report worker to generate it in background
+      try {
+        const existingLock = await Cache.findOne({ key: lockKey }).lean();
+        if (!existingLock) {
+          await Cache.updateOne({ key: lockKey }, { $set: { value: "1", expireAt: new Date(Date.now() + 30000) } }, { upsert: true });
+          await reportQueue.add('refresh-report-cache', { campaignId, userId, cacheKey, lockKey });
+        }
+      } catch (e) {
+        console.error("Failed to queue report cache:", e);
+      }
+
+      // 3. Fallback: Run live aggregation ONCE so the user isn't stuck waiting
       const isRepliedExpr = {
         $or: [
           { $ne: [{ $ifNull: ["$$r.reply", ""] }, ""] },
@@ -439,7 +490,7 @@ export async function GET(req: Request) {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select("-reportData")
+        .select("-reportData") 
         .lean(),
       Campaign.countDocuments({ userId: new mongoose.Types.ObjectId(userId) }),
     ]);
