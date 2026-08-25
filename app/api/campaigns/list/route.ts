@@ -4,6 +4,7 @@ import { connectDB } from "@/lib/mongodb";
 import Campaign from "@/models/Campaign";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { statsQueue } from "@/lib/queue"; // ✅ Added statsQueue
 import mongoose from "mongoose";
 
 function normalizePhoneExpr(phoneFieldExpr: any) {
@@ -60,10 +61,25 @@ export async function GET(req: Request) {
     const isDownload = searchParams.get("download") === "true"; 
 
     // ==========================================
-    // ✅ 1. FAST VIEW MODAL (Limits to 15 numbers)
+    // ✅ 1. FAST VIEW MODAL & LOAD STATUS BUTTON
     // ==========================================
     const viewId = searchParams.get("viewId");
     if (viewId) {
+      // 1. Queue the stats sync job for this specific campaign
+      try {
+        const job = await statsQueue.add('sync-campaign-stats', { campaignId: viewId });
+
+        // 2. Wait for the statsWorker to process it (Timeout after 15 seconds)
+        await Promise.race([
+          job.waitUntilFinished(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Stats sync timeout")), 15000))
+        ]);
+      } catch (err) {
+        console.error("Failed to wait for stats sync:", err);
+        // Continue anyway to return whatever is currently in the DB
+      }
+
+      // 3. Fetch the freshly updated campaign from DB
       const campaign = await Campaign.findOne(
         { 
           _id: new mongoose.Types.ObjectId(viewId), 
@@ -83,8 +99,16 @@ export async function GET(req: Request) {
           mediaType: 1,
           totalMessages: 1,
           additionalFields: 1,
-          sheetUrl: 1, // ✅ Added
-          standaloneSheetUrl: 1, // ✅ Added
+          sheetUrl: 1, 
+          standaloneSheetUrl: 1,
+          // ✅ Added missing fields required by the List Page card to update UI
+          liveStats: 1,
+          status: 1,
+          totalDeducted: 1,
+          sentCount: 1,
+          failedCount: 1,
+          currentPrice: 1,
+          pricePerMessage: 1,
           // ✅ Only fetch 15 elements for instant loading
           phoneNumbers: { $slice: 15 },
           names: { $slice: 15 },
@@ -111,13 +135,13 @@ export async function GET(req: Request) {
         {
           name: 1,
           templateName: 1,
-          phoneNumbers: 1, // ✅ Full array
-          names: 1, // ✅ Full array
+          phoneNumbers: 1, 
+          names: 1, 
           additionalFields: 1,
-          additionalFieldsData: 1, // ✅ Full array
-          reportData: 1, // ✅ Full array (for statuses and replies)
-          sheetUrl: 1, // ✅ Added
-          standaloneSheetUrl: 1, // ✅ Added
+          additionalFieldsData: 1, 
+          reportData: 1, 
+          sheetUrl: 1, 
+          standaloneSheetUrl: 1, 
         }
       ).lean();
       
@@ -315,7 +339,6 @@ export async function GET(req: Request) {
             languageCode: 1,
             totalDeducted: 1,
             campaignStats: 1,
-            // ✅ NEW: Include the sheet URLs so frontend buttons stay disabled on refresh
             sheetUrl: 1,
             standaloneSheetUrl: 1,
             totalFiltered: { $size: "$filteredData" },
@@ -416,7 +439,7 @@ export async function GET(req: Request) {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select("-reportData") // This returns everything EXCEPT reportData, so sheetUrl and standaloneSheetUrl are already included
+        .select("-reportData")
         .lean(),
       Campaign.countDocuments({ userId: new mongoose.Types.ObjectId(userId) }),
     ]);
