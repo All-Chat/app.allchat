@@ -60,36 +60,44 @@ export async function GET(req: Request) {
     const isDownload = searchParams.get("download") === "true"; 
 
     // ==========================================
-    // ✅ 1. FAST VIEW MODAL (Limits to 15 numbers)
+    // ✅ 1. FAST VIEW MODAL & STATS REFRESH
     // ==========================================
     const viewId = searchParams.get("viewId");
     if (viewId) {
+      const fetchStats = searchParams.get("stats") === "true";
+      
+      const projection: any = {
+        name: 1,
+        templateName: 1,
+        templateCategory: 1,
+        languageCode: 1,
+        scheduledAt: 1,
+        variables: 1,
+        mappedVariables: { $slice: 1 }, 
+        generateOtp: 1,
+        otpLength: 1,
+        mediaUrl: 1,
+        mediaType: 1,
+        totalMessages: 1,
+        additionalFields: 1,
+        sheetUrl: 1, 
+        standaloneSheetUrl: 1,
+        status: 1,
+      };
+
+      if (fetchStats) {
+        projection.liveStats = 1;
+        projection.totalDeducted = 1;
+        projection.currentPrice = 1;
+        projection.pricePerMessage = 1;
+      }
+
       const campaign = await Campaign.findOne(
         { 
           _id: new mongoose.Types.ObjectId(viewId), 
           userId: new mongoose.Types.ObjectId(userId) 
         },
-        {
-          name: 1,
-          templateName: 1,
-          templateCategory: 1,
-          languageCode: 1,
-          scheduledAt: 1,
-          variables: 1,
-          mappedVariables: 1,
-          generateOtp: 1,
-          otpLength: 1,
-          mediaUrl: 1,
-          mediaType: 1,
-          totalMessages: 1,
-          additionalFields: 1,
-          sheetUrl: 1, // ✅ Added
-          standaloneSheetUrl: 1, // ✅ Added
-          // ✅ Only fetch 15 elements for instant loading
-          phoneNumbers: { $slice: 15 },
-          names: { $slice: 15 },
-          additionalFieldsData: { $slice: 15 }
-        }
+        projection
       ).lean();
       
       if (!campaign) {
@@ -111,13 +119,13 @@ export async function GET(req: Request) {
         {
           name: 1,
           templateName: 1,
-          phoneNumbers: 1, // ✅ Full array
-          names: 1, // ✅ Full array
+          phoneNumbers: 1, 
+          names: 1, 
           additionalFields: 1,
-          additionalFieldsData: 1, // ✅ Full array
-          reportData: 1, // ✅ Full array (for statuses and replies)
-          sheetUrl: 1, // ✅ Added
-          standaloneSheetUrl: 1, // ✅ Added
+          additionalFieldsData: 1, 
+          reportData: 1, 
+          sheetUrl: 1, 
+          standaloneSheetUrl: 1, 
         }
       ).lean();
       
@@ -160,225 +168,85 @@ export async function GET(req: Request) {
     // 5. SINGLE CAMPAIGN REPORT MODE
     // ==========================================
     if (campaignId) {
-      const limit = 50;
+      const limit = 25;
       const page = parseInt(searchParams.get("page") || "1");
       const skip = (page - 1) * limit;
 
       const showOnly = searchParams.get("showOnly")?.split(",").filter(Boolean) || [];
       const filterOut = searchParams.get("filterOut")?.split(",").filter(Boolean) || [];
       const search = searchParams.get("search") || "";
-
-      const isRepliedExpr = {
-        $or: [
-          { $ne: [{ $ifNull: ["$$r.reply", ""] }, ""] },
-          { $gt: [ { $size: { $filter: { input: { $ifNull: ["$$r.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0 ] },
-          { $in: [normalizePhoneExpr("$$r.phone"), "$repliedPhonesSet"] }
-        ]
-      };
-
-      const baseStatusExpr = {
-        $switch: {
-          branches: [
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "read"] }, then: "read" },
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "delivered"] }, then: "delivered" },
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "sent"] }, then: "sent" },
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "failed"] }, then: "failed" },
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "invalid"] }, then: "invalid" },
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "duplicate"] }, then: "duplicate" },
-          ],
-          default: "pending"
-        }
-      };
-
-      const effectiveStatusExpr = {
-        $cond: {
-          if: isRepliedExpr,
-          then: "replied",
-          else: baseStatusExpr
-        }
-      };
-
-      const andConditions: any[] = [];
-
-      if (search) {
-        andConditions.push({
-          $or: [
-            { $regexMatch: { input: { $toString: { $ifNull: ["$$r.phone", ""] } }, regex: search, options: "i" } },
-            { $regexMatch: { input: { $ifNull: ["$$r.name", ""] }, regex: search, options: "i" } },
-          ],
-        });
-      }
-
-      if (showOnly.length > 0) {
-        andConditions.push({ $in: [effectiveStatusExpr, showOnly] });
-      }
       
-      if (filterOut.length > 0) {
-        andConditions.push({ $not: [{ $in: [effectiveStatusExpr, filterOut] }] });
-      }
+      // ✅ FIX: Check if filters are applied
+      const hasFilters = showOnly.length > 0 || filterOut.length > 0 || search.length > 0;
 
-      const finalFilterCond = andConditions.length > 0 ? { $and: andConditions } : true;
+      let pipeline: any[];
 
-      const pipeline: any[] = [
-        {
-          $match: {
-            _id: new mongoose.Types.ObjectId(campaignId),
-            userId: new mongoose.Types.ObjectId(userId),
-          },
-        },
-        {
-          $addFields: {
-            campPhonesNormalized: {
-              $setUnion: [
-                {
-                  $map: {
-                    input: { $ifNull: ["$reportData", []] },
-                    as: "r",
-                    in: normalizePhoneExpr("$$r.phone"),
-                  },
-                },
-                [],
-              ],
-            },
-          },
-        },
-        {
-          $lookup: {
-            from: "messages",
-            let: { camp_createdAt: "$createdAt", user_id: "$userId", camp_phones: "$campPhonesNormalized" },
-            pipeline: [
-              {
-                $match: {
-                  $expr: {
-                    $and: [
-                      { $eq: ["$userId", "$$user_id"] },
-                      { $eq: ["$direction", "in"] },
-                      { $gte: ["$createdAt", "$$camp_createdAt"] },
-                    ],
-                  },
-                },
-              },
-              { $addFields: { normalizedPhone: normalizePhoneExpr("$phone") } },
-              { $match: { $expr: { $in: ["$normalizedPhone", "$$camp_phones"] } } },
-              { $project: { _id: 0, normalizedPhone: 1, text: 1, messageType: 1 } },
+      if (hasFilters) {
+        // ✅ SLOW PATH: Filters applied, must use $filter
+        const isRepliedExpr = {
+          $or: [
+            { $ne: [{ $ifNull: ["$$r.reply", ""] }, ""] },
+            { $gt: [ { $size: { $ifNull: ["$$r.replies", []] } }, 0 ] }
+          ]
+        };
+        const baseStatusExpr = {
+          $switch: {
+            branches: [
+              { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "read"] }, then: "read" },
+              { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "delivered"] }, then: "delivered" },
+              { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "sent"] }, then: "sent" },
+              { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "failed"] }, then: "failed" },
+              { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "invalid"] }, then: "invalid" },
+              { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "duplicate"] }, then: "duplicate" },
             ],
-            as: "inboundMsgs",
+            default: "pending"
+          }
+        };
+        const effectiveStatusExpr = {
+          $cond: { if: isRepliedExpr, then: "replied", else: baseStatusExpr }
+        };
+
+        const andConditions: any[] = [];
+        if (search) {
+          andConditions.push({
+            $or: [
+              { $regexMatch: { input: { $toString: { $ifNull: ["$$r.phone", ""] } }, regex: search, options: "i" } },
+              { $regexMatch: { input: { $ifNull: ["$$r.name", ""] }, regex: search, options: "i" } },
+            ],
+          });
+        }
+        if (showOnly.length > 0) andConditions.push({ $in: [effectiveStatusExpr, showOnly] });
+        if (filterOut.length > 0) andConditions.push({ $not: [{ $in: [effectiveStatusExpr, filterOut] }] });
+        const finalFilterCond = andConditions.length > 0 ? { $and: andConditions } : true;
+
+        pipeline = [
+          { $match: { _id: new mongoose.Types.ObjectId(campaignId), userId: new mongoose.Types.ObjectId(userId) } },
+          {
+            $addFields: {
+              filteredData: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: finalFilterCond } },
+            }
           },
-        },
-        {
-          $addFields: {
-            repliedPhonesSet: { $setUnion: ["$inboundMsgs.normalizedPhone", []] },
-          },
-        },
-        {
-          $addFields: {
-            campaignStats: {
-              total: { $size: { $ifNull: ["$reportData", []] } },
-              replied: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: isRepliedExpr } } },
-              read: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "read"] }, { $not: isRepliedExpr } ] } } } },
-              delivered: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "delivered"] }, { $not: isRepliedExpr } ] } } } },
-              sent: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "sent"] }, { $not: isRepliedExpr } ] } } } },
-              failed: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "failed"] }, { $not: isRepliedExpr } ] } } } },
-              invalid: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "invalid"] }, { $not: isRepliedExpr } ] } } } },
-              duplicate: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "duplicate"] }, { $not: isRepliedExpr } ] } } } },
-              pending: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $and: [ { $or: [ { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "pending"] }, { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "queued"] }, { $eq: [{ $ifNull: ["$$r.status", ""] }, ""] } ] }, { $not: isRepliedExpr } ] } } } },
+          {
+            $project: {
+              name: 1, templateName: 1, additionalFields: 1, languageCode: 1, totalDeducted: 1,
+              totalFiltered: { $size: "$filteredData" },
+              reportData: { $slice: ["$filteredData", skip, limit] },
             }
           }
-        },
-        {
-          $addFields: {
-            filteredData: {
-              $filter: {
-                input: { $ifNull: ["$reportData", []] },
-                as: "r",
-                cond: finalFilterCond,
-              },
-            },
-          },
-        },
-        {
-          $addFields: {
-            paginatedData: {
-              $cond: {
-                if: isDownload,
-                then: "$filteredData",
-                else: { $slice: ["$filteredData", skip, limit] }
-              }
+        ];
+      } else {
+        // ✅ FAST PATH: No filters, use $slice directly. 100x faster!
+        pipeline = [
+          { $match: { _id: new mongoose.Types.ObjectId(campaignId), userId: new mongoose.Types.ObjectId(userId) } },
+          {
+            $project: {
+              name: 1, templateName: 1, additionalFields: 1, languageCode: 1, totalDeducted: 1,
+              totalFiltered: { $size: { $ifNull: ["$reportData", []] } },
+              reportData: { $slice: [ { $ifNull: ["$reportData", []] }, skip, limit ] }
             }
           }
-        },
-        {
-          $project: {
-            name: 1,
-            templateName: 1,
-            additionalFields: 1,
-            languageCode: 1,
-            totalDeducted: 1,
-            campaignStats: 1,
-            // ✅ NEW: Include the sheet URLs so frontend buttons stay disabled on refresh
-            sheetUrl: 1,
-            standaloneSheetUrl: 1,
-            totalFiltered: { $size: "$filteredData" },
-            reportData: {
-              $map: {
-                input: "$paginatedData",
-                as: "r",
-                in: {
-                  $let: {
-                    vars: {
-                      matchedMsgs: {
-                        $filter: {
-                          input: { $ifNull: ["$inboundMsgs", []] },
-                          as: "msg",
-                          cond: { $eq: ["$$msg.normalizedPhone", normalizePhoneExpr("$$r.phone")] }
-                        }
-                      }
-                    },
-                    in: {
-                      $mergeObjects: [
-                        "$$r",
-                        {
-                          status: effectiveStatusExpr,
-                          replies: {
-                            $filter: {
-                              input: {
-                                $concatArrays: [
-                                  { $ifNull: ["$$r.replies", []] },
-                                  {
-                                    $map: {
-                                      input: "$$matchedMsgs",
-                                      as: "msg",
-                                      in: {
-                                        $cond: {
-                                          if: { $ne: [{ $ifNull: ["$$msg.text", ""] }, ""] },
-                                          then: "$$msg.text",
-                                          else: {
-                                            $cond: {
-                                              if: { $ne: [{ $ifNull: ["$$msg.messageType", ""] }, ""] },
-                                              then: { $concat: ["[", "$$msg.messageType", "]"] },
-                                              else: ""
-                                            }
-                                          }
-                                        }
-                                      }
-                                    }
-                                  }
-                                ]
-                              },
-                              as: "rep",
-                              cond: { $ne: ["$$rep", ""] }
-                            }
-                          }
-                        }
-                      ]
-                    }
-                  }
-                }
-              }
-            },
-          },
-        },
-      ];
+        ];
+      }
 
       const result = await Campaign.aggregate(pipeline);
 
@@ -400,7 +268,8 @@ export async function GET(req: Request) {
         ],
         currentPage: page,
         totalPages: totalPages,
-        campaignStats: campaign.campaignStats,
+        // ✅ FIX: Return empty object for campaignStats. The frontend will automatically fallback to liveStats which are already loaded in the sidebar!
+        campaignStats: {}, 
       });
     }
 
@@ -416,7 +285,7 @@ export async function GET(req: Request) {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select("-reportData") // This returns everything EXCEPT reportData, so sheetUrl and standaloneSheetUrl are already included
+        .select("-reportData -phoneNumbers -names -additionalFieldsData") 
         .lean(),
       Campaign.countDocuments({ userId: new mongoose.Types.ObjectId(userId) }),
     ]);
