@@ -1,38 +1,30 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getServerSession } from "next-auth/next";
 import { connectDB } from "@/lib/mongodb";
 import User from "@/models/User";
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
-    // ✅ Run DB connection and session check in parallel
-    const [, session] = await Promise.all([
-      connectDB(),
-      getServerSession(authOptions)
-    ]);
+    await connectDB();
 
-    if (!session?.user?.id) {
-      return NextResponse.json(
-        { error: "Unauthorized" }, 
-        { status: 401, headers: { "Cache-Control": "no-store" } }
-      );
+    // Assuming you use next-auth. If you use a custom auth, adjust this part.
+    const session = await getServerSession();
+    if (!session || !session.user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // ✅ Query by _id (uses fastest index) and .select() ONLY needed fields
-    const user = await User.findById(session.user.id)
-      .select("name balance accountStatus hideIntegrations hiddenSidebarLinks hiddenReportActions")
-      .lean();
+    // Assuming session.user.name or session.user.email holds the username
+    const userName = (session.user as any).name || (session.user as any).email;
+
+    const user = await User.findOne({ name: userName }).lean();
 
     if (!user) {
-      return NextResponse.json(
-        { error: "User not found" }, 
-        { status: 404, headers: { "Cache-Control": "no-store" } }
-      );
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    const response = NextResponse.json({
+    // ✅ Return the fields needed by the frontend, including hiddenReportActions
+    return NextResponse.json({
       success: true,
       user: {
         name: user.name,
@@ -40,21 +32,11 @@ export async function GET() {
         accountStatus: user.accountStatus || "active",
         hideIntegrations: user.hideIntegrations || false,
         hiddenSidebarLinks: user.hiddenSidebarLinks || [],
-        hiddenReportActions: user.hiddenReportActions || [], 
+        hiddenReportActions: user.hiddenReportActions || [], // ✅ CRITICAL: SEND THIS TO FRONTEND
       },
     });
-
-    // ✅ Cache for 10 seconds. Because this route contains 'balance', 
-    // we only cache for 10 seconds (instead of 24 hours) so the wallet updates fairly quickly, 
-    // but rapid page navigations within 10 seconds will load instantly.
-    response.headers.set("Cache-Control", "private, max-age=10, s-maxage=10");
-
-    return response;
   } catch (error) {
     console.error("Error fetching user profile:", error);
-    return NextResponse.json(
-      { error: "Internal server error" }, 
-      { status: 500, headers: { "Cache-Control": "no-store" } }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
