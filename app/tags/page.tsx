@@ -9,7 +9,7 @@ import { useRouter } from "next/navigation";
 import {
   Tag as TagIcon, Plus, Loader2, X, Check, Trash2,
   Sparkles, AlertCircle, ChevronDown, Users, Phone, Pencil, ArrowLeft,
-  Gauge, AlertTriangle, Infinity as InfinityIcon,
+  Gauge, AlertTriangle, Infinity as InfinityIcon, ChevronLeft, ChevronRight,
 } from "lucide-react";
 
 interface LimitInfo {
@@ -17,6 +17,13 @@ interface LimitInfo {
   usage: { count: number; resetAt: string | null };
   remaining: number;
   allowed: boolean;
+}
+
+interface ContactPageData {
+  contacts: any[];
+  currentPage: number;
+  totalPages: number;
+  loading: boolean;
 }
 
 export default function TagsPage() {
@@ -35,8 +42,7 @@ export default function TagsPage() {
 
   // Expand/Collapse State
   const [expandedTagId, setExpandedTagId] = useState<string | null>(null);
-  const [contactsMap, setContactsMap] = useState<Record<string, any[]>>({});
-  const [loadingContacts, setLoadingContacts] = useState(false);
+  const [contactsMap, setContactsMap] = useState<Record<string, ContactPageData>>({});
 
   // Delete Confirmation State
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -170,8 +176,46 @@ export default function TagsPage() {
     [loadData, showToast]
   );
 
+  // ✅ Fetches contacts ONLY when dropdown is expanded, limited to 10 per page
+  const fetchContactsPage = useCallback(async (tag: any, page: number) => {
+    setContactsMap((prev) => ({
+      ...prev,
+      [tag._id]: {
+        contacts: prev[tag._id]?.contacts || [],
+        currentPage: page,
+        totalPages: prev[tag._id]?.totalPages || 1,
+        loading: true,
+      },
+    }));
+
+    try {
+      const res = await fetch(`/api/contacts?tag=${encodeURIComponent(tag.name)}&page=${page}&limit=10`);
+      const data = await res.json();
+      
+      setContactsMap((prev) => ({
+        ...prev,
+        [tag._id]: {
+          contacts: data.contacts || [],
+          currentPage: data.currentPage || page,
+          totalPages: data.totalPages || 1,
+          loading: false,
+        },
+      }));
+    } catch {
+      setContactsMap((prev) => ({
+        ...prev,
+        [tag._id]: {
+          contacts: [],
+          currentPage: 1,
+          totalPages: 1,
+          loading: false,
+        },
+      }));
+    }
+  }, []);
+
   const handleTagClick = useCallback(
-    async (tag: any) => {
+    (tag: any) => {
       if (expandedTagId === tag._id) {
         setExpandedTagId(null);
         return;
@@ -179,20 +223,19 @@ export default function TagsPage() {
 
       setExpandedTagId(tag._id);
 
+      // Fetch page 1 only if not already fetched
       if (!contactsMap[tag._id]) {
-        setLoadingContacts(true);
-        try {
-          const res = await fetch(`/api/contacts?tag=${encodeURIComponent(tag.name)}`);
-          const data = await res.json();
-          setContactsMap((prev) => ({ ...prev, [tag._id]: data.contacts || [] }));
-        } catch {
-          setContactsMap((prev) => ({ ...prev, [tag._id]: [] }));
-        } finally {
-          setLoadingContacts(false);
-        }
+        fetchContactsPage(tag, 1);
       }
     },
-    [expandedTagId, contactsMap]
+    [expandedTagId, contactsMap, fetchContactsPage]
+  );
+
+  const handlePageChange = useCallback(
+    (tag: any, newPage: number) => {
+      fetchContactsPage(tag, newPage);
+    },
+    [fetchContactsPage]
   );
 
   // Memoized derived values
@@ -447,7 +490,7 @@ export default function TagsPage() {
                   <div className="flex-1 overflow-y-auto slim-scroll pr-2 space-y-3">
                     {tags.map((tag) => {
                       const isExpanded = expandedTagId === tag._id;
-                      const contacts = contactsMap[tag._id] || [];
+                      const tagData = contactsMap[tag._id] || { contacts: [], currentPage: 1, totalPages: 1, loading: false };
                       const isDeleting = deletingId === tag._id;
 
                       return (
@@ -476,9 +519,6 @@ export default function TagsPage() {
                             <div className="flex items-center gap-2 shrink-0">
                               {!isDeleting ? (
                                 <>
-                                  <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-md items-center gap-1 hidden sm:flex">
-                                    <Users size={10} /> {contacts.length || 0}
-                                  </span>
                                   <button
                                     onClick={() => handleEditClick(tag)}
                                     className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
@@ -522,27 +562,51 @@ export default function TagsPage() {
                           </div>
 
                           {isExpanded && (
-                            <div className="border-t border-slate-100 bg-slate-50/50 p-4 animate-slide-in max-h-[200px] overflow-y-auto slim-scroll">
-                              {loadingContacts && !contacts.length ? (
-                                <div className="flex justify-center items-center py-4">
+                            <div className="border-t border-slate-100 bg-slate-50/50 p-4 animate-slide-in max-h-[280px] overflow-y-auto slim-scroll">
+                              {tagData.loading && tagData.contacts.length === 0 ? (
+                                <div className="flex justify-center items-center py-8">
                                   <Loader2 size={16} className="animate-spin text-slate-400" />
                                 </div>
-                              ) : contacts.length > 0 ? (
-                                <div className="space-y-2">
-                                  {contacts.map((contact, idx) => (
-                                    <div key={idx} className="flex items-center gap-3 bg-white border border-slate-200 px-3 py-2 rounded-lg text-xs">
-                                      <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 font-bold">
-                                        {contact.name?.charAt(0).toUpperCase() || <Phone size={12} />}
+                              ) : tagData.contacts.length > 0 ? (
+                                <>
+                                  <div className="space-y-2 mb-3">
+                                    {tagData.contacts.map((contact, idx) => (
+                                      <div key={idx} className="flex items-center gap-3 bg-white border border-slate-200 px-3 py-2 rounded-lg text-xs">
+                                        <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 font-bold">
+                                          {contact.name?.charAt(0).toUpperCase() || <Phone size={12} />}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                          <p className="font-bold text-slate-800 truncate">{contact.name || "Unknown"}</p>
+                                          <p className="text-slate-500 font-mono">{contact.phone}</p>
+                                        </div>
                                       </div>
-                                      <div className="flex-1 min-w-0">
-                                        <p className="font-bold text-slate-800 truncate">{contact.name || "Unknown"}</p>
-                                        <p className="text-slate-500 font-mono">{contact.phone}</p>
-                                      </div>
+                                    ))}
+                                  </div>
+                                  
+                                  {tagData.totalPages > 1 && (
+                                    <div className="flex justify-center items-center gap-3 pt-2 border-t border-slate-200">
+                                      <button
+                                        onClick={() => handlePageChange(tag, tagData.currentPage - 1)}
+                                        disabled={tagData.currentPage === 1 || tagData.loading}
+                                        className="p-1 rounded-md bg-white border border-slate-200 disabled:opacity-40 hover:bg-slate-50 transition-colors"
+                                      >
+                                        <ChevronLeft size={14} className="text-slate-600" />
+                                      </button>
+                                      <span className="text-xs font-bold text-slate-600">
+                                        Page {tagData.currentPage} of {tagData.totalPages}
+                                      </span>
+                                      <button
+                                        onClick={() => handlePageChange(tag, tagData.currentPage + 1)}
+                                        disabled={tagData.currentPage === tagData.totalPages || tagData.loading}
+                                        className="p-1 rounded-md bg-white border border-slate-200 disabled:opacity-40 hover:bg-slate-50 transition-colors"
+                                      >
+                                        <ChevronRight size={14} className="text-slate-600" />
+                                      </button>
                                     </div>
-                                  ))}
-                                </div>
+                                  )}
+                                </>
                               ) : (
-                                <div className="text-center py-4">
+                                <div className="text-center py-8">
                                   <p className="text-xs text-slate-400 font-medium">No contacts have been tagged with this yet.</p>
                                 </div>
                               )}
