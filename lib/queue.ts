@@ -62,7 +62,7 @@ async function addJob(queue: string, name: string, data: any, opts: any = {}) {
     id: job._id.toString(),
     waitUntilFinished: async () => {
       const start = Date.now();
-      const timeout = 300000; // 5 minutes timeout for API to wait
+      const timeout = 30000; // 30 seconds timeout for API to wait
       while (Date.now() - start < timeout) {
         const j = await Job.findById(job._id).lean();
         if (j?.status === "completed") return j.result;
@@ -145,5 +145,7 @@ export const reportQueue = new MongoQueue("report-processing");
 export const reportQueueEvents = new MongoQueueEvents("report-processing");
 export const statsQueue = new MongoQueue("stats-processing");
 export const statsQueueEvents = new MongoQueueEvents("stats-processing");
+export const utilityQueue = new MongoQueue("utility-processing"); // ✅ NEW UTILITY QUEUE
+export const utilityQueueEvents = new MongoQueueEvents("utility-processing");
 
 export { Job, Cache };
