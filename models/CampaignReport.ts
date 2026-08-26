@@ -4,6 +4,9 @@ const CampaignReportSchema = new mongoose.Schema({
   campaignId: { type: mongoose.Schema.Types.ObjectId, ref: "Campaign", required: true, index: true },
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
   
+  // ✅ NEW: Stores the original index from the phoneNumbers array
+  index: { type: Number, required: true, index: true }, 
+  
   phone: { type: String, required: true, index: true },
   name: { type: String, default: "" },
   additionalData: { type: [String], default: [] },
@@ -26,7 +29,6 @@ const CampaignReportSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// Compound index ensures we never duplicate a contact in a campaign
 CampaignReportSchema.index({ campaignId: 1, phone: 1 }, { unique: true });
 
 export default mongoose.models.CampaignReport || mongoose.model("CampaignReport", CampaignReportSchema);
