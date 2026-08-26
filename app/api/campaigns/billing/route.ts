@@ -28,37 +28,26 @@ export async function GET() {
 
     const campaignIds = campaigns.map((c: any) => new mongoose.Types.ObjectId(c._id));
 
-    // ✅ FIX: Use the EXACT SAME $project logic as list/route.ts to guarantee stats match
+    // ✅ FIX: Aggregate count AND chargedAmount (which is 0 for refunded messages)
     const statsAgg = await CampaignReport.aggregate([
       { $match: { campaignId: { $in: campaignIds } } },
-      {
-        $project: {
-          campaignId: "$campaignId",
-          effStatus: {
-            $cond: {
-              if: {
-                $or: [
-                  { $eq: [{ $toLower: { $ifNull: ["$status", ""] } }, "replied"] },
-                  { $gt: [ { $size: { $ifNull: ["$replies", []] } }, 0 ] },
-                  { $gt: [ { $strLenCP: { $ifNull: ["$reply", ""] } }, 0 ] }
-                ]
-              },
-              then: "replied",
-              else: { $toLower: { $ifNull: ["$status", "pending"] } }
-            }
-          }
-        }
-      },
-      { $group: { _id: { campaignId: "$campaignId", status: "$effStatus" }, count: { $sum: 1 } } }
+      { 
+        $group: { 
+          _id: { campaignId: "$campaignId", status: "$status" }, 
+          count: { $sum: 1 },
+          totalCharged: { $sum: "$chargedAmount" } // ✅ Sum up the actual charged amount
+        } 
+      }
     ]);
 
     const statsMap: Record<string, any> = {};
     statsAgg.forEach((item: any) => {
       const cid = item._id.campaignId.toString();
       const status = (item._id.status || "pending").toLowerCase();
-      if (!statsMap[cid]) statsMap[cid] = { sent: 0, delivered: 0, read: 0, replied: 0, failed: 0, invalid: 0, duplicate: 0, docCount: 0 };
+      if (!statsMap[cid]) statsMap[cid] = { sent: 0, delivered: 0, read: 0, replied: 0, failed: 0, invalid: 0, duplicate: 0, docCount: 0, totalCharged: 0 };
       if (statsMap[cid].hasOwnProperty(status)) statsMap[cid][status] += item.count;
       statsMap[cid].docCount += item.count;
+      statsMap[cid].totalCharged += item.totalCharged || 0;
     });
 
     const mappedCampaigns = campaigns.map((c: any) => {
@@ -100,10 +89,8 @@ export async function GET() {
         finalStatus = "completed";
       }
 
-      const deliveredCombined = sent + delivered + read + replied;
-      const priceForCalc = Number(c.pricePerMessage) > 0 ? Number(c.pricePerMessage) : currentPrice;
-      let finalTotalDeducted = Number(c.totalDeducted || 0);
-      if (finalTotalDeducted === 0 && deliveredCombined > 0 && priceForCalc > 0) finalTotalDeducted = deliveredCombined * priceForCalc;
+      // ✅ CRITICAL FIX: Use the exact totalCharged amount from the aggregation. This is already Net (Spend - Refunds).
+      const finalTotalDeducted = Number(stats.totalCharged || 0);
 
       return { ...c, status: finalStatus, currentPrice, totalDeducted: finalTotalDeducted, liveStats: finalLiveStats };
     });
