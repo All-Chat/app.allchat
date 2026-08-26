@@ -6,38 +6,16 @@ import { authOptions } from "@/lib/auth";
 
 export async function GET() {
   try {
-    // ✅ Run DB connection and session check in parallel
-    const [, session] = await Promise.all([
-      connectDB(),
-      getServerSession(authOptions)
-    ]);
+    await connectDB();
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.id) return NextResponse.json({ success: false }, { status: 401 });
 
-    if (!session?.user?.id) {
-      return NextResponse.json({ success: false }, { status: 401, headers: { "Cache-Control": "no-store" } });
-    }
+    const user = await User.findById(session.user.id).select("enabledCountries").lean();
+    if (!user) return NextResponse.json({ success: false }, { status: 404 });
 
-    // ✅ O(1) Database lookup using _id index, fetching ONLY 1 field
-    const user = await User.findById(session.user.id)
-      .select("enabledCountries")
-      .lean();
-
-    if (!user) {
-      return NextResponse.json({ success: false }, { status: 404, headers: { "Cache-Control": "no-store" } });
-    }
-
-    const response = NextResponse.json({
-      success: true,
-      enabledCountries: user.enabledCountries || []
-    });
-
-    // ✅ THE SECRET WEAPON: Client-side Caching
-    // The browser will now cache this for 60 seconds. 
-    // Repeat page loads will load in 0ms without hitting the server!
-    response.headers.set("Cache-Control", "private, max-age=60, s-maxage=60");
-
-    return response;
+    return NextResponse.json({ success: true, enabledCountries: user.enabledCountries || [] });
   } catch (error) {
     console.error("Error fetching pricing:", error);
-    return NextResponse.json({ success: false }, { status: 500, headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ success: false }, { status: 500 });
   }
 }
