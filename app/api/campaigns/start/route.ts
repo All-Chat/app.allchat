@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import mongoose from "mongoose";
 import Campaign from "@/models/Campaign";
-import CampaignReport from "@/models/CampaignReport"; // ✅ NEW
+import CampaignReport from "@/models/CampaignReport";
 import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -100,26 +100,38 @@ export async function POST(req: Request) {
       { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID, pricePerMessage: bPrice } }
     );
 
-    // ✅ NEW: Initialize CampaignReport documents with their exact array index
-    const existingReportsCount = await CampaignReport.countDocuments({ campaignId });
-    if (existingReportsCount === 0) {
-      const reportsToInsert = campaign.phoneNumbers.map((phone: any, index: string | number) => ({
-        campaignId: campaign._id,
-        userId: campaign.userId,
-        index: index, // ✅ CRITICAL: Store the exact index
-        phone,
-        name: campaign.names?.[index] || "",
-        additionalData: campaign.additionalFieldsData?.[index] || [],
-        status: "pending",
-      }));
-      await CampaignReport.insertMany(reportsToInsert, { ordered: false });
-    } else {
-      // Reset queued messages to pending if resuming
-      await CampaignReport.updateMany(
-        { campaignId, status: "queued" },
-        { $set: { status: "pending" } }
-      );
+    // ✅ CRITICAL FIX: Ensure ALL phone numbers have a CampaignReport document
+    const existingReports = await CampaignReport.find({ campaignId }).select("phone").lean();
+    const existingPhones = new Set(existingReports.map(r => r.phone));
+    
+    const missingReports: any[] = [];
+    campaign.phoneNumbers.forEach((phone: any, index: string | number) => {
+      if (!existingPhones.has(phone)) {
+        missingReports.push({
+          campaignId: campaign._id,
+          userId: campaign.userId,
+          index: index,
+          phone,
+          name: campaign.names?.[index] || "",
+          additionalData: campaign.additionalFieldsData?.[index] || [],
+          status: "pending",
+        });
+      }
+    });
+
+    if (missingReports.length > 0) {
+      try {
+        await CampaignReport.insertMany(missingReports, { ordered: false });
+      } catch (err: any) {
+        if (err.code !== 11000) console.error("Error inserting missing reports:", err.message);
+      }
     }
+
+    // Reset queued messages to pending if resuming
+    await CampaignReport.updateMany(
+      { campaignId, status: "queued" },
+      { $set: { status: "pending" } }
+    );
 
     const CHUNK_SIZE = 10;
     const totalNumbers = campaign.phoneNumbers.length;
