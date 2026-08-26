@@ -75,23 +75,21 @@ async function startCampaignWorker() {
       ).lean();
 
       if (job) {
-        // ✅ FIX: Check Campaign Status before processing
+        // Check Campaign Status before processing
         const campaign = await Campaign.findById(job.data.campaignId).select("status").lean();
         
         if (!campaign) {
-          await Job.deleteOne({ _id: job._id }); // Campaign deleted, discard job
+          await Job.deleteOne({ _id: job._id }); 
           continue;
         }
 
         if (campaign.status === "paused") {
-          // Put it back to pending and wait 5 seconds before checking again
           await Job.updateOne({ _id: job._id }, { $set: { status: "pending", lockedAt: null } });
           await new Promise(r => setTimeout(r, 5000));
           continue;
         }
 
         if (campaign.status === "stopped" || campaign.status === "completed") {
-          // Discard the job entirely
           await Job.deleteOne({ _id: job._id });
           continue;
         }
@@ -105,7 +103,7 @@ async function startCampaignWorker() {
           console.error(`❌ Chunk ${job.data.startIdx}-${job.data.endIdx} failed:`, err.message);
           await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
         }
-        await new Promise(r => setTimeout(r, 500)); // 500ms delay = 20 msgs/sec
+        await new Promise(r => setTimeout(r, 500)); 
       } else { await new Promise(r => setTimeout(r, 1000)); }
     } catch (err) {
       console.error('Polling error for campaign-processing:', err);
@@ -163,29 +161,35 @@ async function processCampaignChunk(data: any) {
   
   const tc = { templateName: cleanStr(campaign.templateName).toLowerCase(), languageCode: cleanStr(campaign.languageCode || "en"), templateCategory: campaign.templateCategory, generateOtp: campaign.generateOtp, otpLength: campaign.otpLength || 4, mediaUrl: campaign.mediaUrl };
 
-  const reports = await CampaignReport.find({ campaignId }).skip(startIdx).limit(chunkSize).lean();
+  // ✅ CRITICAL FIX: Query ONLY for pending documents. Do not use skip/limit, as it causes duplicate fetches and leaves 50% behind.
+  const reports = await CampaignReport.find({ campaignId, status: "pending" }).limit(chunkSize).lean();
+  
   const metaPromises: Promise<any>[] = [];
   const reportIds: string[] = [];
   const batchPhones: string[] = [];
+  const batchVariables: string[][] = [];
 
   for (let i = 0; i < reports.length; i++) {
     const report = reports[i];
-    if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(report.status)) continue;
 
+    // Claim the report
     await CampaignReport.updateOne({ _id: report._id, status: "pending" }, { $set: { status: "queued" } });
 
     let cv: string[] = [];
+    const absoluteIndex = startIdx + i; // Used to map variables correctly
+
     if (campaign.templateCategory === "AUTHENTICATION") {
-      if (campaign.generateOtp || !campaign.mappedVariables?.[startIdx + i]?.length) {
+      if (campaign.generateOtp || !campaign.mappedVariables?.[absoluteIndex]?.length) {
         const l = campaign.otpLength || 4; const min = Math.pow(10, l - 1); const max = Math.pow(10, l) - 1;
         cv = [Math.floor(Math.random() * (max - min + 1) + min).toString()];
-      } else cv = campaign.mappedVariables[startIdx + i];
-    } else cv = (campaign.mappedVariables?.[startIdx + i]?.length > 0) ? campaign.mappedVariables[startIdx + i] : (campaign.variables || []);
+      } else cv = campaign.mappedVariables[absoluteIndex];
+    } else cv = (campaign.mappedVariables?.[absoluteIndex]?.length > 0) ? campaign.mappedVariables[absoluteIndex] : (campaign.variables || []);
 
     cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
     metaPromises.push(metaSenderWorker(report.phone, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
     reportIds.push(report._id.toString());
     batchPhones.push(report.phone);
+    batchVariables.push(cv);
   }
 
   const metaResults = await Promise.allSettled(metaPromises);
