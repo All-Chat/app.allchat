@@ -12,7 +12,6 @@ import User from '../models/User';
 import Message from '../models/Message';
 import Session from '../models/Session';
 import mongoose from 'mongoose';
-import { getPriceForCategory } from '../lib/billing';
 import { syncCampaignToGoogleSheet } from '../lib/googleSheetSync';
 import { Job, Cache } from '../lib/queue';
 
@@ -60,11 +59,11 @@ async function startWorker(queueName: string, processor: (job: any) => Promise<a
 }
 
 // ============================================================================
-// CAMPAIGN WORKER
+// CAMPAIGN WORKER (Dynamic Atomic Loop)
 // ============================================================================
 
 async function startCampaignWorker() {
-  console.log('🚀 Worker started for queue: campaign-processing (Concurrency: 1, Rate: 2 chunks/sec = 20 msgs/sec)');
+  console.log('🚀 Worker started for queue: campaign-processing (Dynamic Loop, 10 msgs/sec)');
 
   while (true) {
     try {
@@ -75,38 +74,148 @@ async function startCampaignWorker() {
       ).lean();
 
       if (job) {
-        const campaign = await Campaign.findById(job.data.campaignId).select("status").lean();
-        
-        if (!campaign) {
-          await Job.deleteOne({ _id: job._id }); 
-          continue;
-        }
-
-        if (campaign.status === "paused") {
-          await Job.updateOne({ _id: job._id }, { $set: { status: "pending", lockedAt: null } });
-          await new Promise(r => setTimeout(r, 5000));
-          continue;
-        }
-
-        if (campaign.status === "stopped" || campaign.status === "completed") {
+        if (job.name === 'process-campaign') {
+          await processCampaignLoop(job.data, job._id);
+          await Job.deleteOne({ _id: job._id }); // Delete job when loop finishes
+        } else {
+          // Fallback for any old chunk jobs
           await Job.deleteOne({ _id: job._id });
-          continue;
         }
-
-        try {
-          await processCampaignChunk(job.data);
-          await Job.deleteOne({ _id: job._id });
-          console.log(`✅ Chunk ${job.data.startIdx}-${job.data.endIdx} completed`);
-        } catch (err: any) {
-          console.error(`❌ Chunk ${job.data.startIdx}-${job.data.endIdx} failed:`, err.message);
-          await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
-        }
-        await new Promise(r => setTimeout(r, 500)); 
       } else { await new Promise(r => setTimeout(r, 1000)); }
     } catch (err) {
       console.error('Polling error for campaign-processing:', err);
       await new Promise(r => setTimeout(r, 2000));
     }
+  }
+}
+
+async function processCampaignLoop(data: any, jobId: any) {
+  const { campaignId, userId, payerId, PHONE_NUMBER_ID, ACCESS_TOKEN, pricePerMessage } = data;
+  await ensureDbConnected();
+
+  let thf = "";
+  const batchSize = 10;
+  
+  while (true) {
+    // 1. Check Campaign Status (Pause / Stop)
+    const campaign: any = await Campaign.findById(campaignId).lean();
+    if (!campaign) break;
+    
+    if (campaign.status === "paused") {
+      // Put job back to pending and exit loop. It will be picked up again when resumed.
+      await Job.updateOne({ _id: jobId }, { $set: { status: "pending", lockedAt: null } }).catch(()=>{});
+      console.log(`⏸ Campaign ${campaign.name} paused. Job returned to queue.`);
+      return; 
+    }
+    if (campaign.status === "stopped" || campaign.status === "completed") {
+      console.log(`⏹ Campaign ${campaign.name} stopped/completed. Exiting loop.`);
+      return; 
+    }
+
+    if (!thf) {
+      thf = campaign.templateHeaderFormat || "";
+      if (!thf) { 
+        thf = await fetchTemplateHeaderFormat(PHONE_NUMBER_ID, ACCESS_TOKEN, cleanStr(campaign.templateName).toLowerCase(), cleanStr(campaign.languageCode || "en"), cleanStr(campaign.mediaType || "none")); 
+        await Campaign.updateOne({ _id: campaignId }, { $set: { templateHeaderFormat: thf } }); 
+      }
+    }
+
+    const tc = { 
+      templateName: cleanStr(campaign.templateName).toLowerCase(), 
+      languageCode: cleanStr(campaign.languageCode || "en"), 
+      templateCategory: campaign.templateCategory, 
+      generateOtp: campaign.generateOtp, 
+      otpLength: campaign.otpLength || 4, 
+      mediaUrl: campaign.mediaUrl 
+    };
+
+    // 2. ATOMIC FETCH: Grab the next 10 PENDING contacts and lock them
+    const reports = [];
+    for (let i = 0; i < batchSize; i++) {
+      const doc = await CampaignReport.findOneAndUpdate(
+        { campaignId, status: "pending" },
+        { $set: { status: "queued" } },
+        { sort: { index: 1 }, new: true }
+      ).lean();
+      if (doc) reports.push(doc);
+      else break;
+    }
+    
+    // 3. If none left, Campaign is Complete!
+    if (reports.length === 0) {
+      const pendingCount = await CampaignReport.countDocuments({ campaignId, status: "pending" });
+      const queuedCount = await CampaignReport.countDocuments({ campaignId, status: "queued" });
+      
+      if (pendingCount === 0 && queuedCount === 0) {
+        await Campaign.updateOne({ _id: campaignId }, { $set: { status: "completed", completedAt: new Date() } });
+        console.log(`✅ Campaign ${campaign.name} fully processed!`);
+        try {
+          const finalCampaign = await Campaign.findById(campaignId).lean();
+          const plainReportData = await CampaignReport.find({ campaignId }).select("name phone status error replies reply tags additionalData -_id").lean();
+          await syncCampaignToGoogleSheet(userId, { name: finalCampaign?.name || "Campaign", reportData: plainReportData });
+        } catch (e) {}
+      }
+      return; // Exit loop
+    }
+
+    const metaPromises: Promise<any>[] = [];
+    const batchPhones: string[] = [];
+
+    for (let i = 0; i < reports.length; i++) {
+      const report: any = reports[i];
+      let cv: string[] = [];
+      const absoluteIndex = report.index; // Use stored index for variables
+
+      if (campaign.templateCategory === "AUTHENTICATION") {
+        if (campaign.generateOtp || !campaign.mappedVariables?.[absoluteIndex]?.length) {
+          const l = campaign.otpLength || 4; const min = Math.pow(10, l - 1); const max = Math.pow(10, l) - 1;
+          cv = [Math.floor(Math.random() * (max - min + 1) + min).toString()];
+        } else cv = campaign.mappedVariables[absoluteIndex];
+      } else cv = (campaign.mappedVariables?.[absoluteIndex]?.length > 0) ? campaign.mappedVariables[absoluteIndex] : (campaign.variables || []);
+
+      cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
+      metaPromises.push(metaSenderWorker(report.phone, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
+      batchPhones.push(report.phone);
+    }
+
+    // 4. Send them via Meta API
+    const metaResults = await Promise.allSettled(metaPromises);
+    let bd = 0, sent = 0, failed = 0, ded = 0;
+    const messagesToCreate: any[] = [];
+    const bulkReportOps: any[] = [];
+
+    for (let i = 0; i < metaResults.length; i++) {
+      const res = metaResults[i];
+      const reportId = reports[i]._id;
+      const ph = batchPhones[i].replace(/\+/g, "");
+
+      if (res.status !== 'fulfilled') {
+        failed++;
+        bulkReportOps.push({ updateOne: { filter: { _id: reportId }, update: { $set: { status: "failed", error: "System Error: Promise rejected" } } } });
+        continue;
+      }
+      const r = res.value;
+
+      if (r.status === "sent") {
+        sent++;
+        const pp = Number(pricePerMessage) > 0 ? Number(pricePerMessage) : (Number(campaign.pricePerMessage) || 0);
+        bd += pp;
+        bulkReportOps.push({ updateOne: { filter: { _id: reportId }, update: { $set: { status: "sent", sentWamid: r.wamid, charged: true, chargedAmount: pp } } } });
+        messagesToCreate.push({ userId, phone: ph, text: "", direction: "out", messageType: "template", mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID });
+      } else {
+        failed++;
+        bulkReportOps.push({ updateOne: { filter: { _id: reportId }, update: { $set: { status: "failed", error: r.error || "Unknown error" } } } });
+      }
+    }
+
+    if (bd > 0) ded = Math.round((ded + bd) * 100) / 100;
+    if (bulkReportOps.length > 0) try { await CampaignReport.bulkWrite(bulkReportOps); } catch (e) {}
+    if (messagesToCreate.length > 0) try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) {}
+    if (bd > 0) try { await User.updateOne({ _id: payerId }, { $inc: { balance: -bd } }); } catch (e) {}
+    try { await Campaign.updateOne({ _id: campaignId }, { $inc: { sentCount: sent, failedCount: failed, totalDeducted: ded } }); } catch (e) {}
+
+    // 5. Wait 500ms (Rate limit: 20 msgs/sec) and loop back to step 1
+    await new Promise(r => setTimeout(r, 500));
   }
 }
 
@@ -142,103 +251,6 @@ async function startInactivityWorker() {
 }
 
 function cleanStr(val: any): string { if (val == null) return ""; let s = String(val).trim(); if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1); if (s.startsWith("'") && s.endsWith("'")) s = s.slice(1, -1); s = s.replace(/\\"/g, '"').replace(/\\'/g, "'"); return s; }
-
-async function processCampaignChunk(data: any) {
-  const { campaignId, userId, payerId, startIdx, endIdx, PHONE_NUMBER_ID, ACCESS_TOKEN, pricePerMessage } = data;
-  await ensureDbConnected();
-
-  const payer = await User.findById(payerId).lean();
-  if (!payer) throw new Error("User not found");
-  const campaign = await Campaign.findById(campaignId).lean();
-  if (!campaign) throw new Error("Campaign not found");
-  if (["paused", "stopped", "completed"].includes(campaign.status)) return;
-
-  let thf = campaign.templateHeaderFormat || "";
-  if (!thf) { thf = await fetchTemplateHeaderFormat(PHONE_NUMBER_ID, ACCESS_TOKEN, cleanStr(campaign.templateName).toLowerCase(), cleanStr(campaign.languageCode || "en"), cleanStr(campaign.mediaType || "none")); await Campaign.updateOne({ _id: campaignId }, { $set: { templateHeaderFormat: thf } }); }
-  
-  const tc = { templateName: cleanStr(campaign.templateName).toLowerCase(), languageCode: cleanStr(campaign.languageCode || "en"), templateCategory: campaign.templateCategory, generateOtp: campaign.generateOtp, otpLength: campaign.otpLength || 4, mediaUrl: campaign.mediaUrl };
-
-  // ✅ CRITICAL FIX: Query deterministically by the chunk index range. This guarantees variables map perfectly.
-  const reports = await CampaignReport.find({ campaignId, index: { $gte: startIdx, $lt: endIdx } }).lean();
-  
-  const metaPromises: Promise<any>[] = [];
-  const reportIds: string[] = [];
-  const batchPhones: string[] = [];
-
-  for (let i = 0; i < reports.length; i++) {
-    const report = reports[i];
-    
-    // If already processed, skip it
-    if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(report.status)) continue;
-
-    // Claim the report
-    await CampaignReport.updateOne({ _id: report._id, status: "pending" }, { $set: { status: "queued" } });
-
-    let cv: string[] = [];
-    const absoluteIndex = report.index; // ✅ Use the exact stored index!
-
-    if (campaign.templateCategory === "AUTHENTICATION") {
-      if (campaign.generateOtp || !campaign.mappedVariables?.[absoluteIndex]?.length) {
-        const l = campaign.otpLength || 4; const min = Math.pow(10, l - 1); const max = Math.pow(10, l) - 1;
-        cv = [Math.floor(Math.random() * (max - min + 1) + min).toString()];
-      } else cv = campaign.mappedVariables[absoluteIndex];
-    } else cv = (campaign.mappedVariables?.[absoluteIndex]?.length > 0) ? campaign.mappedVariables[absoluteIndex] : (campaign.variables || []);
-
-    cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
-    metaPromises.push(metaSenderWorker(report.phone, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
-    reportIds.push(report._id.toString());
-    batchPhones.push(report.phone);
-  }
-
-  const metaResults = await Promise.allSettled(metaPromises);
-  let bd = 0, sent = 0, failed = 0, ded = 0;
-  const messagesToCreate: any[] = [];
-  const bulkReportOps: any[] = [];
-
-  for (let i = 0; i < metaResults.length; i++) {
-    const res = metaResults[i];
-    const reportId = reportIds[i];
-    const ph = batchPhones[i].replace(/\+/g, "");
-
-    if (res.status !== 'fulfilled') {
-      failed++;
-      bulkReportOps.push({ updateOne: { filter: { _id: reportId }, update: { $set: { status: "failed", error: "System Error: Promise rejected" } } } });
-      continue;
-    }
-    const r = res.value;
-
-    if (r.status === "sent") {
-      sent++;
-      const pp = Number(pricePerMessage) > 0 ? Number(pricePerMessage) : (Number(campaign.pricePerMessage) || 0);
-      bd += pp;
-      bulkReportOps.push({ updateOne: { filter: { _id: reportId }, update: { $set: { status: "sent", sentWamid: r.wamid, charged: true, chargedAmount: pp } } } });
-      messagesToCreate.push({ userId, phone: ph, text: "", direction: "out", messageType: "template", mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID });
-    } else {
-      failed++;
-      bulkReportOps.push({ updateOne: { filter: { _id: reportId }, update: { $set: { status: "failed", error: r.error || "Unknown error" } } } });
-    }
-  }
-
-  if (bd > 0) ded = Math.round((ded + bd) * 100) / 100;
-  if (bulkReportOps.length > 0) try { await CampaignReport.bulkWrite(bulkReportOps); } catch (e) {}
-  if (messagesToCreate.length > 0) try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) {}
-  if (bd > 0) try { await User.updateOne({ _id: payerId }, { $inc: { balance: -bd } }); } catch (e) {}
-  try { await Campaign.updateOne({ _id: campaignId }, { $inc: { sentCount: sent, failedCount: failed, totalDeducted: ded } }); } catch (e) {}
-
-  try {
-    const processedCount = await CampaignReport.countDocuments({ campaignId, status: { $in: ["sent", "delivered", "read", "failed", "invalid", "duplicate", "replied"] } });
-    if (campaign.status !== "completed" && processedCount >= (campaign.totalMessages || 0)) {
-      const completedCampaign = await Campaign.findOneAndUpdate({ _id: campaignId, status: { $ne: "completed" } }, { $set: { status: "completed", completedAt: new Date() } }, { new: true, fields: "status" }).lean();
-      if (completedCampaign && completedCampaign.status === "completed") {
-        try {
-          const finalCampaign = await Campaign.findById(campaignId).lean();
-          const plainReportData = await CampaignReport.find({ campaignId }).select("name phone status error replies reply tags additionalData -_id").lean();
-          await syncCampaignToGoogleSheet(userId, { name: finalCampaign?.name || "Campaign", reportData: plainReportData });
-        } catch (e) {}
-      }
-    }
-  } catch (e) {}
-}
 
 async function metaSenderWorker(phone: string, variables: string[], tc: any, token: string, pnId: string, thf: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
   let comps = buildCampaignComponents(thf, variables, tc.mediaUrl || "");
