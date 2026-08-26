@@ -5,13 +5,9 @@
 
 require('dotenv').config({ path: '.env.local' });
 
-// ============================================================================
-// IMPORTS
-// ============================================================================
-
 import { connectDB } from '../lib/mongodb';
 import Campaign from '../models/Campaign';
-import CampaignReport from '../models/CampaignReport'; // ✅ NEW
+import CampaignReport from '../models/CampaignReport';
 import User from '../models/User';
 import Message from '../models/Message';
 import Session from '../models/Session';
@@ -20,81 +16,54 @@ import { getPriceForCategory } from '../lib/billing';
 import { syncCampaignToGoogleSheet } from '../lib/googleSheetSync';
 import { Job, Cache } from '../lib/queue';
 
-// ============================================================================
-// 0. CONNECT TO MONGO ON STARTUP
-// ============================================================================
-
 connectDB()
   .then(async () => {
     console.log('✅ Main Worker process connected to MongoDB');
-
-    // Start all background workers
     startInactivityWorker();
     startCampaignWorker();
-
     startWorker('counts-processing', async (job) => {
       if (job.name === 'generate-counts') {
         return await generateCountsData(job.data.userId, job.data.page, job.data.limit, job.data.cacheKey, job.data.lockKey);
       }
     }, 5);
-
-    console.log('🚀 Standalone main worker process started — campaign / counts / inactivity workers running.');
+    console.log('🚀 Standalone main worker process started.');
   })
-  .catch((err) => { console.error('❌ Worker process failed to connect to MongoDB:', err); process.exit(1); });
+  .catch((err) => { console.error('❌ Worker process failed:', err); process.exit(1); });
 
 export async function ensureDbConnected() {
   if (mongoose.connection.readyState !== 1) await connectDB();
 }
 
-// ============================================================================
-// 1. MONGODB QUEUE WORKER LOGIC (Generic)
-// ============================================================================
-
 async function startWorker(queueName: string, processor: (job: any) => Promise<any>, concurrency: number = 1) {
-  
-  console.log(`🚀 Worker started for queue: ${queueName} (Concurrency: ${concurrency})`);
-
   for (let i = 0; i < concurrency; i++) {
     (async () => {
       while (true) {
         try {
-          
           const job = await Job.findOneAndUpdate(
             { queue: queueName, $or: [{ status: "pending" }, { status: "processing", lockedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } }] },
             { $set: { status: "processing", lockedAt: new Date() } },
             { sort: { createdAt: 1 }, returnDocument: "after" }
           ).lean();
-
           if (job) {
-            console.log(`▶️ Processing job ${job.name} (${job._id}) in ${queueName}`);
             try {
               const result = await processor({ id: job._id.toString(), name: job.name, data: job.data });
-              const shouldRemove = job.opts?.removeOnComplete || job.opts?.removeOnFail;
-              if (shouldRemove) await Job.deleteOne({ _id: job._id });
+              if (job.opts?.removeOnComplete || job.opts?.removeOnFail) await Job.deleteOne({ _id: job._id });
               else await Job.updateOne({ _id: job._id }, { $set: { status: "completed", result } });
-              console.log(`✅ Completed job ${job.name} (${job._id})`);
             } catch (err: any) {
-              console.error(`❌ Failed job ${job.name} (${job._id}):`, err.message);
-              const shouldRemove = job.opts?.removeOnFail || job.opts?.removeOnComplete;
-              if (shouldRemove) await Job.deleteOne({ _id: job._id });
-              else await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
+              await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
             }
           } else { await new Promise((r) => setTimeout(r, 1000)); }
-        } catch (err) {
-          console.error(`Polling error for ${queueName}:`, err);
-          await new Promise((r) => setTimeout(r, 2000));
-        }
+        } catch (err) { await new Promise((r) => setTimeout(r, 2000)); }
       }
     })();
   }
 }
 
 // ============================================================================
-// 1.5 CAMPAIGN WORKER
+// CAMPAIGN WORKER (With Pause / Stop Logic)
 // ============================================================================
 
 async function startCampaignWorker() {
-  
   console.log('🚀 Worker started for queue: campaign-processing (Concurrency: 1, Rate: 2 chunks/sec = 20 msgs/sec)');
 
   while (true) {
@@ -106,7 +75,28 @@ async function startCampaignWorker() {
       ).lean();
 
       if (job) {
-        console.log(`▶️ Processing chunk ${job.data.startIdx}-${job.data.endIdx} (${job._id})`);
+        // ✅ FIX: Check Campaign Status before processing
+        const campaign = await Campaign.findById(job.data.campaignId).select("status").lean();
+        
+        if (!campaign) {
+          await Job.deleteOne({ _id: job._id }); // Campaign deleted, discard job
+          continue;
+        }
+
+        if (campaign.status === "paused") {
+          // Put it back to pending and wait 5 seconds before checking again
+          await Job.updateOne({ _id: job._id }, { $set: { status: "pending", lockedAt: null } });
+          await new Promise(r => setTimeout(r, 5000));
+          continue;
+        }
+
+        if (campaign.status === "stopped" || campaign.status === "completed") {
+          // Discard the job entirely
+          await Job.deleteOne({ _id: job._id });
+          continue;
+        }
+
+        // If status is "running", process the chunk
         try {
           await processCampaignChunk(job.data);
           await Job.deleteOne({ _id: job._id });
@@ -125,160 +115,37 @@ async function startCampaignWorker() {
 }
 
 // ============================================================================
-// 1.6 INACTIVITY TIMER WORKER ✅
+// INACTIVITY TIMER WORKER
 // ============================================================================
 
-async function sendInactivityMessage(accessToken: string, phoneNumberId: string, phone: string, message: string) {
-  try {
-    const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "text", text: { body: message, preview_url: true } }),
-    });
-    const data = await res.json();
-    if (!res.ok) console.error("❌ Inactivity message failed:", JSON.stringify(data));
-    else console.log(`✅ Inactivity message sent to ${phone}`);
-  } catch (err) { console.error("❌ Inactivity message error:", err); }
-}
-
 async function startInactivityWorker() {
-  console.log("🚀 Worker started for queue: workflow-inactivity");
   while (true) {
     try {
       await ensureDbConnected();
       const job = await Job.findOneAndUpdate(
-        {
-          queue: "workflow-inactivity", status: "pending",
-          $expr: { $lt: [{ $add: ["$createdAt", { $multiply: [{ $ifNull: ["$data.delaySeconds", 30] }, 1000] }] }, new Date()] }
-        },
+        { queue: "workflow-inactivity", status: "pending", $expr: { $lt: [{ $add: ["$createdAt", { $multiply: [{ $ifNull: ["$data.delaySeconds", 30] }, 1000] }] }, new Date()] } },
         { $set: { status: "processing", lockedAt: new Date() } },
         { sort: { createdAt: 1 }, returnDocument: "after" }
       ).lean();
-
       if (job) {
-        console.log(`▶️ Processing inactivity job for ${job.data.phone}`);
         try {
           const data = job.data;
           const session = await Session.findOne({ phone: data.phone, userId: data.userId });
-          if (session && session.formId) {
+          if (session && session.formId) { await Job.deleteOne({ _id: job._id }); }
+          else if (data.sentCount < data.repeatCount) {
+            await fetch(`https://graph.facebook.com/v21.0/${data.phoneNumberId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${data.accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ messaging_product: "whatsapp", to: data.phone, type: "text", text: { body: data.message, preview_url: true } }) });
+            await Message.create({ userId: data.userId, phone: data.phone, text: data.message, direction: "out", messageType: "text", status: "sent", whatsappPhoneNumberId: data.phoneNumberId });
+            if (data.sentCount + 1 < data.repeatCount) await Job.create({ queue: "workflow-inactivity", name: "send-inactivity-message", data: { ...data, sentCount: data.sentCount + 1 }, status: "pending", createdAt: new Date() });
             await Job.deleteOne({ _id: job._id });
-          } else if (data.sentCount < data.repeatCount) {
-            await sendInactivityMessage(data.accessToken, data.phoneNumberId, data.phone, data.message);
-            await Message.create({
-              userId: data.userId, phone: data.phone, text: data.message,
-              direction: "out", messageType: "text", status: "sent",
-              whatsappPhoneNumberId: data.phoneNumberId, senderNumber: data.phoneNumberId,
-            });
-            if (data.sentCount + 1 < data.repeatCount) {
-              await Job.create({
-                queue: "workflow-inactivity", name: "send-inactivity-message",
-                data: { ...data, sentCount: data.sentCount + 1 },
-                status: "pending", createdAt: new Date(),
-              });
-            }
-            await Job.deleteOne({ _id: job._id });
-            console.log(`✅ Inactivity job completed for ${data.phone}`);
-          } else {
-            await Job.deleteOne({ _id: job._id });
-          }
-        } catch (err: any) {
-          console.error(`❌ Inactivity job failed:`, err.message);
-          await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
-        }
+          } else { await Job.deleteOne({ _id: job._id }); }
+        } catch (err: any) { await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } }); }
         await new Promise(r => setTimeout(r, 1000));
       } else { await new Promise(r => setTimeout(r, 2000)); }
-    } catch (err) {
-      console.error("Polling error for workflow-inactivity:", err);
-      await new Promise(r => setTimeout(r, 2000));
-    }
+    } catch (err) { await new Promise(r => setTimeout(r, 2000)); }
   }
 }
 
-// ============================================================================
-// 2. HELPER FUNCTIONS
-// ============================================================================
-
-function cleanStr(val: any): string {
-  if (val == null) return "";
-  let s = String(val).trim();
-  if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1);
-  if (s.startsWith("'") && s.endsWith("'")) s = s.slice(1, -1);
-  s = s.replace(/\\"/g, '"').replace(/\\'/g, "'");
-  return s;
-}
-
-async function fetchTemplateHeaderFormat(phoneNumberId: string, accessToken: string, templateName: string, languageCode: string, userProvidedMediaType: string): Promise<string> {
-  const valid = ["image", "video", "document"];
-  const clean = cleanStr(userProvidedMediaType).toLowerCase().trim();
-  try {
-    let res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}&language=${encodeURIComponent(languageCode)}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (res.ok) { const d = await res.json(); const t = d?.data?.[0]; if (t?.components) for (const c of t.components) if (c.type === "HEADER") return (c.format || "none").toUpperCase(); }
-    res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (res.ok) { const d = await res.json(); const t = d?.data?.[0]; if (t?.components) for (const c of t.components) if (c.type === "HEADER") return (c.format || "none").toUpperCase(); }
-  } catch (e) {}
-  if (valid.includes(clean)) return clean.toUpperCase();
-  return "none";
-}
-
-function buildCampaignComponents(headerFormat: string, variables: string[], mediaUrl: string): any[] {
-  const comps: any[] = [];
-  const valid = ["image", "video", "document"];
-  if (valid.includes(headerFormat.toLowerCase()) && mediaUrl) {
-    const hType = headerFormat.toLowerCase();
-    const mObj: any = mediaUrl.startsWith("http") ? { link: mediaUrl } : { id: mediaUrl };
-    const param: any = { type: hType };
-    if (hType === "image") param.image = mObj;
-    else if (hType === "video") param.video = mObj;
-    else if (hType === "document") param.document = { ...mObj, filename: "document.pdf" };
-    comps.push({ type: "header", parameters: [param] });
-  }
-  if (variables.length > 0) {
-    const params = new Array(variables.length);
-    for (let i = 0; i < variables.length; i++) params[i] = { type: "text", text: String(variables[i]) };
-    comps.push({ type: "body", parameters: params });
-  }
-  return comps;
-}
-
-// ============================================================================
-// 3. PRICE CACHE OPTIMIZATION
-// ============================================================================
-
-const priceMapCache = new Map<string, { map: Map<string, number>, defaultPrice: number, timestamp: number }>();
-const PRICE_CACHE_TTL = 5 * 60 * 1000;
-
-function getOptimizedPriceForPhone(payerId: string, payer: any, phone: string, category: string): number {
-  const now = Date.now();
-  let cache = priceMapCache.get(payerId);
-  if (!cache || (now - cache.timestamp > PRICE_CACHE_TTL)) {
-    const map = new Map<string, number>();
-    const defaultPrice = getPriceForCategory(payer, category);
-    if (payer.enabledCountries && payer.enabledCountries.length > 0) {
-      payer.enabledCountries.forEach((c: any) => {
-        if (c.code) {
-          const cleanCode = c.code.replace(/\D/g, '');
-          map.set(`M-${cleanCode}`, c.priceMarketing ?? defaultPrice);
-          map.set(`U-${cleanCode}`, c.priceUtility ?? defaultPrice);
-          map.set(`A-${cleanCode}`, c.priceAuthentication ?? defaultPrice);
-        }
-      });
-    }
-    cache = { map, defaultPrice, timestamp: now };
-    priceMapCache.set(payerId, cache);
-  }
-  const catPrefix = category.charAt(0) + '-';
-  for (let i = 1; i <= 4; i++) {
-    if (phone.length < i) break;
-    const prefix = phone.substring(0, i);
-    const price = cache.map.get(catPrefix + prefix);
-    if (price !== undefined) return price;
-  }
-  return cache.defaultPrice;
-}
-
-// ============================================================================
-// 4. WORKER LOGIC: Process Campaign Chunk
-// ============================================================================
+function cleanStr(val: any): string { if (val == null) return ""; let s = String(val).trim(); if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1); if (s.startsWith("'") && s.endsWith("'")) s = s.slice(1, -1); s = s.replace(/\\"/g, '"').replace(/\\'/g, "'"); return s; }
 
 async function processCampaignChunk(data: any) {
   const { campaignId, userId, payerId, startIdx, endIdx, PHONE_NUMBER_ID, ACCESS_TOKEN, pricePerMessage } = data;
@@ -287,38 +154,24 @@ async function processCampaignChunk(data: any) {
 
   const payer = await User.findById(payerId).lean();
   if (!payer) throw new Error("User not found");
-
   const campaign = await Campaign.findById(campaignId).lean();
   if (!campaign) throw new Error("Campaign not found");
   if (["paused", "stopped", "completed"].includes(campaign.status)) return;
 
-  const cTName = cleanStr(campaign.templateName).toLowerCase();
-  const cLang = cleanStr(campaign.languageCode || "en");
-  const cMedia = cleanStr(campaign.mediaType || "none");
-
   let thf = campaign.templateHeaderFormat || "";
-  if (!thf) {
-    thf = await fetchTemplateHeaderFormat(PHONE_NUMBER_ID, ACCESS_TOKEN, cTName, cLang, cMedia);
-    await Campaign.updateOne({ _id: campaignId }, { $set: { templateHeaderFormat: thf } });
-  }
+  if (!thf) { thf = await fetchTemplateHeaderFormat(PHONE_NUMBER_ID, ACCESS_TOKEN, cleanStr(campaign.templateName).toLowerCase(), cleanStr(campaign.languageCode || "en"), cleanStr(campaign.mediaType || "none")); await Campaign.updateOne({ _id: campaignId }, { $set: { templateHeaderFormat: thf } }); }
+  
+  const tc = { templateName: cleanStr(campaign.templateName).toLowerCase(), languageCode: cleanStr(campaign.languageCode || "en"), templateCategory: campaign.templateCategory, generateOtp: campaign.generateOtp, otpLength: campaign.otpLength || 4, mediaUrl: campaign.mediaUrl };
 
-  const tc = {
-    templateName: cTName, languageCode: cLang, templateCategory: campaign.templateCategory,
-    generateOtp: campaign.generateOtp, otpLength: campaign.otpLength || 4, mediaUrl: campaign.mediaUrl
-  };
-
-  // ✅ FIX: Fetch CampaignReport documents for this chunk
   const reports = await CampaignReport.find({ campaignId }).skip(startIdx).limit(chunkSize).lean();
   const metaPromises: Promise<any>[] = [];
   const reportIds: string[] = [];
   const batchPhones: string[] = [];
-  const batchVariables: string[][] = [];
 
   for (let i = 0; i < reports.length; i++) {
     const report = reports[i];
     if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(report.status)) continue;
 
-    // Claim the report
     await CampaignReport.updateOne({ _id: report._id, status: "pending" }, { $set: { status: "queued" } });
 
     let cv: string[] = [];
@@ -333,7 +186,6 @@ async function processCampaignChunk(data: any) {
     metaPromises.push(metaSenderWorker(report.phone, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
     reportIds.push(report._id.toString());
     batchPhones.push(report.phone);
-    batchVariables.push(cv);
   }
 
   const metaResults = await Promise.allSettled(metaPromises);
@@ -385,10 +237,6 @@ async function processCampaignChunk(data: any) {
     }
   } catch (e) {}
 }
-
-// ============================================================================
-// 5. META API WORKER FUNCTION
-// ============================================================================
 
 async function metaSenderWorker(phone: string, variables: string[], tc: any, token: string, pnId: string, thf: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
   let comps = buildCampaignComponents(thf, variables, tc.mediaUrl || "");
@@ -457,9 +305,38 @@ async function metaSenderWorker(phone: string, variables: string[], tc: any, tok
   return { status: "failed", error: "Exited retry loop unexpectedly" };
 }
 
-// ============================================================================
-// 6. COUNTS WORKER
-// ============================================================================
+async function fetchTemplateHeaderFormat(phoneNumberId: string, accessToken: string, templateName: string, languageCode: string, userProvidedMediaType: string): Promise<string> {
+  const valid = ["image", "video", "document"];
+  const clean = cleanStr(userProvidedMediaType).toLowerCase().trim();
+  try {
+    let res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}&language=${encodeURIComponent(languageCode)}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (res.ok) { const d = await res.json(); const t = d?.data?.[0]; if (t?.components) for (const c of t.components) if (c.type === "HEADER") return (c.format || "none").toUpperCase(); }
+    res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (res.ok) { const d = await res.json(); const t = d?.data?.[0]; if (t?.components) for (const c of t.components) if (c.type === "HEADER") return (c.format || "none").toUpperCase(); }
+  } catch (e) {}
+  if (valid.includes(clean)) return clean.toUpperCase();
+  return "none";
+}
+
+function buildCampaignComponents(headerFormat: string, variables: string[], mediaUrl: string): any[] {
+  const comps: any[] = [];
+  const valid = ["image", "video", "document"];
+  if (valid.includes(headerFormat.toLowerCase()) && mediaUrl) {
+    const hType = headerFormat.toLowerCase();
+    const mObj: any = mediaUrl.startsWith("http") ? { link: mediaUrl } : { id: mediaUrl };
+    const param: any = { type: hType };
+    if (hType === "image") param.image = mObj;
+    else if (hType === "video") param.video = mObj;
+    else if (hType === "document") param.document = { ...mObj, filename: "document.pdf" };
+    comps.push({ type: "header", parameters: [param] });
+  }
+  if (variables.length > 0) {
+    const params = new Array(variables.length);
+    for (let i = 0; i < variables.length; i++) params[i] = { type: "text", text: String(variables[i]) };
+    comps.push({ type: "body", parameters: params });
+  }
+  return comps;
+}
 
 async function generateCountsData(userId: string, page: number, limit: number, cacheKey: string, lockKey: string) {
   try {
@@ -475,7 +352,7 @@ async function generateCountsData(userId: string, page: number, limit: number, c
           phoneNumbers: { $slice: [{ $ifNull: ["$phoneNumbers", []] }, 15] }, names: { $slice: [{ $ifNull: ["$names", []] }, 15] },
           additionalFieldsData: { $slice: [{ $ifNull: ["$additionalFieldsData", []] }, 15] }, mediaUrl: 1, mediaType: 1, languageCode: 1,
           status: 1, totalMessages: 1, totalDeducted: 1, scheduledAt: 1, createdAt: 1, additionalFields: 1, sentCount: 1, failedCount: 1, skippedCount: 1,
-          liveStats: 1 // ✅ Now uses the liveStats field calculated by statsWorker
+          liveStats: 1
         }
       }
     ]).allowDiskUse(false);
@@ -502,11 +379,4 @@ async function generateCountsData(userId: string, page: number, limit: number, c
   }
 }
 
-// ============================================================================
-// SHUTDOWN
-// ============================================================================
-
-process.on('SIGTERM', async () => {
-  console.log('Main Worker process shutting down...');
-  process.exit(0);
-});
+process.on('SIGTERM', async () => { console.log('Main Worker process shutting down...'); process.exit(0); });
