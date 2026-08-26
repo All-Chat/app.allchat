@@ -253,7 +253,11 @@ export default function CampaignList() {
     }
   };
 
-  const loadCampaigns = async () => {
+    const loadCampaigns = async (isRetry = false) => {
+    if (!isRetry) {
+      setLoadingCampaigns(true);
+    }
+
     try {
       const res = await fetch("/api/campaigns/billing", { cache: "no-store" });
       if (res.status === 401) {
@@ -261,11 +265,21 @@ export default function CampaignList() {
         return;
       }
       const data = await res.json();
+      
+      // ✅ FIX: If worker is still building cache, wait 2s and retry automatically
+      if (data.building) {
+        await new Promise(r => setTimeout(r, 2000));
+        return loadCampaigns(true); // Retry
+      }
+
       if (data.success && Array.isArray(data.campaigns)) {
         setCampaigns(data.campaigns);
+      } else {
+        setCampaigns([]); // Ensure it's an array to prevent map errors
       }
     } catch (err) {
       console.error("Failed to load campaigns", err);
+      setCampaigns([]); // Prevent crash on error
     } finally {
       setLoadingCampaigns(false);
     }
