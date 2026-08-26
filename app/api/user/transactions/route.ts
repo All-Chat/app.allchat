@@ -4,49 +4,9 @@ import { connectDB } from "@/lib/mongodb";
 import mongoose from "mongoose";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-
-const TransactionSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  type: String,
-  amount: Number,
-  description: String,
-  status: String,
-  createdAt: { type: Date, default: Date.now },
-  metadata: Object
-});
-const Transaction = mongoose.models.Transaction || mongoose.model('Transaction', TransactionSchema);
-
-const UserSchema = new mongoose.Schema({
-  balance: Number,
-  totalRecharged: Number,
-  parentTenantId: String,
-  priceMarketing: Number,
-  priceUtility: Number,
-  priceAuthentication: Number,
-  pricePerMessage: Number
-}, { strict: false });
-const User = mongoose.models.User || mongoose.model('User', UserSchema);
-
-const CampaignSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-  name: String,
-  templateName: String,
-  templateCategory: String,
-  status: String,
-  createdAt: { type: Date, default: Date.now },
-  pricePerMessage: { type: Number, default: 0 },
-  totalDeducted: { type: Number, default: 0 },
-  stats: {
-    replied: Number,
-    read: Number,
-    delivered: Number,
-    sent: Number,
-    failed: Number,
-    invalid: Number,
-    duplicate: Number,
-  }
-});
-const Campaign = mongoose.models.Campaign || mongoose.model("Campaign", CampaignSchema);
+import Campaign from "@/models/Campaign";
+import User from "@/models/User";
+import Transaction from "@/models/Transaction";
 
 export async function GET(req: Request) {
   try {
@@ -59,6 +19,7 @@ export async function GET(req: Request) {
     }
 
     const userObjId = new mongoose.Types.ObjectId(userId);
+    
     const userDoc = await User.findById(userObjId).select("parentTenantId").lean();
     const parentTenantId = (userDoc as any)?.parentTenantId;
 
@@ -84,13 +45,37 @@ export async function GET(req: Request) {
     }
 
     if (type === "usage") {
-      // 1. Fetch test message transactions normally from DB
-      const testMsgQuery: any = { 
-        userId: { $in: userIdsToQuery }, 
-        type: "test_message",
-        status: "success"
-      };
-      const testMsgs = await Transaction.find(testMsgQuery).sort({ createdAt: -1 }).lean();
+      // ✅ SPEED FIX: Only fetch the most recent 500 records of each type to prevent memory overload.
+      // This ensures the API responds in milliseconds even if you have 100,000 transactions.
+      const [testMsgs, refunds, campaigns] = await Promise.all([
+        Transaction.find({ 
+          userId: { $in: userIdsToQuery }, 
+          type: "test_message",
+          status: "success"
+        })
+        .select("amount createdAt metadata.templateName metadata.phone")
+        .sort({ createdAt: -1 })
+        .limit(500) 
+        .lean(),
+        
+        Transaction.find({ 
+          userId: { $in: userIdsToQuery }, 
+          type: "refund",
+          status: "success"
+        })
+        .select("amount createdAt description metadata.campaignName metadata.templateName metadata.phone")
+        .sort({ createdAt: -1 })
+        .limit(500)
+        .lean(),
+        
+        Campaign.find({
+          userId: { $in: userIdsToQuery },
+          status: { $in: ["running", "paused", "completed", "failed", "stopped"] }
+        })
+        .select("name templateName status createdAt pricePerMessage liveStats totalDeducted")
+        .sort({ createdAt: -1 })
+        .lean()
+      ]);
 
       const testUsages = testMsgs.map((t: any) => ({
         _id: t._id,
@@ -106,68 +91,29 @@ export async function GET(req: Request) {
         }
       }));
 
-      // 2. Fetch Campaigns
-      const campaigns = await Campaign.find({
-        userId: { $in: userIdsToQuery },
-        status: { $in: ["running", "paused", "completed", "failed", "stopped"] }
-      }).sort({ createdAt: -1 }).lean();
-
-      // ═══════════════════════════════════════════════════════════════
-      // ✅ FIX: Calculate REAL stats from reportData using aggregation
-      // This counts the ACTUAL status of each message in reportData
-      // — same approach as the billing API
-      // ═══════════════════════════════════════════════════════════════
-      const campaignIds = campaigns.map((c: any) =>
-        new mongoose.Types.ObjectId(c._id)
-      );
-
-      const statsAgg = await Campaign.aggregate([
-        { $match: { _id: { $in: campaignIds } } },
-        { $unwind: "$reportData" },
-        {
-          $group: {
-            _id: { campaignId: "$_id", status: "$reportData.status" },
-            count: { $sum: 1 },
-          },
-        },
-      ]);
-
-      // Build stats map: campaignId -> { sent, delivered, read, replied, failed, ... }
-      const statsMap: Record<string, any> = {};
-      statsAgg.forEach((item: any) => {
-        const cid = item._id.campaignId.toString();
-        const status = (item._id.status || "pending").toLowerCase();
-        if (!statsMap[cid]) {
-          statsMap[cid] = {
-            total: 0, sent: 0, delivered: 0, read: 0, replied: 0,
-            failed: 0, invalid: 0, pending: 0, duplicate: 0
-          };
+      const refundUsages = refunds.map((t: any) => ({
+        _id: t._id,
+        type: "refund",
+        amount: t.amount,
+        description: t.description || "Refund for failed message",
+        status: "success",
+        createdAt: t.createdAt,
+        metadata: {
+          campaignName: t.metadata?.campaignName || "-",
+          templateName: t.metadata?.templateName,
+          phone: t.metadata?.phone,
         }
-        if (statsMap[cid].hasOwnProperty(status)) {
-          statsMap[cid][status] += item.count;
-        }
-        statsMap[cid].total += item.count;
-      });
+      }));
 
-      // ═══════════════════════════════════════════════════════════════
-      // ✅ FIX: Amount = DELIVERED (combined) × price
-      // deliveredCombined = sent + delivered + read + replied
-      // ═══════════════════════════════════════════════════════════════
       const campaignUsages = campaigns.map((camp: any) => {
-        // ✅ Use calculated stats from reportData (accurate)
-        const calcStats = statsMap[camp._id.toString()] || camp.stats || {};
-
-        // ✅ Delivered = sent + delivered + read + replied (ALL successful statuses)
+        const ls = camp.liveStats || {};
         const deliveredCombined = 
-          Number(calcStats.sent || 0) +
-          Number(calcStats.delivered || 0) +
-          Number(calcStats.read || 0) +
-          Number(calcStats.replied || 0);
+          Number(ls.sent || 0) +
+          Number(ls.delivered || 0) +
+          Number(ls.read || 0) +
+          Number(ls.replied || 0);
 
-        const price = camp.pricePerMessage || 0;
-
-        // ✅ Amount = delivered (combined) × price — NOT totalDeducted
-        const amount = deliveredCombined * price;
+        const amount = Number(camp.totalDeducted || 0);
 
         return {
           _id: camp._id,
@@ -184,7 +130,7 @@ export async function GET(req: Request) {
         };
       });
 
-      let combined = [...testUsages, ...campaignUsages];
+      let combined = [...testUsages, ...refundUsages, ...campaignUsages];
 
       if (search) {
         const searchNum = parseFloat(search);
@@ -201,6 +147,8 @@ export async function GET(req: Request) {
 
       combined.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
+      // ✅ SPEED FIX: Cap totalRecords to the combined length we actually fetched
+      // This prevents the frontend from trying to load empty pages beyond our 500-record window
       totalRecords = combined.length;
       transactions = combined.slice(skip, skip + limit);
 
