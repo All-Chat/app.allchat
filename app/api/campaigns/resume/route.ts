@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Campaign from "@/models/Campaign";
+import CampaignReport from "@/models/CampaignReport";
 import { Job } from "@/lib/queue";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -25,6 +26,12 @@ export async function POST(req: Request) {
     await Job.updateMany(
       { queue: "campaign-processing", "data.campaignId": campaignId, status: "failed" },
       { $set: { status: "pending", lockedAt: null } }
+    );
+
+    // ✅ CRITICAL FIX: Reset any "queued" reports back to "pending" so they actually get sent!
+    await CampaignReport.updateMany(
+      { campaignId, status: "queued" },
+      { $set: { status: "pending" } }
     );
 
     return NextResponse.json({ success: true, message: "Campaign resumed. Worker will continue sending." });
