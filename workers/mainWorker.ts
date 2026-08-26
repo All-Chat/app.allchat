@@ -60,7 +60,7 @@ async function startWorker(queueName: string, processor: (job: any) => Promise<a
 }
 
 // ============================================================================
-// CAMPAIGN WORKER (With Pause / Stop Logic)
+// CAMPAIGN WORKER
 // ============================================================================
 
 async function startCampaignWorker() {
@@ -75,7 +75,6 @@ async function startCampaignWorker() {
       ).lean();
 
       if (job) {
-        // Check Campaign Status before processing
         const campaign = await Campaign.findById(job.data.campaignId).select("status").lean();
         
         if (!campaign) {
@@ -94,7 +93,6 @@ async function startCampaignWorker() {
           continue;
         }
 
-        // If status is "running", process the chunk
         try {
           await processCampaignChunk(job.data);
           await Job.deleteOne({ _id: job._id });
@@ -147,7 +145,6 @@ function cleanStr(val: any): string { if (val == null) return ""; let s = String
 
 async function processCampaignChunk(data: any) {
   const { campaignId, userId, payerId, startIdx, endIdx, PHONE_NUMBER_ID, ACCESS_TOKEN, pricePerMessage } = data;
-  const chunkSize = endIdx - startIdx;
   await ensureDbConnected();
 
   const payer = await User.findById(payerId).lean();
@@ -161,22 +158,24 @@ async function processCampaignChunk(data: any) {
   
   const tc = { templateName: cleanStr(campaign.templateName).toLowerCase(), languageCode: cleanStr(campaign.languageCode || "en"), templateCategory: campaign.templateCategory, generateOtp: campaign.generateOtp, otpLength: campaign.otpLength || 4, mediaUrl: campaign.mediaUrl };
 
-  // ✅ CRITICAL FIX: Query ONLY for pending documents. Do not use skip/limit, as it causes duplicate fetches and leaves 50% behind.
-  const reports = await CampaignReport.find({ campaignId, status: "pending" }).limit(chunkSize).lean();
+  // ✅ CRITICAL FIX: Query deterministically by the chunk index range. This guarantees variables map perfectly.
+  const reports = await CampaignReport.find({ campaignId, index: { $gte: startIdx, $lt: endIdx } }).lean();
   
   const metaPromises: Promise<any>[] = [];
   const reportIds: string[] = [];
   const batchPhones: string[] = [];
-  const batchVariables: string[][] = [];
 
   for (let i = 0; i < reports.length; i++) {
     const report = reports[i];
+    
+    // If already processed, skip it
+    if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(report.status)) continue;
 
     // Claim the report
     await CampaignReport.updateOne({ _id: report._id, status: "pending" }, { $set: { status: "queued" } });
 
     let cv: string[] = [];
-    const absoluteIndex = startIdx + i; // Used to map variables correctly
+    const absoluteIndex = report.index; // ✅ Use the exact stored index!
 
     if (campaign.templateCategory === "AUTHENTICATION") {
       if (campaign.generateOtp || !campaign.mappedVariables?.[absoluteIndex]?.length) {
@@ -189,7 +188,6 @@ async function processCampaignChunk(data: any) {
     metaPromises.push(metaSenderWorker(report.phone, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
     reportIds.push(report._id.toString());
     batchPhones.push(report.phone);
-    batchVariables.push(cv);
   }
 
   const metaResults = await Promise.allSettled(metaPromises);
