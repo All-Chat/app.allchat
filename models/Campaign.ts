@@ -22,38 +22,10 @@ const CampaignSchema = new mongoose.Schema({
   additionalFields: { type: [String], default: [] },
   additionalFieldsData: { type: [[String]], default: [] },
   
-  reportData: {
-    type: [
-      {
-        phone: String,
-        name: String,
-        status: String,
-        sentWamid: String,
-        error: String,
-        replies: [String],
-        reply: String,
-        deliveredAt: Date, 
-        readAt: Date,         
-        repliedAt: Date,      
-        replyTimes: [Date],   
-        tags: [String],
-        additionalData: { type: [String], default: [] },
-      }
-    ],
-    default: []
-  },
-  stats: {
-    replied:   { type: Number, default: 0 },
-    read:      { type: Number, default: 0 },
-    delivered: { type: Number, default: 0 },
-    sent:      { type: Number, default: 0 },
-    failed:    { type: Number, default: 0 },
-    invalid:   { type: Number, default: 0 },
-    duplicate: { type: Number, default: 0 },
-  },
-  
   mediaUrl: { type: String, default: null },
   mediaType: { type: String, default: null },
+  templateHeaderFormat: { type: String, default: "" },
+  
   status: {
     type: String,
     enum: ["saved", "scheduled", "running", "paused", "stopped", "completed", "failed"],
@@ -65,12 +37,14 @@ const CampaignSchema = new mongoose.Schema({
   sentCount: { type: Number, default: 0 },
   failedCount: { type: Number, default: 0 },
   
-  // ✅ UPDATED: Added pricePerMessage to lock in the exact price
   pricePerMessage: { type: Number, default: 0 },
   totalDeducted: { type: Number, default: 0 },
+  liveStats: { type: Object, default: {} }, // ✅ Stores calculated stats
   
   sheetUrl: { type: String, default: null },
   standaloneSheetUrl: { type: String, default: null },
+  reportSpreadsheetUrl: { type: String, default: null },
+  reportSpreadsheetId: { type: String, default: null },
 
   createdAt: { type: Date, default: Date.now },
 });
