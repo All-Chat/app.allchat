@@ -8,7 +8,7 @@ import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getPriceForCategory } from "@/lib/billing";
-import { campaignQueue } from "@/lib/queue";
+import { campaignQueue, Job } from "@/lib/queue";
 
 export const runtime = "nodejs";
 
@@ -37,14 +37,6 @@ export async function POST(req: Request) {
 
     if (["completed", "stopped"].includes(campaign.status)) {
       return NextResponse.json({ success: true, message: "Campaign already completed or stopped." });
-    }
-
-    if (campaign.status === "running") {
-      const activeCount = await campaignQueue.getActiveCount();
-      const waitingCount = await campaignQueue.getWaitingCount();
-      if (activeCount > 0 || waitingCount > 0) {
-        return NextResponse.json({ success: true, message: "Campaign is already running and has jobs in progress." });
-      }
     }
 
     const user = await User.findById(userId);
@@ -100,7 +92,7 @@ export async function POST(req: Request) {
       { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID, pricePerMessage: bPrice } }
     );
 
-    // ✅ CRITICAL FIX: Ensure ALL phone numbers have a CampaignReport document
+    // ✅ Ensure ALL phone numbers have a CampaignReport document
     const existingReports = await CampaignReport.find({ campaignId }).select("phone").lean();
     const existingPhones = new Set(existingReports.map(r => r.phone));
     
@@ -133,34 +125,18 @@ export async function POST(req: Request) {
       { $set: { status: "pending" } }
     );
 
-    const CHUNK_SIZE = 10;
-    const totalNumbers = campaign.phoneNumbers.length;
-    const jobs = [];
-
-    for (let i = 0; i < totalNumbers; i += CHUNK_SIZE) {
-      const endIdx = Math.min(i + CHUNK_SIZE, totalNumbers);
-
-      jobs.push({
-        name: 'send-chunk',
-        data: {
-          campaignId,
-          userId,
-          payerId: payer._id.toString(),
-          startIdx: i,
-          endIdx: endIdx,
-          PHONE_NUMBER_ID,
-          ACCESS_TOKEN,
-          pricePerMessage: bPrice,
-        },
-        opts: {
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 2000 },
-          jobId: `${campaignId}-chunk-${i}`,
-        }
-      });
-    }
-
-    await campaignQueue.addBulk(jobs);
+    // ✅ CRITICAL FIX: Create only ONE master job. The worker will loop inside this job.
+    // Delete any old master jobs first
+    await Job.deleteMany({ queue: "campaign-processing", "data.campaignId": campaignId });
+    
+    await campaignQueue.add('process-campaign', {
+      campaignId,
+      userId,
+      payerId: payer._id.toString(),
+      PHONE_NUMBER_ID,
+      ACCESS_TOKEN,
+      pricePerMessage: bPrice,
+    });
 
     return NextResponse.json({ success: true, message: "Campaign started in background queue!" });
   } catch (error: any) {
