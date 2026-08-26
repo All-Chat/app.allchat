@@ -253,7 +253,7 @@ export default function CampaignList() {
     }
   };
 
-    const loadCampaigns = async (isRetry = false) => {
+  const loadCampaigns = async (isRetry = false) => {
     if (!isRetry) {
       setLoadingCampaigns(true);
     }
@@ -266,20 +266,19 @@ export default function CampaignList() {
       }
       const data = await res.json();
       
-      // ✅ FIX: If worker is still building cache, wait 2s and retry automatically
       if (data.building) {
         await new Promise(r => setTimeout(r, 2000));
-        return loadCampaigns(true); // Retry
+        return loadCampaigns(true);
       }
 
       if (data.success && Array.isArray(data.campaigns)) {
         setCampaigns(data.campaigns);
       } else {
-        setCampaigns([]); // Ensure it's an array to prevent map errors
+        setCampaigns([]);
       }
     } catch (err) {
       console.error("Failed to load campaigns", err);
-      setCampaigns([]); // Prevent crash on error
+      setCampaigns([]);
     } finally {
       setLoadingCampaigns(false);
     }
@@ -778,6 +777,8 @@ export default function CampaignList() {
                 );
               })()}
 
+              {/* ✅ FIX: Removed Audience Preview Block Entirely */}
+
               {viewCampaign.variables?.length > 0 && (
                 <div>
                   <span className="text-slate-500 block mb-1">Variables:</span>
@@ -790,22 +791,6 @@ export default function CampaignList() {
                   </div>
                 </div>
               )}
-
-              <div>
-                <span className="text-slate-500 block mb-1">Audience Preview:</span>
-                <div className="bg-slate-50 p-2 rounded-lg text-xs font-mono max-h-20 overflow-y-auto border border-slate-100 flex flex-wrap items-center gap-1">
-                  {viewCampaign.phoneNumbers?.slice(0, 15).map((p: string, i: number) => (
-                    <span key={i} className="inline-block mr-2 mb-1 bg-white px-1.5 py-0.5 rounded border border-slate-200">
-                      {p}
-                    </span>
-                  ))}
-                  {viewCampaign.totalMessages > 15 && (
-                    <span className="text-slate-400 font-bold ml-1 inline-block mb-1">
-                      +{viewCampaign.totalMessages - 15} more numbers
-                    </span>
-                  )}
-                </div>
-              </div>
 
               <div className="border-t border-slate-100 pt-4">
                 <label className="text-xs font-bold text-slate-700 mb-2 block flex items-center gap-1.5">
