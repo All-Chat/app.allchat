@@ -641,25 +641,32 @@ export default function ReportsPage() {
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                                    <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                     <div className="relative flex-1 sm:flex-none">
                       <Search className="absolute left-2.5 top-2.5 w-4 h-4 text-slate-400" />
                       <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name/phone..." className="w-full sm:w-48 pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none" />
                     </div>
                     
-                    <button onClick={() => fetchReportData(selectedCamp._id, reportCurrentPage, true)} disabled={loadingReport} className="px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50" title="Refresh current page">
+                    <button onClick={() => selectedId && fetchReportData(selectedId, reportCurrentPage, true)} disabled={loadingReport} className="px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50" title="Refresh current page">
                       {loadingReport ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Refresh
                     </button>
 
                     <button onClick={() => setIsBriefOpen(true)} disabled={hiddenActions.includes("brief")} className={`px-3 py-2 border rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 ${hiddenActions.includes("brief") ? "bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed" : "bg-white border-indigo-200 text-indigo-600 hover:bg-indigo-50"}`}>
                       <BarChart3 size={12} /> Brief
                     </button>
-                    <button onClick={() => handleSyncSheet(selectedCamp._id)} disabled={syncingSheet || !!selectedCamp.sheetUrl || hiddenActions.includes("loadSheet")} className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed ${hiddenActions.includes("loadSheet") || selectedCamp.sheetUrl ? "bg-slate-200 text-slate-500" : "bg-indigo-500 text-white hover:bg-indigo-600"}`}>
-                      {syncingSheet ? <Loader2 size={12} className="animate-spin" /> : selectedCamp.sheetUrl ? <Check size={12} /> : <ExternalLink size={12} />} {selectedCamp.sheetUrl ? "Synced" : "Sync Sheets"}
+
+                    {/* ✅ FIX: Removed disabled condition for sheetUrl, added Update text */}
+                    <button onClick={() => handleSyncSheet(selectedCamp._id)} disabled={syncingSheet || hiddenActions.includes("loadSheet")} className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed ${hiddenActions.includes("loadSheet") ? "bg-slate-200 text-slate-500" : "bg-indigo-500 text-white hover:bg-indigo-600"}`}>
+                      {syncingSheet ? <Loader2 size={12} className="animate-spin" /> : selectedCamp.sheetUrl ? <RefreshCw size={12} /> : <ExternalLink size={12} />} 
+                      {selectedCamp.sheetUrl ? "Update Sheet" : "Sync Sheets"}
                     </button>
-                    <button onClick={() => handleCreateStandaloneSheet(selectedCamp._id)} disabled={syncingStandaloneSheet || !!selectedCamp.standaloneSheetUrl || hiddenActions.includes("generateReport")} className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed ${hiddenActions.includes("generateReport") || selectedCamp.standaloneSheetUrl ? "bg-slate-200 text-slate-500" : "bg-purple-500 text-white hover:bg-purple-600"}`}>
-                      {syncingStandaloneSheet ? <Loader2 size={12} className="animate-spin" /> : selectedCamp.standaloneSheetUrl ? <Check size={12} /> : <FileSpreadsheet size={12} />} {selectedCamp.standaloneSheetUrl ? "Exported" : "Export Report"}
+
+                    {/* ✅ FIX: Removed disabled condition for standaloneSheetUrl, added Update text */}
+                    <button onClick={() => handleCreateStandaloneSheet(selectedCamp._id)} disabled={syncingStandaloneSheet || hiddenActions.includes("generateReport")} className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed ${hiddenActions.includes("generateReport") ? "bg-slate-200 text-slate-500" : "bg-purple-500 text-white hover:bg-purple-600"}`}>
+                      {syncingStandaloneSheet ? <Loader2 size={12} className="animate-spin" /> : selectedCamp.standaloneSheetUrl ? <RefreshCw size={12} /> : <FileSpreadsheet size={12} />} 
+                      {selectedCamp.standaloneSheetUrl ? "Update Report" : "Export Report"}
                     </button>
+
                     <button onClick={downloadExcel} disabled={downloadingExcel || hiddenActions.includes("downloadExcel")} className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed ${hiddenActions.includes("downloadExcel") ? "bg-slate-200 text-slate-500" : "bg-emerald-500 text-white hover:bg-emerald-600"}`}>
                       {downloadingExcel ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />} Excel
                     </button>
