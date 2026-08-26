@@ -95,18 +95,18 @@ export async function POST(req: Request) {
     if (bPrice > 0 && (payer.balance || 0) < bPrice)
       return NextResponse.json({ success: false, message: `Insufficient balance.` }, { status: 402 });
 
-    // ✅ Lock in pricePerMessage
     await Campaign.updateOne(
       { _id: campaignId },
       { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID, pricePerMessage: bPrice } }
     );
 
-    // ✅ NEW: Initialize CampaignReport documents (1 per contact)
+    // ✅ NEW: Initialize CampaignReport documents with their exact array index
     const existingReportsCount = await CampaignReport.countDocuments({ campaignId });
     if (existingReportsCount === 0) {
       const reportsToInsert = campaign.phoneNumbers.map((phone: any, index: string | number) => ({
         campaignId: campaign._id,
         userId: campaign.userId,
+        index: index, // ✅ CRITICAL: Store the exact index
         phone,
         name: campaign.names?.[index] || "",
         additionalData: campaign.additionalFieldsData?.[index] || [],
@@ -121,7 +121,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // Divide numbers into chunks of 10
     const CHUNK_SIZE = 10;
     const totalNumbers = campaign.phoneNumbers.length;
     const jobs = [];
