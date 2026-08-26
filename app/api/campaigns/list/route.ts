@@ -24,7 +24,6 @@ export async function GET(req: Request) {
     // ==========================================
     const viewId = searchParams.get("viewId");
     if (viewId) {
-      // Silently queue the worker to update the DB cache in the background
       statsQueue.add('sync-campaign-stats', { campaignId: viewId }).catch(()=>{});
 
       const campaign = await Campaign.findOne(
@@ -33,13 +32,13 @@ export async function GET(req: Request) {
           name: 1, templateName: 1, templateCategory: 1, languageCode: 1, scheduledAt: 1,
           variables: 1, mappedVariables: 1, generateOtp: 1, otpLength: 1, mediaUrl: 1, mediaType: 1,
           totalMessages: 1, additionalFields: 1, sheetUrl: 1, standaloneSheetUrl: 1, liveStats: 1,
-          status: 1, totalDeducted: 1, sentCount: 1, failedCount: 1, currentPrice: 1, pricePerMessage: 1
+          status: 1, sentCount: 1, failedCount: 1, currentPrice: 1, pricePerMessage: 1
         }
       ).lean();
       
       if (!campaign) return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
 
-      // ✅ FIX: Calculate stats INSTANTLY on the fly so the user never waits for the worker
+      // ✅ FIX: Calculate exact stats AND exact net amount (Spend - Refunds) instantly
       const statsAgg = await CampaignReport.aggregate([
         { $match: { campaignId: new mongoose.Types.ObjectId(viewId) } },
         {
@@ -56,25 +55,38 @@ export async function GET(req: Request) {
                 then: "replied",
                 else: { $toLower: { $ifNull: ["$status", "pending"] } }
               }
-            }
+            },
+            chargedAmount: 1
           }
         },
-        { $group: { _id: "$effStatus", count: { $sum: 1 } } }
+        { 
+          $group: { 
+            _id: "$effStatus", 
+            count: { $sum: 1 },
+            totalCharged: { $sum: "$chargedAmount" } 
+          } 
+        }
       ]);
 
       const liveStats: any = { total: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0, invalid: 0, pending: 0, duplicate: 0 };
       let actualDocsCount = 0;
+      let netDeducted = 0;
+      
       statsAgg.forEach(s => {
         const status = s._id || "pending";
         if (liveStats.hasOwnProperty(status)) liveStats[status] = s.count;
         actualDocsCount += s.count;
+        netDeducted += s.totalCharged || 0;
       });
 
       liveStats.total = campaign.totalMessages || actualDocsCount;
       const processed = liveStats.sent + liveStats.delivered + liveStats.read + liveStats.replied + liveStats.failed + liveStats.invalid + liveStats.duplicate;
       liveStats.pending = Math.max(0, liveStats.total - processed);
 
-      return NextResponse.json({ success: true, campaigns: [{ ...campaign, liveStats }] });
+      return NextResponse.json({ 
+        success: true, 
+        campaigns: [{ ...campaign, liveStats, totalDeducted: netDeducted }] // ✅ Return exact net amount
+      });
     }
 
     // ==========================================
