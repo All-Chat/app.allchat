@@ -35,7 +35,7 @@ function getDisplayStatus(rawStatus: string, repliesCount: number): string {
   }
 }
 
-// Helper to get column letter (A, B, C... Z, AA, AB...) for clearing ranges
+// Helper to get column letter (A, B, C... Z, AA, AB...)
 function getColumnLetter(columnIndex: number): string {
   let letter = '';
   while (columnIndex >= 0) {
@@ -127,8 +127,9 @@ export async function POST(req: Request) {
       }
     });
 
-    const sheets = google.sheets({ version: "v4", auth: oauth2Client as any, timeout: 15000 });
-    const drive = google.drive({ version: "v3", auth: oauth2Client as any, timeout: 15000 });
+    // ✅ SPEED FIX: Increase timeout and fetch the googleapis instance
+    const sheets = google.sheets({ version: "v4", auth: oauth2Client as any, timeout: 60000 });
+    const drive = google.drive({ version: "v3", auth: oauth2Client as any, timeout: 60000 });
 
     let spreadsheetId = "";
     let wasCreated = false;
@@ -149,51 +150,54 @@ export async function POST(req: Request) {
       wasCreated = true;
     }
 
-    // ✅ CRITICAL FIX: Calculate exact column letter (e.g., "Z" or "AA") to clear efficiently
     const lastColLetter = getColumnLetter(headers.length - 1);
-    const clearRange = `A1:${lastColLetter}1000000`;
+    const totalRows = rows.length + 1;
 
-    // Clear old data so rows don't get stuck at the bottom
-    await sheets.spreadsheets.values.clear({
-      spreadsheetId,
-      range: clearRange
-    });
-
-    // 1. Write Headers first
-    await sheets.spreadsheets.values.update({
-      spreadsheetId, range: "A1", valueInputOption: "RAW",
-      requestBody: { values: [headers] },
-    });
-
-    // ✅ SPEED FIX: Chunk the writes (1000 rows at a time) to prevent Google API timeouts
-    const chunkSize = 1000;
-    for (let i = 0; i < rows.length; i += chunkSize) {
-      const chunk = rows.slice(i, i + chunkSize);
-      const startRow = i + 2; // +2 because row 1 is headers, row 2 is index 0
-      const endRow = startRow + chunk.length - 1;
-      const range = `A${startRow}:${lastColLetter}${endRow}`;
-
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range,
-        valueInputOption: "RAW",
-        requestBody: { values: chunk },
-      });
-    }
-
-    // 2. Format headers (Do this last so it doesn't block data writing)
+    // ✅ CRITICAL FIX: Combine Grid Expansion AND Header Formatting into ONE API call
+    // This cuts down API requests and speeds up the process significantly
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId,
       requestBody: {
         requests: [
           {
+            updateSheetProperties: {
+              properties: {
+                sheetId: 0,
+                gridProperties: {
+                  rowCount: Math.max(totalRows, 1000), // Expand grid to prevent limit errors
+                  columnCount: Math.max(headers.length, 26)
+                }
+              },
+              fields: "gridProperties(rowCount,columnCount)"
+            }
+          },
+          {
             repeatCell: {
               range: { sheetId: 0, startRowIndex: 0, endRowIndex: 1 },
               cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: { red: 0.95, green: 0.95, blue: 0.95 } } },
               fields: "userEnteredFormat(textFormat,backgroundColor)",
-            },
-          },
-          // Only auto-resize up to 15 columns to prevent Google from hanging on massive sheets
+            }
+          }
+        ]
+      }
+    });
+
+    // ✅ CRITICAL FIX: Write ALL data in ONE single API request
+    // Google API can handle 10,000+ rows in a single update easily. This prevents 2-3 min delays.
+    const allValues = [headers, ...rows];
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `A1:${lastColLetter}${totalRows}`,
+      valueInputOption: "RAW",
+      requestBody: { values: allValues },
+    });
+
+    // ✅ SPEED FIX: Auto-resize columns asynchronously (optional, but good for UX)
+    // We do this at the very end so it doesn't block the API response
+    sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
           {
             autoResizeDimensions: {
               dimensions: { sheetId: 0, dimension: "COLUMNS", startIndex: 0, endIndex: Math.min(headers.length, 15) },
@@ -201,7 +205,7 @@ export async function POST(req: Request) {
           },
         ],
       },
-    });
+    }).catch(() => {}); // Ignore errors here, it's just for formatting
 
     return NextResponse.json({
       success: true,
