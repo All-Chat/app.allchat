@@ -14,12 +14,12 @@ export async function GET() {
     const session = await getServerSession(authOptions);
     if (!session?.user?.id) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
 
-    const user = await User.findById(session.user.id);
+    const user = await User.findById(session.user.id).lean();
     if (!user) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
     let billingUser = user;
     if (user.parentTenantId) {
-      const parent = await User.findOne({ tenantId: user.parentTenantId });
+      const parent = await User.findOne({ tenantId: user.parentTenantId }).lean();
       if (parent) billingUser = parent;
     }
 
@@ -39,7 +39,7 @@ export async function GET() {
         googleSheetId: user.googleSheetId || null,
         hideIntegrations: user.hideIntegrations || false,
         enabledCountries: user.enabledCountries || [], 
-        hiddenSidebarLinks: user.hiddenSidebarLinks || [], // ✅ ADDED THIS LINE
+        hiddenSidebarLinks: user.hiddenSidebarLinks || [],
       },
     });
   } catch (error) {
@@ -48,7 +48,6 @@ export async function GET() {
   }
 }
 
-// POST: Request to ADD a new number
 export async function POST(req: Request) {
   try {
     await connectDB();
@@ -88,7 +87,6 @@ export async function POST(req: Request) {
   }
 }
 
-// PUT: Request to EDIT an existing number
 export async function PUT(req: Request) {
   try {
     await connectDB();
@@ -127,7 +125,6 @@ export async function PUT(req: Request) {
   }
 }
 
-// PATCH: Switch Active Number
 export async function PATCH(req: Request) {
   try {
     await connectDB();
@@ -156,7 +153,6 @@ export async function PATCH(req: Request) {
   }
 }
 
-// DELETE: Remove a WhatsApp Number
 export async function DELETE(req: Request) {
   try {
     await connectDB();
