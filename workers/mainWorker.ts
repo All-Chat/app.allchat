@@ -11,6 +11,7 @@ require('dotenv').config({ path: '.env.local' });
 
 import { connectDB } from '../lib/mongodb';
 import Campaign from '../models/Campaign';
+import CampaignReport from '../models/CampaignReport'; // ✅ NEW
 import User from '../models/User';
 import Message from '../models/Message';
 import Session from '../models/Session';
@@ -287,20 +288,13 @@ async function processCampaignChunk(data: any) {
   const payer = await User.findById(payerId).lean();
   if (!payer) throw new Error("User not found");
 
-  const campaign = await Campaign.findById(campaignId, {
-    phoneNumbers: { $slice: [startIdx, chunkSize] }, reportData: { $slice: [startIdx, chunkSize] },
-    mappedVariables: { $slice: [startIdx, chunkSize] }, templateName: 1, templateCategory: 1, languageCode: 1,
-    mediaType: 1, mediaUrl: 1, templateHeaderFormat: 1, generateOtp: 1, otpLength: 1, variables: 1, status: 1, totalMessages: 1,
-    pricePerMessage: 1 
-  }).lean();
-
+  const campaign = await Campaign.findById(campaignId).lean();
   if (!campaign) throw new Error("Campaign not found");
   if (["paused", "stopped", "completed"].includes(campaign.status)) return;
 
   const cTName = cleanStr(campaign.templateName).toLowerCase();
   const cLang = cleanStr(campaign.languageCode || "en");
   const cMedia = cleanStr(campaign.mediaType || "none");
-  const cat = (campaign.templateCategory || "MARKETING").toUpperCase();
 
   let thf = campaign.templateHeaderFormat || "";
   if (!thf) {
@@ -313,99 +307,83 @@ async function processCampaignChunk(data: any) {
     generateOtp: campaign.generateOtp, otpLength: campaign.otpLength || 4, mediaUrl: campaign.mediaUrl
   };
 
+  // ✅ FIX: Fetch CampaignReport documents for this chunk
+  const reports = await CampaignReport.find({ campaignId }).skip(startIdx).limit(chunkSize).lean();
   const metaPromises: Promise<any>[] = [];
-  const batchAbsoluteIndices: number[] = [];
+  const reportIds: string[] = [];
   const batchPhones: string[] = [];
-  const claimOps: any[] = [];
+  const batchVariables: string[][] = [];
 
-  for (let i = 0; i < chunkSize; i++) {
-    const absoluteIndex = startIdx + i;
-    const ph = campaign.phoneNumbers[i];
-    const cs = campaign.reportData[i]?.status;
-    if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(cs)) continue;
+  for (let i = 0; i < reports.length; i++) {
+    const report = reports[i];
+    if (["sent", "delivered", "read", "failed", "invalid", "queued"].includes(report.status)) continue;
 
-    claimOps.push({
-      updateOne: {
-        filter: { _id: campaignId, [`reportData.${absoluteIndex}.status`]: "pending" },
-        update: { $set: { [`reportData.${absoluteIndex}.status`]: "queued" } }
-      }
-    });
+    // Claim the report
+    await CampaignReport.updateOne({ _id: report._id, status: "pending" }, { $set: { status: "queued" } });
 
     let cv: string[] = [];
     if (campaign.templateCategory === "AUTHENTICATION") {
-      if (campaign.generateOtp || !campaign.mappedVariables?.[i]?.length) {
-        const l = campaign.otpLength || 4;
-        const min = Math.pow(10, l - 1);
-        const max = Math.pow(10, l) - 1;
+      if (campaign.generateOtp || !campaign.mappedVariables?.[startIdx + i]?.length) {
+        const l = campaign.otpLength || 4; const min = Math.pow(10, l - 1); const max = Math.pow(10, l) - 1;
         cv = [Math.floor(Math.random() * (max - min + 1) + min).toString()];
-      } else cv = campaign.mappedVariables[i];
-    } else cv = (campaign.mappedVariables?.[i]?.length > 0) ? campaign.mappedVariables[i] : (campaign.variables || []);
+      } else cv = campaign.mappedVariables[startIdx + i];
+    } else cv = (campaign.mappedVariables?.[startIdx + i]?.length > 0) ? campaign.mappedVariables[startIdx + i] : (campaign.variables || []);
 
     cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
-    metaPromises.push(metaSenderWorker(ph, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
-    batchAbsoluteIndices.push(absoluteIndex);
-    batchPhones.push(ph);
-  }
-
-  if (claimOps.length > 0) {
-    try { await Campaign.bulkWrite(claimOps); } catch (e) { console.error(`[Worker] BulkWrite claim error:`, e); }
+    metaPromises.push(metaSenderWorker(report.phone, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
+    reportIds.push(report._id.toString());
+    batchPhones.push(report.phone);
+    batchVariables.push(cv);
   }
 
   const metaResults = await Promise.allSettled(metaPromises);
   let bd = 0, sent = 0, failed = 0, ded = 0;
-  const campaignBulkOps: any[] = [];
   const messagesToCreate: any[] = [];
+  const bulkReportOps: any[] = [];
 
   for (let i = 0; i < metaResults.length; i++) {
     const res = metaResults[i];
+    const reportId = reportIds[i];
+    const ph = batchPhones[i].replace(/\+/g, "");
+
     if (res.status !== 'fulfilled') {
       failed++;
-      const absoluteIndex = batchAbsoluteIndices[i];
-      campaignBulkOps.push({ updateOne: { filter: { _id: campaignId, [`reportData.${absoluteIndex}.status`]: "queued" }, update: { $set: { [`reportData.${absoluteIndex}.status`]: "failed", [`reportData.${absoluteIndex}.error`]: "System Error: Promise rejected" } } } });
+      bulkReportOps.push({ updateOne: { filter: { _id: reportId }, update: { $set: { status: "failed", error: "System Error: Promise rejected" } } } });
       continue;
     }
     const r = res.value;
-    const absoluteIndex = batchAbsoluteIndices[i];
-    const ph = batchPhones[i].replace(/\+/g, "");
 
     if (r.status === "sent") {
       sent++;
-      const pp = Number(pricePerMessage) > 0 
-        ? Number(pricePerMessage) 
-        : (Number(campaign.pricePerMessage) || 0);
-
+      const pp = Number(pricePerMessage) > 0 ? Number(pricePerMessage) : (Number(campaign.pricePerMessage) || 0);
       bd += pp;
-      campaignBulkOps.push({ updateOne: { filter: { _id: campaignId, [`reportData.${absoluteIndex}.status`]: "queued" }, update: { $set: { [`reportData.${absoluteIndex}.status`]: "sent", [`reportData.${absoluteIndex}.sentWamid`]: r.wamid, [`reportData.${absoluteIndex}.charged`]: true, [`reportData.${absoluteIndex}.chargedAmount`]: pp } } } });
+      bulkReportOps.push({ updateOne: { filter: { _id: reportId }, update: { $set: { status: "sent", sentWamid: r.wamid, charged: true, chargedAmount: pp } } } });
       messagesToCreate.push({ userId, phone: ph, text: "", direction: "out", messageType: "template", mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID });
-    } else if (r.status === "failed") {
+    } else {
       failed++;
-      campaignBulkOps.push({ updateOne: { filter: { _id: campaignId, [`reportData.${absoluteIndex}.status`]: "queued" }, update: { $set: { [`reportData.${absoluteIndex}.status`]: "failed", [`reportData.${absoluteIndex}.error`]: r.error || "Unknown error" } } } });
+      bulkReportOps.push({ updateOne: { filter: { _id: reportId }, update: { $set: { status: "failed", error: r.error || "Unknown error" } } } });
     }
   }
 
   if (bd > 0) ded = Math.round((ded + bd) * 100) / 100;
-  if (campaignBulkOps.length > 0) try { await Campaign.bulkWrite(campaignBulkOps); } catch (e) { console.error(`[Worker] Campaign bulkWrite error:`, e); }
-  if (messagesToCreate.length > 0) try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) { console.error(`[Worker] Message insertMany error:`, e); }
-  if (bd > 0) try { await User.updateOne({ _id: payerId }, { $inc: { balance: -bd } }); } catch (e) { console.error(`[Worker] User balance deduction error:`, e); }
-  try { await Campaign.updateOne({ _id: campaignId }, { $inc: { sentCount: sent, failedCount: failed, totalDeducted: ded } }); } catch (e) { console.error(`[Worker] Campaign counter increment error:`, e); }
+  if (bulkReportOps.length > 0) try { await CampaignReport.bulkWrite(bulkReportOps); } catch (e) {}
+  if (messagesToCreate.length > 0) try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) {}
+  if (bd > 0) try { await User.updateOne({ _id: payerId }, { $inc: { balance: -bd } }); } catch (e) {}
+  try { await Campaign.updateOne({ _id: campaignId }, { $inc: { sentCount: sent, failedCount: failed, totalDeducted: ded } }); } catch (e) {}
 
   try {
-    const [statResult] = await Campaign.aggregate([
-      { $match: { _id: new mongoose.Types.ObjectId(campaignId) } },
-      { $project: { status: 1, totalMessages: 1, processedCount: { $size: { $filter: { input: { $ifNull: ["$reportData", []] }, as: "r", cond: { $in: ["$$r.status", ["sent", "delivered", "read", "failed", "invalid", "duplicate"]] } } } } } }
-    ]);
-    let completedCampaign: any = null;
-    if (statResult && statResult.status !== "completed" && statResult.processedCount >= (statResult.totalMessages || 0)) {
-      completedCampaign = await Campaign.findOneAndUpdate({ _id: campaignId, status: { $ne: "completed" } }, { $set: { status: "completed", completedAt: new Date() } }, { new: true, fields: "status" });
+    const processedCount = await CampaignReport.countDocuments({ campaignId, status: { $in: ["sent", "delivered", "read", "failed", "invalid", "duplicate", "replied"] } });
+    if (campaign.status !== "completed" && processedCount >= (campaign.totalMessages || 0)) {
+      const completedCampaign = await Campaign.findOneAndUpdate({ _id: campaignId, status: { $ne: "completed" } }, { $set: { status: "completed", completedAt: new Date() } }, { new: true, fields: "status" }).lean();
+      if (completedCampaign && completedCampaign.status === "completed") {
+        try {
+          const finalCampaign = await Campaign.findById(campaignId).lean();
+          const plainReportData = await CampaignReport.find({ campaignId }).select("name phone status error replies reply tags additionalData -_id").lean();
+          await syncCampaignToGoogleSheet(userId, { name: finalCampaign?.name || "Campaign", reportData: plainReportData });
+        } catch (e) {}
+      }
     }
-    if (completedCampaign && completedCampaign.status === "completed") {
-      try {
-        const finalCampaign = await Campaign.findById(campaignId).lean();
-        const plainReportData = (finalCampaign?.reportData || []).map((r: any) => ({ name: r.name || "", phone: r.phone || "", status: r.status || "", error: r.error || "", replies: r.replies || [], reply: r.reply || null, tags: r.tags || [], additionalData: r.additionalData || [] }));
-        await syncCampaignToGoogleSheet(userId, { name: finalCampaign?.name || "Campaign", reportData: plainReportData });
-      } catch (e) { console.error("[Worker] Sheet sync failed:", e); }
-    }
-  } catch (e) { console.error(`[Worker] Campaign completion check error:`, e); }
+  } catch (e) {}
 }
 
 // ============================================================================
@@ -497,28 +475,7 @@ async function generateCountsData(userId: string, page: number, limit: number, c
           phoneNumbers: { $slice: [{ $ifNull: ["$phoneNumbers", []] }, 15] }, names: { $slice: [{ $ifNull: ["$names", []] }, 15] },
           additionalFieldsData: { $slice: [{ $ifNull: ["$additionalFieldsData", []] }, 15] }, mediaUrl: 1, mediaType: 1, languageCode: 1,
           status: 1, totalMessages: 1, totalDeducted: 1, scheduledAt: 1, createdAt: 1, additionalFields: 1, sentCount: 1, failedCount: 1, skippedCount: 1,
-          liveStats: {
-            $let: {
-              vars: {
-                counts: {
-                  $reduce: {
-                    input: { $ifNull: ["$reportData", []] },
-                    initialValue: { replied: 0, read: 0, delivered: 0, sent: 0, failed: 0, invalid: 0, duplicate: 0 },
-                    in: {
-                      replied: { $add: ["$$value.replied", { $cond: [{ $or: [{ $ne: [{ $ifNull: ["$$this.reply", ""] }, ""] }, { $gt: [{ $size: { $filter: { input: { $ifNull: ["$$this.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0] }] }, 1, 0] }] },
-                      read: { $add: ["$$value.read", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "read"] }, 1, 0] }] },
-                      delivered: { $add: ["$$value.delivered", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "delivered"] }, 1, 0] }] },
-                      sent: { $add: ["$$value.sent", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "sent"] }, 1, 0] }] },
-                      failed: { $add: ["$$value.failed", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "failed"] }, 1, 0] }] },
-                      invalid: { $add: ["$$value.invalid", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "invalid"] }, 1, 0] }] },
-                      duplicate: { $add: ["$$value.duplicate", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "duplicate"] }, 1, 0] }] }
-                    }
-                  }
-                }
-              },
-              in: { total: { $ifNull: ["$totalMessages", 0] }, replied: "$$counts.replied", read: "$$counts.read", delivered: "$$counts.delivered", sent: "$$counts.sent", failed: "$$counts.failed", invalid: "$$counts.invalid", duplicate: "$$counts.duplicate" }
-            }
-          }
+          liveStats: 1 // ✅ Now uses the liveStats field calculated by statsWorker
         }
       }
     ]).allowDiskUse(false);
