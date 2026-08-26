@@ -3,13 +3,6 @@
 // ============================================================================
 // WEBHOOK ROUTE — WhatsApp Webhook Handler
 // ============================================================================
-// This file handles:
-//   1. Incoming messages from WhatsApp
-//   2. Workflow execution (auto-replies, buttons, forms, etc.)
-//   3. Message status updates (sent → delivered → read → failed)
-//   4. Balance refunds for failed campaign messages
-//   5. Inactivity timer (via MongoDB Job queue — survives serverless!)
-// ============================================================================
 
 import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
@@ -23,7 +16,7 @@ import Campaign from "@/models/Campaign";
 import fs from "fs";
 import path from "path";
 import mongoose from "mongoose";
-import { Job } from "@/lib/queue";
+import { Job, Cache } from "@/lib/queue";
 
 export const runtime = "nodejs";
 
@@ -32,24 +25,17 @@ export const runtime = "nodejs";
 // ============================================================================
 
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "watiX_webhook_verify_2024";
-
-// Form timers still use setInterval (they're shorter-lived)
 const formTimers = new Map<string, NodeJS.Timeout>();
 
 // ============================================================================
-// TRANSACTION MODEL (for refund records)
+// TRANSACTION MODEL
 // ============================================================================
 
 const TransactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  type: String,
-  amount: Number,
-  description: String,
-  status: String,
-  createdAt: { type: Date, default: Date.now },
-  metadata: Object
+  type: String, amount: Number, description: String, status: String,
+  createdAt: { type: Date, default: Date.now }, metadata: Object
 });
-
 const Transaction = mongoose.models.Transaction || mongoose.model('Transaction', TransactionSchema);
 
 // ============================================================================
@@ -61,16 +47,13 @@ const statusPriority: Record<string, number> = {
 };
 
 function shouldUpdateStatus(currentStatus: string, newStatus: string): boolean {
-  
   const currentPriority = statusPriority[currentStatus] || 0;
   const newPriority = statusPriority[newStatus] || 0;
 
   if (newStatus === "failed" || newStatus === "invalid") {
     return currentPriority < 4 && currentStatus !== "failed" && currentStatus !== "invalid";
   }
-
   if (currentStatus === "failed" || currentStatus === "invalid") return false;
-
   return newPriority > currentPriority;
 }
 
@@ -80,43 +63,20 @@ function normalizePhone(val: any): string {
 }
 
 // ============================================================================
-// ✅ FIX: SAFE SESSION UPSERT
-// ============================================================================
-// The Session collection has a unique index on "phone" alone.
-// When findOneAndUpdate with upsert:true tries to create a new session
-// for a phone that already exists (but with a different userId),
-// MongoDB throws E11000 duplicate key error.
-//
-// This helper safely handles that by:
-//   1. Finding by phone + userId (normal case)
-//   2. If not found, finding by phone alone (reuse existing session)
-//   3. If still not found, create new
+// SAFE SESSION UPSERT
 // ============================================================================
 
 async function upsertSession(phone: string, userId: string, updateData: any) {
-  
-  // Step 1: Try to find by phone + userId
   let session = await Session.findOne({ phone, userId });
-
   if (session) {
-    // Found existing session — just update it
     await Session.updateOne({ _id: session._id }, { $set: updateData });
     return await Session.findById(session._id);
   }
-
-  // Step 2: Not found — check if there's a session with same phone but different userId
   session = await Session.findOne({ phone });
-
   if (session) {
-    // Reuse this session — update userId and all fields
-    await Session.updateOne(
-      { _id: session._id },
-      { $set: { userId, ...updateData } }
-    );
+    await Session.updateOne({ _id: session._id }, { $set: { userId, ...updateData } });
     return await Session.findById(session._id);
   }
-
-  // Step 3: No session at all — create new
   return await Session.create({ phone, userId, ...updateData });
 }
 
@@ -124,89 +84,35 @@ async function upsertSession(phone: string, userId: string, updateData: any) {
 // BALANCE REFUND HELPER
 // ============================================================================
 
-async function processBalanceRefund(
-  campaignId: any,
-  reportIdx: number,
-  prevStatus: string,
-  newStatus: string,
-  errorText: string | null,
-  wamid: string,
-  reportDataItem: any
-) {
-  
+async function processBalanceRefund(campaignId: any, reportIdx: number, prevStatus: string, newStatus: string, errorText: string | null, wamid: string, reportDataItem: any) {
   try {
-    
-    // Only refund if message was previously "sent" and now becomes "failed"
-    if ((newStatus === "failed" || newStatus === "invalid") &&
-        ["sent", "delivered", "read"].includes(prevStatus)) {
-
-      const campaign: any = await Campaign.findById(campaignId)
-        .select("pricePerMessage userId name templateName")
-        .lean();
-      
+    if ((newStatus === "failed" || newStatus === "invalid") && ["sent", "delivered", "read"].includes(prevStatus)) {
+      const campaign: any = await Campaign.findById(campaignId).select("pricePerMessage userId name templateName").lean();
       if (!campaign) return;
 
-      // ✅ Use ACTUAL charged amount from reportData
       const refundAmount = Number(reportDataItem?.chargedAmount) || Number(campaign.pricePerMessage || 0);
-
       if (refundAmount <= 0) return;
 
-      // Find payer (user or parent tenant)
       let payerId = campaign.userId;
-      
       try {
         const campaignUser = await User.findById(campaign.userId).select("parentTenantId").lean();
         if (campaignUser?.parentTenantId) {
           const parent = await User.findOne({ tenantId: campaignUser.parentTenantId }).select("_id").lean();
           if (parent) payerId = parent._id;
         }
-      } catch (e) {
-        console.error("Refund: Failed to find payer:", e);
-      }
+      } catch (e) { console.error("Refund: Failed to find payer:", e); }
 
-      // Refund balance
       try {
         await User.updateOne({ _id: payerId }, { $inc: { balance: refundAmount } });
-        console.log(`✅ Refunded ${refundAmount} to user ${payerId} for failed message ${wamid || "unknown"}`);
-      } catch (e) {
-        console.error("Refund: Balance update failed:", e);
-      }
-
-      // Reduce totalDeducted
-      try {
         await Campaign.updateOne({ _id: campaignId }, { $inc: { totalDeducted: -refundAmount } });
-      } catch (e) {
-        console.error("Refund: totalDeducted update failed:", e);
-      }
-
-      // Create refund transaction record
-      try {
         await Transaction.create({
-          userId: payerId,
-          type: "refund",
-          amount: refundAmount,
-          description: "Refund: Message failed to deliver",
-          status: "success",
-          createdAt: new Date(),
-          metadata: {
-            campaignName: campaign.name,
-            templateName: campaign.templateName,
-            phone: reportDataItem?.phone,
-            wamid: wamid,
-            reason: errorText,
-            previousStatus: prevStatus,
-            newStatus: newStatus,
-            chargedAmount: refundAmount,
-          }
+          userId: payerId, type: "refund", amount: refundAmount, description: "Refund: Message failed to deliver",
+          status: "success", createdAt: new Date(),
+          metadata: { campaignName: campaign.name, templateName: campaign.templateName, phone: reportDataItem?.phone, wamid: wamid, reason: errorText, previousStatus: prevStatus, newStatus: newStatus, chargedAmount: refundAmount }
         });
-        console.log(`✅ Refund transaction created for ${wamid || "unknown"} (amount: ${refundAmount})`);
-      } catch (e) {
-        console.error("Refund: Transaction creation failed:", e);
-      }
+      } catch (e) { console.error("Refund: Transaction/Update failed:", e); }
     }
-  } catch (err) {
-    console.error("Refund: Unexpected error:", err);
-  }
+  } catch (err) { console.error("Refund: Unexpected error:", err); }
 }
 
 // ============================================================================
@@ -214,14 +120,11 @@ async function processBalanceRefund(
 // ============================================================================
 
 type OutgoingPayload = {
-  text: string;
-  messageType: string;
-  mediaUrl: string | null;
+  text: string; messageType: string; mediaUrl: string | null;
   buttons: Array<{ type: string; text: string; url?: string; phone_number?: string }>;
 };
 
 function buildOutgoingMessagePayload(step: any): OutgoingPayload {
-  
   let text = step.message || "";
   let messageType = "text";
   let mediaUrl: string | null = null;
@@ -232,7 +135,6 @@ function buildOutgoingMessagePayload(step: any): OutgoingPayload {
     buttons = [{ type: "phone_number", text: step.urlLabel || "Call", phone_number: step.phoneNumber }];
     return { text, messageType, mediaUrl, buttons };
   }
-
   if (step.stepType === "url_action" && step.url) {
     let url = step.url.trim();
     if (!url.startsWith("http")) url = "https://" + url;
@@ -240,183 +142,80 @@ function buildOutgoingMessagePayload(step: any): OutgoingPayload {
     buttons = [{ type: "url", text: step.urlLabel || "Open", url }];
     return { text, messageType, mediaUrl, buttons };
   }
-
   if (step.mediaUrl && ["image", "video", "document"].includes(step.mediaType)) {
-    messageType = step.mediaType;
-    mediaUrl = step.mediaUrl;
+    messageType = step.mediaType; mediaUrl = step.mediaUrl;
   }
-
   if (step.buttons?.length > 0) {
     const valid = step.buttons.filter((b: any) => b.label?.trim());
-    if (valid.length > 0) {
-      buttons = valid.map((b: any) => ({ type: "quick_reply", text: b.label }));
-    }
+    if (valid.length > 0) buttons = valid.map((b: any) => ({ type: "quick_reply", text: b.label }));
   }
-
   return { text, messageType, mediaUrl, buttons };
 }
 
-async function saveOutgoingWorkflowMessage(
-  userId: string,
-  customerNumber: string,
-  phoneNumberId: string,
-  step: any
-) {
-  
+async function saveOutgoingWorkflowMessage(userId: string, customerNumber: string, phoneNumberId: string, step: any) {
   const { text, messageType, mediaUrl, buttons } = buildOutgoingMessagePayload(step);
-  
   await Message.create({
-    userId,
-    phone: customerNumber,
-    text,
-    direction: "out",
-    messageType,
-    mediaUrl,
+    userId, phone: customerNumber, text, direction: "out", messageType, mediaUrl,
     templateButtons: buttons.length > 0 ? JSON.stringify(buttons) : undefined,
-    status: "sent",
-    whatsappPhoneNumberId: phoneNumberId,
-    senderNumber: phoneNumberId,
+    status: "sent", whatsappPhoneNumberId: phoneNumberId, senderNumber: phoneNumberId,
   });
 }
 
 // ============================================================================
-// ✅ INACTIVITY TIMER (MongoDB Job Queue — survives serverless!)
+// INACTIVITY TIMER (MongoDB Job Queue)
 // ============================================================================
 
 const clearWorkflowTimer = async (phone: string) => {
-  
-  try {
-    await Job.deleteMany({
-      queue: "workflow-inactivity",
-      status: "pending",
-      "data.phone": phone,
-    });
-  } catch (err) {
-    console.error("Failed to clear workflow timer:", err);
-  }
+  try { await Job.deleteMany({ queue: "workflow-inactivity", status: "pending", "data.phone": phone }); } catch (err) {}
 };
 
-const startWorkflowInactivityTimer = async (
-  phone: string,
-  userId: string,
-  workflowId: string,
-  accessToken: string,
-  phoneNumberId: string,
-  baseUrl: string
-) => {
-  
+const startWorkflowInactivityTimer = async (phone: string, userId: string, workflowId: string, accessToken: string, phoneNumberId: string, baseUrl: string) => {
   try {
-    
     await clearWorkflowTimer(phone);
-
     const wf = await Workflow.findById(workflowId);
     if (!wf || !wf.steps) return;
-
-    const inactivityNode = Object.values(wf.steps).find(
-      (s: any) => s.stepType === "inactivity_node"
-    ) as any;
-    
+    const inactivityNode = Object.values(wf.steps).find((s: any) => s.stepType === "inactivity_node") as any;
     if (!inactivityNode) return;
 
     const delaySeconds = inactivityNode.delaySeconds || 30;
     const repeatCount = inactivityNode.repeatCount || 1;
     const message = inactivityNode.message || "Are you still there?";
 
-    // ✅ Create a job in MongoDB — the worker picks it up after delaySeconds
     await Job.create({
-      queue: "workflow-inactivity",
-      name: "send-inactivity-message",
-      data: {
-        phone, userId, workflowId, accessToken, phoneNumberId, baseUrl,
-        message, delaySeconds, repeatCount, sentCount: 0,
-      },
-      status: "pending",
-      createdAt: new Date(),
+      queue: "workflow-inactivity", name: "send-inactivity-message",
+      data: { phone, userId, workflowId, accessToken, phoneNumberId, baseUrl, message, delaySeconds, repeatCount, sentCount: 0 },
+      status: "pending", createdAt: new Date(),
     });
-
-    console.log(`⏰ Inactivity timer set for ${phone} (${delaySeconds}s, repeat: ${repeatCount})`);
-
-  } catch (err) {
-    console.error("Failed to start inactivity timer:", err);
-  }
+  } catch (err) { console.error("Failed to start inactivity timer:", err); }
 };
 
 // ============================================================================
 // FORM INACTIVITY TIMER
 // ============================================================================
 
-const startFormInactivityTimer = (
-  phone: string,
-  userId: string,
-  formId: string,
-  fieldIndex: number,
-  field: any,
-  form: any,
-  accessToken: string,
-  phoneNumberId: string,
-  baseUrl: string
-) => {
-  
-  if (formTimers.has(phone)) {
-    clearInterval(formTimers.get(phone) as NodeJS.Timeout);
-    formTimers.delete(phone);
-  }
-
+const startFormInactivityTimer = (phone: string, userId: string, formId: string, fieldIndex: number, field: any, form: any, accessToken: string, phoneNumberId: string, baseUrl: string) => {
+  if (formTimers.has(phone)) { clearInterval(formTimers.get(phone) as NodeJS.Timeout); formTimers.delete(phone); }
   if (field.delaySeconds > 0 && field.repeatCount > 0 && field.delayMessage) {
-    
     let remindersSent = 0;
-
     const intervalId = setInterval(async () => {
-      
       try {
         await connectDB();
-
         const checkSession = await Session.findOne({ phone, userId });
-
         if (!checkSession || !checkSession.formId || checkSession.formFieldIndex !== fieldIndex) {
-          clearInterval(intervalId);
-          formTimers.delete(phone);
-          return;
+          clearInterval(intervalId); formTimers.delete(phone); return;
         }
-
         if (remindersSent < field.repeatCount) {
-          
-          await sendWorkflowWhatsAppMessage(
-            accessToken, phoneNumberId, phone,
-            { message: field.delayMessage, stepType: "text" },
-            baseUrl
-          );
+          await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, { message: field.delayMessage, stepType: "text" }, baseUrl);
           remindersSent++;
-          
         } else {
-          
-          clearInterval(intervalId);
-          formTimers.delete(phone);
-
-          const abandonmentStep = {
-            message: form.abandonmentMessage || "It seems you are busy. Click below to restart.",
-            stepType: "message",
-            buttons: [{ id: `restart_form_${formId}`, label: "🔄 Restart Form", nextStepId: null }]
-          };
-
+          clearInterval(intervalId); formTimers.delete(phone);
+          const abandonmentStep = { message: form.abandonmentMessage || "It seems you are busy. Click below to restart.", stepType: "message", buttons: [{ id: `restart_form_${formId}`, label: "🔄 Restart Form", nextStepId: null }] };
           await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, abandonmentStep, baseUrl);
-
-          checkSession.formId = null;
-          checkSession.formFieldIndex = 0;
-          await checkSession.save();
-
-          await FormResponse.updateOne(
-            { formId, phone, status: "incomplete" },
-            { $set: { status: "abandoned" } }
-          );
+          checkSession.formId = null; checkSession.formFieldIndex = 0; await checkSession.save();
+          await FormResponse.updateOne({ formId, phone, status: "incomplete" }, { $set: { status: "abandoned" } });
         }
-      } catch (err) {
-        console.error("Form timer error:", err);
-        clearInterval(intervalId);
-        formTimers.delete(phone);
-      }
+      } catch (err) { clearInterval(intervalId); formTimers.delete(phone); }
     }, field.delaySeconds * 1000);
-
     formTimers.set(phone, intervalId);
   }
 };
@@ -426,19 +225,14 @@ const startFormInactivityTimer = (
 // ============================================================================
 
 export async function GET(req: NextRequest) {
-  
   const { searchParams } = new URL(req.url);
   const mode = searchParams.get("hub.mode");
   const token = searchParams.get("hub.verify_token");
   const challenge = searchParams.get("hub.challenge");
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    return new NextResponse(challenge || "", {
-      status: 200,
-      headers: { "Content-Type": "text/plain" }
-    });
+    return new NextResponse(challenge || "", { status: 200, headers: { "Content-Type": "text/plain" } });
   }
-
   return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 }
 
@@ -447,33 +241,18 @@ export async function GET(req: NextRequest) {
 // ============================================================================
 
 async function findUserByPhoneNumberId(phoneNumberId: string) {
-  
   const user = await User.findOne({
-    $or: [
-      { whatsappPhoneNumberId: phoneNumberId },
-      { "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId }
-    ]
+    $or: [{ whatsappPhoneNumberId: phoneNumberId }, { "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId }]
   }).lean();
-
   if (!user) return null;
 
   let matchedNumber: any = null;
-
   if (user.whatsappNumbers && user.whatsappNumbers.length > 0) {
-    matchedNumber = user.whatsappNumbers.find(
-      (n: any) => n.whatsappPhoneNumberId === phoneNumberId && n.whatsappAccessToken
-    );
+    matchedNumber = user.whatsappNumbers.find((n: any) => n.whatsappPhoneNumberId === phoneNumberId && n.whatsappAccessToken);
   }
-
   if (!matchedNumber && user.whatsappPhoneNumberId === phoneNumberId && user.whatsappAccessToken) {
-    matchedNumber = {
-      whatsappPhoneNumberId: user.whatsappPhoneNumberId,
-      whatsappAccessToken: user.whatsappAccessToken,
-      wabaId: user.wabaId,
-      name: "Default Number"
-    };
+    matchedNumber = { whatsappPhoneNumberId: user.whatsappPhoneNumberId, whatsappAccessToken: user.whatsappAccessToken, wabaId: user.wabaId, name: "Default Number" };
   }
-
   if (!matchedNumber) return null;
 
   return {
@@ -486,83 +265,12 @@ async function findUserByPhoneNumberId(phoneNumberId: string) {
   };
 }
 
-async function getAllWhatsappNumbersFromDB() {
-  
-  const users = await User.find({}).lean();
-  const numbers: any[] = [];
-
-  for (const user of users) {
-    
-    if (user.whatsappNumbers && user.whatsappNumbers.length > 0) {
-      for (const n of user.whatsappNumbers) {
-        if (n.whatsappPhoneNumberId && n.whatsappAccessToken) {
-          numbers.push({
-            userId: user._id,
-            name: n.name || user.name || "Unknown",
-            phoneNumberId: n.whatsappPhoneNumberId,
-            accessToken: n.whatsappAccessToken,
-            wabaId: n.wabaId || user.wabaId
-          });
-        }
-      }
-    }
-
-    if (user.whatsappPhoneNumberId && user.whatsappAccessToken) {
-      if (!numbers.some((n) => n.phoneNumberId === user.whatsappPhoneNumberId)) {
-        numbers.push({
-          userId: user._id,
-          name: user.name || "Unknown",
-          phoneNumberId: user.whatsappPhoneNumberId,
-          accessToken: user.whatsappAccessToken,
-          wabaId: user.wabaId
-        });
-      }
-    }
-  }
-
-  return numbers;
-}
-
-// ============================================================================
-// MESSAGE PULLING
-// ============================================================================
-
-async function forcePullMessages(num: any, baseUrl: string) {
-  
-  try {
-    
-    const since = Math.floor((Date.now() - 5000) / 1000);
-    
-    const res = await fetch(
-      `https://graph.facebook.com/v21.0/${num.phoneNumberId}/messages?fields=id,from,type,text,image,video,audio,document,location,contacts,interactive,button,timestamp&limit=50&since=${since}`,
-      { headers: { Authorization: `Bearer ${num.accessToken}` } }
-    );
-
-    if (!res.ok) return;
-
-    const data = await res.json();
-
-    for (const msg of data.data || []) {
-      if (msg.from) {
-        await processAndSaveMessage(msg, num);
-        await executeWorkflowsForMessage(msg, num, baseUrl);
-      }
-    }
-  } catch (err) {
-    console.error(`❌ [PULL] Exception:`, err);
-  }
-}
-
 // ============================================================================
 // MESSAGE PARSING
 // ============================================================================
 
 function parseMessage(msg: any) {
-  
-  let text = "";
-  let messageType = "text";
-  let mediaId: string | null = null;
-
+  let text = ""; let messageType = "text"; let mediaId: string | null = null;
   switch (msg.type) {
     case "text": text = msg.text?.body || ""; break;
     case "button": text = msg.button?.text || msg.button?.payload || ""; messageType = "text"; break;
@@ -576,20 +284,12 @@ function parseMessage(msg: any) {
     case "contacts": text = msg.contacts?.[0]?.name?.formatted_name || "Contact"; break;
     default: text = `[${msg.type}]`; break;
   }
-
   return { text, messageType, mediaId };
 }
 
 function extractButtonPayload(msg: any): string | null {
-  
-  if (msg.type === "interactive") {
-    return msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id || null;
-  }
-  
-  if (msg.type === "button") {
-    return msg.button?.payload || msg.button?.text || null;
-  }
-
+  if (msg.type === "interactive") return msg.interactive?.button_reply?.id || msg.interactive?.list_reply?.id || null;
+  if (msg.type === "button") return msg.button?.payload || msg.button?.text || null;
   return null;
 }
 
@@ -598,33 +298,18 @@ function extractButtonPayload(msg: any): string | null {
 // ============================================================================
 
 async function processAndSaveMessage(msg: any, num: any) {
-  
   const exists = await Message.findOne({ whatsappMessageId: msg.id }).lean();
-
   if (exists) {
     if (!(exists as any).whatsappPhoneNumberId && num.phoneNumberId) {
-      await Message.updateOne(
-        { _id: (exists as any)._id },
-        { $set: { whatsappPhoneNumberId: num.phoneNumberId } }
-      );
+      await Message.updateOne({ _id: (exists as any)._id }, { $set: { whatsappPhoneNumberId: num.phoneNumberId } });
     }
     return;
   }
-
   const { text, messageType, mediaId } = parseMessage(msg);
-
   await Message.create({
-    userId: num.userId,
-    phone: msg.from,
-    text,
-    direction: "in",
-    messageType,
-    mediaUrl: mediaId,
-    whatsappMessageId: msg.id,
-    status: "delivered",
-    whatsappPhoneNumberId: num.phoneNumberId,
-    senderNumber: msg.from,
-    createdAt: msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date()
+    userId: num.userId, phone: msg.from, text, direction: "in", messageType, mediaUrl: mediaId,
+    whatsappMessageId: msg.id, status: "delivered", whatsappPhoneNumberId: num.phoneNumberId,
+    senderNumber: msg.from, createdAt: msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date()
   });
 }
 
@@ -632,61 +317,31 @@ async function processAndSaveMessage(msg: any, num: any) {
 // MEDIA UPLOAD
 // ============================================================================
 
-async function uploadMediaToMetaFromUrl(
-  phoneNumberId: string,
-  accessToken: string,
-  mediaUrl: string
-): Promise<string | null> {
-  
+async function uploadMediaToMetaFromUrl(phoneNumberId: string, accessToken: string, mediaUrl: string): Promise<string | null> {
   try {
-    
     if (/^\d+$/.test(mediaUrl)) return mediaUrl;
-
-    let blob: Blob | null = null;
-    let filename = "media";
-
+    let blob: Blob | null = null; let filename = "media";
     if (mediaUrl.startsWith("/uploads/") || mediaUrl.startsWith("/public/")) {
       const localPath = path.join(process.cwd(), "public", mediaUrl);
-      if (fs.existsSync(localPath)) {
-        blob = new Blob([fs.readFileSync(localPath)]);
-        filename = `media${path.extname(localPath).toLowerCase()}`;
-      }
+      if (fs.existsSync(localPath)) { blob = new Blob([fs.readFileSync(localPath)]); filename = `media${path.extname(localPath).toLowerCase()}`; }
     } else if (mediaUrl.startsWith("http")) {
       const res = await fetch(mediaUrl);
-      if (res.ok) {
-        blob = await res.blob();
-        filename = `media${path.extname(new URL(mediaUrl).pathname).toLowerCase() || ".bin"}`;
-      }
+      if (res.ok) { blob = await res.blob(); filename = `media${path.extname(new URL(mediaUrl).pathname).toLowerCase() || ".bin"}`; }
     } else {
       const base = process.env.NEXTAUTH_URL || "";
       if (base) {
         const res = await fetch(`${base}${mediaUrl.startsWith("/") ? "" : "/"}${mediaUrl}`);
-        if (res.ok) {
-          blob = await res.blob();
-          filename = `media${path.extname(new URL(base).pathname).toLowerCase() || ".bin"}`;
-        }
+        if (res.ok) { blob = await res.blob(); filename = `media${path.extname(new URL(base).pathname).toLowerCase() || ".bin"}`; }
       }
     }
-
     if (!blob) return null;
-
     const formData = new FormData();
     formData.append("file", blob, filename);
     formData.append("messaging_product", "whatsapp");
-
-    const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/media`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${accessToken}` },
-      body: formData
-    });
-
+    const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/media`, { method: "POST", headers: { Authorization: `Bearer ${accessToken}` }, body: formData });
     const data = await res.json();
     return data.id || null;
-
-  } catch (err) {
-    console.error(`❌ [MEDIA] Upload failed:`, err);
-    return null;
-  }
+  } catch (err) { console.error(`❌ [MEDIA] Upload failed:`, err); return null; }
 }
 
 // ============================================================================
@@ -694,106 +349,54 @@ async function uploadMediaToMetaFromUrl(
 // ============================================================================
 
 async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
-  
   try {
-    
     if (!["text", "button", "interactive"].includes(msg.type)) return;
-
     const incomingText = parseMessage(msg).text;
     const buttonPayload = extractButtonPayload(msg);
-
     if (!incomingText && !buttonPayload) return;
 
-    // ✅ Clear any pending inactivity timer (user just sent a message)
     await clearWorkflowTimer(msg.from);
-
     const activeSession = await Session.findOne({ phone: msg.from, userId: num.userId });
 
     // ─── FORM FLOW ───
     if (activeSession && activeSession.formId) {
-      
       if (buttonPayload && buttonPayload.startsWith("restart_form_")) {
         // Fall through to normal processing
       } else {
-        
         const form = await Form.findById(activeSession.formId);
         if (!form) { await Session.deleteOne({ _id: activeSession._id }); return; }
-
         const fieldIndex = activeSession.formFieldIndex;
         const currentField = form.fields[fieldIndex];
         if (!currentField) { await Session.deleteOne({ _id: activeSession._id }); return; }
 
         if (currentField.required && !incomingText.trim()) {
-          await sendWorkflowWhatsAppMessage(
-            num.accessToken, num.phoneNumberId, msg.from,
-            { message: "⚠️ This field is required. Please enter a valid response.", stepType: "text" },
-            baseUrl
-          );
+          await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: "⚠️ This field is required. Please enter a valid response.", stepType: "text" }, baseUrl);
           return;
         }
 
-        await FormResponse.updateOne(
-          { formId: form._id, phone: msg.from, status: "incomplete" },
-          { $set: { [`data.${currentField.label}`]: incomingText } }
-        );
-
-        if (formTimers.has(msg.from)) {
-          clearInterval(formTimers.get(msg.from) as NodeJS.Timeout);
-          formTimers.delete(msg.from);
-        }
+        await FormResponse.updateOne({ formId: form._id, phone: msg.from, status: "incomplete" }, { $set: { [`data.${currentField.label}`]: incomingText } });
+        if (formTimers.has(msg.from)) { clearInterval(formTimers.get(msg.from) as NodeJS.Timeout); formTimers.delete(msg.from); }
 
         const nextFieldIndex = fieldIndex + 1;
-
         if (nextFieldIndex < form.fields.length) {
-          
           const nextField = form.fields[nextFieldIndex];
           activeSession.formFieldIndex = nextFieldIndex;
           await activeSession.save();
-
-          await sendWorkflowWhatsAppMessage(
-            num.accessToken, num.phoneNumberId, msg.from,
-            { message: nextField.label, stepType: "text" },
-            baseUrl
-          );
-
-          startFormInactivityTimer(
-            msg.from, num.userId.toString(), form._id.toString(),
-            nextFieldIndex, nextField, form,
-            num.accessToken, num.phoneNumberId, baseUrl
-          );
+          await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: nextField.label, stepType: "text" }, baseUrl);
+          startFormInactivityTimer(msg.from, num.userId.toString(), form._id.toString(), nextFieldIndex, nextField, form, num.accessToken, num.phoneNumberId, baseUrl);
           return;
-
         } else {
-          
-          // Form complete!
-          await FormResponse.updateOne(
-            { formId: form._id, phone: msg.from, status: "incomplete" },
-            { $set: { status: "complete" } }
-          );
-
-          await sendWorkflowWhatsAppMessage(
-            num.accessToken, num.phoneNumberId, msg.from,
-            { message: form.completionMessage || "✅ Thank you!", stepType: "text" },
-            baseUrl
-          );
-
+          await FormResponse.updateOne({ formId: form._id, phone: msg.from, status: "incomplete" }, { $set: { status: "complete" } });
+          await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: form.completionMessage || "✅ Thank you!", stepType: "text" }, baseUrl);
           const workflow = await Workflow.findById(activeSession.workflowId);
           if (workflow && activeSession.currentStepId) {
             const step = workflow.steps[activeSession.currentStepId];
             if (step && step.nextStepId) {
-              activeSession.formId = null;
-              activeSession.formFieldIndex = 0;
-              await activeSession.save();
-
-              await processWorkflowStep(
-                step.nextStepId, workflow.steps, workflow,
-                num.accessToken, num.phoneNumberId, msg.from,
-                num.userId.toString(), num.tenantId, baseUrl
-              );
+              activeSession.formId = null; activeSession.formFieldIndex = 0; await activeSession.save();
+              await processWorkflowStep(step.nextStepId, workflow.steps, workflow, num.accessToken, num.phoneNumberId, msg.from, num.userId.toString(), num.tenantId, baseUrl);
               return;
             }
           }
-
           await Session.deleteOne({ _id: activeSession._id });
           return;
         }
@@ -801,27 +404,14 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
     }
 
     // ─── FIND MATCHING WORKFLOW ───
-    let workflows = await Workflow.find({
-      userId: num.userId,
-      wabaPhoneNumberId: num.phoneNumberId,
-      active: true
-    });
-
+    let workflows = await Workflow.find({ userId: num.userId, wabaPhoneNumberId: num.phoneNumberId, active: true });
     if (workflows.length === 0) {
-      const legacy = await Workflow.find({
-        userId: num.userId,
-        $or: [{ wabaPhoneNumberId: null }, { wabaPhoneNumberId: { $exists: false } }],
-        active: true
-      });
+      const legacy = await Workflow.find({ userId: num.userId, $or: [{ wabaPhoneNumberId: null }, { wabaPhoneNumberId: { $exists: false } }], active: true });
       if (legacy.length > 0) {
         workflows = legacy;
-        await Workflow.updateMany(
-          { userId: num.userId, $or: [{ wabaPhoneNumberId: null }, { wabaPhoneNumberId: { $exists: false } }], active: true },
-          { $set: { wabaPhoneNumberId: num.phoneNumberId } }
-        );
+        await Workflow.updateMany({ userId: num.userId, $or: [{ wabaPhoneNumberId: null }, { wabaPhoneNumberId: { $exists: false } }], active: true }, { $set: { wabaPhoneNumberId: num.phoneNumberId } });
       }
     }
-
     if (workflows.length === 0) return;
 
     let matchedWorkflow: any = null;
@@ -829,155 +419,63 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
 
     // ─── BUTTON CLICK HANDLING ───
     if (buttonPayload) {
-      
       if (buttonPayload.startsWith("restart_form_")) {
-        
         const formId = buttonPayload.replace("restart_form_", "");
         const formData = await Form.findById(formId);
-        
         if (formData && formData.fields.length > 0) {
-          
-          // ✅ FIX: Use upsertSession instead of findOneAndUpdate with upsert
-          await upsertSession(msg.from, num.userId.toString(), {
-            formId: formData._id,
-            formFieldIndex: 0,
-            updatedAt: new Date()
-          });
-
-          await FormResponse.findOneAndUpdate(
-            { formId: formData._id, phone: msg.from, status: "incomplete" },
-            { $set: { userId: num.userId, data: {}, status: "incomplete" } },
-            { upsert: true, new: true }
-          );
-
-          await sendWorkflowWhatsAppMessage(
-            num.accessToken, num.phoneNumberId, msg.from,
-            { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" },
-            baseUrl
-          );
-
-          startFormInactivityTimer(
-            msg.from, num.userId.toString(), formData._id.toString(),
-            0, formData.fields[0], formData,
-            num.accessToken, num.phoneNumberId, baseUrl
-          );
+          await upsertSession(msg.from, num.userId.toString(), { formId: formData._id, formFieldIndex: 0, updatedAt: new Date() });
+          await FormResponse.findOneAndUpdate({ formId: formData._id, phone: msg.from, status: "incomplete" }, { $set: { userId: num.userId, data: {}, status: "incomplete" } }, { upsert: true, new: true });
+          await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" }, baseUrl);
+          startFormInactivityTimer(msg.from, num.userId.toString(), formData._id.toString(), 0, formData.fields[0], formData, num.accessToken, num.phoneNumberId, baseUrl);
           return;
         }
       }
-
-      // Button click within active session
       if (activeSession && activeSession.workflowId && !activeSession.formId) {
-        
         const wf = await Workflow.findById(activeSession.workflowId);
-
         if (wf && wf.active && wf.steps) {
-          
           let clickedBtn = null;
-
           for (const id of Object.keys(wf.steps)) {
             const step = wf.steps[id];
-            const btn = step.buttons?.find((b: any) => b.id === buttonPayload) ||
-                        step.buttons?.find((b: any) => b.label?.toLowerCase() === incomingText.toLowerCase());
+            const btn = step.buttons?.find((b: any) => b.id === buttonPayload) || step.buttons?.find((b: any) => b.label?.toLowerCase() === incomingText.toLowerCase());
             if (btn) { clickedBtn = btn; break; }
           }
-
           if (clickedBtn) {
-            
             if (clickedBtn.applyTagId) await applyTagToContact(msg.from, clickedBtn.applyTagId, num.userId.toString());
             if (clickedBtn.optInNodeId) await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
-
             if (clickedBtn.nextStepId) {
-              
               let nextStep = wf.steps[clickedBtn.nextStepId];
-
-              // Skip through delay nodes
               while (nextStep && nextStep.stepType === "delay_node") {
                 if (nextStep.delaySeconds > 0) await new Promise(r => setTimeout(r, nextStep.delaySeconds * 1000));
                 nextStep = nextStep.nextStepId ? wf.steps[nextStep.nextStepId] : null;
               }
-
               if (nextStep) {
-                
-                if (nextStep.stepType === "opt_in_node") {
-                  await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
-                  return;
-                } else if (nextStep.stepType === "tag_node") {
-                  if (nextStep.selectedTag) await applyTagToContact(msg.from, nextStep.selectedTag, num.userId.toString());
-                  return;
-                }
-
+                if (nextStep.stepType === "opt_in_node") { await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId); return; }
+                else if (nextStep.stepType === "tag_node") { if (nextStep.selectedTag) await applyTagToContact(msg.from, nextStep.selectedTag, num.userId.toString()); return; }
                 if (nextStep.stepType === "form_node" && nextStep.selectedForm) {
-                  
                   const formData = await Form.findById(nextStep.selectedForm);
-                  
                   if (formData && formData.fields.length > 0) {
-                    
-                    activeSession.formId = formData._id;
-                    activeSession.formFieldIndex = 0;
-                    activeSession.currentStepId = nextStep.id;
-                    await activeSession.save();
-
-                    await FormResponse.findOneAndUpdate(
-                      { formId: formData._id, phone: msg.from, status: "incomplete" },
-                      { $set: { userId: num.userId, data: {}, status: "incomplete" } },
-                      { upsert: true, new: true }
-                    );
-
-                    await sendWorkflowWhatsAppMessage(
-                      num.accessToken, num.phoneNumberId, msg.from,
-                      { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" },
-                      baseUrl
-                    );
-
-                    startFormInactivityTimer(
-                      msg.from, num.userId.toString(), formData._id.toString(),
-                      0, formData.fields[0], formData,
-                      num.accessToken, num.phoneNumberId, baseUrl
-                    );
+                    activeSession.formId = formData._id; activeSession.formFieldIndex = 0; activeSession.currentStepId = nextStep.id; await activeSession.save();
+                    await FormResponse.findOneAndUpdate({ formId: formData._id, phone: msg.from, status: "incomplete" }, { $set: { userId: num.userId, data: {}, status: "incomplete" } }, { upsert: true, new: true });
+                    await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" }, baseUrl);
+                    startFormInactivityTimer(msg.from, num.userId.toString(), formData._id.toString(), 0, formData.fields[0], formData, num.accessToken, num.phoneNumberId, baseUrl);
                     return;
                   }
                 }
-
-                // Send the next step
-                activeSession.currentStepId = nextStep.id;
-                await activeSession.save();
-
+                activeSession.currentStepId = nextStep.id; await activeSession.save();
                 await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, nextStep, baseUrl);
                 await saveOutgoingWorkflowMessage(num.userId.toString(), msg.from, num.phoneNumberId, nextStep);
-
-                // ✅ Start inactivity timer (MongoDB Job)
-                await startWorkflowInactivityTimer(
-                  msg.from, num.userId.toString(), wf._id.toString(),
-                  num.accessToken, num.phoneNumberId, baseUrl
-                );
+                await startWorkflowInactivityTimer(msg.from, num.userId.toString(), wf._id.toString(), num.accessToken, num.phoneNumberId, baseUrl);
                 return;
-
-              } else {
-                await Session.deleteOne({ _id: activeSession._id });
-                return;
-              }
-            } else {
-              await Session.deleteOne({ _id: activeSession._id });
-              return;
-            }
-          } else {
-            await Session.deleteOne({ _id: activeSession._id });
-          }
-        } else {
-          if (activeSession) await Session.deleteOne({ _id: activeSession._id });
-        }
+              } else { await Session.deleteOne({ _id: activeSession._id }); return; }
+            } else { await Session.deleteOne({ _id: activeSession._id }); return; }
+          } else { await Session.deleteOne({ _id: activeSession._id }); }
+        } else { if (activeSession) await Session.deleteOne({ _id: activeSession._id }); }
       }
-
-      // Search for button match across all workflows
       for (const wf of workflows) {
         for (const id of Object.keys(wf.steps)) {
           const step = wf.steps[id];
           const btn = step.buttons?.find((b: any) => b.id === buttonPayload || b.label?.toLowerCase() === incomingText.toLowerCase());
-          if (btn?.nextStepId) {
-            matchedWorkflow = wf;
-            matchedByButton = true;
-            break;
-          }
+          if (btn?.nextStepId) { matchedWorkflow = wf; matchedByButton = true; break; }
         }
         if (matchedByButton) break;
       }
@@ -987,23 +485,19 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
     if (!matchedWorkflow) {
       for (const wf of workflows) {
         const isMatch = wf.triggers.some((t: any) => {
-          const k = (t.keyword || "").trim();
-          const m = (t.matchMode || "contains").toLowerCase();
-          if (m === "exists") return true;
-          if (k === "*" || k === "") return true;
+          const k = (t.keyword || "").trim(); const m = (t.matchMode || "contains").toLowerCase();
+          if (m === "exists") return true; if (k === "*" || k === "") return true;
           if (m === "exact") return incomingText.trim() === k;
           return incomingText.toLowerCase().trim().includes(k.toLowerCase());
         });
         if (isMatch) { matchedWorkflow = wf; break; }
       }
     }
-
     if (!matchedWorkflow) return;
 
     // ─── EXECUTE MATCHED WORKFLOW ───
     const steps = matchedWorkflow.steps;
     let currentStepId: string | null = null;
-
     if (matchedByButton && buttonPayload) {
       for (const id of Object.keys(steps)) {
         const step = steps[id];
@@ -1015,265 +509,97 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
           break;
         }
       }
-    } else {
-      currentStepId = matchedWorkflow.rootStepId;
-    }
-
+    } else { currentStepId = matchedWorkflow.rootStepId; }
     if (!currentStepId || !steps[currentStepId]) return;
-
     const rootStep = steps[currentStepId];
 
-    // Execute trigger actions
     if (rootStep?.triggerActions && rootStep.triggerActions.length > 0) {
       for (const action of rootStep.triggerActions) {
-        if (action.type === "opt_in_node") {
-          await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
-        } else if (action.type === "tag_node") {
-          const tagStep = steps[action.stepId];
-          if (tagStep?.selectedTag) await applyTagToContact(msg.from, tagStep.selectedTag, num.userId.toString());
-        }
+        if (action.type === "opt_in_node") await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
+        else if (action.type === "tag_node") { const tagStep = steps[action.stepId]; if (tagStep?.selectedTag) await applyTagToContact(msg.from, tagStep.selectedTag, num.userId.toString()); }
       }
     }
+    if (rootStep.stepType === "opt_in_node") { await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId); return; }
+    else if (rootStep.stepType === "tag_node") { if (rootStep.selectedTag) await applyTagToContact(msg.from, rootStep.selectedTag, num.userId.toString()); return; }
 
-    // Handle root step being an action node
-    if (rootStep.stepType === "opt_in_node") {
-      await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
-      return;
-    } else if (rootStep.stepType === "tag_node") {
-      if (rootStep.selectedTag) await applyTagToContact(msg.from, rootStep.selectedTag, num.userId.toString());
-      return;
-    }
-
-    await processWorkflowStep(
-      currentStepId, steps, matchedWorkflow,
-      num.accessToken, num.phoneNumberId, msg.from,
-      num.userId.toString(), num.tenantId, baseUrl
-    );
-
-  } catch (err) {
-    console.error("❌ [WORKFLOW] Error:", err);
-  }
+    await processWorkflowStep(currentStepId, steps, matchedWorkflow, num.accessToken, num.phoneNumberId, msg.from, num.userId.toString(), num.tenantId, baseUrl);
+  } catch (err) { console.error("❌ [WORKFLOW] Error:", err); }
 }
 
 // ============================================================================
 // WORKFLOW STEP PROCESSOR
 // ============================================================================
 
-async function processWorkflowStep(
-  stepId: string,
-  steps: Record<string, any>,
-  matchedWorkflow: any,
-  accessToken: string,
-  phoneNumberId: string,
-  customerNumber: string,
-  userId: string,
-  tenantId: string | null,
-  baseUrl: string
-) {
-  
+async function processWorkflowStep(stepId: string, steps: Record<string, any>, matchedWorkflow: any, accessToken: string, phoneNumberId: string, customerNumber: string, userId: string, tenantId: string | null, baseUrl: string) {
   const step = steps[stepId];
   if (!step) return;
 
-  // ─── DELAY NODE ───
   if (step.stepType === "delay_node") {
-    
-    if (step.delaySeconds > 0) {
-      await new Promise((r) => setTimeout(r, step.delaySeconds * 1000));
-    }
-
-    if (step.nextStepId) {
-      return await processWorkflowStep(
-        step.nextStepId, steps, matchedWorkflow,
-        accessToken, phoneNumberId, customerNumber,
-        userId, tenantId, baseUrl
-      );
-    }
+    if (step.delaySeconds > 0) await new Promise((r) => setTimeout(r, step.delaySeconds * 1000));
+    if (step.nextStepId) return await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
     return;
   }
-
-  // ─── OPT-OUT NODE ───
-  if (step.stepType === "opt_in_node") {
-    await addOptOutNumber(customerNumber, userId, tenantId);
-    return;
-  }
-
-  // ─── TAG NODE ───
-  if (step.stepType === "tag_node") {
-    if (step.selectedTag) {
-      await applyTagToContact(customerNumber, step.selectedTag, userId);
-    }
-    return;
-  }
-
-  // ─── FORM NODE ───
+  if (step.stepType === "opt_in_node") { await addOptOutNumber(customerNumber, userId, tenantId); return; }
+  if (step.stepType === "tag_node") { if (step.selectedTag) await applyTagToContact(customerNumber, step.selectedTag, userId); return; }
+  
   if (step.stepType === "form_node" && step.selectedForm) {
-    
     const formData = await Form.findById(step.selectedForm);
     if (!formData || !formData.fields.length) return;
-
-    // ✅ FIX: Use upsertSession instead of findOneAndUpdate
-    await upsertSession(customerNumber, userId, {
-      formId: formData._id,
-      formFieldIndex: 0,
-      workflowId: matchedWorkflow._id,
-      currentStepId: step.id,
-      updatedAt: new Date(),
-    });
-
-    await FormResponse.findOneAndUpdate(
-      { formId: formData._id, phone: customerNumber, status: "incomplete" },
-      { $set: { userId, data: {}, status: "incomplete" } },
-      { upsert: true, new: true }
-    );
-
-    await sendWorkflowWhatsAppMessage(
-      accessToken, phoneNumberId, customerNumber,
-      { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" },
-      baseUrl
-    );
-
+    await upsertSession(customerNumber, userId, { formId: formData._id, formFieldIndex: 0, workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() });
+    await FormResponse.findOneAndUpdate({ formId: formData._id, phone: customerNumber, status: "incomplete" }, { $set: { userId, data: {}, status: "incomplete" } }, { upsert: true, new: true });
+    await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" }, baseUrl);
     return;
   }
 
-  // ─── MESSAGE NODE ───
-  if (step.stepType === "message") {
-    
+  if (step.stepType === "message" || step.stepType === "call_action" || step.stepType === "url_action" || step.stepType === "text") {
     await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
     await saveOutgoingWorkflowMessage(userId, customerNumber, phoneNumberId, step);
-
-    // ✅ FIX: Use upsertSession instead of findOneAndUpdate
-    await upsertSession(customerNumber, userId, {
-      workflowId: matchedWorkflow._id,
-      currentStepId: step.id,
-      formId: null,
-      formFieldIndex: 0,
-      updatedAt: new Date(),
-    });
-
-    // ✅ Start inactivity timer (MongoDB Job)
-    await startWorkflowInactivityTimer(
-      customerNumber, userId, matchedWorkflow._id.toString(),
-      accessToken, phoneNumberId, baseUrl
-    );
-
+    await upsertSession(customerNumber, userId, { workflowId: matchedWorkflow._id, currentStepId: step.id, formId: null, formFieldIndex: 0, updatedAt: new Date() });
+    await startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
     return;
   }
 
-  // ─── CALL / URL ACTION NODE ───
-  if (step.stepType === "call_action" || step.stepType === "url_action") {
-    
-    await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
-    await saveOutgoingWorkflowMessage(userId, customerNumber, phoneNumberId, step);
-
-    // ✅ FIX: Use upsertSession instead of findOneAndUpdate
-    await upsertSession(customerNumber, userId, {
-      workflowId: matchedWorkflow._id,
-      currentStepId: step.id,
-      formId: null,
-      formFieldIndex: 0,
-      updatedAt: new Date(),
-    });
-
-    // ✅ Start inactivity timer (MongoDB Job)
-    await startWorkflowInactivityTimer(
-      customerNumber, userId, matchedWorkflow._id.toString(),
-      accessToken, phoneNumberId, baseUrl
-    );
-
-    return;
-  }
-
-  // ─── DEFAULT ───
   await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
   await saveOutgoingWorkflowMessage(userId, customerNumber, phoneNumberId, step);
-
-  // ✅ FIX: Use upsertSession instead of findOneAndUpdate
-  await upsertSession(customerNumber, userId, {
-    workflowId: matchedWorkflow._id,
-    currentStepId: step.id,
-    updatedAt: new Date(),
-  });
-
-  // ✅ Start inactivity timer (MongoDB Job)
-  await startWorkflowInactivityTimer(
-    customerNumber, userId, matchedWorkflow._id.toString(),
-    accessToken, phoneNumberId, baseUrl
-  );
+  await upsertSession(customerNumber, userId, { workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() });
+  await startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
 }
 
 // ============================================================================
 // WHATSAPP MESSAGE SENDER
 // ============================================================================
 
-async function sendWorkflowWhatsAppMessage(
-  accessToken: string,
-  phoneNumberId: string,
-  to: string,
-  step: any,
-  baseUrl: string
-) {
-  
+async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: string, to: string, step: any, baseUrl: string) {
   const sendMessage = async (payload: any) => {
     try {
       const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok) console.error("❌ WhatsApp API ERROR:", JSON.stringify(data, null, 2));
-    } catch (err: any) {
-      console.error("❌ Send failed:", err.message);
-    }
+    } catch (err: any) { console.error("❌ Send failed:", err.message); }
   };
 
-  const isSocialLink = (url?: string) =>
-    url && ["instagram.com", "facebook.com", "youtube.com", "tiktok.com", "linkedin.com", "twitter.com", "wa.me"].some((d) => url.includes(d));
+  const isSocialLink = (url?: string) => url && ["instagram.com", "facebook.com", "youtube.com", "tiktok.com", "linkedin.com", "twitter.com", "wa.me"].some((d) => url.includes(d));
 
-  // Call action
   if (step.stepType === "call_action" && step.phoneNumber) {
     let number = step.phoneNumber.replace(/[^\d+]/g, "");
     if (!number.startsWith("+")) number = "+" + number;
     const redirectUrl = `${baseUrl}/api/redirect-call?number=${encodeURIComponent(number)}`;
-    return sendMessage({
-      messaging_product: "whatsapp", to, type: "interactive",
-      interactive: {
-        type: "cta_url",
-        header: { type: "text", text: step.urlLabel || "Call Now" },
-        body: { text: step.message || "Tap below to call" },
-        action: { name: "cta_url", parameters: { display_text: step.urlLabel || "Call", url: redirectUrl } }
-      }
-    });
+    return sendMessage({ messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "cta_url", header: { type: "text", text: step.urlLabel || "Call Now" }, body: { text: step.message || "Tap below to call" }, action: { name: "cta_url", parameters: { display_text: step.urlLabel || "Call", url: redirectUrl } } } });
   }
-
-  // URL action
   if (step.stepType === "url_action" && step.url) {
     let url = step.url.trim();
     if (!url.startsWith("http")) url = "https://" + url;
-    return sendMessage({
-      messaging_product: "whatsapp", to, type: "interactive",
-      interactive: {
-        type: "cta_url",
-        header: { type: "text", text: step.urlLabel || "Open Link" },
-        body: { text: step.message || "Tap below to continue" },
-        action: { name: "cta_url", parameters: { display_text: step.urlLabel || "Open", url } }
-      }
-    });
+    return sendMessage({ messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "cta_url", header: { type: "text", text: step.urlLabel || "Open Link" }, body: { text: step.message || "Tap below to continue" }, action: { name: "cta_url", parameters: { display_text: step.urlLabel || "Open", url } } } });
   }
-
-  // Link / Social media
   if (step.mediaType === "link" || isSocialLink(step.mediaUrl)) {
     const url = step.mediaUrl?.startsWith("http") ? step.mediaUrl : `https://${step.mediaUrl}`;
     let bodyText = step.message || "";
     if (bodyText && !bodyText.includes(url)) bodyText = `${bodyText}\n\n${url}`;
     else if (!bodyText) bodyText = url;
-    return sendMessage({
-      messaging_product: "whatsapp", to, type: "text",
-      text: { body: bodyText, preview_url: true }
-    });
+    return sendMessage({ messaging_product: "whatsapp", to, type: "text", text: { body: bodyText, preview_url: true } });
   }
-
-  // Media (image/video/document)
   if (step.mediaUrl && ["image", "video", "document"].includes(step.mediaType)) {
     const mediaId = await uploadMediaToMetaFromUrl(phoneNumberId, accessToken, step.mediaUrl);
     if (mediaId) {
@@ -1285,58 +611,19 @@ async function sendWorkflowWhatsAppMessage(
       if (step.buttons?.length > 0) {
         const valid = step.buttons.filter((b: any) => b.label?.trim());
         if (valid.length > 0) {
-          if (valid.length > 3) {
-            return sendMessage({
-              messaging_product: "whatsapp", to, type: "interactive",
-              interactive: {
-                type: "list",
-                body: { text: step.message || "Select option" },
-                action: { button: step.listButtonText || "Options", sections: [{ title: "Menu", rows: valid.slice(0, 10).map((b: any) => ({ id: b.id, title: b.label.substring(0, 24) })) }] }
-              }
-            });
-          }
-          return sendMessage({
-            messaging_product: "whatsapp", to, type: "interactive",
-            interactive: {
-              type: "button",
-              body: { text: step.message || "" },
-              action: { buttons: valid.slice(0, 3).map((b: any) => ({ type: "reply", reply: { id: b.id, title: b.label.substring(0, 20) } })) }
-            }
-          });
+          if (valid.length > 3) return sendMessage({ messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "list", body: { text: step.message || "Select option" }, action: { button: step.listButtonText || "Options", sections: [{ title: "Menu", rows: valid.slice(0, 10).map((b: any) => ({ id: b.id, title: b.label.substring(0, 24) })) }] } } });
+          return sendMessage({ messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "button", body: { text: step.message || "" }, action: { buttons: valid.slice(0, 3).map((b: any) => ({ type: "reply", reply: { id: b.id, title: b.label.substring(0, 20) } })) } } });
         }
       }
       return;
     }
   }
-
-  // Buttons only (no media)
   if (step.buttons?.length > 0) {
     const valid = step.buttons.filter((b: any) => b.label?.trim());
-    if (valid.length > 3) {
-      return sendMessage({
-        messaging_product: "whatsapp", to, type: "interactive",
-        interactive: {
-          type: "list",
-          body: { text: step.message || "Select option" },
-          action: { button: step.listButtonText || "Options", sections: [{ title: "Menu", rows: valid.slice(0, 10).map((b: any) => ({ id: b.id, title: b.label.substring(0, 24) })) }] }
-        }
-      });
-    }
-    return sendMessage({
-      messaging_product: "whatsapp", to, type: "interactive",
-      interactive: {
-        type: "button",
-        body: { text: step.message || "" },
-        action: { buttons: valid.slice(0, 3).map((b: any) => ({ type: "reply", reply: { id: b.id, title: b.label.substring(0, 20) } })) }
-      }
-    });
+    if (valid.length > 3) return sendMessage({ messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "list", body: { text: step.message || "Select option" }, action: { button: step.listButtonText || "Options", sections: [{ title: "Menu", rows: valid.slice(0, 10).map((b: any) => ({ id: b.id, title: b.label.substring(0, 24) })) }] } } });
+    return sendMessage({ messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "button", body: { text: step.message || "" }, action: { buttons: valid.slice(0, 3).map((b: any) => ({ type: "reply", reply: { id: b.id, title: b.label.substring(0, 20) } })) } } });
   }
-
-  // Plain text
-  return sendMessage({
-    messaging_product: "whatsapp", to, type: "text",
-    text: { body: step.message || "", preview_url: true }
-  });
+  return sendMessage({ messaging_product: "whatsapp", to, type: "text", text: { body: step.message || "", preview_url: true } });
 }
 
 // ============================================================================
@@ -1366,32 +653,18 @@ async function addOptOutNumber(phoneNumber: string, userId: string, tenantId: st
 // ============================================================================
 
 export async function POST(req: NextRequest) {
-  
   try {
     await connectDB();
-
     const forwardedProto = req.headers.get('x-forwarded-proto') || (req.headers.get('host')?.includes('localhost') ? 'http' : 'https');
     const forwardedHost = req.headers.get('x-forwarded-host') || req.headers.get('host');
     const baseUrl = `${forwardedProto}://${forwardedHost}`;
-
-    const contentType = req.headers.get("content-type") || "";
-
-    // Non-JSON = message pull
-    if (!contentType.includes("application/json")) {
-      const allNumbers = await getAllWhatsappNumbersFromDB();
-      if (allNumbers.length === 0) return NextResponse.json({ success: true, pulled: 0 });
-      await Promise.all(allNumbers.map((num) => forcePullMessages(num, baseUrl)));
-      return NextResponse.json({ success: true, pulled: allNumbers.length });
-    }
 
     const body = await req.json();
     if (!body?.entry) return NextResponse.json({ success: true });
 
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
-        
         if (change.field !== "messages") continue;
-        
         const value = change.value;
         if (!value) continue;
         
@@ -1401,20 +674,14 @@ export async function POST(req: NextRequest) {
         const num = await findUserByPhoneNumberId(phoneNumberId);
         if (!num) continue;
 
-        // Save contact name
         const contactInfo = value.contacts?.[0];
         if (contactInfo?.profile?.name && contactInfo?.wa_id) {
           try {
             const { default: Contact } = await import("@/models/Contact");
-            await Contact.findOneAndUpdate(
-              { phone: contactInfo.wa_id, userId: num.userId },
-              { name: contactInfo.profile.name, phone: contactInfo.wa_id },
-              { upsert: true }
-            );
+            await Contact.findOneAndUpdate({ phone: contactInfo.wa_id, userId: num.userId }, { name: contactInfo.profile.name, phone: contactInfo.wa_id }, { upsert: true });
           } catch {}
         }
 
-        // Process incoming messages
         for (const msg of value.messages || []) {
           if (msg.type === "reaction" || msg.type === "system") continue;
           await processAndSaveMessage(msg, num);
@@ -1422,12 +689,8 @@ export async function POST(req: NextRequest) {
           await handleCampaignReply(msg, num);
         }
 
-        // Process status updates
         for (const statusObj of value.statuses || []) {
-          
           const { id, status, recipient_id, errors } = statusObj;
-
-          console.log(`[WEBHOOK STATUS] id=${id} status=${status} recipient=${recipient_id}`);
 
           if (status === "delivered" || status === "read") {
             await Message.updateOne({ whatsappMessageId: id }, { $set: { status, error: null } });
@@ -1435,82 +698,59 @@ export async function POST(req: NextRequest) {
             await Message.updateOne({ whatsappMessageId: id }, { $set: { status, error: errors?.[0]?.message || "Failed" } });
           }
 
-          // Update campaign reportData and handle refunds
           try {
-            
             let errorText = null;
             if (status === "failed" || status === "invalid") {
               const raw = errors?.[0]?.message || "Failed to send";
-              errorText = (raw.toLowerCase().includes("undeliverable") || raw.toLowerCase().includes("unsupported"))
-                ? "Message not delivered to maintain a healthy ecosystem." : raw;
+              errorText = (raw.toLowerCase().includes("undeliverable") || raw.toLowerCase().includes("unsupported")) ? "Message not delivered to maintain a healthy ecosystem." : raw;
             }
 
             const campByWamid = await Campaign.findOne({ "reportData.sentWamid": id });
-
             if (campByWamid) {
-              
               const idx = campByWamid.reportData.findIndex((item: any) => item.sentWamid === id);
-              
               if (idx !== -1 && shouldUpdateStatus(campByWamid.reportData[idx].status, status)) {
-                
                 const prevStatus = campByWamid.reportData[idx].status;
-
                 const updateSet: any = { "reportData.$.status": status, "reportData.$.error": errorText };
                 if (status === "delivered") updateSet["reportData.$.deliveredAt"] = new Date(parseInt(statusObj.timestamp) * 1000);
                 if (status === "read") updateSet["reportData.$.readAt"] = new Date(parseInt(statusObj.timestamp) * 1000);
-
                 await Campaign.updateOne({ _id: campByWamid._id, "reportData.sentWamid": id }, { $set: updateSet });
-
                 await processBalanceRefund(campByWamid._id, idx, prevStatus, status, errorText, id, campByWamid.reportData[idx]);
-              }
-
-            } else {
-              
-              const normRecipient = normalizePhone(recipient_id);
-              
-              if (normRecipient) {
                 
+                // ✅ Invalidate Cache so UI can fetch fresh stats on next load
+                await Cache.deleteOne({ key: `billing:${num.userId}` }).catch(()=>{});
+                await Cache.deleteOne({ key: `dashboard:${num.userId}` }).catch(()=>{});
+              }
+            } else {
+              const normRecipient = normalizePhone(recipient_id);
+              if (normRecipient) {
                 const camps = await Campaign.find({ userId: num.userId, "reportData.sentWamid": { $exists: false } });
-
                 for (const camp of camps) {
-                  
                   let touchedIdx = -1;
-                  
                   for (let i = 0; i < camp.reportData.length; i++) {
-                    const item = camp.reportData[i];
-                    if (normalizePhone(item.phone) === normRecipient && shouldUpdateStatus(item.status, status)) {
-                      touchedIdx = i;
-                      break;
+                    if (normalizePhone(camp.reportData[i].phone) === normRecipient && shouldUpdateStatus(camp.reportData[i].status, status)) {
+                      touchedIdx = i; break;
                     }
                   }
-
                   if (touchedIdx !== -1) {
-                    
                     const prevStatus = camp.reportData[touchedIdx].status;
-
-                    const updateSet: any = {
-                      [`reportData.${touchedIdx}.status`]: status,
-                      [`reportData.${touchedIdx}.error`]: errorText
-                    };
+                    const updateSet: any = { [`reportData.${touchedIdx}.status`]: status, [`reportData.${touchedIdx}.error`]: errorText };
                     if (status === "delivered") updateSet[`reportData.${touchedIdx}.deliveredAt`] = new Date(parseInt(statusObj.timestamp) * 1000);
                     if (status === "read") updateSet[`reportData.${touchedIdx}.readAt`] = new Date(parseInt(statusObj.timestamp) * 1000);
-
                     await Campaign.updateOne({ _id: camp._id }, { $set: updateSet });
-
                     await processBalanceRefund(camp._id, touchedIdx, prevStatus, status, errorText, id, camp.reportData[touchedIdx]);
+                    
+                    // ✅ Invalidate Cache
+                    await Cache.deleteOne({ key: `billing:${num.userId}` }).catch(()=>{});
+                    await Cache.deleteOne({ key: `dashboard:${num.userId}` }).catch(()=>{});
                   }
                 }
               }
             }
-          } catch (campErr) {
-            console.error("Failed to update campaign status:", campErr);
-          }
+          } catch (campErr) { console.error("Failed to update campaign status:", campErr); }
         }
       }
     }
-
     return NextResponse.json({ success: true });
-
   } catch (error) {
     console.error("❌ [WEBHOOK] Fatal Error:", error);
     return NextResponse.json({ success: true });
@@ -1522,54 +762,34 @@ export async function POST(req: NextRequest) {
 // ============================================================================
 
 async function handleCampaignReply(msg: any, num: any) {
-  
   try {
-    
-    const Campaign = (await import("@/models/Campaign")).default;
-    
     const phone = msg.from;
-    const text = msg?.text?.body || msg?.button?.text ||
-                 msg?.interactive?.button_reply?.title ||
-                 msg?.interactive?.list_reply?.title ||
-                 "[Media/Non-text reply]";
-    
+    const text = msg?.text?.body || msg?.button?.text || msg?.interactive?.button_reply?.title || msg?.interactive?.list_reply?.title || "[Media/Non-text reply]";
     const replyTime = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
 
-    // ✅ FIX: Find the most recent campaign that EXACTLY contains this phone number
-    const camp = await Campaign.findOne({
-      userId: num.userId,
-      "reportData.phone": phone // This correctly queries inside the array
-    }).sort({ createdAt: -1 });
+    const camp = await Campaign.findOne({ userId: num.userId, "reportData.phone": phone }).sort({ createdAt: -1 });
 
     if (camp) {
-      
       let touchedIdx = -1;
-      
       for (let i = 0; i < camp.reportData.length; i++) {
         if (normalizePhone(camp.reportData[i].phone) === normalizePhone(phone)) {
-          touchedIdx = i;
-          break;
+          touchedIdx = i; break;
         }
       }
 
       if (touchedIdx !== -1) {
-        
         await Campaign.updateOne(
           { _id: camp._id },
           {
-            $set: {
-              [`reportData.${touchedIdx}.status`]: "replied",
-              [`reportData.${touchedIdx}.repliedAt`]: replyTime,
-            },
-            $push: {
-              [`reportData.${touchedIdx}.replies`]: text,
-              [`reportData.${touchedIdx}.replyTimes`]: replyTime,
-            }
+            $set: { [`reportData.${touchedIdx}.status`]: "replied", [`reportData.${touchedIdx}.repliedAt`]: replyTime },
+            $push: { [`reportData.${touchedIdx}.replies`]: text, [`reportData.${touchedIdx}.replyTimes`]: replyTime }
           }
         );
+        
+        // ✅ Invalidate Cache so the "Load Status" button picks up the new reply immediately
+        await Cache.deleteOne({ key: `billing:${num.userId}` }).catch(()=>{});
+        await Cache.deleteOne({ key: `dashboard:${num.userId}` }).catch(()=>{});
       }
     }
-  } catch (err) {
-    console.error("Campaign reply update error:", err);
-  }
+  } catch (err) { console.error("Campaign reply update error:", err); }
 }
