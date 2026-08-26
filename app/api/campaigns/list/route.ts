@@ -38,8 +38,7 @@ export async function GET(req: Request) {
           name: 1, templateName: 1, templateCategory: 1, languageCode: 1, scheduledAt: 1,
           variables: 1, mappedVariables: 1, generateOtp: 1, otpLength: 1, mediaUrl: 1, mediaType: 1,
           totalMessages: 1, additionalFields: 1, sheetUrl: 1, standaloneSheetUrl: 1, liveStats: 1,
-          status: 1, totalDeducted: 1, sentCount: 1, failedCount: 1, currentPrice: 1, pricePerMessage: 1,
-          phoneNumbers: { $slice: 15 }, names: { $slice: 15 }, additionalFieldsData: { $slice: 15 }
+          status: 1, totalDeducted: 1, sentCount: 1, failedCount: 1, currentPrice: 1, pricePerMessage: 1
         }
       ).lean();
       
@@ -58,8 +57,14 @@ export async function GET(req: Request) {
       ).lean();
       
       if (!campaign) return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
+      
       const reports = await CampaignReport.find({ campaignId: campaign._id }).lean();
-      return NextResponse.json({ success: true, campaigns: [{ ...campaign, reportData: reports }] });
+      const formattedReports = reports.map((r: any) => {
+        const isReplied = r.status === "replied" || (r.replies && r.replies.length > 0) || (r.reply && r.reply.trim().length > 0);
+        return { ...r, status: isReplied ? "replied" : r.status };
+      });
+
+      return NextResponse.json({ success: true, campaigns: [{ ...campaign, reportData: formattedReports }] });
     }
 
     // ==========================================
@@ -94,7 +99,6 @@ export async function GET(req: Request) {
       const filterOut = searchParams.get("filterOut")?.split(",").filter(Boolean) || [];
       const search = searchParams.get("search") || "";
 
-      // Build the database query
       const query: any = { campaignId: new mongoose.Types.ObjectId(campaignId) };
       
       if (search) {
@@ -104,11 +108,54 @@ export async function GET(req: Request) {
         ];
       }
 
-      // ✅ FIX: Properly combine $in and $nin without overwriting each other
+      // ✅ FIX: Smart "Replied" Query Logic
+      // If a contact has replies, they ARE replied, regardless of their raw status field.
+      const repliedCondition = {
+        $or: [
+          { status: "replied" },
+          { "replies.0": { $exists: true } },
+          { reply: { $exists: true, $ne: "" } }
+        ]
+      };
+
+      const notRepliedCondition = {
+        $and: [
+          { "replies.0": { $exists: false } },
+          { $or: [{ reply: { $exists: false } }, { reply: "" }] }
+        ]
+      };
+
       const statusQuery: any = {};
-      if (showOnly.length > 0) statusQuery.$in = showOnly;
-      if (filterOut.length > 0) statusQuery.$nin = filterOut;
-      if (Object.keys(statusQuery).length > 0) query.status = statusQuery;
+      const cleanShowOnly = showOnly.filter(s => s !== "replied");
+      const cleanFilterOut = filterOut.filter(s => s !== "replied");
+
+      if (cleanShowOnly.length > 0) statusQuery.$in = cleanShowOnly;
+      if (cleanFilterOut.length > 0) statusQuery.$nin = cleanFilterOut;
+
+      const andConditions: any[] = [];
+
+      if (Object.keys(statusQuery).length > 0) {
+        if (showOnly.includes("replied")) {
+          // Show Replied + Other Selected Statuses
+          andConditions.push({ $or: [ { status: statusQuery }, repliedCondition ] });
+        } else if (!filterOut.includes("replied")) {
+          // Show specific statuses, but ensure we don't accidentally include replied contacts
+          andConditions.push({ $and: [ { status: statusQuery }, notRepliedCondition ] });
+        } else {
+          // Show specific statuses (Replied is already filtered out)
+          andConditions.push({ status: statusQuery });
+        }
+      } else if (filterOut.includes("replied")) {
+        // Only filtering out Replied
+        andConditions.push(notRepliedCondition);
+      } else if (showOnly.includes("replied")) {
+        // Only showing Replied
+        andConditions.push(repliedCondition);
+      }
+
+      if (andConditions.length > 0) {
+        query.$and = andConditions;
+      }
 
       // Fetch paginated reports and total count in parallel
       const [reports, totalFiltered] = await Promise.all([
@@ -119,16 +166,40 @@ export async function GET(req: Request) {
       const campaign = await Campaign.findById(campaignId).select("name templateName additionalFields languageCode totalDeducted totalMessages").lean();
       if (!campaign) return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
 
-      // ✅ FIX: Calculate exact stats dynamically for this specific campaign
+      // ✅ FIX: Force "replied" status on the frontend if they have replies
+      const formattedReports = reports.map((r: any) => {
+        const isReplied = r.status === "replied" || (r.replies && r.replies.length > 0) || (r.reply && r.reply.trim().length > 0);
+        return { ...r, status: isReplied ? "replied" : r.status };
+      });
+
+      // ✅ FIX: Calculate exact stats dynamically with strict string length checking
       const statsAgg = await CampaignReport.aggregate([
         { $match: { campaignId: new mongoose.Types.ObjectId(campaignId) } },
-        { $group: { _id: "$status", count: { $sum: 1 } } }
+        {
+          $project: {
+            effStatus: {
+              $cond: {
+                if: {
+                  $or: [
+                    { $eq: [{ $toLower: { $ifNull: ["$status", ""] } }, "replied"] },
+                    { $gt: [ { $size: { $ifNull: ["$replies", []] } }, 0 ] },
+                    { $gt: [ { $strLenCP: { $ifNull: ["$reply", ""] } }, 0 ] }
+                  ]
+                },
+                then: "replied",
+                else: { $toLower: { $ifNull: ["$status", "pending"] } }
+              }
+            }
+          }
+        },
+        { $group: { _id: "$effStatus", count: { $sum: 1 } } }
       ]);
 
       const liveStats: any = { total: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0, invalid: 0, pending: 0, duplicate: 0 };
       let actualDocsCount = 0;
+      
       statsAgg.forEach(s => {
-        const status = (s._id || "pending").toLowerCase();
+        const status = s._id || "pending";
         if (liveStats.hasOwnProperty(status)) liveStats[status] = s.count;
         actualDocsCount += s.count;
       });
@@ -141,7 +212,7 @@ export async function GET(req: Request) {
         success: true,
         campaigns: [{
           ...campaign,
-          reportData: reports,
+          reportData: formattedReports,
           campaignStats: liveStats
         }],
         currentPage: page,
