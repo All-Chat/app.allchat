@@ -38,9 +38,29 @@ export async function GET(request: Request) {
     }
 
     const campaignIds = campaigns.map(c => new mongoose.Types.ObjectId(c._id));
+    
+    // ✅ FIX: Use the EXACT SAME $project logic to guarantee sidebar stats match the table
     const statsAgg = await CampaignReport.aggregate([
       { $match: { campaignId: { $in: campaignIds } } },
-      { $group: { _id: { campaignId: "$campaignId", status: "$status" }, count: { $sum: 1 } } }
+      {
+        $project: {
+          campaignId: "$campaignId",
+          effStatus: {
+            $cond: {
+              if: {
+                $or: [
+                  { $eq: [{ $toLower: { $ifNull: ["$status", ""] } }, "replied"] },
+                  { $gt: [ { $size: { $ifNull: ["$replies", []] } }, 0 ] },
+                  { $gt: [ { $strLenCP: { $ifNull: ["$reply", ""] } }, 0 ] }
+                ]
+              },
+              then: "replied",
+              else: { $toLower: { $ifNull: ["$status", "pending"] } }
+            }
+          }
+        }
+      },
+      { $group: { _id: { campaignId: "$campaignId", status: "$effStatus" }, count: { $sum: 1 } } }
     ]);
 
     const statsMap: Record<string, any> = {};
@@ -53,7 +73,6 @@ export async function GET(request: Request) {
     });
 
     const fixedCampaigns = campaigns.map((c: any) => {
-      // ✅ FIX: Bulletproof math for stats
       const stats = statsMap[c._id.toString()] || {};
       const docCount = stats.docCount || 0;
       const total = c.totalMessages || docCount || 0;
