@@ -2,452 +2,154 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Campaign from "@/models/Campaign";
+import CampaignReport from "@/models/CampaignReport";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { statsQueue, reportQueue, Cache } from "@/lib/queue";
+import { statsQueue } from "@/lib/queue";
 import mongoose from "mongoose";
-
-function normalizePhoneExpr(phoneFieldExpr: any) {
-  return {
-    $let: {
-      vars: {
-        digitsArr: {
-          $map: {
-            input: { $regexFindAll: { input: { $toString: { $ifNull: [phoneFieldExpr, ""] } }, regex: "\\d" } },
-            as: "m",
-            in: "$$m.match",
-          },
-        },
-      },
-      in: {
-        $let: {
-          vars: {
-            digitsStr: {
-              $reduce: {
-                input: "$$digitsArr",
-                initialValue: "",
-                in: { $concat: ["$$value", "$$this"] },
-              },
-            },
-          },
-          in: {
-            $substrCP: [
-              "$$digitsStr",
-              { $max: [0, { $subtract: [{ $strLenCP: "$$digitsStr" }, 10] }] },
-              10,
-            ],
-          },
-        },
-      },
-    },
-  };
-}
 
 export async function GET(req: Request) {
   try {
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
-
-    if (!userId) {
-      return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
-    }
+    if (!userId) return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
 
     await connectDB();
-
     const { searchParams } = new URL(req.url);
-    const checkName = searchParams.get("check");
-    const excludeId = searchParams.get("excludeId");
     const campaignId = searchParams.get("id");
-    const isDownload = searchParams.get("download") === "true"; 
+    const isDownload = searchParams.get("download") === "true";
 
     // ==========================================
-    // ✅ 1. FAST VIEW MODAL & LOAD STATUS BUTTON
+    // 1. VIEW MODAL & LOAD STATUS BUTTON
     // ==========================================
     const viewId = searchParams.get("viewId");
     if (viewId) {
-      // 1. Queue the stats sync job for this specific campaign
       try {
         const job = await statsQueue.add('sync-campaign-stats', { campaignId: viewId });
-
-        // 2. Wait for the statsWorker to process it (Timeout after 15 seconds)
         await Promise.race([
           job.waitUntilFinished(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Stats sync timeout")), 15000))
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 15000))
         ]);
-      } catch (err) {
-        console.error("Failed to wait for stats sync:", err);
-        // Continue anyway to return whatever is currently in the DB
-      }
+      } catch (err) {}
 
-      // 3. Fetch the freshly updated campaign from DB
       const campaign = await Campaign.findOne(
-        { 
-          _id: new mongoose.Types.ObjectId(viewId), 
-          userId: new mongoose.Types.ObjectId(userId) 
-        },
+        { _id: new mongoose.Types.ObjectId(viewId), userId: new mongoose.Types.ObjectId(userId) },
         {
-          name: 1,
-          templateName: 1,
-          templateCategory: 1,
-          languageCode: 1,
-          scheduledAt: 1,
-          variables: 1,
-          mappedVariables: 1,
-          generateOtp: 1,
-          otpLength: 1,
-          mediaUrl: 1,
-          mediaType: 1,
-          totalMessages: 1,
-          additionalFields: 1,
-          sheetUrl: 1, 
-          standaloneSheetUrl: 1,
-          liveStats: 1,
-          status: 1,
-          totalDeducted: 1,
-          sentCount: 1,
-          failedCount: 1,
-          currentPrice: 1,
-          pricePerMessage: 1,
-          phoneNumbers: { $slice: 15 },
-          names: { $slice: 15 },
-          additionalFieldsData: { $slice: 15 }
+          name: 1, templateName: 1, templateCategory: 1, languageCode: 1, scheduledAt: 1,
+          variables: 1, mappedVariables: 1, generateOtp: 1, otpLength: 1, mediaUrl: 1, mediaType: 1,
+          totalMessages: 1, additionalFields: 1, sheetUrl: 1, standaloneSheetUrl: 1, liveStats: 1,
+          status: 1, totalDeducted: 1, sentCount: 1, failedCount: 1, currentPrice: 1, pricePerMessage: 1,
+          phoneNumbers: { $slice: 15 }, names: { $slice: 15 }, additionalFieldsData: { $slice: 15 }
         }
       ).lean();
       
-      if (!campaign) {
-        return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
-      }
+      if (!campaign) return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
       return NextResponse.json({ success: true, campaigns: [campaign] });
     }
 
     // ==========================================
-    // ✅ 2. EXCEL EXPORT (Loads ALL numbers)
+    // 2. EXCEL EXPORT
     // ==========================================
     const exportId = searchParams.get("exportId");
     if (exportId) {
       const campaign = await Campaign.findOne(
-        { 
-          _id: new mongoose.Types.ObjectId(exportId), 
-          userId: new mongoose.Types.ObjectId(userId) 
-        },
-        {
-          name: 1,
-          templateName: 1,
-          phoneNumbers: 1, 
-          names: 1, 
-          additionalFields: 1,
-          additionalFieldsData: 1, 
-          reportData: 1, 
-          sheetUrl: 1, 
-          standaloneSheetUrl: 1, 
-        }
+        { _id: new mongoose.Types.ObjectId(exportId), userId: new mongoose.Types.ObjectId(userId) },
+        { name: 1, templateName: 1, additionalFields: 1, languageCode: 1 }
       ).lean();
       
-      if (!campaign) {
-        return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
-      }
-      return NextResponse.json({ success: true, campaigns: [campaign] });
+      if (!campaign) return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
+      const reports = await CampaignReport.find({ campaignId: campaign._id }).lean();
+      return NextResponse.json({ success: true, campaigns: [{ ...campaign, reportData: reports }] });
     }
 
     // ==========================================
-    // 3. EDIT PAGE (Loads ALL data)
+    // 3. EDIT PAGE
     // ==========================================
     const editId = searchParams.get("editId");
     if (editId) {
-      const campaign = await Campaign.findOne({ 
-        _id: new mongoose.Types.ObjectId(editId), 
-        userId: new mongoose.Types.ObjectId(userId) 
-      }).lean();
-      
-      if (!campaign) {
-        return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
-      }
+      const campaign = await Campaign.findOne({ _id: new mongoose.Types.ObjectId(editId), userId: new mongoose.Types.ObjectId(userId) }).lean();
+      if (!campaign) return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
       return NextResponse.json({ success: true, campaigns: [campaign] });
     }
 
     // ==========================================
     // 4. LIVE CHECK MODE
     // ==========================================
+    const checkName = searchParams.get("check");
     if (checkName !== null) {
-      const query: any = {
-        userId: new mongoose.Types.ObjectId(userId),
-        name: { $regex: new RegExp(`^${checkName}$`, "i") },
-      };
-      if (excludeId) query._id = { $ne: excludeId };
-      const existing = await Campaign.findOne(query).lean();
-      return NextResponse.json({ success: true, exists: !!existing });
+      const query: any = { userId: new mongoose.Types.ObjectId(userId), name: { $regex: new RegExp(`^${checkName}$`, "i") } };
+      if (searchParams.get("excludeId")) query._id = { $ne: searchParams.get("excludeId") };
+      return NextResponse.json({ success: true, exists: !!(await Campaign.findOne(query).lean()) });
     }
 
-          // ==========================================
-    // 5. SINGLE CAMPAIGN REPORT MODE (OPTIMIZED PAGINATION)
+    // ==========================================
+    // 5. REPORT MODE (ULTRA-FAST PAGINATION & FILTERING)
     // ==========================================
     if (campaignId) {
-      const limit = 10; // ✅ Only 10 contacts per page
+      const limit = 10; // 10 contacts per page
       const page = parseInt(searchParams.get("page") || "1");
       const skip = (page - 1) * limit;
 
       const showOnly = searchParams.get("showOnly")?.split(",").filter(Boolean) || [];
       const filterOut = searchParams.get("filterOut")?.split(",").filter(Boolean) || [];
       const search = searchParams.get("search") || "";
-      const forceRefresh = searchParams.get("refresh") === "true";
 
-      // 1. Check Cache First (Short 1-minute cache just to prevent spamming)
-      const cacheKey = `report_page:${userId}:${campaignId}:${page}:${search}:${showOnly.join("")}:${filterOut.join("")}`;
-      if (!forceRefresh) {
-        const cachedDoc = await Cache.findOne({ key: cacheKey }).lean();
-        if (cachedDoc && cachedDoc.value) {
-          const cachedData = JSON.parse(cachedDoc.value);
-          return NextResponse.json({
-            success: true,
-            campaigns: [{
-              ...cachedData.meta,
-              reportData: cachedData.data,
-              campaignStats: cachedData.stats
-            }],
-            currentPage: page,
-            totalPages: cachedData.totalPages,
-            campaignStats: cachedData.stats,
-            fromCache: true
-          });
-        }
-      }
-
-      // 2. If Refresh clicked, delete this specific page cache
-      if (forceRefresh) {
-        await Cache.deleteOne({ key: cacheKey });
-      }
-
-      // 3. Run Optimized Aggregation (Fetches ONLY 10 items and their replies)
-      const isRepliedExpr = {
-        $or: [
-          { $ne: [{ $ifNull: ["$$r.reply", ""] }, ""] },
-          { $gt: [ { $size: { $filter: { input: { $ifNull: ["$$r.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0 ] },
-          { $in: [normalizePhoneExpr("$$r.phone"), "$pagePhonesSet"] }
-        ]
-      };
-
-      const baseStatusExpr = {
-        $switch: {
-          branches: [
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "read"] }, then: "read" },
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "delivered"] }, then: "delivered" },
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "sent"] }, then: "sent" },
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "failed"] }, then: "failed" },
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "invalid"] }, then: "invalid" },
-            { case: { $eq: [{ $toLower: { $ifNull: ["$$r.status", ""] } }, "duplicate"] }, then: "duplicate" },
-          ],
-          default: "pending"
-        }
-      };
-
-      const effectiveStatusExpr = {
-        $cond: {
-          if: isRepliedExpr,
-          then: "replied",
-          else: baseStatusExpr
-        }
-      };
-
-      const andConditions: any[] = [];
-
-      if (search) {
-        andConditions.push({
-          $or: [
-            { $regexMatch: { input: { $toString: { $ifNull: ["$$r.phone", ""] } }, regex: search, options: "i" } },
-            { $regexMatch: { input: { $ifNull: ["$$r.name", ""] }, regex: search, options: "i" } },
-          ],
-        });
-      }
-
-      if (showOnly.length > 0) {
-        andConditions.push({ $in: [effectiveStatusExpr, showOnly] });
-      }
+      // Build the database query
+      const query: any = { campaignId: new mongoose.Types.ObjectId(campaignId) };
       
-      if (filterOut.length > 0) {
-        andConditions.push({ $not: [{ $in: [effectiveStatusExpr, filterOut] }] });
+      if (search) {
+        query.$or = [
+          { phone: { $regex: search, $options: "i" } },
+          { name: { $regex: search, $options: "i" } }
+        ];
       }
 
-      const finalFilterCond = andConditions.length > 0 ? { $and: andConditions } : true;
+      // ✅ FIX: Properly combine $in and $nin without overwriting each other
+      const statusQuery: any = {};
+      if (showOnly.length > 0) statusQuery.$in = showOnly;
+      if (filterOut.length > 0) statusQuery.$nin = filterOut;
+      if (Object.keys(statusQuery).length > 0) query.status = statusQuery;
 
-      const pipeline: any[] = [
-        {
-          $match: {
-            _id: new mongoose.Types.ObjectId(campaignId),
-            userId: new mongoose.Types.ObjectId(userId),
-          },
-        },
-        // Step 1: Filter the reportData array based on search/filters
-        {
-          $addFields: {
-            filteredData: {
-              $filter: {
-                input: { $ifNull: ["$reportData", []] },
-                as: "r",
-                cond: finalFilterCond,
-              },
-            },
-          },
-        },
-        // Step 2: Slice to get ONLY the 10 items for the current page
-        {
-          $addFields: {
-            paginatedData: { $slice: ["$filteredData", skip, limit] }
-          }
-        },
-        // Step 3: Extract phone numbers for ONLY those 10 items
-        {
-          $addFields: {
-            pagePhonesNormalized: {
-              $setUnion: [
-                {
-                  $map: {
-                    input: "$paginatedData",
-                    as: "r",
-                    in: normalizePhoneExpr("$$r.phone"),
-                  },
-                },
-                [],
-              ],
-            },
-          },
-        },
-        // Step 4: Lookup inbound messages ONLY for those 10 phone numbers (SUPER FAST!)
-        {
-          $lookup: {
-            from: "messages",
-            let: { camp_createdAt: "$createdAt", user_id: "$userId", page_phones: "$pagePhonesNormalized" },
-            pipeline: [
-              {
-                $match: {
-                  $expr: {
-                    $and: [
-                      { $eq: ["$userId", "$$user_id"] },
-                      { $eq: ["$direction", "in"] },
-                      { $gte: ["$createdAt", "$$camp_createdAt"] },
-                    ],
-                  },
-                },
-              },
-              { $addFields: { normalizedPhone: normalizePhoneExpr("$phone") } },
-              { $match: { $expr: { $in: ["$normalizedPhone", "$$page_phones"] } } },
-              { $project: { _id: 0, normalizedPhone: 1, text: 1, messageType: 1 } },
-            ],
-            as: "inboundMsgs",
-          },
-        },
-        {
-          $addFields: {
-            pagePhonesSet: { $setUnion: ["$inboundMsgs.normalizedPhone", []] },
-          },
-        },
-        // Step 5: Map the replies to the 10 items and calculate stats
-        {
-          $project: {
-            name: 1,
-            templateName: 1,
-            additionalFields: 1,
-            languageCode: 1,
-            totalDeducted: 1,
-            liveStats: 1, // Return liveStats for the Brief modal
-            totalFiltered: { $size: "$filteredData" },
-            reportData: {
-              $map: {
-                input: "$paginatedData",
-                as: "r",
-                in: {
-                  $let: {
-                    vars: {
-                      matchedMsgs: {
-                        $filter: {
-                          input: { $ifNull: ["$inboundMsgs", []] },
-                          as: "msg",
-                          cond: { $eq: ["$$msg.normalizedPhone", normalizePhoneExpr("$$r.phone")] }
-                        }
-                      }
-                    },
-                    in: {
-                      $mergeObjects: [
-                        "$$r",
-                        {
-                          status: effectiveStatusExpr,
-                          replies: {
-                            $filter: {
-                              input: {
-                                $concatArrays: [
-                                  { $ifNull: ["$$r.replies", []] },
-                                  {
-                                    $map: {
-                                      input: "$$matchedMsgs",
-                                      as: "msg",
-                                      in: {
-                                        $cond: {
-                                          if: { $ne: [{ $ifNull: ["$$msg.text", ""] }, ""] },
-                                          then: "$$msg.text",
-                                          else: {
-                                            $cond: {
-                                              if: { $ne: [{ $ifNull: ["$$msg.messageType", ""] }, ""] },
-                                              then: { $concat: ["[", "$$msg.messageType", "]"] },
-                                              else: ""
-                                            }
-                                          }
-                                        }
-                                      }
-                                    }
-                                  }
-                                ]
-                              },
-                              as: "rep",
-                              cond: { $ne: ["$$rep", ""] }
-                            }
-                          }
-                        }
-                      ]
-                    }
-                  }
-                }
-              }
-            },
-          },
-        },
-      ];
+      // Fetch paginated reports and total count in parallel
+      const [reports, totalFiltered] = await Promise.all([
+        CampaignReport.find(query).skip(skip).limit(isDownload ? 100000 : limit).lean(),
+        CampaignReport.countDocuments(query)
+      ]);
 
-      const result = await Campaign.aggregate(pipeline);
+      const campaign = await Campaign.findById(campaignId).select("name templateName additionalFields languageCode totalDeducted totalMessages").lean();
+      if (!campaign) return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
 
-      if (!result || result.length === 0) {
-        return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
-      }
+      // ✅ FIX: Calculate exact stats dynamically for this specific campaign
+      const statsAgg = await CampaignReport.aggregate([
+        { $match: { campaignId: new mongoose.Types.ObjectId(campaignId) } },
+        { $group: { _id: "$status", count: { $sum: 1 } } }
+      ]);
 
-      const campaign = result[0];
-      const totalPages = Math.max(1, Math.ceil(campaign.totalFiltered / limit));
+      const liveStats: any = { total: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0, invalid: 0, pending: 0, duplicate: 0 };
+      let actualDocsCount = 0;
+      statsAgg.forEach(s => {
+        const status = (s._id || "pending").toLowerCase();
+        if (liveStats.hasOwnProperty(status)) liveStats[status] = s.count;
+        actualDocsCount += s.count;
+      });
 
-      const responseData = {
+      liveStats.total = campaign.totalMessages || actualDocsCount;
+      const processed = liveStats.sent + liveStats.delivered + liveStats.read + liveStats.replied + liveStats.failed + liveStats.invalid + liveStats.duplicate;
+      liveStats.pending = Math.max(0, liveStats.total - processed);
+
+      return NextResponse.json({
         success: true,
-        campaigns: [
-          {
-            ...campaign,
-            languageCode: campaign.languageCode || "en",
-            totalDeducted: campaign.totalDeducted || 0,
-          },
-        ],
+        campaigns: [{
+          ...campaign,
+          reportData: reports,
+          campaignStats: liveStats
+        }],
         currentPage: page,
-        totalPages: totalPages,
-        campaignStats: campaign.liveStats || {}, // Use liveStats for Brief modal
-      };
-
-      // Save to cache for 1 minute to prevent spamming
-      await Cache.updateOne(
-        { key: cacheKey },
-        { $set: { value: JSON.stringify({ 
-          meta: { name: campaign.name, templateName: campaign.templateName, additionalFields: campaign.additionalFields, languageCode: campaign.languageCode, totalDeducted: campaign.totalDeducted }, 
-          data: campaign.reportData, 
-          stats: campaign.liveStats || {},
-          totalPages: totalPages
-        }), expireAt: new Date(Date.now() + 60 * 1000) } }, // 1 minute cache
-        { upsert: true }
-      );
-
-      return NextResponse.json(responseData);
+        totalPages: Math.max(1, Math.ceil(totalFiltered / limit)),
+        campaignStats: liveStats
+      });
     }
+
     // ==========================================
     // 6. PAGINATED LIST MODE
     // ==========================================
@@ -460,20 +162,13 @@ export async function GET(req: Request) {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select("-reportData") 
         .lean(),
       Campaign.countDocuments({ userId: new mongoose.Types.ObjectId(userId) }),
     ]);
 
-    const fixedCampaigns = campaigns.map((c: any) => ({
-      ...c,
-      languageCode: c.languageCode || "en",
-      totalDeducted: c.totalDeducted || 0,
-    }));
-
     return NextResponse.json({
       success: true,
-      campaigns: fixedCampaigns,
+      campaigns: campaigns.map((c: any) => ({ ...c, languageCode: c.languageCode || "en", totalDeducted: c.totalDeducted || 0 })),
       totalCampaigns,
       hasMore: skip + campaigns.length < totalCampaigns,
     });
