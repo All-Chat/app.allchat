@@ -93,6 +93,9 @@ async function processCampaignLoop(data: any, jobId: any) {
   const { campaignId, userId, payerId, PHONE_NUMBER_ID, ACCESS_TOKEN, pricePerMessage } = data;
   await ensureDbConnected();
 
+  // ✅ FIX: Reset any stuck "queued" documents back to "pending" (in case of crash/restart)
+  await CampaignReport.updateMany({ campaignId, status: "queued" }, { $set: { status: "pending" } });
+
   let thf = "";
   const batchSize = 10;
   
@@ -102,7 +105,6 @@ async function processCampaignLoop(data: any, jobId: any) {
     if (!campaign) break;
     
     if (campaign.status === "paused") {
-      // Put job back to pending and exit loop. It will be picked up again when resumed.
       await Job.updateOne({ _id: jobId }, { $set: { status: "pending", lockedAt: null } }).catch(()=>{});
       console.log(`⏸ Campaign ${campaign.name} paused. Job returned to queue.`);
       return; 
