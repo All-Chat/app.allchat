@@ -8,13 +8,13 @@ import { useRouter } from "next/navigation";
 import Sidebar from "@/components/Sidebar";
 import {
   Wallet, ArrowDownCircle, ArrowUpCircle, Loader2, Search,
-  ChevronLeft, ChevronRight, FileText, Send, CheckCircle2, XCircle,
-  TrendingUp, TrendingDown
+  ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, FileText, Send, CheckCircle2, XCircle,
+  TrendingUp, TrendingDown, Undo2
 } from "lucide-react";
 
 type Transaction = {
   _id: string;
-  type: string; // 'recharge' or 'usage'
+  type: string; // 'recharge', 'usage', or 'refund'
   amount: number;
   description: string;
   status: string;
@@ -55,6 +55,7 @@ export default function TransactionHistoryPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [searchTerm, setSearchTerm] = useState("");
+  
   const itemsPerPage = 10;
 
   useEffect(() => {
@@ -119,7 +120,7 @@ export default function TransactionHistoryPage() {
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end border-b border-slate-200 pb-4 sm:pb-6 gap-4">
             <div>
               <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900">Transaction History</h1>
-              <p className="text-slate-500 text-xs sm:text-sm mt-1">Track your recharges and campaign usage deductions.</p>
+              <p className="text-slate-500 text-xs sm:text-sm mt-1">Track your recharges, campaign usage, and refunds.</p>
             </div>
             <div className="flex items-center gap-2 px-4 py-2 bg-white rounded-xl border border-slate-200 shadow-sm">
               <Wallet className="w-5 h-5 text-emerald-500" />
@@ -224,63 +225,68 @@ export default function TransactionHistoryPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {transactions.map((tx) => (
-                      <tr key={tx._id} className="hover:bg-slate-50 transition-colors">
-                        <td className="px-5 py-4 text-xs text-slate-500 whitespace-nowrap">
-                          {new Date(tx.createdAt).toLocaleString()}
-                        </td>
-                        <td className="px-5 py-4">
-                          <div className="flex items-start gap-3">
-                            <div className={`p-2 rounded-lg ${activeTab === "recharge" ? "bg-emerald-50" : "bg-blue-50"}`}>
-                              {activeTab === "recharge" ? (
-                                <ArrowDownCircle className="w-4 h-4 text-emerald-600" />
-                              ) : (
-                                <Send className="w-4 h-4 text-blue-600" />
-                              )}
+                    {transactions.map((tx) => {
+                      const isCredit = tx.type === "recharge" || tx.type === "refund";
+                      
+                      return (
+                        <tr key={tx._id} className="hover:bg-slate-50 transition-colors">
+                          <td className="px-5 py-4 text-xs text-slate-500 whitespace-nowrap">
+                            {new Date(tx.createdAt).toLocaleString()}
+                          </td>
+                          <td className="px-5 py-4">
+                            <div className="flex items-start gap-3">
+                              <div className={`p-2 rounded-lg ${isCredit ? "bg-emerald-50" : "bg-blue-50"}`}>
+                                {tx.type === "recharge" ? (
+                                  <ArrowDownCircle className="w-4 h-4 text-emerald-600" />
+                                ) : tx.type === "refund" ? (
+                                  <Undo2 className="w-4 h-4 text-emerald-600" />
+                                ) : (
+                                  <Send className="w-4 h-4 text-blue-600" />
+                                )}
+                              </div>
+                              <div className="flex-1">
+                                <p className="font-semibold text-slate-900 text-sm">
+                                  {tx.description}
+                                </p>
+                                {tx.metadata?.campaignName && tx.metadata.campaignName !== "-" && (
+                                  <p className="text-xs text-slate-500 mt-0.5">
+                                    Campaign: <span className="font-medium">{tx.metadata.campaignName}</span>
+                                  </p>
+                                )}
+                                {tx.metadata?.templateName && (
+                                  <p className="text-xs text-slate-500 mt-0.5">
+                                    Template: <span className="font-medium">{tx.metadata.templateName}</span>
+                                  </p>
+                                )}
+                                {tx.metadata?.phone && tx.metadata?.campaignName === "-" && (
+                                  <p className="text-xs text-slate-400 font-mono mt-0.5">
+                                    To: {tx.metadata.phone}
+                                  </p>
+                                )}
+                              </div>
                             </div>
-                            <div className="flex-1">
-                              <p className="font-semibold text-slate-900 text-sm">
-                                {tx.description}
-                              </p>
-                              {tx.metadata?.campaignName && tx.metadata.campaignName !== "-" && (
-                                <p className="text-xs text-slate-500 mt-0.5">
-                                  Campaign: <span className="font-medium">{tx.metadata.campaignName}</span>
-                                </p>
-                              )}
-                              {tx.metadata?.templateName && (
-                                <p className="text-xs text-slate-500 mt-0.5">
-                                  Template: <span className="font-medium">{tx.metadata.templateName}</span>
-                                </p>
-                              )}
-                              {/* ✅ ONLY SHOW PHONE FOR TEST MESSAGES (where campaignName is "-") */}
-                              {tx.metadata?.phone && tx.metadata?.campaignName === "-" && (
-                                <p className="text-xs text-slate-400 font-mono mt-0.5">
-                                  To: {tx.metadata.phone}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-5 py-4">
-                          {tx.status === "success" || tx.status === "completed" ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-100">
-                              <CheckCircle2 size={10} /> Success
+                          </td>
+                          <td className="px-5 py-4">
+                            {tx.status === "success" || tx.status === "completed" ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-100">
+                                <CheckCircle2 size={10} /> Success
+                              </span>
+                            ) : tx.status === "failed" || tx.status === "pending" ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-red-50 text-red-700 border border-red-100">
+                                <XCircle size={10} /> {tx.status}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-slate-500 capitalize">{tx.status}</span>
+                            )}
+                          </td>
+                          <td className="px-5 py-4 text-right whitespace-nowrap">
+                            <span className={`font-bold text-sm ${isCredit ? "text-emerald-600" : "text-red-600"}`}>
+                              {isCredit ? "+" : "-"} {formatINR(tx.amount)}
                             </span>
-                          ) : tx.status === "failed" || tx.status === "pending" ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-red-50 text-red-700 border border-red-100">
-                              <XCircle size={10} /> {tx.status}
-                            </span>
-                          ) : (
-                            <span className="text-xs text-slate-500 capitalize">{tx.status}</span>
-                          )}
-                        </td>
-                        <td className="px-5 py-4 text-right whitespace-nowrap">
-                          <span className={`font-bold text-sm ${activeTab === "recharge" ? "text-emerald-600" : "text-red-600"}`}>
-                            {activeTab === "recharge" ? "+" : "-"} {formatINR(tx.amount)}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -288,7 +294,17 @@ export default function TransactionHistoryPage() {
 
             {/* Pagination */}
             {!loading && transactions.length > 0 && totalPages > 1 && (
-              <div className="flex justify-center items-center gap-4 p-4 border-t border-slate-100 bg-slate-50">
+              <div className="flex flex-wrap justify-center items-center gap-2 sm:gap-4 p-4 border-t border-slate-100 bg-slate-50">
+                {/* ✅ NEW: First Page Button */}
+                <button
+                  onClick={() => setCurrentPage(1)}
+                  disabled={currentPage === 1}
+                  className="flex items-center gap-1 px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-100 transition-colors"
+                  title="First Page"
+                >
+                  <ChevronsLeft size={14} />
+                </button>
+
                 <button
                   onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
                   disabled={currentPage === 1}
@@ -296,15 +312,27 @@ export default function TransactionHistoryPage() {
                 >
                   <ChevronLeft size={14} /> Prev
                 </button>
+                
                 <span className="text-sm font-bold text-slate-700">
                   Page {currentPage} of {totalPages}
                 </span>
+                
                 <button
                   onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
                   disabled={currentPage === totalPages}
                   className="flex items-center gap-1 px-4 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-100 transition-colors"
                 >
                   Next <ChevronRight size={14} />
+                </button>
+
+                {/* ✅ NEW: Last Page Button */}
+                <button
+                  onClick={() => setCurrentPage(totalPages)}
+                  disabled={currentPage === totalPages}
+                  className="flex items-center gap-1 px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-100 transition-colors"
+                  title="Last Page"
+                >
+                  <ChevronsRight size={14} />
                 </button>
               </div>
             )}
