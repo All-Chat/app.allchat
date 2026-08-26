@@ -41,62 +41,119 @@ const ScannerWrapper = styled.div`
   align-items: center;
   width: 100%;
   padding: 20px 0;
+
   .scanner span {
     color: transparent;
     font-size: 1.4rem;
     position: relative;
     overflow: hidden;
   }
+
   .scanner span::before {
     content: "Loading...";
     position: absolute;
-    top: 0; left: 0;
-    width: 0; height: 100%;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 100%;
     border-right: 4px solid #000000;
     overflow: hidden;
     color: #000000;
     animation: load91371 2s linear infinite;
   }
+
   @keyframes load91371 {
     0%, 10%, 100% { width: 0; }
-    10%, 20%, 30%, 40%, 50%, 60%, 70%, 80%, 90%, 100% { border-right-color: transparent; }
-    11%, 21%, 31%, 41%, 51%, 61%, 71%, 81%, 91% { border-right-color: #000000; }
+    10%, 20%, 30%, 40%, 50%, 60%, 70%, 80%, 90%, 100% {
+      border-right-color: transparent;
+    }
+    11%, 21%, 31%, 41%, 51%, 61%, 71%, 81%, 91% {
+      border-right-color: #000000;
+    }
     60%, 80% { width: 100%; }
   }
 `;
 
+/* ========================================================= *
+   TYPES
+ * ========================================================= */
+
 type ReportItem = {
-  name: string; phone: string; status: string; error?: string;
-  replies?: string[]; reply?: string | null; repliedAt?: string | null;
-  deliveredAt?: string | null; readAt?: string | null; replyTimes?: string[];
-  tags?: string[]; additionalData?: string[];
+  name: string;
+  phone: string;
+  status: string;
+  error?: string;
+  replies?: string[];
+  reply?: string | null;
+  repliedAt?: string | null;
+  deliveredAt?: string | null;
+  readAt?: string | null;
+  replyTimes?: string[];
+  tags?: string[];
+  additionalData?: string[];
 };
 
 type LiveStats = {
-  total: number; replied: number; read: number; delivered: number; sent: number;
-  failed: number; invalid: number; duplicate: number; pending: number;
+  total: number;
+  replied: number;
+  read: number;
+  delivered: number;
+  sent: number;
+  failed: number;
+  invalid: number;
+  duplicate: number;
+  pending: number;
 };
 
 type Campaign = {
-  _id: string; name: string; reportData?: ReportItem[]; status: string;
-  totalMessages: number; sentCount: number; failedCount: number; templateName?: string;
-  createdAt?: string; updatedAt?: string; additionalFields?: string[];
-  liveStats?: LiveStats; standaloneSheetUrl?: string | null; sheetUrl?: string | null;
+  _id: string;
+  name: string;
+  reportData?: ReportItem[];
+  status: string;
+  totalMessages: number;
+  sentCount: number;
+  failedCount: number;
+  templateName?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  additionalFields?: string[];
+  liveStats?: LiveStats;
+  standaloneSheetUrl?: string | null;
+  sheetUrl?: string | null;
   [x: string]: any;
 };
 
+/* ========================================================= *
+   HELPER FUNCTIONS
+ * ========================================================= */
+
 const normalizePhone = (p: string) => String(p || "").replace(/\D/g, "");
+
 const formatExcelDate = (dateStr: string | null | undefined) => {
   if (!dateStr) return "";
   try {
     const date = new Date(dateStr);
     if (isNaN(date.getTime())) return "";
-    return date.toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
-  } catch { return ""; }
+    return date.toLocaleString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
 };
+
+/* ========================================================= *
+   MAIN COMPONENT
+ * ========================================================= */
 
 export default function ReportsPage() {
   const { data: session, status } = useSession();
+
+  /* -------------------- STATE -------------------- */
 
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -106,6 +163,7 @@ export default function ReportsPage() {
   const [loadingReport, setLoadingReport] = useState(false);
 
   const [campaignStats, setCampaignStats] = useState<any>({});
+  const [campaignStatsCampaignId, setCampaignStatsCampaignId] = useState<string | null>(null);
   const [campaignStatsCache, setCampaignStatsCache] = useState<Record<string, any>>({});
 
   const [syncingSheet, setSyncingSheet] = useState(false);
@@ -125,9 +183,12 @@ export default function ReportsPage() {
 
   const [reportCurrentPage, setReportCurrentPage] = useState(1);
   const [reportTotalPages, setReportTotalPages] = useState(1);
+
   const [hiddenActions, setHiddenActions] = useState<string[]>([]);
 
   const fetchReportController = useRef<AbortController | null>(null);
+
+  /* -------------------- HELPER FUNCTIONS -------------------- */
 
   const getRepliesList = (d: ReportItem): string[] => {
     if (d.phone) {
@@ -135,23 +196,37 @@ export default function ReportsPage() {
       const p10 = normalizePhone(d.phone).slice(-10);
       if (p10.length >= 7) {
         for (const key in repliesMap) {
-          if (normalizePhone(key).slice(-10) === p10 && repliesMap[key].length > 0) return repliesMap[key];
+          if (normalizePhone(key).slice(-10) === p10 && repliesMap[key].length > 0) {
+            return repliesMap[key];
+          }
         }
       }
     }
     if (d.replies && d.replies.length > 0) return d.replies;
-    if (d.reply) return [d.reply];
+    if (d.reply && d.reply.trim().length > 0) return [d.reply];
     return [];
   };
 
   const getCampaignStats = (c: Campaign): LiveStats => {
     const buildStats = (cs: any): LiveStats => {
-      const processed = Number(cs.replied||0) + Number(cs.read||0) + Number(cs.delivered||0) + Number(cs.sent||0) + Number(cs.failed||0) + Number(cs.invalid||0) + Number(cs.duplicate||0);
+      const processed =
+        Number(cs.replied || 0) +
+        Number(cs.read || 0) +
+        Number(cs.delivered || 0) +
+        Number(cs.sent || 0) +
+        Number(cs.failed || 0) +
+        Number(cs.invalid || 0) +
+        Number(cs.duplicate || 0);
       return {
-        total: Number(cs.total||0), replied: Number(cs.replied||0), read: Number(cs.read||0),
-        delivered: Number(cs.delivered||0), sent: Number(cs.sent||0), failed: Number(cs.failed||0),
-        invalid: Number(cs.invalid||0), duplicate: Number(cs.duplicate||0),
-        pending: Math.max(0, Number(cs.total||0) - processed),
+        total: Number(cs.total || 0),
+        replied: Number(cs.replied || 0),
+        read: Number(cs.read || 0),
+        delivered: Number(cs.delivered || 0),
+        sent: Number(cs.sent || 0),
+        failed: Number(cs.failed || 0),
+        invalid: Number(cs.invalid || 0),
+        duplicate: Number(cs.duplicate || 0),
+        pending: Math.max(0, Number(cs.total || 0) - processed),
       };
     };
 
@@ -175,6 +250,8 @@ export default function ReportsPage() {
       default: return { color: "bg-gray-50 text-gray-700 border-gray-200", icon: <Ban size={10} className="inline mr-1" />, label: status ? (status.charAt(0).toUpperCase() + status.slice(1)) : "Unknown", isWaiting: false, tooltip: "" };
     }
   };
+
+  /* -------------------- EFFECTS -------------------- */
 
   useEffect(() => {
     if (status === "authenticated") {
@@ -273,6 +350,7 @@ export default function ReportsPage() {
         setReportData(data.campaigns[0].reportData || []);
         setReportTotalPages(data.totalPages || 1);
         setCampaignStats(data.campaignStats || {});
+        setCampaignStatsCampaignId(id);
         setCampaignStatsCache((prev) => ({ ...prev, [id]: data.campaignStats || {} }));
         
         const newRepliesMap: Record<string, string[]> = {};
@@ -297,12 +375,6 @@ export default function ReportsPage() {
     if (arr.includes(value)) setter(arr.filter((v) => v !== value));
     else setter([...arr, value]);
   };
-
-  const modalFilteredData = reportData.filter((d) => {
-    if (tagFilter === "all") return true;
-    if (tagFilter === "untagged") return !d.tags || d.tags.length === 0;
-    return d.tags?.includes(tagFilter);
-  });
 
   const additionalFieldsCount = selectedCamp?.additionalFields?.length || 0;
   const handleSelectCampaign = (id: string) => { setSelectedId(id); setShowCampaignList(false); };
@@ -695,11 +767,11 @@ export default function ReportsPage() {
 
                 {reportTotalPages > 1 && (
                   <div className="flex justify-center items-center gap-4 mt-8">
-                    <button onClick={() => selectedId && fetchReportData(selectedId, reportCurrentPage - 1)} disabled={reportCurrentPage === 1 || loadingReport || !selectedId} className="flex items-center gap-1 px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">
+                    <button onClick={() => selectedId && fetchReportData(selectedId, reportCurrentPage - 1)} disabled={reportCurrentPage === 1 || loadingReport} className="flex items-center gap-1 px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">
                       <ChevronLeft size={14} /> Prev
                     </button>
                     <span className="text-sm font-bold text-slate-700">Page {reportCurrentPage} of {reportTotalPages}</span>
-                    <button onClick={() => selectedId && fetchReportData(selectedId, reportCurrentPage + 1)} disabled={reportCurrentPage === reportTotalPages || loadingReport || !selectedId} className="flex items-center gap-1 px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">
+                    <button onClick={() => selectedId && fetchReportData(selectedId, reportCurrentPage + 1)} disabled={reportCurrentPage === reportTotalPages || loadingReport} className="flex items-center gap-1 px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">
                       Next <ChevronRight size={14} />
                     </button>
                   </div>
