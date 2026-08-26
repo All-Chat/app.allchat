@@ -4,6 +4,7 @@ require('dotenv').config({ path: '.env.local' });
 
 import { connectDB } from '../lib/mongodb';
 import Campaign from '../models/Campaign';
+import CampaignReport from '../models/CampaignReport';
 import { Job } from '../lib/queue';
 import mongoose from 'mongoose';
 
@@ -14,7 +15,6 @@ connectDB().then(async () => {
 
 async function startStatsWorker() {
   console.log('🚀 Worker started for queue: stats-processing');
-
   while (true) {
     try {
       const job = await Job.findOneAndUpdate(
@@ -46,42 +46,30 @@ async function startStatsWorker() {
   }
 }
 
-// ============================================================================
-// STATS WORKER LOGIC
-// ============================================================================
-
 async function syncCampaignStats(campaignId: string) {
   try {
-    await Campaign.aggregate([
-      { $match: { _id: new mongoose.Types.ObjectId(campaignId) } },
-      {
-        $project: {
-          liveStats: {
-            $let: {
-              vars: {
-                counts: {
-                  $reduce: {
-                    input: { $ifNull: ["$reportData", []] },
-                    initialValue: { replied: 0, read: 0, delivered: 0, sent: 0, failed: 0, invalid: 0, duplicate: 0 },
-                    in: {
-                      replied: { $add: ["$$value.replied", { $cond: [{ $or: [{ $ne: [{ $ifNull: ["$$this.reply", ""] }, ""] }, { $gt: [{ $size: { $filter: { input: { $ifNull: ["$$this.replies", []] }, as: "rep", cond: { $ne: ["$$rep", ""] } } } }, 0] }] }, 1, 0] }] },
-                      read: { $add: ["$$value.read", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "read"] }, 1, 0] }] },
-                      delivered: { $add: ["$$value.delivered", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "delivered"] }, 1, 0] }] },
-                      sent: { $add: ["$$value.sent", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "sent"] }, 1, 0] }] },
-                      failed: { $add: ["$$value.failed", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "failed"] }, 1, 0] }] },
-                      invalid: { $add: ["$$value.invalid", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "invalid"] }, 1, 0] }] },
-                      duplicate: { $add: ["$$value.duplicate", { $cond: [{ $eq: [{ $toLower: { $ifNull: ["$$this.status", ""] } }, "duplicate"] }, 1, 0] }] }
-                    }
-                  }
-                }
-              },
-              in: { total: { $ifNull: ["$totalMessages", 0] }, replied: "$$counts.replied", read: "$$counts.read", delivered: "$$counts.delivered", sent: "$$counts.sent", failed: "$$counts.failed", invalid: "$$counts.invalid", duplicate: "$$counts.duplicate" }
-            }
-          }
-        }
-      },
-      { $merge: { into: "campaigns", on: "_id", whenMatched: "merge", whenNotMatched: "discard" } }
+    const statsAgg = await CampaignReport.aggregate([
+      { $match: { campaignId: new mongoose.Types.ObjectId(campaignId) } },
+      { $group: { _id: "$status", count: { $sum: 1 } } }
     ]);
+
+    const liveStats: any = { total: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0, invalid: 0, pending: 0, duplicate: 0 };
+    let actualDocsCount = 0;
+    
+    statsAgg.forEach(s => {
+      const status = (s._id || "pending").toLowerCase();
+      if (liveStats.hasOwnProperty(status)) liveStats[status] = s.count;
+      actualDocsCount += s.count;
+    });
+
+    const campaign: any = await Campaign.findById(campaignId).select("totalMessages").lean();
+    liveStats.total = campaign?.totalMessages || actualDocsCount;
+
+    // ✅ FIX: Bulletproof math for pending
+    const processed = liveStats.sent + liveStats.delivered + liveStats.read + liveStats.replied + liveStats.failed + liveStats.invalid + liveStats.duplicate;
+    liveStats.pending = Math.max(0, liveStats.total - processed);
+
+    await Campaign.updateOne({ _id: campaignId }, { $set: { liveStats } });
     return { success: true };
   } catch (error) {
     console.error(`❌ Stats sync error for campaign ${campaignId}:`, error);
