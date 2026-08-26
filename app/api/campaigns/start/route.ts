@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import mongoose from "mongoose";
 import Campaign from "@/models/Campaign";
+import CampaignReport from "@/models/CampaignReport"; // ✅ NEW
 import User from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -42,10 +43,7 @@ export async function POST(req: Request) {
       const activeCount = await campaignQueue.getActiveCount();
       const waitingCount = await campaignQueue.getWaitingCount();
       if (activeCount > 0 || waitingCount > 0) {
-        return NextResponse.json({
-          success: true,
-          message: "Campaign is already running and has jobs in progress.",
-        });
+        return NextResponse.json({ success: true, message: "Campaign is already running and has jobs in progress." });
       }
     }
 
@@ -97,40 +95,35 @@ export async function POST(req: Request) {
     if (bPrice > 0 && (payer.balance || 0) < bPrice)
       return NextResponse.json({ success: false, message: `Insufficient balance.` }, { status: 402 });
 
-    const totalNumbers = campaign.phoneNumbers.length;
-
-    // ✅ Lock in pricePerMessage only (no totalDeducted — calculated from delivered)
+    // ✅ Lock in pricePerMessage
     await Campaign.updateOne(
       { _id: campaignId },
-      {
-        $set: {
-          status: "running",
-          whatsappPhoneNumberId: PHONE_NUMBER_ID,
-          pricePerMessage: bPrice,
-        },
-      }
+      { $set: { status: "running", whatsappPhoneNumberId: PHONE_NUMBER_ID, pricePerMessage: bPrice } }
     );
 
-    // Reset queued messages to pending
-    await Campaign.updateOne(
-      { _id: campaignId },
-      { $set: { "reportData.$[elem].status": "pending" } },
-      { arrayFilters: [{ "elem.status": "queued" }] }
-    );
-
-    // ═══════════════════════════════════════════════════════════════
-    // ✅ REMOVED: Transaction.insertMany() for ALL phone numbers
-    //
-    // Previously this created transactions for ALL numbers upfront
-    // with status "success" — even before messages were sent.
-    // This caused the transaction history to show wrong amount.
-    //
-    // Transactions should ONLY be created in the WORKER after
-    // each message is actually DELIVERED (sent + delivered + read + replied).
-    // ═══════════════════════════════════════════════════════════════
+    // ✅ NEW: Initialize CampaignReport documents (1 per contact)
+    const existingReportsCount = await CampaignReport.countDocuments({ campaignId });
+    if (existingReportsCount === 0) {
+      const reportsToInsert = campaign.phoneNumbers.map((phone: any, index: string | number) => ({
+        campaignId: campaign._id,
+        userId: campaign.userId,
+        phone,
+        name: campaign.names?.[index] || "",
+        additionalData: campaign.additionalFieldsData?.[index] || [],
+        status: "pending",
+      }));
+      await CampaignReport.insertMany(reportsToInsert, { ordered: false });
+    } else {
+      // Reset queued messages to pending if resuming
+      await CampaignReport.updateMany(
+        { campaignId, status: "queued" },
+        { $set: { status: "pending" } }
+      );
+    }
 
     // Divide numbers into chunks of 10
     const CHUNK_SIZE = 10;
+    const totalNumbers = campaign.phoneNumbers.length;
     const jobs = [];
 
     for (let i = 0; i < totalNumbers; i += CHUNK_SIZE) {
@@ -146,7 +139,7 @@ export async function POST(req: Request) {
           endIdx: endIdx,
           PHONE_NUMBER_ID,
           ACCESS_TOKEN,
-          pricePerMessage: bPrice,  // ✅ Pass price to worker
+          pricePerMessage: bPrice,
         },
         opts: {
           attempts: 3,
