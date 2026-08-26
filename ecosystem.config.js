@@ -54,6 +54,17 @@ module.exports = {
       autorestart: true,
       max_memory_restart: "1G",
       env: { NODE_ENV: "production" }
+    },
+    {
+      name: "utility-worker",
+      cwd: __dirname,
+      script: "npx",
+      args: "tsx workers/utilityWorker.ts",
+      instances: 1,
+      exec_mode: "fork",
+      autorestart: true,
+      max_memory_restart: "1G",
+      env: { NODE_ENV: "production" }
     }
   ]
 };
