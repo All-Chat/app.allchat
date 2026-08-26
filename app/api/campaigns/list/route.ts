@@ -24,13 +24,8 @@ export async function GET(req: Request) {
     // ==========================================
     const viewId = searchParams.get("viewId");
     if (viewId) {
-      try {
-        const job = await statsQueue.add('sync-campaign-stats', { campaignId: viewId });
-        await Promise.race([
-          job.waitUntilFinished(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 15000))
-        ]);
-      } catch (err) {}
+      // Silently queue the worker to update the DB cache in the background
+      statsQueue.add('sync-campaign-stats', { campaignId: viewId }).catch(()=>{});
 
       const campaign = await Campaign.findOne(
         { _id: new mongoose.Types.ObjectId(viewId), userId: new mongoose.Types.ObjectId(userId) },
@@ -43,7 +38,43 @@ export async function GET(req: Request) {
       ).lean();
       
       if (!campaign) return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
-      return NextResponse.json({ success: true, campaigns: [campaign] });
+
+      // ✅ FIX: Calculate stats INSTANTLY on the fly so the user never waits for the worker
+      const statsAgg = await CampaignReport.aggregate([
+        { $match: { campaignId: new mongoose.Types.ObjectId(viewId) } },
+        {
+          $project: {
+            effStatus: {
+              $cond: {
+                if: {
+                  $or: [
+                    { $eq: [{ $toLower: { $ifNull: ["$status", ""] } }, "replied"] },
+                    { $gt: [ { $size: { $ifNull: ["$replies", []] } }, 0 ] },
+                    { $gt: [ { $strLenCP: { $ifNull: ["$reply", ""] } }, 0 ] }
+                  ]
+                },
+                then: "replied",
+                else: { $toLower: { $ifNull: ["$status", "pending"] } }
+              }
+            }
+          }
+        },
+        { $group: { _id: "$effStatus", count: { $sum: 1 } } }
+      ]);
+
+      const liveStats: any = { total: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0, invalid: 0, pending: 0, duplicate: 0 };
+      let actualDocsCount = 0;
+      statsAgg.forEach(s => {
+        const status = s._id || "pending";
+        if (liveStats.hasOwnProperty(status)) liveStats[status] = s.count;
+        actualDocsCount += s.count;
+      });
+
+      liveStats.total = campaign.totalMessages || actualDocsCount;
+      const processed = liveStats.sent + liveStats.delivered + liveStats.read + liveStats.replied + liveStats.failed + liveStats.invalid + liveStats.duplicate;
+      liveStats.pending = Math.max(0, liveStats.total - processed);
+
+      return NextResponse.json({ success: true, campaigns: [{ ...campaign, liveStats }] });
     }
 
     // ==========================================
@@ -91,7 +122,7 @@ export async function GET(req: Request) {
     // 5. REPORT MODE (ULTRA-FAST PAGINATION & FILTERING)
     // ==========================================
     if (campaignId) {
-      const limit = 10; // 10 contacts per page
+      const limit = 10;
       const page = parseInt(searchParams.get("page") || "1");
       const skip = (page - 1) * limit;
 
@@ -108,8 +139,6 @@ export async function GET(req: Request) {
         ];
       }
 
-      // ✅ FIX: Smart "Replied" Query Logic
-      // If a contact has replies, they ARE replied, regardless of their raw status field.
       const repliedCondition = {
         $or: [
           { status: "replied" },
@@ -136,20 +165,15 @@ export async function GET(req: Request) {
 
       if (Object.keys(statusQuery).length > 0) {
         if (showOnly.includes("replied")) {
-          // Show Replied + Other Selected Statuses
           andConditions.push({ $or: [ { status: statusQuery }, repliedCondition ] });
         } else if (!filterOut.includes("replied")) {
-          // Show specific statuses, but ensure we don't accidentally include replied contacts
           andConditions.push({ $and: [ { status: statusQuery }, notRepliedCondition ] });
         } else {
-          // Show specific statuses (Replied is already filtered out)
           andConditions.push({ status: statusQuery });
         }
       } else if (filterOut.includes("replied")) {
-        // Only filtering out Replied
         andConditions.push(notRepliedCondition);
       } else if (showOnly.includes("replied")) {
-        // Only showing Replied
         andConditions.push(repliedCondition);
       }
 
@@ -157,7 +181,6 @@ export async function GET(req: Request) {
         query.$and = andConditions;
       }
 
-      // Fetch paginated reports and total count in parallel
       const [reports, totalFiltered] = await Promise.all([
         CampaignReport.find(query).skip(skip).limit(isDownload ? 100000 : limit).lean(),
         CampaignReport.countDocuments(query)
@@ -166,13 +189,11 @@ export async function GET(req: Request) {
       const campaign = await Campaign.findById(campaignId).select("name templateName additionalFields languageCode totalDeducted totalMessages").lean();
       if (!campaign) return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
 
-      // ✅ FIX: Force "replied" status on the frontend if they have replies
       const formattedReports = reports.map((r: any) => {
         const isReplied = r.status === "replied" || (r.replies && r.replies.length > 0) || (r.reply && r.reply.trim().length > 0);
         return { ...r, status: isReplied ? "replied" : r.status };
       });
 
-      // ✅ FIX: Calculate exact stats dynamically with strict string length checking
       const statsAgg = await CampaignReport.aggregate([
         { $match: { campaignId: new mongoose.Types.ObjectId(campaignId) } },
         {
@@ -197,7 +218,6 @@ export async function GET(req: Request) {
 
       const liveStats: any = { total: 0, sent: 0, delivered: 0, read: 0, replied: 0, failed: 0, invalid: 0, pending: 0, duplicate: 0 };
       let actualDocsCount = 0;
-      
       statsAgg.forEach(s => {
         const status = s._id || "pending";
         if (liveStats.hasOwnProperty(status)) liveStats[status] = s.count;
