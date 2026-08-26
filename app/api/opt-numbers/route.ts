@@ -11,10 +11,9 @@ export async function GET() {
     await connectDB();
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
-
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const numbers = await OptNumber.find({ userId }).sort({ createdAt: -1 });
+    const numbers = await OptNumber.find({ userId }).sort({ createdAt: -1 }).lean();
     return NextResponse.json({ numbers });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -26,52 +25,26 @@ export async function POST(req: Request) {
     await connectDB();
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
-
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    // ✅ CHECK LIMIT BEFORE CREATING
     const limitCheck = await checkLimit(userId, "optNumbers");
     if (!limitCheck.allowed) {
       return NextResponse.json(
-        {
-          error: `Opt-in number limit reached. You have used ${limitCheck.currentUsage}/${limitCheck.limit} numbers per ${limitCheck.period}. Contact admin to increase your limit.`,
-          limitExceeded: true,
-          limitInfo: {
-            resource: "optNumbers",
-            currentUsage: limitCheck.currentUsage,
-            limit: limitCheck.limit,
-            period: limitCheck.period,
-            remaining: limitCheck.remaining,
-          },
-        },
+        { error: `Opt-in number limit reached. You have used ${limitCheck.currentUsage}/${limitCheck.limit} numbers per ${limitCheck.period}.`, limitExceeded: true },
         { status: 429 }
       );
     }
 
     const { phoneNumber } = await req.json();
-    if (!phoneNumber || !phoneNumber.trim()) {
-      return NextResponse.json({ error: "Phone number is required" }, { status: 400 });
-    }
+    if (!phoneNumber || !phoneNumber.trim()) return NextResponse.json({ error: "Phone number is required" }, { status: 400 });
 
-    // Prevent duplicates
     const existing = await OptNumber.findOne({ userId, phoneNumber: phoneNumber.trim() });
     if (existing) return NextResponse.json({ error: "Number already exists" }, { status: 400 });
 
-    // ==========================================
-    // 🔴 MULTI-TENANT DATA ISOLATION
-    // ==========================================
     const tenantId = (session.user as any)?.parentTenantId || (session.user as any)?.tenantId || null;
+    const optNumber = await OptNumber.create({ userId, tenantId, createdBy: userId, phoneNumber: phoneNumber.trim() });
 
-    const optNumber = await OptNumber.create({ 
-      userId, 
-      tenantId, // ✅ ATTACH TENANT ID FOR AGGREGATED VIEWS
-      createdBy: userId, // ✅ TRACK WHO CREATED IT
-      phoneNumber: phoneNumber.trim() 
-    });
-
-    // ✅ INCREMENT USAGE AFTER SUCCESSFUL CREATION
-    await incrementUsage(userId, "optNumbers");
-
+    incrementUsage(userId, "optNumbers").catch(() => {});
     return NextResponse.json({ success: true, optNumber });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
