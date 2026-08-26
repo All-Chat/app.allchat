@@ -1535,9 +1535,10 @@ async function handleCampaignReply(msg: any, num: any) {
     
     const replyTime = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
 
+    // ✅ FIX: Find the most recent campaign that EXACTLY contains this phone number
     const camp = await Campaign.findOne({
       userId: num.userId,
-      "reportData.phone": { $exists: true }
+      "reportData.phone": phone // This correctly queries inside the array
     }).sort({ createdAt: -1 });
 
     if (camp) {
