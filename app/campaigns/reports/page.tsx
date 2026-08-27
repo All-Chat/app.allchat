@@ -11,7 +11,7 @@ import {
   BarChart3, Download, Loader2, Search, CheckCircle, XCircle, Clock,
   MessageSquare, Eye, CheckCheck, AlertTriangle, Copy, Ban, Radio,
   ArrowLeft, X, Tag as TagIcon, Users, PieChart, Database, Filter,
-  FilterX, ChevronLeft, ChevronRight, ExternalLink, FileSpreadsheet,
+  FilterX, ChevronLeft, ChevronRight, ChevronDown, ExternalLink, FileSpreadsheet,
   Link2, Check, RefreshCw,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
@@ -160,6 +160,8 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(true);
 
   const [reportData, setReportData] = useState<ReportItem[]>([]);
+  const [fullReportData, setFullReportData] = useState<ReportItem[]>([]); // ✅ Stores ALL data for client-side filtering
+  const [totalFilteredItems, setTotalFilteredItems] = useState(0); // ✅ Accurate total count
   const [loadingReport, setLoadingReport] = useState(false);
 
   const [campaignStats, setCampaignStats] = useState<any>({});
@@ -174,6 +176,13 @@ export default function ReportsPage() {
   const [filterOut, setFilterOut] = useState<string[]>([]);
   const [search, setSearch] = useState("");
 
+  // ✅ Template button filter state
+  const [templateButtons, setTemplateButtons] = useState<string[]>([]);
+  const [loadingTemplateButtons, setLoadingTemplateButtons] = useState(false);
+  const [templateButtonsFetched, setTemplateButtonsFetched] = useState(false);
+  const [showButtonDropdown, setShowButtonDropdown] = useState(false);
+  const [buttonFilter, setButtonFilter] = useState<string>("all");
+
   const [repliesMap, setRepliesMap] = useState<Record<string, string[]>>({});
   const [whatsappNumbers, setWhatsappNumbers] = useState<any[]>([]);
   const [showCampaignList, setShowCampaignList] = useState(true);
@@ -186,7 +195,7 @@ export default function ReportsPage() {
 
   const [hiddenActions, setHiddenActions] = useState<string[]>([]);
 
-  const fetchReportController = useRef<AbortController | null>(null);
+  const buttonDropdownRef = useRef<HTMLDivElement | null>(null);
 
   /* -------------------- HELPER FUNCTIONS -------------------- */
 
@@ -261,10 +270,64 @@ export default function ReportsPage() {
     }
   }, [status]);
 
-  // ✅ FIX: Re-fetch when campaign changes OR when filters/search change
+  // ✅ Fetch all data when campaign or main filters change
   useEffect(() => {
-    if (selectedId) fetchReportData(selectedId, 1);
+    if (selectedId) fetchAllReportData(selectedId);
   }, [selectedId, showOnly, filterOut, search]);
+
+  // ✅ Reset page to 1 when button filter changes
+  useEffect(() => {
+    setReportCurrentPage(1);
+  }, [buttonFilter]);
+
+  // ✅ Reset template states when campaign changes
+  useEffect(() => {
+    setTemplateButtons([]);
+    setTemplateButtonsFetched(false);
+    setLoadingTemplateButtons(false);
+    setButtonFilter("all");
+    setShowButtonDropdown(false);
+  }, [selectedId]);
+
+  // ✅ Client-side filtering and pagination logic
+  useEffect(() => {
+    if (loadingReport) return;
+
+    let list = [...fullReportData];
+
+    // Apply button filter across ALL data
+    if (buttonFilter && buttonFilter !== "all") {
+      list = list.filter((d) => {
+        const replies = getRepliesList(d);
+        if (buttonFilter === "other") {
+          return replies.length > 0 && !replies.some((r) => templateButtons.includes(r));
+        }
+        return replies.includes(buttonFilter);
+      });
+    }
+
+    setTotalFilteredItems(list.length);
+    setReportTotalPages(Math.max(1, Math.ceil(list.length / 10)));
+
+    // Adjust current page if it exceeds new total pages
+    const currentPage = Math.min(reportCurrentPage, Math.max(1, Math.ceil(list.length / 10)));
+    if (currentPage !== reportCurrentPage) setReportCurrentPage(currentPage);
+
+    const start = (currentPage - 1) * 10;
+    const paginated = list.slice(start, start + 10);
+    setReportData(paginated);
+  }, [fullReportData, buttonFilter, reportCurrentPage, templateButtons, loadingReport, repliesMap]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (buttonDropdownRef.current && !buttonDropdownRef.current.contains(e.target as Node)) {
+        setShowButtonDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
 
   const selectedCamp = campaigns.find((c) => c._id === selectedId);
 
@@ -281,6 +344,43 @@ export default function ReportsPage() {
       }
     } catch (error) { console.error("Failed to fetch campaigns", error); }
     finally { setLoading(false); }
+  };
+
+  const fetchTemplateButtons = async (rawTemplateName?: string) => {
+    if (!rawTemplateName) {
+      setTemplateButtons([]);
+      setTemplateButtonsFetched(true);
+      return;
+    }
+
+    const cleanName = rawTemplateName.replace(/^["']|["']$/g, "").trim();
+
+    setLoadingTemplateButtons(true);
+    try {
+      const res = await fetch(`/api/templates/buttons?name=${encodeURIComponent(cleanName)}`);
+      if (!res.ok) {
+        setTemplateButtons([]);
+        setTemplateButtonsFetched(true);
+        return;
+      }
+      const data = await res.json();
+      setTemplateButtons(Array.isArray(data.buttons) ? data.buttons : []);
+      setTemplateButtonsFetched(true);
+    } catch (err) {
+      console.error("Failed to fetch template buttons", err);
+      setTemplateButtons([]);
+      setTemplateButtonsFetched(true);
+    } finally {
+      setLoadingTemplateButtons(false);
+    }
+  };
+
+  const handleButtonDropdownToggle = () => {
+    const willOpen = !showButtonDropdown;
+    setShowButtonDropdown(willOpen);
+    if (willOpen && !templateButtonsFetched && selectedCamp?.templateName) {
+      fetchTemplateButtons(selectedCamp.templateName);
+    }
   };
 
   const fetchWhatsappNumbers = async () => {
@@ -324,48 +424,45 @@ export default function ReportsPage() {
     } catch (err) { console.error("Failed to fetch tags", err); }
   };
 
-  // ✅ FIX: Simplified, instant fetch using the optimized API
-  const fetchReportData = async (id: string, page: number = 1, forceRefresh = false) => {
-    if (fetchReportController.current) fetchReportController.current.abort();
-    const controller = new AbortController();
-    fetchReportController.current = controller;
-
+  // ✅ Fetches ALL report data at once to enable perfect client-side filtering
+  const fetchAllReportData = async (id: string, forceRefresh = false) => {
     setLoadingReport(true);
-    setReportCurrentPage(page);
+    setReportCurrentPage(1);
     setReportData([]);
+    setFullReportData([]);
 
     try {
       const params = new URLSearchParams();
       params.set("id", id);
-      params.set("page", page.toString());
+      params.set("download", "true"); // Ensures we get all rows, not just 1 page
       if (showOnly.length > 0) params.set("showOnly", showOnly.join(","));
       if (filterOut.length > 0) params.set("filterOut", filterOut.join(","));
       if (search) params.set("search", search);
       if (forceRefresh) params.set("refresh", "true");
 
-      const res = await fetch(`/api/campaigns/list?${params.toString()}`, { signal: controller.signal });
+      const res = await fetch(`/api/campaigns/list?${params.toString()}`);
       const data = await res.json();
 
       if (data.success && Array.isArray(data.campaigns) && data.campaigns[0]) {
-        setReportData(data.campaigns[0].reportData || []);
-        setReportTotalPages(data.totalPages || 1);
-        setCampaignStats(data.campaignStats || {});
-        setCampaignStatsCampaignId(id);
-        setCampaignStatsCache((prev) => ({ ...prev, [id]: data.campaignStats || {} }));
-        
+        setFullReportData(data.campaigns[0].reportData || []);
+
+        if (data.campaignStats) {
+          setCampaignStats(data.campaignStats || {});
+          setCampaignStatsCampaignId(id);
+          setCampaignStatsCache((prev) => ({ ...prev, [id]: data.campaignStats || {} }));
+        }
+
         const newRepliesMap: Record<string, string[]> = {};
         (data.campaigns[0].reportData || []).forEach((d: ReportItem) => {
           if (d.phone && d.replies && d.replies.length > 0) newRepliesMap[d.phone] = d.replies;
         });
         setRepliesMap(newRepliesMap);
       } else {
-        setReportData([]);
-        setReportTotalPages(1);
+        setFullReportData([]);
       }
     } catch (error: any) {
-      if (error.name === "AbortError") return;
       console.error("Failed to fetch report data", error);
-      setReportData([]);
+      setFullReportData([]);
     } finally {
       setLoadingReport(false);
     }
@@ -428,54 +525,54 @@ export default function ReportsPage() {
     if (!selectedId) { toast.error("No campaign selected"); return; }
     setDownloadingExcel(true);
     try {
-      const params = new URLSearchParams();
-      params.set("id", selectedId);
-      params.set("download", "true");
-      if (showOnly.length > 0) params.set("showOnly", showOnly.join(","));
-      if (filterOut.length > 0) params.set("filterOut", filterOut.join(","));
-      if (search) params.set("search", search);
+      // We already have the full data in memory
+      let fullData = [...fullReportData];
 
-      const res = await fetch(`/api/campaigns/list?${params.toString()}`);
-      const data = await res.json();
-
-      if (data.success && Array.isArray(data.campaigns) && data.campaigns[0]) {
-        const campData = data.campaigns[0];
-        const fullData = campData.reportData || [];
-        if (fullData.length === 0) { toast.error("No data to download"); return; }
-
-        const fallbackTime = campData.createdAt || campData.updatedAt;
-        const additionalCols = selectedCamp?.additionalFields || [];
-
-        const wsData = fullData.map((d: any) => {
-          const replies = getRepliesList(d).slice(0, 5);
-          let currentStatus = d.status;
-          if (replies.length > 0) currentStatus = "replied";
-          const statusConfig = getStatusConfig(currentStatus, replies, d.error);
-
-          const row: any = { "Name": d.name || "N/A", "Phone Number": d.phone };
-          additionalCols.forEach((field, idx) => { row[field] = d.additionalData?.[idx] || ""; });
-          row["Status"] = statusConfig.label;
-          row["Delivered Time"] = formatExcelDate(d.deliveredAt || (["delivered", "read", "replied"].includes(currentStatus) ? fallbackTime : null));
-          row["Read Time"] = formatExcelDate(d.readAt || (["read", "replied"].includes(currentStatus) ? fallbackTime : null));
-          row["Replied Time"] = formatExcelDate(d.repliedAt || (currentStatus === "replied" ? fallbackTime : null));
-          row["Error Reason"] = d.error || "";
-          row["Tags"] = d.tags?.join(", ") || "None";
-
-          for (let i = 0; i < 5; i++) {
-            const replyText = replies[i] || "";
-            row[`Reply ${i + 1}`] = replyText;
-            if (replyText) row[`Reply ${i + 1} Time`] = formatExcelDate(d.replyTimes?.[i] || d.repliedAt || fallbackTime);
-            else row[`Reply ${i + 1} Time`] = "";
+      // Apply button filter for Excel export
+      if (buttonFilter && buttonFilter !== "all") {
+        fullData = fullData.filter((d) => {
+          const replies = getRepliesList(d);
+          if (buttonFilter === "other") {
+            return replies.length > 0 && !replies.some((r) => templateButtons.includes(r));
           }
-          return row;
+          return replies.includes(buttonFilter);
         });
+      }
 
-        const ws = XLSX.utils.json_to_sheet(wsData);
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "Report");
-        const campName = campaigns.find((c) => c._id === selectedId)?.name || "Campaign";
-        XLSX.writeFile(wb, `${campName}_Report.xlsx`);
-      } else { toast.error(data.message || "Failed to fetch full report"); }
+      if (fullData.length === 0) { toast.error("No data to download"); return; }
+
+      const fallbackTime = selectedCamp?.createdAt || selectedCamp?.updatedAt;
+      const additionalCols = selectedCamp?.additionalFields || [];
+
+      const wsData = fullData.map((d: any) => {
+        const replies = getRepliesList(d).slice(0, 5);
+        let currentStatus = d.status;
+        if (replies.length > 0) currentStatus = "replied";
+        const statusConfig = getStatusConfig(currentStatus, replies, d.error);
+
+        const row: any = { "Name": d.name || "N/A", "Phone Number": d.phone };
+        additionalCols.forEach((field, idx) => { row[field] = d.additionalData?.[idx] || ""; });
+        row["Status"] = statusConfig.label;
+        row["Delivered Time"] = formatExcelDate(d.deliveredAt || (["delivered", "read", "replied"].includes(currentStatus) ? fallbackTime : null));
+        row["Read Time"] = formatExcelDate(d.readAt || (["read", "replied"].includes(currentStatus) ? fallbackTime : null));
+        row["Replied Time"] = formatExcelDate(d.repliedAt || (currentStatus === "replied" ? fallbackTime : null));
+        row["Error Reason"] = d.error || "";
+        row["Tags"] = d.tags?.join(", ") || "None";
+
+        for (let i = 0; i < 5; i++) {
+          const replyText = replies[i] || "";
+          row[`Reply ${i + 1}`] = replyText;
+          if (replyText) row[`Reply ${i + 1} Time`] = formatExcelDate(d.replyTimes?.[i] || d.repliedAt || fallbackTime);
+          else row[`Reply ${i + 1} Time`] = "";
+        }
+        return row;
+      });
+
+      const ws = XLSX.utils.json_to_sheet(wsData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Report");
+      const campName = campaigns.find((c) => c._id === selectedId)?.name || "Campaign";
+      XLSX.writeFile(wb, `${campName}_Report.xlsx`);
     } catch (error) { console.error("Failed to download Excel", error); toast.error("Error downloading Excel"); }
     finally { setDownloadingExcel(false); }
   };
@@ -515,6 +612,14 @@ export default function ReportsPage() {
       </div>
     );
   }
+
+  // ✅ Shows the TOTAL filtered count from all pages, not just the current one
+  const getButtonFilterLabel = () => {
+    let label = "All Contacts";
+    if (buttonFilter === "other") label = "Other";
+    else if (buttonFilter !== "all") label = buttonFilter;
+    return `${label} (${totalFilteredItems})`;
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-gray-900">
@@ -587,7 +692,7 @@ export default function ReportsPage() {
           <div className="md:hidden h-14 bg-[#f0f2f5] flex items-center px-4 border-b border-slate-200 flex-shrink-0">
             <span className="font-bold text-gray-800 text-lg tracking-tight flex-1">Reports</span>
           </div>
-          <div className="hidden md:block p-4 border-b border-slate-100 bg-slate-50">
+          <div className="hidden md:block p-4 border-b border-slate-101 bg-slate-50">
             <h2 className="font-bold text-slate-800 flex items-center gap-2"><BarChart3 size={16} /> Campaign Reports</h2>
           </div>
 
@@ -641,13 +746,13 @@ export default function ReportsPage() {
                     </div>
                   </div>
 
-                                    <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                  <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                     <div className="relative flex-1 sm:flex-none">
                       <Search className="absolute left-2.5 top-2.5 w-4 h-4 text-slate-400" />
                       <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name/phone..." className="w-full sm:w-48 pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none" />
                     </div>
-                    
-                    <button onClick={() => selectedId && fetchReportData(selectedId, reportCurrentPage, true)} disabled={loadingReport} className="px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50" title="Refresh current page">
+
+                    <button onClick={() => selectedId && fetchAllReportData(selectedId, true)} disabled={loadingReport} className="px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50" title="Refresh data">
                       {loadingReport ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Refresh
                     </button>
 
@@ -655,13 +760,11 @@ export default function ReportsPage() {
                       <BarChart3 size={12} /> Brief
                     </button>
 
-                    {/* ✅ FIX: Removed disabled condition for sheetUrl, added Update text */}
                     <button onClick={() => handleSyncSheet(selectedCamp._id)} disabled={syncingSheet || hiddenActions.includes("loadSheet")} className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed ${hiddenActions.includes("loadSheet") ? "bg-slate-200 text-slate-500" : "bg-indigo-500 text-white hover:bg-indigo-600"}`}>
                       {syncingSheet ? <Loader2 size={12} className="animate-spin" /> : selectedCamp.sheetUrl ? <RefreshCw size={12} /> : <ExternalLink size={12} />} 
                       {selectedCamp.sheetUrl ? "Update Sheet" : "Sync Sheets"}
                     </button>
 
-                    {/* ✅ FIX: Removed disabled condition for standaloneSheetUrl, added Update text */}
                     <button onClick={() => handleCreateStandaloneSheet(selectedCamp._id)} disabled={syncingStandaloneSheet || hiddenActions.includes("generateReport")} className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed ${hiddenActions.includes("generateReport") ? "bg-slate-200 text-slate-500" : "bg-purple-500 text-white hover:bg-purple-600"}`}>
                       {syncingStandaloneSheet ? <Loader2 size={12} className="animate-spin" /> : selectedCamp.standaloneSheetUrl ? <RefreshCw size={12} /> : <FileSpreadsheet size={12} />} 
                       {selectedCamp.standaloneSheetUrl ? "Update Report" : "Export Report"}
@@ -692,6 +795,77 @@ export default function ReportsPage() {
 
               <div className="flex-1 overflow-y-auto overflow-x-auto p-4 sm:p-6 space-y-4">
                 <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
+                  <div className="pb-3 border-b border-slate-100">
+                    <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest flex items-center gap-2 mb-2">
+                      <MessageSquare size={12} className="text-indigo-500" /> Filter by Button Reply
+                    </label>
+                    <div className="relative inline-block w-full sm:w-72" ref={buttonDropdownRef}>
+                      <button
+                        onClick={handleButtonDropdownToggle}
+                        className="w-full flex items-center justify-between gap-2 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-100 transition-colors"
+                      >
+                        <span className="truncate flex items-center gap-1.5">
+                          {buttonFilter !== "all" && <CheckCircle size={12} className="text-emerald-500 shrink-0" />}
+                          {getButtonFilterLabel()}
+                        </span>
+                        <ChevronDown size={14} className={`text-slate-400 transition-transform shrink-0 ${showButtonDropdown ? "rotate-180" : ""}`} />
+                      </button>
+
+                      {showButtonDropdown && (
+                        <div className="absolute z-30 top-full left-0 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden max-h-72 overflow-y-auto">
+                          <button
+                            onClick={() => { setButtonFilter("all"); setShowButtonDropdown(false); }}
+                            className={`w-full text-left px-3 py-2 text-xs font-bold hover:bg-slate-50 flex items-center justify-between transition-colors ${buttonFilter === "all" ? "bg-emerald-50 text-emerald-700" : "text-slate-700"}`}
+                          >
+                            All Contacts
+                            {buttonFilter === "all" && <Check size={12} />}
+                          </button>
+
+                          {loadingTemplateButtons ? (
+                            <div className="px-3 py-3 text-xs font-bold text-slate-500 flex items-center gap-2 bg-slate-50">
+                              <Loader2 size={12} className="animate-spin text-indigo-500" />
+                              Loading buttons...
+                            </div>
+                          ) : templateButtons.length > 0 ? (
+                            templateButtons.map((btn) => (
+                              <button
+                                key={btn}
+                                onClick={() => { setButtonFilter(btn); setShowButtonDropdown(false); }}
+                                className={`w-full text-left px-3 py-2 text-xs font-bold hover:bg-slate-50 flex items-center justify-between transition-colors border-t border-slate-100 ${buttonFilter === btn ? "bg-indigo-50 text-indigo-700" : "text-slate-700"}`}
+                              >
+                                <span className="truncate flex items-center gap-1.5">
+                                  <MessageSquare size={11} className="text-indigo-400 shrink-0" />
+                                  {btn}
+                                </span>
+                                {buttonFilter === btn && <Check size={12} />}
+                              </button>
+                            ))
+                          ) : (
+                            templateButtonsFetched && (
+                              <div className="px-3 py-2 text-[11px] text-slate-400 border-t border-slate-100">
+                                No buttons found for this template.
+                              </div>
+                            )
+                          )}
+
+                          <button
+                            onClick={() => { setButtonFilter("other"); setShowButtonDropdown(false); }}
+                            className={`w-full text-left px-3 py-2 text-xs font-bold hover:bg-slate-50 flex items-center justify-between transition-colors border-t border-slate-200 ${buttonFilter === "other" ? "bg-amber-50 text-amber-700" : "text-slate-700"}`}
+                          >
+                            <span className="flex items-center gap-1.5">
+                              <AlertTriangle size={11} className="text-amber-500 shrink-0" />
+                              Other
+                            </span>
+                            {buttonFilter === "other" && <Check size={12} />}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1.5">
+                      Filters contacts by which template button they replied with. &quot;Other&quot; shows replies that don&apos;t match any template button.
+                    </p>
+                  </div>
+
                   <div>
                     <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest flex items-center gap-2 mb-2"><Filter size={12} className="text-emerald-500" /> Show Only (Include)</label>
                     {renderFilterPills(showOnly, setShowOnly, <CheckCircle size={12} />, "bg-emerald-500 text-white border-emerald-500")}
@@ -774,11 +948,11 @@ export default function ReportsPage() {
 
                 {reportTotalPages > 1 && (
                   <div className="flex justify-center items-center gap-4 mt-8">
-                    <button onClick={() => selectedId && fetchReportData(selectedId, reportCurrentPage - 1)} disabled={reportCurrentPage === 1 || loadingReport} className="flex items-center gap-1 px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">
+                    <button onClick={() => setReportCurrentPage(reportCurrentPage - 1)} disabled={reportCurrentPage === 1 || loadingReport} className="flex items-center gap-1 px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">
                       <ChevronLeft size={14} /> Prev
                     </button>
                     <span className="text-sm font-bold text-slate-700">Page {reportCurrentPage} of {reportTotalPages}</span>
-                    <button onClick={() => selectedId && fetchReportData(selectedId, reportCurrentPage + 1)} disabled={reportCurrentPage === reportTotalPages || loadingReport} className="flex items-center gap-1 px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">
+                    <button onClick={() => setReportCurrentPage(reportCurrentPage + 1)} disabled={reportCurrentPage === reportTotalPages || loadingReport} className="flex items-center gap-1 px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-colors">
                       Next <ChevronRight size={14} />
                     </button>
                   </div>
