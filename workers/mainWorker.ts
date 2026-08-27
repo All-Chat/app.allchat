@@ -97,7 +97,7 @@ async function processCampaignLoop(data: any, jobId: any) {
   await CampaignReport.updateMany({ campaignId, status: "queued" }, { $set: { status: "pending" } });
 
   let thf = "";
-  const batchSize = 10;
+  const batchSize = 20;
   
   while (true) {
     // 1. Check Campaign Status (Pause / Stop)
@@ -217,7 +217,7 @@ async function processCampaignLoop(data: any, jobId: any) {
     try { await Campaign.updateOne({ _id: campaignId }, { $inc: { sentCount: sent, failedCount: failed, totalDeducted: ded } }); } catch (e) {}
 
     // 5. Wait 500ms (Rate limit: 20 msgs/sec) and loop back to step 1
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 250));
   }
 }
 
