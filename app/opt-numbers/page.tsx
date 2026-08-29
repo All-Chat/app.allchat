@@ -5,11 +5,12 @@
 import { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 import {
-  Plus, Trash2, Loader2, PhoneCall,
+  Plus, Trash2, Loader2, PhoneCall, Download, User,
   Gauge, AlertTriangle, Infinity as InfinityIcon, X, Check,
   ChevronLeft, ChevronRight,
 } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
+import * as XLSX from "xlsx"; // ✅ Import XLSX for Excel download
 
 interface LimitInfo {
   limit: { max: number; period: string };
@@ -20,20 +21,31 @@ interface LimitInfo {
 
 const ITEMS_PER_PAGE = 6;
 
+// ✅ Smart Pagination Helper
+const getPaginationPages = (current: number, total: number): (number | string)[] => {
+  if (total <= 7) {
+    return Array.from({ length: total }, (_, i) => i + 1);
+  }
+  if (current <= 4) {
+    return [1, 2, 3, 4, 5, '...', total];
+  }
+  if (current >= total - 3) {
+    return [1, '...', total - 4, total - 3, total - 2, total - 1, total];
+  }
+  return [1, '...', current - 1, current, current + 1, '...', total];
+};
+
 export default function OptNumbersPage() {
   const { status } = useSession();
   const [numbers, setNumbers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  
   const [newNumber, setNewNumber] = useState("");
+  const [newName, setNewName] = useState(""); // ✅ NEW: Name state
   const [adding, setAdding] = useState(false);
 
-  // ✅ Pagination State
   const [currentPage, setCurrentPage] = useState(1);
-
-  // ✅ Limit State
   const [optLimit, setOptLimit] = useState<LimitInfo | null>(null);
-
-  // Toast
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
   const showToast = (message: string, type: "success" | "error" = "success") => {
@@ -69,7 +81,6 @@ export default function OptNumbersPage() {
       const numbersData = await numbersRes.json();
       setNumbers(numbersData.numbers || []);
 
-      // ✅ Load limit info
       if (limitsRes.ok) {
         const limitsData = await limitsRes.json();
         if (limitsData.success) {
@@ -102,11 +113,10 @@ export default function OptNumbersPage() {
       const res = await fetch("/api/opt-numbers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phoneNumber: newNumber.trim() }),
+        body: JSON.stringify({ phoneNumber: newNumber.trim(), name: newName.trim() }), // ✅ Send name
       });
       const data = await res.json();
 
-      // ✅ Handle limit exceeded response
       if (res.status === 429 && data.limitExceeded) {
         showToast(data.error, "error");
         if (data.limitInfo) {
@@ -127,10 +137,10 @@ export default function OptNumbersPage() {
       if (res.ok) {
         setNumbers([data.optNumber, ...numbers]);
         setNewNumber("");
+        setNewName(""); // ✅ Clear name field
         showToast("Number added successfully!");
-        setCurrentPage(1); // ✅ Reset to first page to show the new number
-        // Refresh limits
-        loadData();
+        setCurrentPage(1);
+        loadData(); // Reload to fetch the newly saved name from contacts
       } else {
         showToast(data.error || "Failed to add number", "error");
       }
@@ -141,7 +151,6 @@ export default function OptNumbersPage() {
     }
   };
 
-  // Delete confirmation
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const handleDelete = async (id: string) => {
@@ -153,13 +162,11 @@ export default function OptNumbersPage() {
         setNumbers(updatedNumbers);
         showToast("Number deleted");
         
-        // ✅ Pagination Fix: If deleting the last item on a page, go back one page
         const totalPages = Math.ceil((previousNumbersLength - 1) / ITEMS_PER_PAGE);
         if (currentPage > totalPages && totalPages > 0) {
           setCurrentPage(totalPages);
         }
 
-        // Refresh limits after deletion
         loadData();
       } else {
         const data = await res.json();
@@ -170,6 +177,27 @@ export default function OptNumbersPage() {
     }
   };
 
+  // ✅ NEW: Handle Excel Download
+  const handleDownload = () => {
+    if (numbers.length === 0) {
+      showToast("No numbers to download", "error");
+      return;
+    }
+
+    const exportData = numbers.map(n => ({
+      Name: n.name || "Unknown",
+      "Phone Number": n.phoneNumber,
+      "Added Date": n.createdAt ? new Date(n.createdAt).toLocaleDateString("en-IN") : "N/A"
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Opt-Out Numbers");
+    XLSX.writeFile(wb, "Opt_Out_Numbers.xlsx");
+    
+    showToast("Download started");
+  };
+
   if (status === "loading" || loading) {
     return (
       <div className="flex min-h-screen bg-slate-50 items-center justify-center">
@@ -178,7 +206,6 @@ export default function OptNumbersPage() {
     );
   }
 
-  // ✅ Pagination Calculations
   const totalPages = Math.ceil(numbers.length / ITEMS_PER_PAGE);
   const indexOfLastNumber = currentPage * ITEMS_PER_PAGE;
   const indexOfFirstNumber = indexOfLastNumber - ITEMS_PER_PAGE;
@@ -236,7 +263,6 @@ export default function OptNumbersPage() {
                 </div>
               </div>
 
-              {/* ✅ Limit Badge in Header */}
               {optLimit && (
                 <div
                   className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold shrink-0 ${
@@ -270,7 +296,7 @@ export default function OptNumbersPage() {
             </div>
           </div>
 
-          {/* ✅ Limit Warning Bar */}
+          {/* Limit Warning Bar */}
           {isLimitActive && (
             <div
               className={`rounded-xl p-3 flex items-center gap-3 text-sm border animate-slide-in ${
@@ -304,7 +330,6 @@ export default function OptNumbersPage() {
                   )}
                 </span>
               </div>
-              {/* Progress bar */}
               <div className="w-24 h-2 bg-white/60 rounded-full overflow-hidden shrink-0">
                 <div
                   className={`h-full rounded-full transition-all ${
@@ -331,7 +356,6 @@ export default function OptNumbersPage() {
                 </h2>
               </div>
 
-              {/* ✅ Limit Reached Warning in Form */}
               {isAtLimit && (
                 <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2 animate-slide-in">
                   <AlertTriangle size={16} className="text-red-500 shrink-0 mt-0.5" />
@@ -346,7 +370,7 @@ export default function OptNumbersPage() {
                 </div>
               )}
 
-              <form onSubmit={handleAdd} className="flex gap-2">
+              <form onSubmit={handleAdd} className="flex flex-col sm:flex-row gap-2">
                 <div className="relative flex-1">
                   <PhoneCall
                     size={16}
@@ -361,10 +385,27 @@ export default function OptNumbersPage() {
                     className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm text-gray-900 placeholder:text-slate-400 focus:outline-none focus:ring-4 focus:ring-cyan-100 focus:border-cyan-400 focus:bg-white transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                 </div>
+                
+                {/* ✅ NEW: Optional Name Input */}
+                <div className="relative flex-1 sm:max-w-[200px]">
+                  <User
+                    size={16}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                  />
+                  <input
+                    type="text"
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    placeholder="Name (Optional)"
+                    disabled={isAtLimit || adding}
+                    className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm text-gray-900 placeholder:text-slate-400 focus:outline-none focus:ring-4 focus:ring-cyan-100 focus:border-cyan-400 focus:bg-white transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                </div>
+
                 <button
                   type="submit"
                   disabled={isAtLimit || adding || !newNumber.trim()}
-                  className={`px-5 py-3 rounded-xl text-sm font-bold transition-all flex items-center gap-2 shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed ${
+                  className={`px-5 py-3 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed ${
                     isAtLimit
                       ? "bg-slate-400 text-white cursor-not-allowed"
                       : "bg-gradient-to-r from-cyan-500 to-sky-500 hover:from-cyan-600 hover:to-sky-600 text-white"
@@ -390,12 +431,26 @@ export default function OptNumbersPage() {
                 <PhoneCall size={14} className="text-slate-500" />
                 Phone Numbers
               </h2>
-              <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full">
-                {numbers.length} Total
-                {isLimitActive && (
-                  <span className="text-slate-400 ml-1">/ {optLimit?.limit.max}</span>
-                )}
-              </span>
+              
+              <div className="flex items-center gap-3">
+                <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full">
+                  {numbers.length} Total
+                  {isLimitActive && (
+                    <span className="text-slate-400 ml-1">/ {optLimit?.limit.max}</span>
+                  )}
+                </span>
+                
+                {/* ✅ NEW: Download Button */}
+                <button 
+                  onClick={handleDownload}
+                  disabled={numbers.length === 0}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-cyan-600 bg-cyan-50 border border-cyan-200 rounded-lg hover:bg-cyan-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Download as Excel"
+                >
+                  <Download size={14} />
+                  Export
+                </button>
+              </div>
             </div>
 
             {numbers.length === 0 ? (
@@ -424,9 +479,17 @@ export default function OptNumbersPage() {
                             {num.phoneNumber.slice(-2)}
                           </div>
                           <div>
-                            <span className="text-sm font-semibold text-gray-800 font-mono">
-                              {num.phoneNumber}
-                            </span>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-sm font-semibold text-gray-800 font-mono">
+                                {num.phoneNumber}
+                              </span>
+                              {/* ✅ Display Name */}
+                              {num.name && num.name !== "Unknown" && (
+                                <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                                  {num.name}
+                                </span>
+                              )}
+                            </div>
                             {num.createdAt && (
                               <p className="text-[10px] text-slate-400 mt-0.5">
                                 Added {new Date(num.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
@@ -435,6 +498,7 @@ export default function OptNumbersPage() {
                           </div>
                         </div>
 
+                        {/* ✅ Double Check Delete Confirmation */}
                         {!isDeleting ? (
                           <button
                             onClick={() => setDeletingId(num._id)}
@@ -444,7 +508,7 @@ export default function OptNumbersPage() {
                             <Trash2 size={16} />
                           </button>
                         ) : (
-                          <div className="flex items-center gap-1 bg-red-50 p-1 rounded-lg border border-red-100">
+                          <div className="flex items-center gap-1 bg-red-50 p-1 rounded-lg border border-red-100 animate-slide-in">
                             <span className="text-[10px] font-bold text-red-600 px-1">Delete?</span>
                             <button
                               onClick={() => {
@@ -468,38 +532,48 @@ export default function OptNumbersPage() {
                   })}
                 </ul>
 
-                {/* ✅ Pagination Controls */}
+                {/* Smart Pagination Controls */}
                 {totalPages > 1 && (
-                  <div className="flex items-center justify-between px-5 sm:px-6 py-4 border-t border-slate-100 bg-slate-50/50">
+                  <div className="flex items-center justify-center gap-2 px-5 sm:px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex-wrap">
                     <button
                       onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
                       disabled={currentPage === 1}
-                      className="flex items-center gap-1 text-xs font-bold text-slate-600 hover:text-cyan-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                     >
                       <ChevronLeft size={14} />
                       Prev
                     </button>
                     
                     <div className="flex items-center gap-1.5">
-                      {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
-                        <button
-                          key={page}
-                          onClick={() => setCurrentPage(page)}
-                          className={`w-7 h-7 flex items-center justify-center rounded-lg text-[11px] font-bold transition-all ${
-                            currentPage === page
-                              ? "bg-cyan-500 text-white shadow-md scale-105"
-                              : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
-                          }`}
-                        >
-                          {page}
-                        </button>
-                      ))}
+                      {getPaginationPages(currentPage, totalPages).map((page, index) => {
+                        if (page === '...') {
+                          return (
+                            <span key={`ellipsis-${index}`} className="text-slate-400 text-xs font-bold px-1 select-none">
+                              ...
+                            </span>
+                          );
+                        }
+                        
+                        return (
+                          <button
+                            key={page}
+                            onClick={() => setCurrentPage(page as number)}
+                            className={`w-7 h-7 flex items-center justify-center rounded-lg text-[11px] font-bold transition-all ${
+                              currentPage === page
+                                ? "bg-cyan-500 text-white shadow-md scale-105"
+                                : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+                            }`}
+                          >
+                            {page}
+                          </button>
+                        );
+                      })}
                     </div>
 
                     <button
                       onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
                       disabled={currentPage === totalPages}
-                      className="flex items-center gap-1 text-xs font-bold text-slate-600 hover:text-cyan-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                     >
                       Next
                       <ChevronRight size={14} />
