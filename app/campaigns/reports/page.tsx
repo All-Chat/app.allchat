@@ -88,6 +88,8 @@ type ReportItem = {
   repliedAt?: string | null;
   deliveredAt?: string | null;
   readAt?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
   replyTimes?: string[];
   tags?: string[];
   additionalData?: string[];
@@ -171,6 +173,9 @@ export default function ReportsPage() {
   const [syncingSheet, setSyncingSheet] = useState(false);
   const [downloadingExcel, setDownloadingExcel] = useState(false);
   const [syncingStandaloneSheet, setSyncingStandaloneSheet] = useState(false);
+
+  // ✅ NEW: Download Modal State
+  const [isDownloadModalOpen, setIsDownloadModalOpen] = useState(false);
 
   const [showOnly, setShowOnly] = useState<string[]>([]);
   const [filterOut, setFilterOut] = useState<string[]>([]);
@@ -521,11 +526,17 @@ export default function ReportsPage() {
     </div>
   );
 
-  const downloadExcel = async () => {
+  // ✅ UPDATED: Accepts sortOrder parameter and applies sorting before download
+  const downloadExcel = async (sortOrder = 'original') => {
     if (!selectedId) { toast.error("No campaign selected"); return; }
     setDownloadingExcel(true);
     try {
-      // We already have the full data in memory
+      
+      // ✅ NEW: Fetch the additional field names (like Region, Dealer Name) from the new route
+      const metaRes = await fetch(`/api/campaigns/meta?campaignId=${selectedId}`);
+      const metaData = await metaRes.json();
+      const additionalCols = metaData.success ? metaData.additionalFields : [];
+
       let fullData = [...fullReportData];
 
       // Apply button filter for Excel export
@@ -541,9 +552,19 @@ export default function ReportsPage() {
 
       if (fullData.length === 0) { toast.error("No data to download"); return; }
 
-      const fallbackTime = selectedCamp?.createdAt || selectedCamp?.updatedAt;
-      const additionalCols = selectedCamp?.additionalFields || [];
+      // ✅ Apply Sorting
+      if (sortOrder === 'latest') {
+        fullData.sort((a, b) => {
+          const timeA = new Date(a.repliedAt || a.readAt || a.deliveredAt || a.createdAt || 0).getTime();
+          const timeB = new Date(b.repliedAt || b.readAt || b.deliveredAt || b.createdAt || 0).getTime();
+          return timeB - timeA; // Descending (Newest first)
+        });
+      }
+      // 'original' keeps the array order as returned from the DB (which matches upload sequence)
 
+      const fallbackTime = selectedCamp?.createdAt || selectedCamp?.updatedAt;
+
+      // ✅ Build the Excel rows using the fetched additionalCols
       const wsData = fullData.map((d: any) => {
         const replies = getRepliesList(d).slice(0, 5);
         let currentStatus = d.status;
@@ -551,7 +572,12 @@ export default function ReportsPage() {
         const statusConfig = getStatusConfig(currentStatus, replies, d.error);
 
         const row: any = { "Name": d.name || "N/A", "Phone Number": d.phone };
-        additionalCols.forEach((field, idx) => { row[field] = d.additionalData?.[idx] || ""; });
+        
+        // ✅ Dynamically add the additional fields
+        additionalCols.forEach((field: string | number, idx: string | number) => { 
+          row[field] = d.additionalData?.[idx] || ""; 
+        });
+        
         row["Status"] = statusConfig.label;
         row["Delivered Time"] = formatExcelDate(d.deliveredAt || (["delivered", "read", "replied"].includes(currentStatus) ? fallbackTime : null));
         row["Read Time"] = formatExcelDate(d.readAt || (["read", "replied"].includes(currentStatus) ? fallbackTime : null));
@@ -572,7 +598,10 @@ export default function ReportsPage() {
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Report");
       const campName = campaigns.find((c) => c._id === selectedId)?.name || "Campaign";
-      XLSX.writeFile(wb, `${campName}_Report.xlsx`);
+      const fileName = sortOrder === 'latest' ? `${campName}_Latest_Report.xlsx` : `${campName}_Original_Report.xlsx`;
+      XLSX.writeFile(wb, fileName);
+      
+      setIsDownloadModalOpen(false); // Close modal on success
     } catch (error) { console.error("Failed to download Excel", error); toast.error("Error downloading Excel"); }
     finally { setDownloadingExcel(false); }
   };
@@ -624,6 +653,44 @@ export default function ReportsPage() {
   return (
     <div className="min-h-screen bg-slate-50 text-gray-900">
       <Sidebar />
+
+      {/* ✅ NEW: Download Excel Popup */}
+      {isDownloadModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4" onClick={() => setIsDownloadModalOpen(false)}>
+          <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col border border-slate-100" onClick={(e) => e.stopPropagation()}>
+            <div className="bg-gradient-to-r from-emerald-50 to-teal-50 p-5 text-slate-800 relative border-b border-emerald-100">
+              <button onClick={() => setIsDownloadModalOpen(false)} className="absolute top-3 right-3 text-slate-400 hover:text-slate-700 p-1.5 hover:bg-white/60 rounded-lg transition-colors"><X size={18} /></button>
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-white rounded-xl shadow-sm border border-emerald-100"><Download className="w-5 h-5 text-emerald-600" /></div>
+                <div>
+                  <h2 className="text-lg font-bold text-slate-900">Download Report</h2>
+                  <p className="text-xs text-emerald-700/80 mt-0.5">Select the order for your Excel export</p>
+                </div>
+              </div>
+            </div>
+            
+            <div className="p-6 space-y-4">
+              <p className="text-xs text-slate-500 text-center">Both options will include all additional fields selected during campaign creation.</p>
+              <button 
+                onClick={() => downloadExcel('original')} 
+                disabled={downloadingExcel}
+                className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 hover:bg-slate-50 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {downloadingExcel ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} className="text-blue-500" />}
+                Original Upload Order
+              </button>
+              <button 
+                onClick={() => downloadExcel('latest')} 
+                disabled={downloadingExcel}
+                className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 hover:bg-slate-50 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {downloadingExcel ? <Loader2 size={16} className="animate-spin" /> : <Clock size={16} className="text-amber-500" />}
+                Latest First (Newest to Oldest)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {isBriefOpen && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4" onClick={() => setIsBriefOpen(false)}>
@@ -770,7 +837,8 @@ export default function ReportsPage() {
                       {selectedCamp.standaloneSheetUrl ? "Update Report" : "Export Report"}
                     </button>
 
-                    <button onClick={downloadExcel} disabled={downloadingExcel || hiddenActions.includes("downloadExcel")} className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed ${hiddenActions.includes("downloadExcel") ? "bg-slate-200 text-slate-500" : "bg-emerald-500 text-white hover:bg-emerald-600"}`}>
+                    {/* ✅ NEW: Opens the Download Modal */}
+                    <button onClick={() => setIsDownloadModalOpen(true)} disabled={downloadingExcel || hiddenActions.includes("downloadExcel")} className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed ${hiddenActions.includes("downloadExcel") ? "bg-slate-200 text-slate-500" : "bg-emerald-500 text-white hover:bg-emerald-600"}`}>
                       {downloadingExcel ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />} Excel
                     </button>
                   </div>
@@ -886,7 +954,6 @@ export default function ReportsPage() {
                           <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase w-10">#</th>
                           <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Name</th>
                           <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Phone</th>
-                          {selectedCamp?.additionalFields?.map((field, idx) => (<th key={idx} className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase whitespace-nowrap">{field}</th>))}
                           <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase min-w-[140px]">Status</th>
                           <th className="px-4 py-3 text-left text-[10px] font-bold text-slate-500 uppercase">Replies</th>
                         </tr>
@@ -902,7 +969,6 @@ export default function ReportsPage() {
                               <td className="px-4 py-3 text-xs text-slate-400">{((reportCurrentPage - 1) * 10) + i + 1}</td>
                               <td className="px-4 py-3 font-medium text-slate-900 text-xs sm:text-sm">{d.name || "—"}</td>
                               <td className="px-4 py-3 font-mono text-xs">{d.phone}</td>
-                              {selectedCamp?.additionalFields?.map((field, idx) => (<td key={idx} className="px-4 py-3 text-xs text-slate-700">{d.additionalData?.[idx] || "—"}</td>))}
                               <td className="px-4 py-3">
                                 <span title={statusConfig.tooltip} className={`px-2.5 py-1 rounded-full text-[10px] font-bold border inline-flex items-center gap-1 cursor-default ${statusConfig.color}`}>
                                   {statusConfig.icon} {statusConfig.label}
@@ -932,7 +998,7 @@ export default function ReportsPage() {
                         })}
                         {reportData.length === 0 && (
                           <tr>
-                            <td colSpan={5 + additionalFieldsCount} className="text-center py-16 text-slate-400">
+                            <td colSpan={5} className="text-center py-16 text-slate-400">
                               <div className="flex flex-col items-center gap-2">
                                 <Search size={32} className="text-slate-200" />
                                 <p className="text-sm font-semibold text-slate-500">No results found</p>
