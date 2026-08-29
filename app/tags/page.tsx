@@ -65,7 +65,7 @@ export default function TagsPage() {
         fetch("/api/user/limits?resource=tags"),
       ]);
 
-      if (tagsRes.status === 401) { router.push("/signin"); return; }
+      if (tagsRes.status === 401) { router.push("/"); return; }
 
       const tagsData = await tagsRes.json();
       setTags(tagsData.tags || []);
@@ -87,7 +87,7 @@ export default function TagsPage() {
 
   useEffect(() => {
     if (status === "authenticated") loadData();
-    else if (status === "unauthenticated") router.push("/signin");
+    else if (status === "unauthenticated") router.push("/");
   }, [status, router, loadData]);
 
   const resetForm = useCallback(() => { setEditingId(null); setTagName(""); }, []);
