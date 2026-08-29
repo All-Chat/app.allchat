@@ -243,7 +243,8 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
 
     if (workflows.length === 0) return;
     
-    let matchedWorkflow: any = null; let matchedByButton = false;
+    let matchedWorkflow: any = null; 
+    let matchedByButton = false;
 
     if (buttonPayload) {
       if (buttonPayload.startsWith("restart_form_")) {
@@ -294,6 +295,28 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
       }
     }
     if (!currentStepId || !steps[currentStepId]) return;
+
+    // ✅ CRITICAL FIX: Restore Trigger Actions execution for the root step
+    const rootStep = steps[currentStepId];
+    if (rootStep.stepType === "opt_in_node") {
+      await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
+      return;
+    } else if (rootStep.stepType === "tag_node") {
+      if (rootStep.selectedTag) await applyTagToContact(msg.from, rootStep.selectedTag, num.userId.toString());
+      return;
+    }
+
+    if (rootStep?.triggerActions && rootStep.triggerActions.length > 0) {
+      console.log(`[Workflow Check] Found ${rootStep.triggerActions.length} trigger actions on root step.`);
+      for (const action of rootStep.triggerActions) {
+        if (action.type === "opt_in_node") {
+          await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
+        } else if (action.type === "tag_node") {
+          const tagStep = steps[action.stepId];
+          if (tagStep?.selectedTag) await applyTagToContact(msg.from, tagStep.selectedTag, num.userId.toString());
+        }
+      }
+    }
     
     await processWorkflowStep(currentStepId, steps, matchedWorkflow, num.accessToken, num.phoneNumberId, msg.from, num.userId.toString(), num.tenantId, baseUrl);
   } catch (err) { console.error("❌ [WORKFLOW] Error:", err); }
