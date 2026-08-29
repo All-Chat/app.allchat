@@ -11,6 +11,7 @@ import {
   Users, Sparkles, Send, RotateCcw, AlertCircle,
   FileText, Film, Image as ImageIcon, Loader2, X, Link, Tag as TagIcon,
   Ban, ShieldCheck, Plus, ChevronDown,
+  Gauge, Infinity as InfinityIcon, Filter, Scissors
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -24,10 +25,17 @@ function EditCampaignContent() {
   const [tags, setTags] = useState<any[]>([]);
   const [selectedTag, setSelectedTag] = useState("");
   
-  // ✅ ADDED: State for excluding tags with Dropdown
+  // Exclude Tags State
   const [isExcludeDropdownOpen, setIsExcludeDropdownOpen] = useState(false);
   const [selectedExcludeTags, setSelectedExcludeTags] = useState<string[]>([]);
   const [excludedTagNumbers, setExcludedTagNumbers] = useState<Set<string>>(new Set());
+  const excludeDropdownRef = useRef<HTMLDivElement>(null);
+  const [isExcluding, setIsExcluding] = useState(false);
+
+  // Track input method to reprocess correctly when exclusions change
+  const [inputMethod, setInputMethod] = useState<'file' | 'text' | 'tag' | 'existing' | null>(null);
+  const [tagContacts, setTagContacts] = useState<any[]>([]);
+  const [initialContacts, setInitialContacts] = useState<{ numbers: string[], names: string[] }>({ numbers: [], names: [] });
 
   const [selectedTemplate, setSelectedTemplate] = useState<any>(null);
   const [rawNumbers, setRawNumbers] = useState<string[]>([]);
@@ -75,7 +83,7 @@ function EditCampaignContent() {
   const [additionalFields, setAdditionalFields] = useState<string[]>([]);
   const [additionalFieldsData, setAdditionalFieldsData] = useState<string[][]>([]);
   
-  const [stats, setStats] = useState({ valid: 0, invalid: 0, duplicates: 0, optedOut: 0 });
+  const [stats, setStats] = useState({ valid: 0, invalid: 0, duplicates: 0, optedOut: 0, excludedOut: 0 });
   const [optedOutNumbers, setOptedOutNumbers] = useState<string[]>([]);
 
   const [mediaInputType, setMediaInputType] = useState<"url" | "upload">("url");
@@ -94,7 +102,17 @@ function EditCampaignContent() {
     if (campaignId) fetchCampaignData();
   }, [campaignId]);
 
-    useEffect(() => {
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (excludeDropdownRef.current && !excludeDropdownRef.current.contains(event.target as Node)) {
+        setIsExcludeDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  useEffect(() => {
     if (initialCampaignData && templates.length > 0) {
       const tmpl = templates.find(
         (t: any) => t.name === initialCampaignData.templateName && t.language === initialCampaignData.languageCode
@@ -162,31 +180,19 @@ function EditCampaignContent() {
   const handleCampaignNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setCampaignName(value);
-    
     if (nameCheckTimer.current) clearTimeout(nameCheckTimer.current);
-    
-    if (!value.trim()) {
-      setNameStatus("idle");
-      return;
-    }
-
+    if (!value.trim()) { setNameStatus("idle"); return; }
     if (initialCampaignData && value.toLowerCase() === (initialCampaignData.name || "").toLowerCase()) {
-      setNameStatus("available");
-      return;
+      setNameStatus("available"); return;
     }
-
     setNameStatus("checking");
     nameCheckTimer.current = setTimeout(async () => {
       try {
         const url = `/api/campaigns/list?check=${encodeURIComponent(value)}&excludeId=${campaignId}`;
         const res = await fetch(url);
         const data = await res.json();
-        if (data.success) {
-          setNameStatus(data.exists ? "taken" : "available");
-        }
-      } catch (err) {
-        console.error("Name check failed", err);
-      }
+        if (data.success) setNameStatus(data.exists ? "taken" : "available");
+      } catch (err) { console.error("Name check failed", err); }
     }, 400);
   };
 
@@ -201,7 +207,61 @@ function EditCampaignContent() {
     } catch (error) { console.error("Failed to fetch settings", error); }
   };
 
-  // ✅ ADDED: Handle selecting/deselecting tags for exclusion
+  // Unified Number Normalizer
+  const normalizeNumber = (num: any) => {
+    if (!num) return "";
+    let numStr = String(num).trim();
+    if (numStr.toLowerCase().includes("e") || numStr.includes(".")) {
+      const parsed = parseFloat(numStr);
+      if (!isNaN(parsed)) numStr = parsed.toFixed(0);
+    }
+    let clean = numStr.replace(/[^\d+]/g, "");
+    if (clean.startsWith("+")) clean = clean.substring(1);
+    if (clean.startsWith("0")) clean = clean.substring(1);
+    if (!clean.startsWith(selectedCountryCode) && clean.length <= 10) {
+      clean = selectedCountryCode + clean;
+    }
+    return clean;
+  };
+
+  // Core Logic: Reprocess existing inputs whenever excluded tags change
+  const reprocessNumbers = (excludedSet: Set<string>) => {
+    if (inputMethod === 'existing' && initialContacts.numbers.length > 0) {
+      const { finalNumbers, finalNames } = cleanAndValidateNumbers(initialContacts.numbers, initialContacts.names, [], [], [], excludedSet);
+      setRawNumbers(finalNumbers);
+      setRawNames(finalNames);
+    } else if (inputMethod === 'file' && fileRows.length > 0 && selectedPhoneCol && selectedPhoneCol !== "skip") {
+      const phoneIdx = fileHeaders.indexOf(selectedPhoneCol);
+      const nameIdx = selectedNameCol && selectedNameCol !== "skip" ? fileHeaders.indexOf(selectedNameCol) : -1;
+      const varIndices = selectedVarCols.map(col => col && col !== "skip" ? fileHeaders.indexOf(col) : -1);
+      const additionalIndices = additionalFields.map(col => col && col !== "skip" ? fileHeaders.indexOf(col) : -1);
+      
+      const numbers = fileRows.map(row => row[phoneIdx] || "");
+      const names = fileRows.map(row => nameIdx !== -1 ? row[nameIdx] || "" : "");
+      
+      const { finalNumbers, finalNames, finalVariables, finalAdditionalData } = cleanAndValidateNumbers(
+        numbers, names, fileRows, varIndices, additionalIndices, excludedSet
+      );
+      setRawNumbers(finalNumbers);
+      setRawNames(finalNames);
+      setRawVariables(finalVariables);
+      setAdditionalFieldsData(finalAdditionalData);
+    } else if (inputMethod === 'text' && rawText) {
+      const lines = rawText.split(/[\n,;]+/).map((n) => n.trim()).filter((n) => n);
+      const { finalNumbers, finalNames, finalVariables } = cleanAndValidateNumbers(lines, lines.map(() => ""), [], [], [], excludedSet);
+      setRawNumbers(finalNumbers);
+      setRawNames(finalNames);
+      setRawVariables(finalVariables);
+    } else if (inputMethod === 'tag' && tagContacts.length > 0) {
+      const numbers = tagContacts.map((c: any) => c.phone);
+      const names = tagContacts.map((c: any) => c.name || "");
+      const { finalNumbers, finalNames, finalVariables } = cleanAndValidateNumbers(numbers, names, [], [], [], excludedSet);
+      setRawNumbers(finalNumbers);
+      setRawNames(finalNames);
+      setRawVariables(finalVariables);
+    }
+  };
+
   const handleExcludeTagChange = async (tagName: string) => {
     let newSelectedTags: string[] = [];
     if (selectedExcludeTags.includes(tagName)) {
@@ -212,33 +272,33 @@ function EditCampaignContent() {
     setSelectedExcludeTags(newSelectedTags);
 
     if (newSelectedTags.length === 0) {
-      setExcludedTagNumbers(new Set());
+      const emptySet = new Set<string>();
+      setExcludedTagNumbers(emptySet);
+      reprocessNumbers(emptySet);
       return;
     }
 
+    setIsExcluding(true);
     try {
       const fetchPromises = newSelectedTags.map(tag =>
         fetch(`/api/contacts?tag=${encodeURIComponent(tag)}`).then(res => res.json())
       );
       const results = await Promise.all(fetchPromises);
-
       const allExcluded = new Set<string>();
       results.forEach(data => {
         if (data.success && data.contacts) {
           data.contacts.forEach((c: any) => {
-            let clean = String(c.phone || "").replace(/[^\d+]/g, "");
-            if (clean.startsWith("+")) clean = clean.substring(1);
-            if (clean.startsWith("0")) clean = clean.substring(1);
-            if (!clean.startsWith(selectedCountryCode) && clean.length <= 10) {
-              clean = selectedCountryCode + clean;
-            }
+            const clean = normalizeNumber(c.phone || "");
             if (clean) allExcluded.add(clean);
           });
         }
       });
       setExcludedTagNumbers(allExcluded);
+      reprocessNumbers(allExcluded);
     } catch (err) {
       toast.error("Error loading excluded contacts.");
+    } finally {
+      setIsExcluding(false);
     }
   };
 
@@ -246,14 +306,16 @@ function EditCampaignContent() {
     setSelectedTag(tagName);
     setAdditionalFields([]);
     setAdditionalFieldsData([]);
+    setInputMethod('tag');
     if (!tagName) return;
     try {
       const res = await fetch(`/api/contacts?tag=${encodeURIComponent(tagName)}`);
       const data = await res.json();
       if (data.success && data.contacts.length > 0) {
+        setTagContacts(data.contacts);
         const numbers = data.contacts.map((c: any) => c.phone);
         const names = data.contacts.map((c: any) => c.name || "");
-        const { finalNumbers, finalNames, finalVariables } = cleanAndValidateNumbers(numbers, names);
+        const { finalNumbers, finalNames, finalVariables } = cleanAndValidateNumbers(numbers, names, [], [], [], excludedTagNumbers);
         setRawNumbers(finalNumbers);
         setRawNames(finalNames);
         setRawVariables(finalVariables);
@@ -261,7 +323,7 @@ function EditCampaignContent() {
       } else {
         toast.error("No contacts found for this tag");
         setRawNumbers([]);
-        setStats({ valid: 0, invalid: 0, duplicates: 0, optedOut: 0 });
+        setStats({ valid: 0, invalid: 0, duplicates: 0, optedOut: 0, excludedOut: 0 });
       }
     } catch (err) { toast.error("Error fetching contacts by tag"); }
   };
@@ -274,17 +336,19 @@ function EditCampaignContent() {
       if (data.success) {
         const campaign = data.campaigns[0];
         if (campaign) {
+          setInputMethod('existing');
           setCampaignName(campaign.name);
           setNameStatus("available"); 
           setRawNumbers(campaign.phoneNumbers || []);
           setRawNames(campaign.names || []);
           setVariables(campaign.variables || []);
           
+          setInitialContacts({ numbers: campaign.phoneNumbers || [], names: campaign.names || [] });
+          
           setMediaUrl(campaign.mediaUrl || "");
           setMediaType(campaign.mediaType || "");
-          
           setLanguageCode(campaign.languageCode || "en");
-          setStats({ valid: campaign.phoneNumbers.length, invalid: 0, duplicates: 0, optedOut: 0 });
+          setStats({ valid: campaign.phoneNumbers.length, invalid: 0, duplicates: 0, optedOut: 0, excludedOut: 0 });
           
           setUseRandomOtp(campaign.generateOtp || false);
           setOtpLength(campaign.otpLength || 4);
@@ -321,18 +385,11 @@ function EditCampaignContent() {
     if (tmpl.language) setLanguageCode(tmpl.language);
     else setLanguageCode("en");
 
-    const isInitialTemplate = initialCampaignData && 
-                              tmpl.name === initialCampaignData.templateName && 
-                              tmpl.language === initialCampaignData.languageCode;
-
+    const isInitialTemplate = initialCampaignData && tmpl.name === initialCampaignData.templateName && tmpl.language === initialCampaignData.languageCode;
     let finalMediaType = "";
-    if (["IMAGE", "VIDEO", "DOCUMENT"].includes(hFormat)) {
-      finalMediaType = hFormat.toLowerCase();
-    }
+    if (["IMAGE", "VIDEO", "DOCUMENT"].includes(hFormat)) finalMediaType = hFormat.toLowerCase();
     
-    if (isInitialTemplate && initialCampaignData.mediaType) {
-      finalMediaType = initialCampaignData.mediaType;
-    }
+    if (isInitialTemplate && initialCampaignData.mediaType) finalMediaType = initialCampaignData.mediaType;
 
     if (finalMediaType) {
       setMediaType(finalMediaType);
@@ -341,9 +398,7 @@ function EditCampaignContent() {
         if (initialCampaignData.mediaUrl) setMediaInputType("url");
       }
     } else { 
-      setMediaType(""); 
-      setMediaUrl(""); 
-      clearMediaFile(); 
+      setMediaType(""); setMediaUrl(""); clearMediaFile(); 
     }
 
     const bodyComp = tmpl.components?.find((c: any) => c.type === "BODY");
@@ -371,7 +426,6 @@ function EditCampaignContent() {
 
     const footerComp = tmpl.components?.find((c: any) => c.type === "FOOTER");
     setFooterText(footerComp?.text || "");
-    
     const buttonsComp = tmpl.components?.find((c: any) => c.type === "BUTTONS");
     setButtons(buttonsComp?.buttons || []);
   };
@@ -388,15 +442,12 @@ function EditCampaignContent() {
   };
 
   const cleanAndValidateNumbers = (
-    nums: string[], 
-    names: string[], 
-    rows: string[][] = [], 
-    varIndices: number[] = [],
-    additionalIndices: number[] = []
+    nums: string[], names: string[], rows: string[][] = [], 
+    varIndices: number[] = [], additionalIndices: number[] = [], excludedSet: Set<string>
   ) => {
-    const MAX_LIMIT = 50000; 
+    const MAX_LIMIT = 50000;
     const seen = new Set();
-    let valid = 0, invalid = 0, duplicates = 0, optedOut = 0;
+    let valid = 0, invalid = 0, duplicates = 0, optedOut = 0, excludedOut = 0;
     const finalNumbers: string[] = [];
     const finalNames: string[] = [];
     const finalVariables: string[][] = [];
@@ -406,36 +457,20 @@ function EditCampaignContent() {
       const num = nums[index];
       if (!num || String(num).trim() === "") continue;
       
-      let clean = String(num).replace(/[^\d+]/g, "");
-      if (clean.startsWith("+")) clean = clean.substring(1);
-      if (clean.startsWith("0")) clean = clean.substring(1);
-      
-      if (!clean.startsWith(selectedCountryCode) && clean.length <= 10) {
-        clean = selectedCountryCode + clean;
-      }
-
+      const clean = normalizeNumber(num);
       if (!clean) continue;
 
-      // ✅ Exclude numbers that match the selected excluded tags
-      if (excludedTagNumbers.has(clean)) {
+      if (excludedSet.has(clean)) {
+        excludedOut++;
         continue;
       }
 
-      if (seen.has(clean)) { 
-        duplicates++; 
-        continue; 
-      } 
+      if (seen.has(clean)) { duplicates++; continue; } 
       seen.add(clean);
 
-      if (optedOutNumbers.includes(clean)) { 
-        optedOut++; 
-        continue; 
-      }
+      if (optedOutNumbers.includes(clean)) { optedOut++; continue; }
 
-      if (clean.length < 7) {
-        invalid++;
-        continue;
-      }
+      if (clean.length < 7) { invalid++; continue; }
 
       valid++;
       finalNumbers.push(clean);
@@ -452,13 +487,14 @@ function EditCampaignContent() {
         break;
       }
     }
-    setStats({ valid, invalid, duplicates, optedOut });
+    setStats({ valid, invalid, duplicates, optedOut, excludedOut });
     return { finalNumbers, finalNames, finalVariables, finalAdditionalData };
   };
 
   const handleTextNumbers = () => {
+    setInputMethod('text');
     const lines = rawText.split(/[\n,;]+/).map(n => n.trim()).filter(n => n);
-    const { finalNumbers, finalNames, finalVariables } = cleanAndValidateNumbers(lines, lines.map(() => ""));
+    const { finalNumbers, finalNames, finalVariables } = cleanAndValidateNumbers(lines, lines.map(() => ""), [], [], [], excludedTagNumbers);
     setRawNumbers(finalNumbers);
     setRawNames(finalNames);
     setRawVariables(finalVariables);
@@ -480,38 +516,22 @@ function EditCampaignContent() {
         const workbook = XLSX.read(data, { type: "array", cellDates: false });
         const worksheet = workbook.Sheets[workbook.SheetNames[0]];
         const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false, defval: "" });
-        rows = jsonData
-          .map((row: any) => row.map((cell: any) => String(cell || "").trim()))
-          .filter((row: string[]) => row.length > 0 && row.some((cell) => cell !== ""));
+        rows = jsonData.map((row: any) => row.map((cell: any) => String(cell || "").trim())).filter((row: string[]) => row.length > 0 && row.some((cell) => cell !== ""));
       } else {
         const text = await file.text();
-        rows = text
-          .split(/\r?\n/)
-          .map((line) => line.split(/[,;\t]/).map((cell) => cell.trim()))
-          .filter((row) => row.length > 0 && row[0] !== "");
+        rows = text.split(/\r?\n/).map((line) => line.split(/[,;\t]/).map((cell) => cell.trim())).filter((row) => row.length > 0 && row[0] !== "");
       }
       
-      if (rows.length === 0) {
-        toast.error("File is empty");
-        return;
-      }
+      if (rows.length === 0) { toast.error("File is empty"); return; }
 
       const firstRow = rows[0] || [];
-      const hasHeader = !firstRow.some((cell: any) => {
-        const cleaned = String(cell).replace(/\D/g, "");
-        return cleaned.length >= 7;
-      });
-
+      const hasHeader = !firstRow.some((cell: any) => String(cell).replace(/\D/g, "").length >= 7);
       const headers = hasHeader ? rows[0] : rows[0].map((_, i) => `Column ${i + 1}`);
       const dataRows = hasHeader ? rows.slice(1) : rows;
       
-      const MAX_LIMIT = 50000;
-      if (dataRows.length > MAX_LIMIT) {
-        toast.error(`❌ The file contains ${dataRows.length.toLocaleString()} numbers. The maximum limit is 50,000. Please split your file and try again.`);
-        setFileName("");
-        setFileHeaders([]);
-        setFileRows([]);
-        setUploadStep(1);
+      if (dataRows.length > 50000) {
+        toast.error(`❌ The file contains ${dataRows.length.toLocaleString()} numbers. The maximum limit is 50,000.`);
+        setFileName(""); setFileHeaders([]); setFileRows([]); setUploadStep(1);
         return;
       }
 
@@ -530,18 +550,18 @@ function EditCampaignContent() {
 
   const processFileColumns = () => {
     if (!selectedPhoneCol || selectedPhoneCol === "skip") { toast.error("Select Phone column"); return; }
+    setInputMethod('file');
+    
     const phoneIdx = fileHeaders.indexOf(selectedPhoneCol);
     const nameIdx = selectedNameCol !== "skip" ? fileHeaders.indexOf(selectedNameCol) : -1;
-    
     const varIndices = selectedVarCols.map(col => col && col !== "skip" ? fileHeaders.indexOf(col) : -1);
-    const additionalIndices = additionalFields
-      .map(col => col && col !== "skip" ? fileHeaders.indexOf(col) : -1);
+    const additionalIndices = additionalFields.map(col => col && col !== "skip" ? fileHeaders.indexOf(col) : -1);
 
     const numbers: string[] = [];
     const names: string[] = [];
     fileRows.forEach(row => { numbers.push(row[phoneIdx] || ""); names.push(nameIdx !== -1 ? (row[nameIdx] || "") : ""); });
     
-    const { finalNumbers, finalNames, finalVariables, finalAdditionalData } = cleanAndValidateNumbers(numbers, names, fileRows, varIndices, additionalIndices);
+    const { finalNumbers, finalNames, finalVariables, finalAdditionalData } = cleanAndValidateNumbers(numbers, names, fileRows, varIndices, additionalIndices, excludedTagNumbers);
     setRawNumbers(finalNumbers);
     setRawNames(finalNames);
     setRawVariables(finalVariables);
@@ -550,15 +570,10 @@ function EditCampaignContent() {
   };
 
   const resetFileUpload = () => { 
-    setUploadStep(1); 
-    setFileHeaders([]); 
-    setFileRows([]); 
-    setSelectedPhoneCol(""); 
-    setSelectedNameCol(""); 
-    setFileName(""); 
+    setUploadStep(1); setFileHeaders([]); setFileRows([]); 
+    setSelectedPhoneCol(""); setSelectedNameCol(""); setFileName(""); 
     setSelectedVarCols(variables.map(() => "skip"));
-    setAdditionalFields([]);
-    setAdditionalFieldsData([]);
+    setAdditionalFields([]); setAdditionalFieldsData([]);
   };
 
   const addAdditionalField = () => setAdditionalFields([...additionalFields, "skip"]);
@@ -584,21 +599,20 @@ function EditCampaignContent() {
 
   const renderMediaInput = () => {
     if (!mediaType && !mediaUrl) return null;
-    
     const currentType = mediaType || "image";
     
     return (
       <div className="space-y-3">
-        <div className="flex gap-2 bg-slate-100 p-1 rounded-lg">
-          <button type="button" onClick={() => { setMediaInputType("url"); clearMediaFile(); }} className={`flex-1 flex items-center justify-center gap-2 px-3 sm:px-4 py-2 rounded-md text-xs font-bold transition-all ${mediaInputType === "url" ? "bg-white shadow-sm text-indigo-700" : "text-slate-500 hover:text-slate-700"}`}><Link size={14} /> URL</button>
-          <button type="button" onClick={() => { setMediaInputType("upload"); setMediaUrl(""); }} className={`flex-1 flex items-center justify-center gap-2 px-3 sm:px-4 py-2 rounded-md text-xs font-bold transition-all ${mediaInputType === "upload" ? "bg-white shadow-sm text-indigo-700" : "text-slate-500 hover:text-slate-700"}`}><Upload size={14} /> Upload</button>
+        <div className="flex gap-2 bg-slate-100 p-1 rounded-xl">
+          <button type="button" onClick={() => { setMediaInputType("url"); clearMediaFile(); }} className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${mediaInputType === "url" ? "bg-white shadow-sm text-indigo-700" : "text-slate-500 hover:text-slate-700"}`}><Link size={14} /> URL</button>
+          <button type="button" onClick={() => { setMediaInputType("upload"); setMediaUrl(""); }} className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all ${mediaInputType === "upload" ? "bg-white shadow-sm text-indigo-700" : "text-slate-500 hover:text-slate-700"}`}><Upload size={14} /> Upload</button>
         </div>
         {mediaInputType === "url" ? (
           <div className="relative">
             {currentType === "image" && <ImageIcon className="absolute left-4 top-3.5 w-4 h-4 text-slate-400" />}
             {currentType === "video" && <Film className="absolute left-4 top-3.5 w-4 h-4 text-slate-400" />}
             {currentType === "document" && <FileText className="absolute left-4 top-3.5 w-4 h-4 text-slate-400" />}
-            <input type="url" value={mediaUrl} onChange={(e) => setMediaUrl(e.target.value)} placeholder={`Direct ${currentType.charAt(0).toUpperCase() + currentType.slice(1)} URL`} className="w-full pl-10 pr-5 py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]" />
+            <input type="url" value={mediaUrl} onChange={(e) => setMediaUrl(e.target.value)} placeholder={`Direct ${currentType.charAt(0).toUpperCase() + currentType.slice(1)} URL`} className="w-full pl-10 pr-5 py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all text-sm font-medium" />
           </div>
         ) : (
           <div>
@@ -629,10 +643,7 @@ function EditCampaignContent() {
 
   const promptSave = (isSchedule: boolean) => {
     if (!campaignName || !selectedTemplate || rawNumbers.length === 0) { toast.error("Name, Template, and valid Numbers are required"); return; }
-    if (nameStatus === "taken") {
-      toast.error("Campaign name already exists. Please use another name.");
-      return;
-    }
+    if (nameStatus === "taken") { toast.error("Campaign name already exists."); return; }
     if (isSchedule && scheduleDate && new Date(scheduleDate).getTime() < Date.now() + 15 * 60000) { toast.error("⏰ Scheduled time must be at least 15 minutes from now."); return; }
     if (mediaType && mediaInputType === "url" && !mediaUrl) { toast.error("Please enter the media URL"); return; }
     if (mediaType && mediaInputType === "upload" && !mediaFile && !mediaUrl) { toast.error("Please upload the media file"); return; }
@@ -651,52 +662,43 @@ function EditCampaignContent() {
       const isSchedule = pendingAction;
       const validAdditionalFields = additionalFields.filter(f => f && f !== "skip");
       const commonData = {
-        id: campaignId,
-        name: campaignName,
+        id: campaignId, name: campaignName,
         templateName: selectedTemplate.name,
         templateCategory: selectedTemplate.category,
         variables: useRandomOtp ? [] : variables, 
         mappedVariables: rawVariables.length > 0 ? rawVariables : [], 
-        generateOtp: useRandomOtp, 
-        otpLength: useRandomOtp ? parseInt(otpLength.toString(), 10) : 0, 
-        phoneNumbers: rawNumbers,
-        names: rawNames,
-        mediaType,
-        languageCode,
+        generateOtp: useRandomOtp, otpLength: useRandomOtp ? parseInt(otpLength.toString(), 10) : 0, 
+        phoneNumbers: rawNumbers, names: rawNames,
+        mediaType, languageCode,
         scheduledAt: isSchedule ? scheduleDate : null,
         additionalFields: validAdditionalFields,
         additionalFieldsData: additionalFieldsData.length > 0 ? additionalFieldsData : [],
       };
 
-    if (mediaInputType === "upload" && mediaFile) {
-      const formData = new FormData();
-      formData.append("id", campaignId || "");
-      formData.append("name", campaignName);
-      formData.append("templateName", selectedTemplate.name);
-      formData.append("templateCategory", selectedTemplate.category);
-      formData.append("mediaUrl", "");
-      formData.append("mediaType", mediaType);
-      formData.append("languageCode", languageCode);
-      formData.append("scheduledAt", isSchedule ? scheduleDate : "null");
-      formData.append("generateOtp", String(useRandomOtp));
-      formData.append("otpLength", String(otpLength));
-
-      formData.append("variables", JSON.stringify(useRandomOtp ? [] : variables));
-      formData.append("mappedVariables", JSON.stringify(rawVariables.length > 0 ? rawVariables : []));
-      formData.append("phoneNumbers", JSON.stringify(rawNumbers));
-      formData.append("names", JSON.stringify(rawNames));
-      formData.append("additionalFields", JSON.stringify(additionalFields.filter(f => f && f !== "skip")));
-      formData.append("additionalFieldsData", JSON.stringify(additionalFieldsData.length > 0 ? additionalFieldsData : []));
-      
-      formData.append("file", mediaFile);
-      res = await fetch("/api/campaigns/update", { method: "POST", body: formData });
-    } else {
+      if (mediaInputType === "upload" && mediaFile) {
+        const formData = new FormData();
+        formData.append("id", campaignId || "");
+        formData.append("name", campaignName);
+        formData.append("templateName", selectedTemplate.name);
+        formData.append("templateCategory", selectedTemplate.category);
+        formData.append("mediaUrl", "");
+        formData.append("mediaType", mediaType);
+        formData.append("languageCode", languageCode);
+        formData.append("scheduledAt", isSchedule ? scheduleDate : "null");
+        formData.append("generateOtp", String(useRandomOtp));
+        formData.append("otpLength", String(otpLength));
+        formData.append("variables", JSON.stringify(useRandomOtp ? [] : variables));
+        formData.append("mappedVariables", JSON.stringify(rawVariables.length > 0 ? rawVariables : []));
+        formData.append("phoneNumbers", JSON.stringify(rawNumbers));
+        formData.append("names", JSON.stringify(rawNames));
+        formData.append("additionalFields", JSON.stringify(additionalFields.filter(f => f && f !== "skip")));
+        formData.append("additionalFieldsData", JSON.stringify(additionalFieldsData.length > 0 ? additionalFieldsData : []));
+        formData.append("file", mediaFile);
+        res = await fetch("/api/campaigns/update", { method: "POST", body: formData });
+      } else {
         res = await fetch("/api/campaigns/update", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...commonData,
-            mediaUrl,
-          }),
+          body: JSON.stringify({ ...commonData, mediaUrl }),
         });
       }
 
@@ -709,18 +711,20 @@ function EditCampaignContent() {
     } catch (err) { toast.error("Error updating"); } finally { setSaving(false); }
   };
 
-  if (loadingData) return <div className="flex min-h-screen bg-slate-50 items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-emerald-600" /></div>;
+  if (loadingData) return <div className="flex min-h-screen bg-slate-50 items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-indigo-600" /></div>;
 
   const hasLocalPreview = mediaInputType === "upload" && mediaPreview;
   const hasDirectUrl = mediaUrl && mediaUrl.startsWith("http");
   const hasMetaId = mediaUrl && /^\d+$/.test(mediaUrl);
 
   return (
-    <div className="min-h-screen bg-slate-50 text-gray-900">
+    <div className="min-h-screen bg-slate-50 text-gray-900 font-sans">
       <Sidebar />
       <div className="md:ml-64 p-4 sm:p-6 lg:p-10 overflow-y-auto min-h-screen">
-        <div className="max-w-7xl mx-auto space-y-6 sm:space-y-10">
-          <div className="relative overflow-hidden bg-gradient-to-br from-[#EEF2FF] to-[#E0E7FF] rounded-2xl sm:rounded-3xl p-6 sm:p-8 border border-indigo-100 shadow-lg shadow-indigo-100/60">
+        <div className="max-w-7xl mx-auto space-y-8 sm:space-y-10">
+          
+          {/* Header */}
+          <div className="relative overflow-hidden bg-gradient-to-br from-[#EEF2FF] to-[#E0E7FF] rounded-3xl p-6 sm:p-8 border border-indigo-100 shadow-lg shadow-indigo-100/60">
             <div className="absolute -top-12 -right-12 w-56 h-56 bg-[#A5B4FC]/40 rounded-full blur-3xl"></div>
             <div className="absolute -bottom-16 -left-10 w-40 h-40 bg-white/60 rounded-full blur-2xl"></div>
             <div className="relative flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 z-10">
@@ -729,7 +733,7 @@ function EditCampaignContent() {
                 <p className="text-indigo-700/80 text-xs sm:text-sm mt-2 font-medium">Modify your audience, template, or schedule before it goes live.</p>
               </div>
               {rawNumbers.length > 0 && (
-                <div className="flex-shrink-0 bg-gradient-to-br from-indigo-500 to-purple-600 px-5 sm:px-8 py-2 sm:py-3 rounded-xl sm:rounded-2xl flex items-center gap-3 sm:gap-4 text-base sm:text-lg font-bold text-white shadow-md shadow-indigo-200/60">
+                <div className="flex-shrink-0 bg-gradient-to-br from-indigo-500 to-purple-600 px-5 sm:px-8 py-2 sm:py-3 rounded-xl sm:rounded-2xl flex items-center gap-3 sm:gap-4 text-base sm:text-lg font-bold text-white shadow-md shadow-indigo-200/60 transform transition-all hover:scale-105">
                   <Users size={20} /> {rawNumbers.length} Contacts
                 </div>
               )}
@@ -737,39 +741,29 @@ function EditCampaignContent() {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 sm:gap-10">
+            
+            {/* Left Column */}
             <div className="lg:col-span-2 space-y-6 sm:space-y-8">
-              <div className="bg-white p-5 sm:p-8 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 space-y-5 sm:space-y-6 hover:shadow-md transition-shadow">
-                <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest flex items-center gap-2"><Sparkles size={14} className="text-indigo-500" /> Campaign Details</label>
+              
+              {/* Campaign Details */}
+              <div className="bg-white p-5 sm:p-8 rounded-3xl shadow-sm border border-slate-100 space-y-5 sm:space-y-6 hover:shadow-md transition-shadow duration-300">
+                <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                  <Sparkles size={14} className="text-indigo-500" /> Campaign Details
+                </label>
                 <div>
                   <input 
-                    type="text" 
-                    value={campaignName} 
-                    onChange={handleCampaignNameChange} 
-                    placeholder="Campaign Name" 
-                    className={`w-full px-4 sm:px-5 py-3 sm:py-3.5 bg-slate-50 border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)] ${
-                      nameStatus === "taken" ? "border-red-400" : nameStatus === "available" ? "border-emerald-400" : "border-slate-200"
-                    }`} 
+                    type="text" value={campaignName} onChange={handleCampaignNameChange} placeholder="Campaign Name" 
+                    className={`w-full px-5 py-3.5 bg-slate-50 border rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)] ${nameStatus === "taken" ? "border-red-400" : nameStatus === "available" ? "border-emerald-400" : "border-slate-200"}`} 
                   />
-                  {nameStatus === "taken" && (
-                    <p className="text-xs text-red-600 font-medium mt-1.5 flex items-center gap-1">
-                      <AlertCircle size={12} /> This campaign name already exists. Please use another name.
-                    </p>
-                  )}
-                  {nameStatus === "available" && (
-                    <p className="text-xs text-emerald-600 font-medium mt-1.5 flex items-center gap-1">
-                      <CheckCircle2 size={12} /> Name is available!
-                    </p>
-                  )}
-                  {nameStatus === "checking" && (
-                    <p className="text-xs text-slate-500 font-medium mt-1.5 flex items-center gap-1">
-                      <Loader2 size={12} className="animate-spin" /> Checking availability...
-                    </p>
-                  )}
+                  {nameStatus === "taken" && <p className="text-xs text-red-600 font-medium mt-1.5 flex items-center gap-1"><AlertCircle size={12} /> This campaign name already exists. Please use another name.</p>}
+                  {nameStatus === "available" && <p className="text-xs text-emerald-600 font-medium mt-1.5 flex items-center gap-1"><CheckCircle2 size={12} /> Name is available!</p>}
+                  {nameStatus === "checking" && <p className="text-xs text-slate-500 font-medium mt-1.5 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Checking availability...</p>}
                 </div>
+
                 <select
                   value={selectedTemplate ? `${selectedTemplate.name}|${selectedTemplate.language}` : ""}
                   onChange={(e) => { const val = e.target.value; if (!val) return; const [name, lang] = val.split("|"); handleTemplateSelect(name, lang); }}
-                  className="w-full px-4 sm:px-5 py-3 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"
+                  className="w-full px-5 py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all text-sm font-medium"
                 >
                   <option value="">Select Template</option>
                   {templates.map((t: any, i: number) => (<option key={`${t.name}-${t.language}-${i}`} value={`${t.name}|${t.language}`}>{t.name} ({t.language || "N/A"})</option>))}
@@ -784,55 +778,27 @@ function EditCampaignContent() {
                 {variables.length > 0 && (
                   <div className="space-y-4 pt-5 border-t border-slate-100">
                     <label className="text-[11px] font-extrabold text-slate-700 flex items-center gap-2 uppercase tracking-widest"><Sparkles size={12} className="text-indigo-500" /> Template Variables</label>
-                    
                     {isAuthTemplate && (
                       <div className="bg-purple-50/50 border border-purple-100 rounded-xl p-4 space-y-3">
                         <label className="flex items-center gap-3 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={useRandomOtp}
-                            onChange={(e) => setUseRandomOtp(e.target.checked)}
-                            className="w-4 h-4 accent-purple-600"
-                          />
-                          <span className="text-sm font-bold text-purple-800 flex items-center gap-2">
-                            <ShieldCheck size={14} /> Generate Random OTP for each contact
-                          </span>
+                          <input type="checkbox" checked={useRandomOtp} onChange={(e) => setUseRandomOtp(e.target.checked)} className="w-4 h-4 accent-purple-600" />
+                          <span className="text-sm font-bold text-purple-800 flex items-center gap-2"><ShieldCheck size={14} /> Generate Random OTP for each contact</span>
                         </label>
                         {useRandomOtp && (
                           <div className="flex items-center gap-3 pl-7">
                             <label className="text-xs font-medium text-purple-700">Number of digits:</label>
-                            <input
-                              type="number"
-                              min="4"
-                              max="8"
-                              value={otpLength}
-                              onChange={(e) => setOtpLength(Math.max(4, Math.min(8, parseInt(e.target.value) || 4)))}
-                              className="w-20 px-3 py-1.5 bg-white border border-purple-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-100 focus:border-purple-500"
-                            />
+                            <input type="number" min="4" max="8" value={otpLength} onChange={(e) => setOtpLength(Math.max(4, Math.min(8, parseInt(e.target.value) || 4)))} className="w-20 px-3 py-1.5 bg-white border border-purple-200 rounded-lg text-sm focus:ring-2 focus:ring-purple-100 focus:border-purple-500" />
                           </div>
                         )}
                       </div>
                     )}
-
                     {!useRandomOtp && (
                       variables.map((v, i) => {
                         const isMapped = !!(selectedVarCols[i] && selectedVarCols[i] !== "skip");
                         return (
                           <div key={i} className="relative">
                             <div className="absolute left-3 top-2.5 text-[10px] font-bold text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded">{`{{${i + 1}}}`}</div>
-                            <input
-                              type="text"
-                              value={isMapped ? `From Column: ${selectedVarCols[i]}` : v}
-                              onChange={(e) => {
-                                const u = [...variables];
-                                u[i] = e.target.value;
-                                setVariables(u);
-                              }}
-                              placeholder="Enter static value..."
-                              disabled={isMapped}
-                              className="w-full pl-20 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)] disabled:opacity-50 disabled:cursor-not-allowed"
-                            />
-                            {isMapped && <p className="text-[10px] text-emerald-600 mt-1 pl-1">Value will be extracted from Excel automatically.</p>}
+                            <input type="text" value={isMapped ? `From Column: ${selectedVarCols[i]}` : v} onChange={(e) => { const u = [...variables]; u[i] = e.target.value; setVariables(u); }} placeholder="Enter static value..." disabled={isMapped} className="w-full pl-20 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all disabled:opacity-50 disabled:cursor-not-allowed" />
                           </div>
                         );
                       })
@@ -841,8 +807,9 @@ function EditCampaignContent() {
                 )}
               </div>
 
+              {/* Live Preview */}
               {selectedTemplate && (
-                <div className="bg-white p-5 sm:p-6 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow">
+                <div className="bg-white p-5 sm:p-6 rounded-3xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow duration-300">
                   <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest mb-5 block">Live Preview</label>
                   <div className="bg-[#efeae2] p-4 rounded-2xl w-full max-w-xs sm:max-w-sm mx-auto shadow-inner border border-slate-200 relative overflow-hidden">
                     <div className="absolute inset-0 opacity-[0.04]" style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23000000' fill-opacity='1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E\")" }}></div>
@@ -850,48 +817,26 @@ function EditCampaignContent() {
                       <div className="bg-white rounded-xl rounded-tr-sm shadow-sm text-sm text-gray-800 leading-relaxed max-w-[95%] overflow-hidden">
                         {mediaType === "image" && (
                           <div className="w-full bg-slate-100">
-                            {hasLocalPreview ? (
-                              <img src={mediaPreview} alt="Preview" className="w-full h-48 object-cover" />
-                            ) : hasDirectUrl ? (
-                              <img src={mediaUrl} alt="Preview" className="w-full h-48 object-cover" />
-                            ) : hasMetaId ? (
-                              <div className="w-full h-48 flex flex-col items-center justify-center text-slate-400 p-4 bg-slate-50">
-                                <ImageIcon size={32} />
-                                <p className="text-xs mt-2 font-medium text-center text-emerald-600">Image Uploaded</p>
-                                <p className="text-[10px] text-slate-400 text-center">Save changes to keep this media.</p>
-                              </div>
-                            ) : (
-                              <div className="w-full h-48 flex items-center justify-center text-slate-400"><ImageIcon size={32} /></div>
-                            )}
+                            {hasLocalPreview ? <img src={mediaPreview} alt="Preview" className="w-full h-48 object-cover" /> 
+                            : hasDirectUrl ? <img src={mediaUrl} alt="Preview" className="w-full h-48 object-cover" /> 
+                            : hasMetaId ? (<div className="w-full h-48 flex flex-col items-center justify-center text-slate-400 p-4 bg-slate-50"><ImageIcon size={32} /><p className="text-xs mt-2 font-medium text-center text-emerald-600">Image Uploaded</p><p className="text-[10px] text-slate-400 text-center">Save changes to keep this media.</p></div>) 
+                            : <div className="w-full h-48 flex items-center justify-center text-slate-400"><ImageIcon size={32} /></div>}
                           </div>
                         )}
                         {mediaType === "video" && (
                           <div className="w-full bg-slate-900 h-48 flex items-center justify-center relative">
-                            {hasLocalPreview ? (
-                              <video src={mediaPreview} className="w-full h-48 object-cover" controls muted />
-                            ) : hasDirectUrl ? (
-                              <video src={mediaUrl} className="w-full h-48 object-cover" controls muted />
-                            ) : hasMetaId ? (
-                              <div className="flex flex-col items-center text-white/50">
-                                <Film size={32} />
-                                <p className="text-xs mt-2 font-medium text-center text-emerald-400">Video Uploaded</p>
-                                <p className="text-[10px] text-white/40 text-center">Save changes to keep this media.</p>
-                              </div>
-                            ) : (
-                              <Film className="text-white/50" size={32} />
-                            )}
-                            {!hasLocalPreview && !hasDirectUrl && !hasMetaId && (
-                              <div className="absolute inset-0 flex items-center justify-center"><div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center"><div className="w-0 h-0 border-t-[8px] border-t-transparent border-b-[8px] border-b-transparent border-l-[14px] border-l-white ml-1"></div></div></div>
-                            )}
+                            {hasLocalPreview ? <video src={mediaPreview} className="w-full h-48 object-cover" controls muted /> 
+                            : hasDirectUrl ? <video src={mediaUrl} className="w-full h-48 object-cover" controls muted /> 
+                            : hasMetaId ? (<div className="flex flex-col items-center text-white/50"><Film size={32} /><p className="text-xs mt-2 font-medium text-center text-emerald-400">Video Uploaded</p><p className="text-[10px] text-white/40 text-center">Save changes to keep this media.</p></div>) 
+                            : <Film className="text-white/50" size={32} />}
+                            {!hasLocalPreview && !hasDirectUrl && !hasMetaId && (<div className="absolute inset-0 flex items-center justify-center"><div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center"><div className="w-0 h-0 border-t-[8px] border-t-transparent border-b-[8px] border-b-transparent border-l-[14px] border-l-white ml-1"></div></div></div>)}
                           </div>
                         )}
                         {mediaType === "document" && (
                           <div className="w-full bg-slate-100 p-4 flex items-center gap-3">
                             <FileText className="text-red-500" size={28} />
                             <div className="flex-1 min-w-0">
-                              <p className="text-xs font-bold text-slate-800 truncate">
-                                {mediaFile ? mediaFile.name : hasMetaId || hasDirectUrl ? "Uploaded Document" : "Document.pdf"}
-                              </p>
+                              <p className="text-xs font-bold text-slate-800 truncate">{mediaFile ? mediaFile.name : hasMetaId || hasDirectUrl ? "Uploaded Document" : "Document.pdf"}</p>
                               <p className="text-[10px] text-slate-500">PDF Document</p>
                             </div>
                           </div>
@@ -910,53 +855,42 @@ function EditCampaignContent() {
               )}
             </div>
 
+            {/* Right Column */}
             <div className="lg:col-span-3 space-y-6 sm:space-y-8">
-              <div className="bg-white p-5 sm:p-8 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 space-y-5 sm:space-y-6 hover:shadow-md transition-shadow">
+              
+              {/* Audience Details */}
+              <div className="bg-white p-5 sm:p-8 rounded-3xl shadow-sm border border-slate-100 space-y-5 sm:space-y-6 hover:shadow-md transition-shadow duration-300">
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                   <label className="text-[11px] font-extrabold text-slate-800 uppercase tracking-widest">Target Audience</label>
-                  
                   <div className="flex items-center gap-2 w-full sm:w-auto">
                     <Globe size={14} className="text-slate-400 hidden sm:block" />
                     {enabledCountries.length > 0 ? (
-                      <select
-                        value={selectedCountryCode}
-                        onChange={(e) => setSelectedCountryCode(e.target.value)}
-                        className="w-full sm:w-auto px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"
-                      >
-                        {enabledCountries.map((c, i) => (
-                          <option key={i} value={c.code}>{c.name} (+{c.code})</option>
-                        ))}
+                      <select value={selectedCountryCode} onChange={(e) => setSelectedCountryCode(e.target.value)} className="w-full sm:w-auto px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all">
+                        {enabledCountries.map((c, i) => <option key={i} value={c.code}>{c.name} (+{c.code})</option>)}
                       </select>
                     ) : (
-                      <input
-                        type="text"
-                        value={selectedCountryCode}
-                        onChange={(e) => setSelectedCountryCode(e.target.value.replace(/\D/g, ""))}
-                        className="w-full sm:w-36 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"
-                      />
+                      <input type="text" value={selectedCountryCode} onChange={(e) => setSelectedCountryCode(e.target.value.replace(/\D/g, ""))} className="w-full sm:w-36 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all" />
                     )}
                   </div>
                 </div>
 
+                {/* Include Tags */}
                 <div className="bg-purple-50/50 border border-purple-100 rounded-xl p-4 space-y-2">
                   <label className="text-[11px] font-extrabold text-purple-800 uppercase tracking-widest flex items-center gap-2"><TagIcon size={14} /> Include Contacts from Tag</label>
-                  <select value={selectedTag} onChange={(e) => handleTagSelect(e.target.value)} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-purple-100 focus:border-purple-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]">
+                  <select value={selectedTag} onChange={(e) => handleTagSelect(e.target.value)} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-purple-100 focus:border-purple-500 transition-all font-medium">
                     <option value="">-- Select a Tag to Load Contacts --</option>
                     {tags.map((t) => (<option key={t._id} value={t.name}>{t.name}</option>))}
                   </select>
                 </div>
 
-                {/* ✅ ADDED: Exclude by Tags Dropdown UI */}
-                <div className="bg-red-50/50 border border-red-100 rounded-xl p-4 space-y-2 relative">
-                  <label className="text-[11px] font-extrabold text-red-800 uppercase tracking-widest flex items-center gap-2">
-                    <Ban size={14} /> Exclude Contacts by Tags
+                {/* Exclude Tags */}
+                <div ref={excludeDropdownRef} className="bg-rose-50/50 border border-rose-100 rounded-xl p-4 space-y-2 relative">
+                  <label className="text-[11px] font-extrabold text-rose-800 uppercase tracking-widest flex items-center gap-2">
+                    <Scissors size={14} /> Exclude Contacts by Tags
                   </label>
-                  <button
-                    type="button"
-                    onClick={() => setIsExcludeDropdownOpen(!isExcludeDropdownOpen)}
-                    className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm font-medium flex items-center justify-between focus:ring-4 focus:ring-red-100 focus:border-red-500 transition-all"
-                  >
-                    <span className="truncate">
+                  <button type="button" onClick={() => setIsExcludeDropdownOpen(!isExcludeDropdownOpen)} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm font-medium flex items-center justify-between focus:ring-4 focus:ring-rose-100 focus:border-rose-500 transition-all">
+                    <span className="truncate flex items-center gap-2">
+                      {isExcluding ? <Loader2 size={14} className="animate-spin" /> : <Filter size={14} className="text-slate-400" />}
                       {selectedExcludeTags.length > 0 ? `${selectedExcludeTags.length} tags selected` : "Select tags to exclude"}
                     </span>
                     <ChevronDown size={16} className={`text-slate-400 transition-transform ${isExcludeDropdownOpen ? 'rotate-180' : ''}`} />
@@ -965,31 +899,24 @@ function EditCampaignContent() {
                     <div className="absolute z-10 mt-1 w-full bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
                       {tags.length > 0 ? tags.map((t) => (
                         <label key={t._id} className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer capitalize">
-                          <input
-                            type="checkbox"
-                            checked={selectedExcludeTags.includes(t.name)}
-                            onChange={() => handleExcludeTagChange(t.name)}
-                            className="w-4 h-4 accent-red-500"
-                          />
+                          <input type="checkbox" checked={selectedExcludeTags.includes(t.name)} onChange={() => handleExcludeTagChange(t.name)} className="w-4 h-4 accent-rose-500" />
                           {t.name}
                         </label>
-                      )) : (
-                        <p className="px-4 py-2 text-xs text-slate-400 italic">No tags available</p>
-                      )}
+                      )) : <p className="px-4 py-2 text-xs text-slate-400 italic">No tags available</p>}
                     </div>
                   )}
                   {selectedExcludeTags.length > 0 && (
                     <div className="flex flex-wrap gap-1.5 mt-2">
                       {selectedExcludeTags.map(tag => (
-                        <span key={tag} className="px-2 py-1 bg-red-100 text-red-800 rounded-md text-[10px] font-semibold flex items-center gap-1 capitalize">
+                        <span key={tag} className="px-2 py-1 bg-rose-100 text-rose-800 rounded-md text-[10px] font-semibold flex items-center gap-1 capitalize">
                           {tag}
-                          <button type="button" onClick={() => handleExcludeTagChange(tag)}><X size={10} /></button>
+                          <button type="button" onClick={() => handleExcludeTagChange(tag)} className="hover:bg-rose-200 rounded-full p-0.5"><X size={10} /></button>
                         </span>
                       ))}
                     </div>
                   )}
                   {excludedTagNumbers.size > 0 && (
-                    <p className="text-xs text-red-600 font-medium pt-1">{excludedTagNumbers.size} contacts marked for exclusion.</p>
+                    <p className="text-xs text-rose-600 font-medium pt-1 flex items-center gap-1"><Ban size={12} /> {excludedTagNumbers.size} contacts marked for exclusion.</p>
                   )}
                 </div>
 
@@ -997,16 +924,13 @@ function EditCampaignContent() {
                   <div className="bg-indigo-50/50 border border-indigo-100 rounded-xl p-3">
                     <p className="text-[11px] font-bold text-indigo-700 mb-1.5">📋 Current Additional Fields:</p>
                     <div className="flex flex-wrap gap-1.5">
-                      {additionalFields.map((f, i) => (
-                        <span key={i} className="px-2 py-1 bg-white text-indigo-700 border border-indigo-200 rounded-md text-[10px] font-semibold">
-                          {f}
-                        </span>
-                      ))}
+                      {additionalFields.map((f, i) => <span key={i} className="px-2 py-1 bg-white text-indigo-700 border border-indigo-200 rounded-md text-[10px] font-semibold">{f}</span>)}
                     </div>
                     <p className="text-[10px] text-slate-500 mt-1.5 italic">Upload a new file to modify these fields.</p>
                   </div>
                 )}
 
+                {/* Upload Section */}
                 {uploadStep === 1 ? (
                   <div className="relative border-2 border-dashed border-slate-200 rounded-2xl p-6 sm:p-10 text-center hover:bg-indigo-50/30 hover:border-indigo-300 transition-all h-48 sm:h-56 flex flex-col items-center justify-center group cursor-pointer">
                     <input type="file" accept=".csv,.txt,.xlsx,.xls" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
@@ -1020,47 +944,28 @@ function EditCampaignContent() {
                       <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-indigo-100 shadow-sm min-w-0"><FileSpreadsheet className="w-5 h-5 text-indigo-600 shrink-0" /><p className="text-sm font-bold text-indigo-900 truncate">{fileName}</p></div>
                       <button onClick={resetFileUpload} className="text-xs text-red-500 hover:text-red-700 flex items-center gap-1.5 hover:underline font-bold bg-red-50 px-3 py-1.5 rounded-lg transition-colors shrink-0"><RotateCcw size={12} /> Change</button>
                     </div>
-                    <select value={selectedPhoneCol} onChange={(e) => setSelectedPhoneCol(e.target.value)} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"><option value="skip">-- Select Phone Column --</option>{fileHeaders.map((h, i) => (<option key={i} value={h}>📱 {h}</option>))}</select>
-                    <select value={selectedNameCol} onChange={(e) => setSelectedNameCol(e.target.value)} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"><option value="skip">-- Select Name Column (Optional) --</option>{fileHeaders.map((h, i) => (<option key={i} value={h}>👤 {h}</option>))}</select>
+                    <select value={selectedPhoneCol} onChange={(e) => setSelectedPhoneCol(e.target.value)} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all font-medium">
+                      <option value="skip">-- Select Phone Column --</option>
+                      {fileHeaders.map((h, i) => <option key={i} value={h}>📱 {h}</option>)}
+                    </select>
+                    <select value={selectedNameCol} onChange={(e) => setSelectedNameCol(e.target.value)} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all font-medium">
+                      <option value="skip">-- Select Name Column (Optional) --</option>
+                      {fileHeaders.map((h, i) => <option key={i} value={h}>👤 {h}</option>)}
+                    </select>
 
                     <div className="space-y-2 mt-2 pt-2 border-t border-indigo-100">
                       <div className="flex items-center justify-between">
-                        <p className="text-[11px] font-extrabold text-indigo-800 uppercase tracking-widest flex items-center gap-2">
-                          <Plus size={12} /> Additional Fields (Optional)
-                        </p>
-                        <button
-                          type="button"
-                          onClick={addAdditionalField}
-                          className="text-xs text-indigo-600 hover:text-indigo-700 flex items-center gap-1.5 font-bold bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg transition-colors"
-                        >
-                          <Plus size={12} /> Add Field
-                        </button>
+                        <p className="text-[11px] font-extrabold text-indigo-800 uppercase tracking-widest flex items-center gap-2"><Plus size={12} /> Additional Fields (Optional)</p>
+                        <button type="button" onClick={addAdditionalField} className="text-xs text-indigo-600 hover:text-indigo-700 flex items-center gap-1.5 font-bold bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg transition-colors"><Plus size={12} /> Add Field</button>
                       </div>
-                      {additionalFields.length === 0 && (
-                        <p className="text-[11px] text-slate-400 italic pl-1">
-                          Click &quot;Add Field&quot; to fetch more columns from your Excel file. These will appear in your report.
-                        </p>
-                      )}
+                      {additionalFields.length === 0 && <p className="text-[11px] text-slate-400 italic pl-1">Click &quot;Add Field&quot; to fetch more columns from your Excel file. These will appear in your report.</p>}
                       {additionalFields.map((field, i) => (
                         <div key={i} className="flex gap-2 items-center">
-                          <select
-                            value={field}
-                            onChange={(e) => updateAdditionalField(i, e.target.value)}
-                            className="flex-1 px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"
-                          >
+                          <select value={field} onChange={(e) => updateAdditionalField(i, e.target.value)} className="flex-1 px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all font-medium">
                             <option value="skip">-- Select Additional Column {i + 1} --</option>
-                            {fileHeaders.map((h, idx) => (
-                              <option key={idx} value={h}>📋 {h}</option>
-                            ))}
+                            {fileHeaders.map((h, idx) => <option key={idx} value={h}>📋 {h}</option>)}
                           </select>
-                          <button
-                            type="button"
-                            onClick={() => removeAdditionalField(i)}
-                            className="p-2.5 bg-red-50 text-red-500 hover:bg-red-100 rounded-xl transition-colors"
-                            title="Remove field"
-                          >
-                            <X size={16} />
-                          </button>
+                          <button type="button" onClick={() => removeAdditionalField(i)} className="p-2.5 bg-red-50 text-red-500 hover:bg-red-100 rounded-xl transition-colors" title="Remove field"><X size={16} /></button>
                         </div>
                       ))}
                     </div>
@@ -1069,65 +974,69 @@ function EditCampaignContent() {
                       <div className="space-y-2 mt-2 pt-2 border-t border-indigo-100">
                         <p className="text-[11px] font-extrabold text-indigo-800 uppercase tracking-widest flex items-center gap-2"><Sparkles size={12} /> Map Template Variables</p>
                         {variables.map((v, i) => (
-                          <select
-                            key={i}
-                            value={selectedVarCols[i] || "skip"}
-                            onChange={(e) => {
-                              const newArr = [...selectedVarCols];
-                              newArr[i] = e.target.value;
-                              setSelectedVarCols(newArr);
-                            }}
-                            className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]"
-                          >
+                          <select key={i} value={selectedVarCols[i] || "skip"} onChange={(e) => { const newArr = [...selectedVarCols]; newArr[i] = e.target.value; setSelectedVarCols(newArr); }} className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 transition-all font-medium">
                             <option value="skip">-- Variable {i + 1} Column (Optional) --</option>
-                            {fileHeaders.map((h, idx) => (
-                              <option key={idx} value={h}>🔗 {h}</option>
-                            ))}
+                            {fileHeaders.map((h, idx) => <option key={idx} value={h}>🔗 {h}</option>)}
                           </select>
                         ))}
                       </div>
                     )}
 
-                    <button onClick={processFileColumns} className="w-full px-5 py-3.5 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-xl text-sm font-bold hover:from-indigo-600 hover:to-purple-600 transition-all shadow-md flex items-center justify-center gap-2"><Sparkles size={16} /> Extract Audience</button>
+                    <button onClick={processFileColumns} className="w-full px-5 py-3.5 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-xl text-sm font-bold hover:from-indigo-600 hover:to-purple-600 transition-all shadow-md flex items-center justify-center gap-2 transform hover:-translate-y-0.5">
+                      <Sparkles size={16} /> Extract Audience
+                    </button>
                   </div>
                 )}
 
+                {/* Manual Text Input */}
                 <div className="relative">
-                  <textarea value={rawText} onChange={(e) => setRawText(e.target.value)} placeholder="Or manually paste numbers..." className="w-full pl-5 pr-24 sm:pr-28 py-4 bg-slate-50 border border-slate-200 rounded-xl resize-none focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all h-32 text-sm font-mono shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]" />
-                  <button onClick={handleTextNumbers} className="absolute right-3 bottom-3 px-4 sm:px-5 py-2 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-lg text-xs font-bold hover:from-emerald-600 hover:to-teal-600 transition-all shadow-md flex items-center gap-1.5"><Send size={12} /> Parse</button>
+                  <textarea value={rawText} onChange={(e) => setRawText(e.target.value)} placeholder="Or manually paste numbers..." className="w-full pl-5 pr-24 sm:pr-28 py-4 bg-slate-50 border border-slate-200 rounded-xl resize-none focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all h-32 text-sm font-mono" />
+                  <button onClick={handleTextNumbers} className="absolute right-3 bottom-3 px-5 py-2 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-lg text-xs font-bold hover:from-emerald-600 hover:to-teal-600 transition-all shadow-md flex items-center gap-1.5 transform hover:-translate-y-0.5">
+                    <Send size={12} /> Parse
+                  </button>
                 </div>
 
-                {rawNumbers.length > 0 && (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4 text-center pt-2">
-                    <div className="bg-gradient-to-br from-emerald-50 to-white p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-emerald-100 shadow-sm"><p className="text-2xl sm:text-3xl font-extrabold text-emerald-600">{stats.valid}</p><p className="text-[9px] sm:text-[10px] text-emerald-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><CheckCircle2 size={10} /> Valid</p></div>
-                    <div className="bg-gradient-to-br from-red-50 to-white p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-red-100 shadow-sm"><p className="text-2xl sm:text-3xl font-extrabold text-red-600">{stats.invalid}</p><p className="text-[9px] sm:text-[10px] text-red-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><AlertCircle size={10} /> Invalid</p></div>
-                    <div className="bg-gradient-to-br from-amber-50 to-white p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-amber-100 shadow-sm"><p className="text-2xl sm:text-3xl font-extrabold text-amber-600">{stats.duplicates}</p><p className="text-[9px] sm:text-[10px] text-amber-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><RotateCcw size={10} /> Duplicates</p></div>
-                    <div className="bg-gradient-to-br from-slate-100 to-white p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow"><p className="text-2xl sm:text-3xl font-extrabold text-slate-600">{stats.optedOut}</p><p className="text-[9px] sm:text-[10px] text-slate-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><Ban size={10} /> Opted Out</p></div>
+                {/* Stats UI */}
+                {rawNumbers.length > 0 || stats.excludedOut > 0 ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4 text-center pt-2">
+                    <div className="bg-gradient-to-br from-emerald-50 to-white p-4 rounded-2xl border border-emerald-100 shadow-sm hover:shadow-md hover:-translate-y-1 transition-all duration-200">
+                      <p className="text-3xl font-extrabold text-emerald-600">{stats.valid}</p>
+                      <p className="text-[10px] text-emerald-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><CheckCircle2 size={10} /> Valid</p>
+                    </div>
+                    <div className="bg-gradient-to-br from-red-50 to-white p-4 rounded-2xl border border-red-100 shadow-sm hover:shadow-md hover:-translate-y-1 transition-all duration-200">
+                      <p className="text-3xl font-extrabold text-red-600">{stats.invalid}</p>
+                      <p className="text-[10px] text-red-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><AlertCircle size={10} /> Invalid</p>
+                    </div>
+                    <div className="bg-gradient-to-br from-amber-50 to-white p-4 rounded-2xl border border-amber-100 shadow-sm hover:shadow-md hover:-translate-y-1 transition-all duration-200">
+                      <p className="text-3xl font-extrabold text-amber-600">{stats.duplicates}</p>
+                      <p className="text-[10px] text-amber-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><RotateCcw size={10} /> Duplicates</p>
+                    </div>
+                    <div className="bg-gradient-to-br from-slate-100 to-white p-4 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md hover:-translate-y-1 transition-all duration-200">
+                      <p className="text-3xl font-extrabold text-slate-600">{stats.optedOut}</p>
+                      <p className="text-[10px] text-slate-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><Ban size={10} /> Opted Out</p>
+                    </div>
+                    <div className="bg-gradient-to-br from-rose-50 to-white p-4 rounded-2xl border border-rose-100 shadow-sm hover:shadow-md hover:-translate-y-1 transition-all duration-200">
+                      <p className="text-3xl font-extrabold text-rose-600">{stats.excludedOut}</p>
+                      <p className="text-[10px] text-rose-700 font-bold uppercase tracking-widest mt-1 flex items-center justify-center gap-1"><Scissors size={10} /> Excluded Out</p>
+                    </div>
                   </div>
-                )}
+                ) : null}
               </div>
 
-              <div className="bg-white p-5 sm:p-8 rounded-2xl sm:rounded-3xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow">
+              {/* Schedule & Actions */}
+              <div className="bg-white p-5 sm:p-8 rounded-3xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow duration-300">
                 <div className="flex flex-col gap-6">
                   <div className="w-full">
                     <label className="text-[11px] font-extrabold text-slate-800 flex items-center gap-2 uppercase tracking-widest mb-2"><Clock size={14} className="text-indigo-500" /> Reschedule Campaign (Optional)</label>
-                    <input type="datetime-local" value={scheduleDate} onChange={(e) => setScheduleDate(e.target.value)} min={new Date(Date.now() + 15 * 60000).toISOString().slice(0, 16)} className="w-full px-4 sm:px-5 py-3 sm:py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all text-sm font-medium shadow-[inset_0_2px_4px_rgba(0,0,0,0.03)]" />
+                    <input type="datetime-local" value={scheduleDate} onChange={(e) => setScheduleDate(e.target.value)} min={new Date(Date.now() + 15 * 60000).toISOString().slice(0, 16)} className="w-full px-5 py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:bg-white transition-all text-sm font-medium" />
                     <p className="text-[10px] text-amber-600 bg-amber-50 p-2 rounded-lg border border-amber-100 flex items-center gap-1.5 mt-2 font-bold"><AlertCircle size={10} /> Must be at least 15 mins in advance.</p>
                   </div>
 
                   <div className="flex flex-col sm:flex-row gap-3">
-                    <button 
-                      onClick={() => promptSave(false)} 
-                      disabled={saving || nameStatus === "taken"} 
-                      className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-bold hover:from-emerald-600 hover:to-teal-600 flex items-center justify-center gap-2 text-sm transition-all shadow-md disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
+                    <button onClick={() => promptSave(false)} disabled={saving || nameStatus === "taken"} className="flex-1 sm:flex-none px-8 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-bold hover:from-emerald-600 hover:to-teal-600 flex items-center justify-center gap-2 text-sm transition-all shadow-md disabled:opacity-40 disabled:cursor-not-allowed transform hover:-translate-y-0.5">
                       {saving ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}{saving ? "Saving..." : "Save Changes"}
                     </button>
-                    <button 
-                      onClick={() => promptSave(true)} 
-                      disabled={saving || !scheduleDate || nameStatus === "taken"} 
-                      className="flex-1 sm:flex-none px-6 sm:px-8 py-3 sm:py-3.5 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-xl font-bold hover:from-indigo-600 hover:to-purple-600 flex items-center justify-center gap-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-md"
-                    >
+                    <button onClick={() => promptSave(true)} disabled={saving || !scheduleDate || nameStatus === "taken"} className="flex-1 sm:flex-none px-8 py-3.5 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-xl font-bold hover:from-indigo-600 hover:to-purple-600 flex items-center justify-center gap-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-md transform hover:-translate-y-0.5">
                       {saving ? <Loader2 size={16} className="animate-spin" /> : <Clock size={16} />}{saving ? "Saving..." : "Update Schedule"}
                     </button>
                   </div>
@@ -1138,18 +1047,15 @@ function EditCampaignContent() {
         </div>
       </div>
 
+      {/* Compliance Modal */}
       {showComplianceModal && (
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-300">
           <div className="bg-white rounded-none sm:rounded-3xl shadow-2xl w-full h-full sm:w-auto sm:h-auto sm:max-w-lg sm:max-h-[70vh] flex flex-col overflow-hidden border border-slate-100">
             
             <div className="relative bg-gradient-to-br from-emerald-50 via-white to-teal-50 px-5 sm:px-6 pt-6 pb-4 text-center border-b border-slate-100 shrink-0">
-              <button 
-                onClick={() => setShowComplianceModal(false)} 
-                className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition-colors"
-              >
+              <button onClick={() => setShowComplianceModal(false)} className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition-colors">
                 <X size={18} />
               </button>
-              
               <div className="w-14 h-14 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-lg shadow-emerald-200/50 rotate-3">
                 <ShieldCheck className="w-7 h-7 text-white -rotate-3" />
               </div>
@@ -1162,54 +1068,27 @@ function EditCampaignContent() {
                 <div className={`mt-0.5 w-5 h-5 rounded-md flex items-center justify-center shrink-0 transition-all duration-200 ${consentChecked ? 'bg-emerald-500 border-emerald-500' : 'bg-white border-2 border-slate-300 group-hover:border-emerald-400'}`}>
                   {consentChecked && <CheckCircle2 className="w-4 h-4 text-white" />}
                 </div>
-                <input
-                  type="checkbox"
-                  checked={consentChecked}
-                  onChange={(e) => setConsentChecked(e.target.checked)}
-                  className="hidden"
-                />
-                <span className="text-xs sm:text-sm text-slate-600 leading-relaxed font-medium">
-                  I confirm that all imported contacts were collected lawfully, have provided any required consent to receive messages, and that this campaign complies with applicable laws and WhatsApp Business policies.
-                </span>
+                <input type="checkbox" checked={consentChecked} onChange={(e) => setConsentChecked(e.target.checked)} className="hidden" />
+                <span className="text-xs sm:text-sm text-slate-600 leading-relaxed font-medium">I confirm that all imported contacts were collected lawfully, have provided any required consent to receive messages, and that this campaign complies with applicable laws and WhatsApp Business policies.</span>
               </label>
 
               <label className="flex items-start gap-3 p-3.5 rounded-xl border-2 border-slate-100 hover:border-emerald-200 hover:bg-emerald-50/30 transition-all cursor-pointer group">
                 <div className={`mt-0.5 w-5 h-5 rounded-md flex items-center justify-center shrink-0 transition-all duration-200 ${responsibilityChecked ? 'bg-emerald-500 border-emerald-500' : 'bg-white border-2 border-slate-300 group-hover:border-emerald-400'}`}>
                   {responsibilityChecked && <CheckCircle2 className="w-4 h-4 text-white" />}
                 </div>
-                <input
-                  type="checkbox"
-                  checked={responsibilityChecked}
-                  onChange={(e) => setResponsibilityChecked(e.target.checked)}
-                  className="hidden"
-                />
-                <span className="text-xs sm:text-sm text-slate-600 leading-relaxed font-medium">
-                  I understand that I am solely responsible for all contacts, messages, campaigns, complaints, legal claims, and any policy violations resulting from my use of AllChat, and that violations may result in account suspension or termination.
-                </span>
+                <input type="checkbox" checked={responsibilityChecked} onChange={(e) => setResponsibilityChecked(e.target.checked)} className="hidden" />
+                <span className="text-xs sm:text-sm text-slate-600 leading-relaxed font-medium">I understand that I am solely responsible for all contacts, messages, campaigns, complaints, legal claims, and any policy violations resulting from my use of AllChat, and that violations may result in account suspension or termination.</span>
               </label>
 
               <div className="bg-amber-50/80 border border-amber-200 text-amber-800 p-3 rounded-xl text-[11px] sm:text-xs font-medium flex items-start gap-2.5">
-                <div className="p-1 bg-amber-100 rounded-md shrink-0">
-                  <AlertCircle size={14} className="text-amber-600" />
-                </div>
-                <span className="leading-relaxed">
-                  Please ensure all recipients have opted in to receive messages. Violations of WhatsApp Business policies may result in account suspension.
-                </span>
+                <div className="p-1 bg-amber-100 rounded-md shrink-0"><AlertCircle size={14} className="text-amber-600" /></div>
+                <span className="leading-relaxed">Please ensure all recipients have opted in to receive messages. Violations of WhatsApp Business policies may result in account suspension.</span>
               </div>
             </div>
 
             <div className="flex gap-3 p-5 bg-slate-50/50 border-t border-slate-100 shrink-0 pb-[calc(1.25rem+env(safe-area-inset-bottom))]">
-              <button
-                onClick={() => setShowComplianceModal(false)}
-                className="flex-1 px-4 py-3 bg-white border border-slate-200 text-slate-700 rounded-xl font-bold text-xs sm:text-sm hover:bg-slate-100 transition-colors shadow-sm"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSave}
-                disabled={!consentChecked || !responsibilityChecked || saving}
-                className="flex-[2] px-4 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-bold text-xs sm:text-sm hover:from-emerald-600 hover:to-teal-600 transition-all disabled:from-slate-300 disabled:to-slate-300 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20"
-              >
+              <button onClick={() => setShowComplianceModal(false)} className="flex-1 px-4 py-3 bg-white border border-slate-200 text-slate-700 rounded-xl font-bold text-xs sm:text-sm hover:bg-slate-100 transition-colors shadow-sm">Cancel</button>
+              <button onClick={handleSave} disabled={!consentChecked || !responsibilityChecked || saving} className="flex-[2] px-4 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-bold text-xs sm:text-sm hover:from-emerald-600 hover:to-teal-600 transition-all disabled:from-slate-300 disabled:to-slate-300 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20">
                 {saving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
                 {saving ? "Saving..." : "I Confirm & Continue"}
               </button>
@@ -1225,7 +1104,7 @@ function EditCampaignContent() {
 
 export default function EditCampaign() {
   return (
-    <Suspense fallback={<div className="flex min-h-screen bg-slate-50 items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-emerald-600" /></div>}>
+    <Suspense fallback={<div className="flex min-h-screen bg-slate-50 items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-indigo-600" /></div>}>
       <EditCampaignContent />
     </Suspense>
   );
