@@ -17,8 +17,16 @@ import { Job, Cache } from "@/lib/queue";
 
 export const runtime = "nodejs";
 
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "watiX_webhook_verify_2024";
 const formTimers = new Map<string, NodeJS.Timeout>();
+
+// ============================================================================
+// SCHEMAS & MODELS
+// ============================================================================
 
 const TransactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -26,6 +34,10 @@ const TransactionSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }, metadata: Object
 });
 const Transaction = mongoose.models.Transaction || mongoose.model('Transaction', TransactionSchema);
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
 
 const statusPriority: Record<string, number> = { "pending": 1, "queued": 2, "sent": 3, "delivered": 4, "read": 5 };
 
@@ -43,9 +55,15 @@ function normalizePhone(val: any): string {
 
 async function upsertSession(phone: string, userId: string, updateData: any) {
   let session = await Session.findOne({ phone, userId });
-  if (session) { await Session.updateOne({ _id: session._id }, { $set: updateData }); return await Session.findById(session._id); }
+  if (session) { 
+    await Session.updateOne({ _id: session._id }, { $set: updateData }); 
+    return await Session.findById(session._id); 
+  }
   session = await Session.findOne({ phone });
-  if (session) { await Session.updateOne({ _id: session._id }, { $set: { userId, ...updateData } }); return await Session.findById(session._id); }
+  if (session) { 
+    await Session.updateOne({ _id: session._id }, { $set: { userId, ...updateData } }); 
+    return await Session.findById(session._id); 
+  }
   return await Session.create({ phone, userId, ...updateData });
 }
 
@@ -81,20 +99,46 @@ async function processBalanceRefund(campaignId: any, reportId: any, prevStatus: 
 }
 
 function buildOutgoingMessagePayload(step: any) {
-  let text = step.message || ""; let messageType = "text"; let mediaUrl: string | null = null; let buttons: any[] = [];
-  if (step.stepType === "call_action" && step.phoneNumber) { text = step.message || step.phoneNumber; buttons = [{ type: "phone_number", text: step.urlLabel || "Call", phone_number: step.phoneNumber }]; return { text, messageType, mediaUrl, buttons }; }
-  if (step.stepType === "url_action" && step.url) { let url = step.url.trim(); if (!url.startsWith("http")) url = "https://" + url; text = step.message || step.url; buttons = [{ type: "url", text: step.urlLabel || "Open", url }]; return { text, messageType, mediaUrl, buttons }; }
-  if (step.mediaUrl && ["image", "video", "document"].includes(step.mediaType)) { messageType = step.mediaType; mediaUrl = step.mediaUrl; }
-  if (step.buttons?.length > 0) { const valid = step.buttons.filter((b: any) => b.label?.trim()); if (valid.length > 0) buttons = valid.map((b: any) => ({ type: "quick_reply", text: b.label })); }
+  let text = step.message || ""; 
+  let messageType = "text"; 
+  let mediaUrl: string | null = null; 
+  let buttons: any[] = [];
+  
+  if (step.stepType === "call_action" && step.phoneNumber) { 
+    text = step.message || step.phoneNumber; 
+    buttons = [{ type: "phone_number", text: step.urlLabel || "Call", phone_number: step.phoneNumber }]; 
+    return { text, messageType, mediaUrl, buttons }; 
+  }
+  if (step.stepType === "url_action" && step.url) { 
+    let url = step.url.trim(); 
+    if (!url.startsWith("http")) url = "https://" + url; 
+    text = step.message || step.url; 
+    buttons = [{ type: "url", text: step.urlLabel || "Open", url }]; 
+    return { text, messageType, mediaUrl, buttons }; 
+  }
+  if (step.mediaUrl && ["image", "video", "document"].includes(step.mediaType)) { 
+    messageType = step.mediaType; 
+    mediaUrl = step.mediaUrl; 
+  }
+  if (step.buttons?.length > 0) { 
+    const valid = step.buttons.filter((b: any) => b.label?.trim()); 
+    if (valid.length > 0) buttons = valid.map((b: any) => ({ type: "quick_reply", text: b.label })); 
+  }
   return { text, messageType, mediaUrl, buttons };
 }
 
 async function saveOutgoingWorkflowMessage(userId: string, customerNumber: string, phoneNumberId: string, step: any) {
   const { text, messageType, mediaUrl, buttons } = buildOutgoingMessagePayload(step);
-  await Message.create({ userId, phone: customerNumber, text, direction: "out", messageType, mediaUrl, templateButtons: buttons.length > 0 ? JSON.stringify(buttons) : undefined, status: "sent", whatsappPhoneNumberId: phoneNumberId, senderNumber: phoneNumberId });
+  await Message.create({ 
+    userId, phone: customerNumber, text, direction: "out", messageType, mediaUrl, 
+    templateButtons: buttons.length > 0 ? JSON.stringify(buttons) : undefined, 
+    status: "sent", whatsappPhoneNumberId: phoneNumberId, senderNumber: phoneNumberId 
+  });
 }
 
-const clearWorkflowTimer = async (phone: string) => { try { await Job.deleteMany({ queue: "workflow-inactivity", status: "pending", "data.phone": phone }); } catch (err) {} };
+const clearWorkflowTimer = async (phone: string) => { 
+  try { await Job.deleteMany({ queue: "workflow-inactivity", status: "pending", "data.phone": phone }); } catch (err) {} 
+};
 
 const startWorkflowInactivityTimer = async (phone: string, userId: string, workflowId: string, accessToken: string, phoneNumberId: string, baseUrl: string) => {
   try {
@@ -103,7 +147,11 @@ const startWorkflowInactivityTimer = async (phone: string, userId: string, workf
     if (!wf || !wf.steps) return;
     const inactivityNode = Object.values(wf.steps).find((s: any) => s.stepType === "inactivity_node") as any;
     if (!inactivityNode) return;
-    await Job.create({ queue: "workflow-inactivity", name: "send-inactivity-message", data: { phone, userId, workflowId, accessToken, phoneNumberId, baseUrl, message: inactivityNode.message || "Are you still there?", delaySeconds: inactivityNode.delaySeconds || 30, repeatCount: inactivityNode.repeatCount || 1, sentCount: 0 }, status: "pending", createdAt: new Date() });
+    await Job.create({ 
+      queue: "workflow-inactivity", name: "send-inactivity-message", 
+      data: { phone, userId, workflowId, accessToken, phoneNumberId, baseUrl, message: inactivityNode.message || "Are you still there?", delaySeconds: inactivityNode.delaySeconds || 30, repeatCount: inactivityNode.repeatCount || 1, sentCount: 0 }, 
+      status: "pending", createdAt: new Date() 
+    });
   } catch (err) {}
 };
 
@@ -116,13 +164,24 @@ const startFormInactivityTimer = (phone: string, userId: string, formId: string,
         await connectDB();
         const checkSession = await Session.findOne({ phone, userId });
         if (!checkSession || !checkSession.formId || checkSession.formFieldIndex !== fieldIndex) { clearInterval(intervalId); formTimers.delete(phone); return; }
-        if (remindersSent < field.repeatCount) { await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, { message: field.delayMessage, stepType: "text" }, baseUrl); remindersSent++; } 
-        else { clearInterval(intervalId); formTimers.delete(phone); await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, { message: form.abandonmentMessage || "It seems you are busy.", stepType: "message", buttons: [{ id: `restart_form_${formId}`, label: "🔄 Restart Form", nextStepId: null }] }, baseUrl); checkSession.formId = null; checkSession.formFieldIndex = 0; await checkSession.save(); await FormResponse.updateOne({ formId, phone, status: "incomplete" }, { $set: { status: "abandoned" } }); }
+        if (remindersSent < field.repeatCount) { 
+          await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, { message: field.delayMessage, stepType: "text" }, baseUrl); 
+          remindersSent++; 
+        } else { 
+          clearInterval(intervalId); formTimers.delete(phone); 
+          await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, phone, { message: form.abandonmentMessage || "It seems you are busy.", stepType: "message", buttons: [{ id: `restart_form_${formId}`, label: "🔄 Restart Form", nextStepId: null }] }, baseUrl); 
+          checkSession.formId = null; checkSession.formFieldIndex = 0; await checkSession.save(); 
+          await FormResponse.updateOne({ formId, phone, status: "incomplete" }, { $set: { status: "abandoned" } }); 
+        }
       } catch (err) { clearInterval(intervalId); formTimers.delete(phone); }
     }, field.delaySeconds * 1000);
     formTimers.set(phone, intervalId);
   }
 };
+
+// ============================================================================
+// WEBHOOK VERIFICATION (GET handler)
+// ============================================================================
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -131,6 +190,10 @@ export async function GET(req: NextRequest) {
   }
   return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 }
+
+// ============================================================================
+// USER & MESSAGE PARSING HELPERS
+// ============================================================================
 
 async function findUserByPhoneNumberId(phoneNumberId: string) {
   const user = await User.findOne({ $or: [{ whatsappPhoneNumberId: phoneNumberId }, { "whatsappNumbers.whatsappPhoneNumberId": phoneNumberId }] }).lean();
@@ -169,15 +232,25 @@ async function processAndSaveMessage(msg: any, num: any) {
   const exists = await Message.findOne({ whatsappMessageId: msg.id }).lean();
   if (exists) return;
   const { text, messageType, mediaId } = parseMessage(msg);
-  await Message.create({ userId: num.userId, phone: msg.from, text, direction: "in", messageType, mediaUrl: mediaId, whatsappMessageId: msg.id, status: "delivered", whatsappPhoneNumberId: num.phoneNumberId, senderNumber: msg.from, createdAt: msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date() });
+  await Message.create({ 
+    userId: num.userId, phone: msg.from, text, direction: "in", messageType, mediaUrl: mediaId, 
+    whatsappMessageId: msg.id, status: "delivered", whatsappPhoneNumberId: num.phoneNumberId, 
+    senderNumber: msg.from, createdAt: msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date() 
+  });
 }
 
 async function uploadMediaToMetaFromUrl(phoneNumberId: string, accessToken: string, mediaUrl: string): Promise<string | null> {
   try {
     if (/^\d+$/.test(mediaUrl)) return mediaUrl;
     let blob: Blob | null = null; let filename = "media";
-    if (mediaUrl.startsWith("/uploads/") || mediaUrl.startsWith("/public/")) { const p = path.join(process.cwd(), "public", mediaUrl); if (fs.existsSync(p)) { blob = new Blob([fs.readFileSync(p)]); filename = `media${path.extname(p).toLowerCase()}`; } }
-    else if (mediaUrl.startsWith("http")) { const res = await fetch(mediaUrl); if (res.ok) { blob = await res.blob(); filename = `media${path.extname(new URL(mediaUrl).pathname).toLowerCase() || ".bin"}`; } }
+    if (mediaUrl.startsWith("/uploads/") || mediaUrl.startsWith("/public/")) { 
+      const p = path.join(process.cwd(), "public", mediaUrl); 
+      if (fs.existsSync(p)) { blob = new Blob([fs.readFileSync(p)]); filename = `media${path.extname(p).toLowerCase()}`; } 
+    }
+    else if (mediaUrl.startsWith("http")) { 
+      const res = await fetch(mediaUrl); 
+      if (res.ok) { blob = await res.blob(); filename = `media${path.extname(new URL(mediaUrl).pathname).toLowerCase() || ".bin"}`; } 
+    }
     if (!blob) return null;
     const formData = new FormData(); formData.append("file", blob, filename); formData.append("messaging_product", "whatsapp");
     const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/media`, { method: "POST", headers: { Authorization: `Bearer ${accessToken}` }, body: formData });
@@ -185,12 +258,17 @@ async function uploadMediaToMetaFromUrl(phoneNumberId: string, accessToken: stri
   } catch { return null; }
 }
 
+// ============================================================================
+// WORKFLOW EXECUTION
+// ============================================================================
+
 async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
   try {
     if (!["text", "button", "interactive"].includes(msg.type)) return;
     const incomingText = parseMessage(msg).text;
     const buttonPayload = extractButtonPayload(msg);
     if (!incomingText && !buttonPayload) return;
+    
     await clearWorkflowTimer(msg.from);
     const activeSession = await Session.findOne({ phone: msg.from, userId: num.userId });
 
@@ -200,7 +278,10 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
       const fieldIndex = activeSession.formFieldIndex;
       const currentField = form.fields[fieldIndex];
       if (!currentField) { await Session.deleteOne({ _id: activeSession._id }); return; }
-      if (currentField.required && !incomingText.trim()) { await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: "⚠️ Required.", stepType: "text" }, baseUrl); return; }
+      if (currentField.required && !incomingText.trim()) { 
+        await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: "⚠️ Required.", stepType: "text" }, baseUrl); 
+        return; 
+      }
       await FormResponse.updateOne({ formId: form._id, phone: msg.from, status: "incomplete" }, { $set: { [`data.${currentField.label}`]: incomingText } });
       const nextFieldIndex = fieldIndex + 1;
       if (nextFieldIndex < form.fields.length) {
@@ -267,32 +348,105 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
   } catch (err) { console.error("❌ [WORKFLOW] Error:", err); }
 }
 
-async function processWorkflowStep(stepId: string, steps: Record<string, any>, matchedWorkflow: any, accessToken: string, phoneNumberId: string, customerNumber: string, userId: string, tenantId: string | null, baseUrl: string) {
+// ============================================================================
+// WORKFLOW STEP PROCESSOR (Fixed Chaining)
+// ============================================================================
+
+async function processWorkflowStep(
+  stepId: string, 
+  steps: Record<string, any>, 
+  matchedWorkflow: any, 
+  accessToken: string, 
+  phoneNumberId: string, 
+  customerNumber: string, 
+  userId: string, 
+  tenantId: string | null, 
+  baseUrl: string
+) {
   const step = steps[stepId];
   if (!step) return;
-  if (step.stepType === "delay_node") { if (step.delaySeconds > 0) await new Promise(r => setTimeout(r, step.delaySeconds * 1000)); if (step.nextStepId) return await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl); return; }
-  if (step.stepType === "opt_in_node") { await addOptOutNumber(customerNumber, userId, tenantId); return; }
-  if (step.stepType === "tag_node") { if (step.selectedTag) await applyTagToContact(customerNumber, step.selectedTag, userId); return; }
+
+  // ─── DELAY NODE ───
+  if (step.stepType === "delay_node") { 
+    if (step.delaySeconds > 0) await new Promise(r => setTimeout(r, step.delaySeconds * 1000)); 
+    if (step.nextStepId) return await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl); 
+    return; 
+  }
+
+  // ─── OPT-OUT NODE ───
+  if (step.stepType === "opt_in_node") { 
+    await addOptOutNumber(customerNumber, userId, tenantId); 
+    // ✅ FIX: Continue to next step if connected
+    if (step.nextStepId) {
+      return await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
+    }
+    return; 
+  }
+
+  // ─── TAG NODE ───
+  if (step.stepType === "tag_node") { 
+    if (step.selectedTag) await applyTagToContact(customerNumber, step.selectedTag, userId); 
+    // ✅ FIX: Continue to next step if connected
+    if (step.nextStepId) {
+      return await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
+    }
+    return; 
+  }
+
+  // ─── FORM NODE ───
   if (step.stepType === "form_node" && step.selectedForm) {
     const formData = await Form.findById(step.selectedForm);
     if (!formData || !formData.fields.length) return;
     await upsertSession(customerNumber, userId, { formId: formData._id, formFieldIndex: 0, workflowId: matchedWorkflow._id, currentStepId: step.id, updatedAt: new Date() });
     await FormResponse.findOneAndUpdate({ formId: formData._id, phone: customerNumber, status: "incomplete" }, { $set: { userId, data: {}, status: "incomplete" } }, { upsert: true, new: true });
     await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" }, baseUrl);
-    return;
+    return; // Stop here, wait for user to reply to form
   }
+
+  // ─── MESSAGE NODE / CALL / URL ACTION / DEFAULT ───
   await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
   await saveOutgoingWorkflowMessage(userId, customerNumber, phoneNumberId, step);
   await upsertSession(customerNumber, userId, { workflowId: matchedWorkflow._id, currentStepId: step.id, formId: null, formFieldIndex: 0, updatedAt: new Date() });
   await startWorkflowInactivityTimer(customerNumber, userId, matchedWorkflow._id.toString(), accessToken, phoneNumberId, baseUrl);
+
+  // ✅ CRITICAL FIX: If a Message node has a next step (like a Tag or Opt-out), execute it!
+  if (step.nextStepId) {
+    return await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
+  }
 }
+
+// ============================================================================
+// WHATSAPP MESSAGE SENDER
+// ============================================================================
 
 async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: string, to: string, step: any, baseUrl: string) {
   const sendMessage = async (payload: any) => {
-    try { const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify(payload) }); if (!res.ok) console.error("❌ WhatsApp API ERROR:", JSON.stringify(await res.json(), null, 2)); } catch {}
+    try { 
+      const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, { 
+        method: "POST", 
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, 
+        body: JSON.stringify(payload) 
+      }); 
+      if (!res.ok) console.error("❌ WhatsApp API ERROR:", JSON.stringify(await res.json(), null, 2)); 
+    } catch {}
   };
-  if (step.stepType === "call_action" && step.phoneNumber) { return sendMessage({ messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "cta_url", header: { type: "text", text: step.urlLabel || "Call" }, body: { text: step.message || "" }, action: { name: "cta_url", parameters: { display_text: step.urlLabel || "Call", url: `${baseUrl}/api/redirect-call?number=${encodeURIComponent(step.phoneNumber)}` } } } }); }
-  if (step.stepType === "url_action" && step.url) { let url = step.url.trim(); if (!url.startsWith("http")) url = "https://" + url; return sendMessage({ messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "cta_url", header: { type: "text", text: step.urlLabel || "Open" }, body: { text: step.message || "" }, action: { name: "cta_url", parameters: { display_text: step.urlLabel || "Open", url } } } }); }
+  if (step.stepType === "call_action" && step.phoneNumber) { 
+    return sendMessage({ 
+      messaging_product: "whatsapp", to, type: "interactive", interactive: { 
+        type: "cta_url", header: { type: "text", text: step.urlLabel || "Call" }, body: { text: step.message || "" }, 
+        action: { name: "cta_url", parameters: { display_text: step.urlLabel || "Call", url: `${baseUrl}/api/redirect-call?number=${encodeURIComponent(step.phoneNumber)}` } } 
+      } 
+    }); 
+  }
+  if (step.stepType === "url_action" && step.url) { 
+    let url = step.url.trim(); if (!url.startsWith("http")) url = "https://" + url; 
+    return sendMessage({ 
+      messaging_product: "whatsapp", to, type: "interactive", interactive: { 
+        type: "cta_url", header: { type: "text", text: step.urlLabel || "Open" }, body: { text: step.message || "" }, 
+        action: { name: "cta_url", parameters: { display_text: step.urlLabel || "Open", url } } 
+      } 
+    }); 
+  }
   if (step.mediaUrl && ["image", "video", "document"].includes(step.mediaType)) {
     const mediaId = await uploadMediaToMetaFromUrl(phoneNumberId, accessToken, step.mediaUrl);
     if (mediaId) {
@@ -305,18 +459,47 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
   }
   if (step.buttons?.length > 0) {
     const valid = step.buttons.filter((b: any) => b.label?.trim());
-    if (valid.length > 3) return sendMessage({ messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "list", body: { text: step.message || "Select" }, action: { button: "Options", sections: [{ title: "Menu", rows: valid.slice(0, 10).map((b: any) => ({ id: b.id, title: b.label.substring(0, 24) })) }] } } });
-    return sendMessage({ messaging_product: "whatsapp", to, type: "interactive", interactive: { type: "button", body: { text: step.message || "" }, action: { buttons: valid.slice(0, 3).map((b: any) => ({ type: "reply", reply: { id: b.id, title: b.label.substring(0, 20) } })) } } });
+    if (valid.length > 3) return sendMessage({ 
+      messaging_product: "whatsapp", to, type: "interactive", interactive: { 
+        type: "list", body: { text: step.message || "Select" }, action: { 
+          button: "Options", sections: [{ title: "Menu", rows: valid.slice(0, 10).map((b: any) => ({ id: b.id, title: b.label.substring(0, 24) })) }] 
+        } 
+      } 
+    });
+    return sendMessage({ 
+      messaging_product: "whatsapp", to, type: "interactive", interactive: { 
+        type: "button", body: { text: step.message || "" }, action: { 
+          buttons: valid.slice(0, 3).map((b: any) => ({ type: "reply", reply: { id: b.id, title: b.label.substring(0, 20) } })) 
+        } 
+      } 
+    });
   }
   return sendMessage({ messaging_product: "whatsapp", to, type: "text", text: { body: step.message || "", preview_url: true } });
 }
 
+// ============================================================================
+// TAG & OPT-OUT HELPERS
+// ============================================================================
+
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
-  try { const { default: Contact } = await import("@/models/Contact"); const { default: Tag } = await import("@/models/Tag"); const tag = await Tag.findById(tagId).lean(); if (tag) await Contact.findOneAndUpdate({ phone: phoneNumber, userId }, { $addToSet: { tags: tag.name } }, { upsert: true }); } catch {}
+  try { 
+    const { default: Contact } = await import("@/models/Contact"); 
+    const { default: Tag } = await import("@/models/Tag"); 
+    const tag = await Tag.findById(tagId).lean(); 
+    if (tag) await Contact.findOneAndUpdate({ phone: phoneNumber, userId }, { $addToSet: { tags: tag.name } }, { upsert: true }); 
+  } catch {}
 }
+
 async function addOptOutNumber(phoneNumber: string, userId: string, tenantId: string | null = null) {
-  try { const { default: OptNumber } = await import("@/models/OptNumber"); if (!(await OptNumber.findOne({ phoneNumber, userId }))) await OptNumber.create({ phoneNumber, userId, tenantId, createdBy: userId }); } catch {}
+  try { 
+    const { default: OptNumber } = await import("@/models/OptNumber"); 
+    if (!(await OptNumber.findOne({ phoneNumber, userId }))) await OptNumber.create({ phoneNumber, userId, tenantId, createdBy: userId }); 
+  } catch {}
 }
+
+// ============================================================================
+// MAIN WEBHOOK POST HANDLER
+// ============================================================================
 
 export async function POST(req: NextRequest) {
   try {
@@ -340,7 +523,10 @@ export async function POST(req: NextRequest) {
 
         const contactInfo = value.contacts?.[0];
         if (contactInfo?.profile?.name && contactInfo?.wa_id) {
-          try { const { default: Contact } = await import("@/models/Contact"); await Contact.findOneAndUpdate({ phone: contactInfo.wa_id, userId: num.userId }, { name: contactInfo.profile.name }, { upsert: true }); } catch {}
+          try { 
+            const { default: Contact } = await import("@/models/Contact"); 
+            await Contact.findOneAndUpdate({ phone: contactInfo.wa_id, userId: num.userId }, { name: contactInfo.profile.name }, { upsert: true }); 
+          } catch {}
         }
 
         for (const msg of value.messages || []) {
@@ -381,6 +567,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true });
   }
 }
+
+// ============================================================================
+// CAMPAIGN REPLY HANDLER
+// ============================================================================
 
 async function handleCampaignReply(msg: any, num: any) {
   try {
