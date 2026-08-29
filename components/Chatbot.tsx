@@ -1,8 +1,9 @@
+/* eslint-disable @typescript-eslint/prefer-as-const */
 /* eslint-disable @next/next/no-img-element */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 
 // --- AllChat DOCUMENTATION KNOWLEDGE BASE ---
 const rawDocumentation = `
@@ -862,11 +863,10 @@ The purpose of this documentation is to provide the AI assistant with enough con
 `;
 
 // --- CHUNKING LOGIC ---
-// We group lines into logical chunks based on ALL CAPS section headers so the AI returns full steps.
 const rawLines = rawDocumentation.split('\n');
 const chunks: string[] = [];
 let currentChunk = '';
-const headerRegex = /^[A-Z][A-Z0-9 \-\/&]+:$/; // Matches headers like "CREATE CAMPAIGN:"
+const headerRegex = /^[A-Z][A-Z0-9 \-\/&]+:$/;
 
 for (const line of rawLines) {
   const trimmedLine = line.trim();
@@ -882,16 +882,12 @@ if (currentChunk.trim()) chunks.push(currentChunk.trim());
 const KNOWLEDGE_BASE = chunks;
 const SUPPORT_EMAIL = "hello@allchat.in";
 
-// Helper to format time
 const formatTime = () => {
   return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
-// Simplified beautify to just format paths nicely
 const formatBeautifully = (text: string) => {
-  return text
-    // Format arrows for paths
-    .replace(/->/g, ' ➜ ');
+  return text.replace(/->/g, ' ➜ ');
 };
 
 export default function Chatbot() {
@@ -903,6 +899,15 @@ export default function Chatbot() {
   const [isLoading, setIsLoading] = useState(false);
   const [aiStatus, setAiStatus] = useState('Loading my brain...'); 
   
+  // ✅ NEW: Drag & Resize State
+  const [isMobile, setIsMobile] = useState(false);
+  const [buttonPos, setButtonPos] = useState({ x: 0, y: 0 });
+  const [windowPos, setWindowPos] = useState({ x: 0, y: 0 });
+  const [windowSize, setWindowSize] = useState({ width: 380, height: 560 });
+  const [dragging, setDragging] = useState<any>(null);
+  const [resizing, setResizing] = useState<any>(null);
+  const [dragMoved, setDragMoved] = useState(false);
+
   const extractorRef = useRef<any>(null);
   const documentEmbeddingsRef = useRef<any[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -912,7 +917,6 @@ export default function Chatbot() {
       try {
         setAiStatus('Loading AI...');
         const { pipeline } = await import('@huggingface/transformers');
-        
         extractorRef.current = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
 
         setAiStatus('Reading docs...');
@@ -922,7 +926,6 @@ export default function Chatbot() {
             return { text: doc, embedding: output.data };
           })
         );
-        
         documentEmbeddingsRef.current = docsMapped;
         setAiStatus('Ready to chat');
       } catch (error) {
@@ -930,13 +933,117 @@ export default function Chatbot() {
         setAiStatus('Error loading AI');
       }
     };
-
     initAI();
   }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
+
+  // ✅ NEW: Handle Initial Window Load & Mobile Resize
+  useEffect(() => {
+    const handleResize = () => {
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+      
+      if (!mobile) {
+        setButtonPos({ x: window.innerWidth - 92, y: window.innerHeight - 92 });
+        setWindowPos({ x: window.innerWidth - 410, y: window.innerHeight - 610 });
+        setWindowSize({ width: 380, height: 560 });
+      } else {
+        setButtonPos({ x: window.innerWidth - 76, y: window.innerHeight - 76 });
+      }
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // ✅ NEW: Global Mouse/Touch Move Listener for Dragging
+  useEffect(() => {
+    if (!dragging) return;
+    const handleMove = (e: any) => {
+      const touch = e.touches ? e.touches[0] : e;
+      const newX = touch.clientX - dragging.offsetX;
+      const newY = touch.clientY - dragging.offsetY;
+      
+      if (Math.abs(newX - dragging.startX) > 5 || Math.abs(newY - dragging.startY) > 5) {
+        setDragMoved(true);
+      }
+
+      const maxX = window.innerWidth - (dragging.type === 'button' ? 68 : 200);
+      const maxY = window.innerHeight - (dragging.type === 'button' ? 68 : 100);
+
+      if (dragging.type === 'button') {
+        setButtonPos({ x: Math.max(0, Math.min(newX, maxX)), y: Math.max(0, Math.min(newY, maxY)) });
+      } else {
+        setWindowPos({ x: Math.max(0, Math.min(newX, maxX)), y: Math.max(0, Math.min(newY, maxY)) });
+      }
+    };
+
+    const handleEnd = () => setDragging(null);
+    
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleEnd);
+    window.addEventListener('touchmove', handleMove, { passive: false });
+    window.addEventListener('touchend', handleEnd);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleEnd);
+      window.removeEventListener('touchmove', handleMove);
+      window.removeEventListener('touchend', handleEnd);
+    };
+  }, [dragging]);
+
+  // ✅ NEW: Global Mouse/Touch Move Listener for Resizing
+  useEffect(() => {
+    if (!resizing) return;
+    const handleMove = (e: any) => {
+      const touch = e.touches ? e.touches[0] : e;
+      const newW = Math.max(300, resizing.startW + (touch.clientX - resizing.startX));
+      const newH = Math.max(400, resizing.startH + (touch.clientY - resizing.startY));
+      setWindowSize({ 
+        width: Math.min(newW, window.innerWidth - windowPos.x - 10), 
+        height: Math.min(newH, window.innerHeight - windowPos.y - 10) 
+      });
+    };
+    const handleEnd = () => setResizing(null);
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleEnd);
+    window.addEventListener('touchmove', handleMove, { passive: false });
+    window.addEventListener('touchend', handleEnd);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleEnd);
+      window.removeEventListener('touchmove', handleMove);
+      window.removeEventListener('touchend', handleEnd);
+    };
+  }, [resizing, windowPos]);
+
+  const handleStartDrag = (e: any, type: 'button' | 'window') => {
+    if (isMobile && type === 'window') return; // Disable window drag on mobile (fullscreen)
+    const touch = e.touches ? e.touches[0] : e;
+    const target = type === 'button' ? buttonPos : windowPos;
+    setDragMoved(false);
+    setDragging({
+      type,
+      offsetX: touch.clientX - target.x,
+      offsetY: touch.clientY - target.y,
+      startX: target.x,
+      startY: target.y
+    });
+  };
+
+  const handleStartResize = (e: any) => {
+    e.stopPropagation();
+    const touch = e.touches ? e.touches[0] : e;
+    setResizing({
+      startX: touch.clientX,
+      startY: touch.clientY,
+      startW: windowSize.width,
+      startH: windowSize.height
+    });
+  };
 
   const calculateSimilarity = (vecA: number[], vecB: number[]) => {
     let dotProduct = 0, normA = 0, normB = 0;
@@ -950,7 +1057,6 @@ export default function Chatbot() {
 
   const handleSendMessage = async () => {
     if (!input.trim() || isLoading || aiStatus !== 'Ready to chat') return;
-
     const userMessage = input.trim();
     setInput('');
     setMessages((prev) => [...prev, { text: userMessage, sender: 'user', time: formatTime() }]);
@@ -958,12 +1064,9 @@ export default function Chatbot() {
 
     try {
       let botResponse = '';
-      
-      // 1. Handle Greetings (Hi, Hello, etc.)
       const lowerCaseMsg = userMessage.toLowerCase();
       const greetings = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening", "yo", "sup"];
       const isGreeting = greetings.some(g => lowerCaseMsg === g || lowerCaseMsg.startsWith(g + " ") || lowerCaseMsg.startsWith(g + "!"));
-      
       const isHowAreYou = lowerCaseMsg.includes("how are you") || lowerCaseMsg.includes("how you doing");
 
       if (isGreeting || isHowAreYou) {
@@ -973,82 +1076,90 @@ export default function Chatbot() {
           "Hi! 🌟 I'm ready to assist. Do you have any questions about our platform?"
         ];
         botResponse = greetingsResponses[Math.floor(Math.random() * greetingsResponses.length)];
-      } 
-      // 2. Handle Documentation Questions
-      else {
+      } else {
         const queryOutput = await extractorRef.current(userMessage, { pooling: 'mean', normalize: true });
         const queryEmbedding = queryOutput.data;
-
         let bestMatch = null;
         let highestScore = 0;
-
         for (const doc of documentEmbeddingsRef.current) {
           const score = calculateSimilarity(queryEmbedding, doc.embedding);
-          if (score > highestScore) {
-            highestScore = score;
-            bestMatch = doc.text;
-          }
+          if (score > highestScore) { highestScore = score; bestMatch = doc.text; }
         }
-
         if (highestScore > 0.30 && bestMatch) {
-          const intros = [
-            "Oh, I can definitely help with that! 😊 Here's what I found:",
-            "Great question! Based on the documentation:",
-            "Got it! Here's the scoop on that:"
-          ];
+          const intros = ["Oh, I can definitely help with that! 😊 Here's what I found:", "Great question! Based on the documentation:", "Got it! Here's the scoop on that:"];
           const outro = "Let me know if you need me to explain any part of that! 🤓";
           const randomIntro = intros[Math.floor(Math.random() * intros.length)];
-          
-          // Beautify the text (formats arrows)
           const formattedDoc = formatBeautifully(bestMatch);
-          
           botResponse = `${randomIntro}\n\n${formattedDoc}\n\n${outro}`;
         } else {
-          // Fallback to email if not in docs
           botResponse = `Hmm, I'm not entirely sure I caught that. 🤔 I couldn't find anything about that in my documentation. I really want to make sure you get the right help, so could you drop an email to ${SUPPORT_EMAIL}? Our team will take great care of you! 💌`;
         }
       }
-
-      // Simulate human typing speed (approx 20 chars per second)
       const typingDelay = Math.min(2500, Math.max(700, botResponse.length * 35));
-      
       setTimeout(() => {
         setMessages((prev) => [...prev, { text: botResponse, sender: 'bot', time: formatTime() }]);
         setIsLoading(false);
       }, typingDelay);
-
     } catch (error: any) {
       setMessages((prev) => [...prev, { text: `Oops! Something went wrong on my end. 🤖 ${error.message}`, sender: 'bot', time: formatTime() }]);
       setIsLoading(false);
     }
   };
 
+  // ✅ NEW: Conditional styles for Mobile vs Desktop
+  const winStyle = isMobile ? {
+    position: 'fixed' as 'fixed',
+    top: 0, left: 0, right: 0, bottom: 0,
+    width: '100%', height: '100dvh',
+    borderRadius: 0, border: 'none'
+  } : {
+    position: 'fixed' as 'fixed',
+    left: windowPos.x, top: windowPos.y,
+    width: windowSize.width, height: windowSize.height
+  };
+
+  const btnStyle = isMobile ? {
+    position: 'fixed' as 'fixed',
+    left: buttonPos.x, top: buttonPos.y,
+    width: 56, height: 56
+  } : {
+    position: 'fixed' as 'fixed',
+    left: buttonPos.x, top: buttonPos.y,
+    width: 68, height: 68
+  };
+
   return (
-    <div style={{ position: 'fixed', bottom: '24px', right: '24px', zIndex: 9999, fontFamily: 'Inter, -apple-system, sans-serif' }}>
-      
+    <>
       {isOpen && (
-        <div style={{
-          width: '380px',
-          height: '560px',
-          backgroundColor: '#ffffff',
-          borderRadius: '20px',
-          boxShadow: '0 15px 40px rgba(0,0,0,0.15)',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-          border: '1px solid #e5e7eb',
-          marginBottom: '12px',
-          animation: 'fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards'
-        }}>
-          {/* Header */}
-          <div style={{
-            background: 'linear-gradient(135deg, #6d28d9 0%, #4f46e5 100%)',
-            padding: '18px 22px',
+        <div 
+          className="chatbot-window"
+          style={{
+            ...winStyle,
+            backgroundColor: '#ffffff',
+            borderRadius: '20px',
+            boxShadow: '0 15px 40px rgba(0,0,0,0.15)',
             display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            color: 'white'
+            flexDirection: 'column',
+            overflow: 'hidden',
+            border: '1px solid #e5e7eb',
+            zIndex: 9999,
+            animation: 'fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards'
           }}>
+          {/* Header */}
+          <div 
+            onMouseDown={(e) => handleStartDrag(e, 'window')}
+            onTouchStart={(e) => handleStartDrag(e, 'window')}
+            style={{
+              background: 'linear-gradient(135deg, #10b981 0%, #0d9488 100%)',
+              padding: '18px 22px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              color: 'white',
+              flexShrink: 0,
+              cursor: isMobile ? 'default' : 'move',
+              userSelect: 'none'
+            }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <div style={{ 
                 width: '42px', height: '42px', 
@@ -1084,7 +1195,7 @@ export default function Chatbot() {
                 gap: '4px'
               }}>
                 <div style={{
-                  backgroundColor: msg.sender === 'user' ? '#4f46e5' : '#ffffff',
+                  backgroundColor: msg.sender === 'user' ? '#10b981' : '#ffffff',
                   color: msg.sender === 'user' ? 'white' : '#1f2937',
                   padding: '12px 16px',
                   borderRadius: msg.sender === 'user' ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
@@ -1092,7 +1203,7 @@ export default function Chatbot() {
                   lineHeight: '1.5',
                   maxWidth: '85%',
                   boxShadow: '0 2px 5px rgba(0,0,0,0.04)',
-                  whiteSpace: 'pre-wrap' // Preserves line breaks and bullet points
+                  whiteSpace: 'pre-wrap'
                 }}>
                   {msg.text}
                 </div>
@@ -1113,7 +1224,7 @@ export default function Chatbot() {
           </div>
 
           {/* Input Area */}
-          <div style={{ padding: '14px', backgroundColor: '#ffffff', borderTop: '1px solid #e5e7eb' }}>
+          <div style={{ padding: '14px', backgroundColor: '#ffffff', borderTop: '1px solid #e5e7eb', flexShrink: 0, position: 'relative' }}>
             <div style={{ display: 'flex', gap: '10px', alignItems: 'center', backgroundColor: '#f1f5f9', padding: '6px 6px 6px 16px', borderRadius: '30px', border: '1px solid #e2e8f0' }}>
               <input
                 type="text"
@@ -1126,7 +1237,7 @@ export default function Chatbot() {
                   flex: 1,
                   border: 'none',
                   outline: 'none',
-                  fontSize: '14px',
+                  fontSize: '16px',
                   backgroundColor: 'transparent',
                   color: '#0f172a'
                 }}
@@ -1135,7 +1246,7 @@ export default function Chatbot() {
                 onClick={handleSendMessage}
                 disabled={isLoading || aiStatus !== 'Ready to chat'}
                 style={{
-                  backgroundColor: '#4f46e5',
+                  backgroundColor: '#10b981',
                   color: 'white',
                   border: 'none',
                   width: '40px',
@@ -1147,47 +1258,71 @@ export default function Chatbot() {
                   justifyContent: 'center',
                   fontSize: '16px',
                   transition: 'all 0.2s',
-                  opacity: (isLoading || aiStatus !== 'Ready to chat') ? 0.4 : 1
+                  opacity: (isLoading || aiStatus !== 'Ready to chat') ? 0.4 : 1,
+                  flexShrink: 0
                 }}
               >
                 ➤
               </button>
             </div>
           </div>
+
+          {/* ✅ NEW: Resize Handle (Hidden on Mobile) */}
+          {!isMobile && (
+            <div 
+              onMouseDown={handleStartResize}
+              onTouchStart={handleStartResize}
+              style={{
+                position: 'absolute',
+                bottom: 0, right: 0,
+                width: '24px', height: '24px',
+                cursor: 'nwse-resize',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                opacity: 0.5
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M11 1L1 11M11 5L5 11M11 9L9 11" stroke="#0f172a" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Floating Chat Icon Button - Uses Image */}
+      {/* Floating Chat Icon Button */}
       {!isOpen && (
         <button
-          onClick={() => setIsOpen(true)}
+          className="chatbot-fab"
+          onMouseDown={(e) => handleStartDrag(e, 'button')}
+          onTouchStart={(e) => handleStartDrag(e, 'button')}
+          onClick={() => {
+            if (!dragMoved) setIsOpen(true); // Only open if it wasn't a drag
+          }}
           style={{
-            background: 'linear-gradient(135deg, #6d28d9 0%, #4f46e5 100%)',
+            ...btnStyle,
+            background: 'linear-gradient(135deg, #10b981 0%, #0d9488 100%)',
             border: 'none',
             borderRadius: '50%',
-            width: '68px',
-            height: '68px',
-            cursor: 'pointer',
-            boxShadow: '0 10px 25px rgba(79, 70, 229, 0.4)',
+            cursor: dragging?.type === 'button' ? 'grabbing' : 'grab',
+            boxShadow: '0 10px 25px rgba(16, 185, 129, 0.4)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             padding: '0',
             overflow: 'hidden',
+            zIndex: 9999,
             animation: 'popIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards'
           }}
-          onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05) translateY(-2px)'}
-          onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1) translateY(0)'}
         >
-          {/* Make sure to place 'icon.png' inside your /public folder */}
           <img 
             src="/icon.png" 
             alt="Chat Icon" 
             style={{ 
-              width: '36px', 
-              height: '36px', 
+              width: isMobile ? '30px' : '36px', 
+              height: isMobile ? '30px' : '36px', 
               objectFit: 'contain',
-              filter: 'brightness(0) invert(1)' // Makes the image white to match the gradient
+              filter: 'brightness(0) invert(1)',
+              pointerEvents: 'none'
             }} 
           />
         </button>
@@ -1206,11 +1341,26 @@ export default function Chatbot() {
           0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
           30% { transform: translateY(-6px); opacity: 1; }
         }
-        /* Custom Scrollbar */
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+
+        /* 📱 RESPONSIVE OVERRIDES FOR MOBILE 📱 */
+        /* The JS handles most mobile logic, but we keep this just in case for older browsers */
+        @media (max-width: 768px) {
+          .chatbot-window {
+            top: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            bottom: 0 !important;
+            width: 100% !important;
+            height: 100% !important;
+            height: 100dvh !important;
+            border-radius: 0 !important;
+            border: none !important;
+          }
+        }
       `}</style>
-    </div>
+    </>
   );
 }
