@@ -296,9 +296,27 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
       return;
     }
 
-    const workflows = await Workflow.find({ userId: num.userId, wabaPhoneNumberId: num.phoneNumberId, active: true });
+    // ✅ CRITICAL FIX: Added Legacy Fallback so old workflows still trigger!
+    let workflows = await Workflow.find({ userId: num.userId, wabaPhoneNumberId: num.phoneNumberId, active: true });
+    if (workflows.length === 0) {
+      const legacy = await Workflow.find({ 
+        userId: num.userId, 
+        $or: [{ wabaPhoneNumberId: null }, { wabaPhoneNumberId: { $exists: false } }], 
+        active: true 
+      });
+      if (legacy.length > 0) {
+        workflows = legacy;
+        await Workflow.updateMany(
+          { userId: num.userId, $or: [{ wabaPhoneNumberId: null }, { wabaPhoneNumberId: { $exists: false } }], active: true },
+          { $set: { wabaPhoneNumberId: num.phoneNumberId } }
+        );
+      }
+    }
+
     if (workflows.length === 0) return;
-    let matchedWorkflow: any = null; let matchedByButton = false;
+    
+    let matchedWorkflow: any = null; 
+    let matchedByButton = false;
 
     if (buttonPayload) {
       if (buttonPayload.startsWith("restart_form_")) {
@@ -478,7 +496,7 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
 }
 
 // ============================================================================
-// TAG & OPT-OUT HELPERS
+// TAG & OPT-OUT HELPERS (With Logging)
 // ============================================================================
 
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
@@ -486,15 +504,27 @@ async function applyTagToContact(phoneNumber: string, tagId: string, userId: str
     const { default: Contact } = await import("@/models/Contact"); 
     const { default: Tag } = await import("@/models/Tag"); 
     const tag = await Tag.findById(tagId).lean(); 
-    if (tag) await Contact.findOneAndUpdate({ phone: phoneNumber, userId }, { $addToSet: { tags: tag.name } }, { upsert: true }); 
-  } catch {}
+    if (tag) {
+      await Contact.findOneAndUpdate({ phone: phoneNumber, userId }, { $addToSet: { tags: tag.name } }, { upsert: true });
+      console.log(`✅ [WORKFLOW] Tag applied: ${tag.name} to ${phoneNumber}`);
+    } else {
+      console.error("❌ [WORKFLOW] Tag not found for ID:", tagId);
+    }
+  } catch (err) {
+    console.error("❌ [WORKFLOW] Error applying tag to contact:", err);
+  }
 }
 
 async function addOptOutNumber(phoneNumber: string, userId: string, tenantId: string | null = null) {
   try { 
     const { default: OptNumber } = await import("@/models/OptNumber"); 
-    if (!(await OptNumber.findOne({ phoneNumber, userId }))) await OptNumber.create({ phoneNumber, userId, tenantId, createdBy: userId }); 
-  } catch {}
+    if (!(await OptNumber.findOne({ phoneNumber, userId }))) {
+      await OptNumber.create({ phoneNumber, userId, tenantId, createdBy: userId });
+      console.log(`✅ [WORKFLOW] Opt-out added: ${phoneNumber}`);
+    }
+  } catch (err) {
+    console.error("❌ [WORKFLOW] Error adding opt-out number:", err);
+  }
 }
 
 // ============================================================================
