@@ -14,6 +14,7 @@ import Session from '../models/Session';
 import mongoose from 'mongoose';
 import { syncCampaignToGoogleSheet } from '../lib/googleSheetSync';
 import { Job, Cache } from '../lib/queue';
+import { getPriceForCategory } from '../lib/billing'; // ✅ NEW: Import the exact same pricing function used by the UI
 
 connectDB()
   .then(async () => {
@@ -90,7 +91,7 @@ async function startCampaignWorker() {
 }
 
 async function processCampaignLoop(data: any, jobId: any) {
-  const { campaignId, userId, payerId, PHONE_NUMBER_ID, ACCESS_TOKEN, pricePerMessage } = data;
+  const { campaignId, userId, payerId, PHONE_NUMBER_ID, ACCESS_TOKEN } = data;
   await ensureDbConnected();
 
   // ✅ FIX: Reset any stuck "queued" documents back to "pending" (in case of crash/restart)
@@ -98,6 +99,14 @@ async function processCampaignLoop(data: any, jobId: any) {
 
   let thf = "";
   const batchSize = 20;
+  
+  // Fetch payer once at the start to calculate prices dynamically if needed
+  const payer: any = await User.findById(payerId).lean();
+  if (!payer) {
+    console.error("Payer not found, stopping campaign.");
+    await Campaign.updateOne({ _id: campaignId }, { $set: { status: "failed" } });
+    return;
+  }
   
   while (true) {
     // 1. Check Campaign Status (Pause / Stop)
@@ -131,7 +140,7 @@ async function processCampaignLoop(data: any, jobId: any) {
       mediaUrl: campaign.mediaUrl 
     };
 
-    // 2. ATOMIC FETCH: Grab the next 10 PENDING contacts and lock them
+    // 2. ATOMIC FETCH: Grab the next 20 PENDING contacts and lock them
     const reports = [];
     for (let i = 0; i < batchSize; i++) {
       const doc = await CampaignReport.findOneAndUpdate(
@@ -200,7 +209,14 @@ async function processCampaignLoop(data: any, jobId: any) {
 
       if (r.status === "sent") {
         sent++;
-        const pp = Number(pricePerMessage) > 0 ? Number(pricePerMessage) : (Number(campaign.pricePerMessage) || 0);
+        
+        // ✅ CRITICAL FIX: Calculate the EXACT price the same way the UI does
+        let pp = Number(campaign.pricePerMessage);
+        if (!pp || pp <= 0) {
+           // Fallback to dynamic calculation using the payer's current settings
+           pp = getPriceForCategory(payer, campaign.templateCategory || "MARKETING");
+        }
+
         bd += pp;
         bulkReportOps.push({ updateOne: { filter: { _id: reportId }, update: { $set: { status: "sent", sentWamid: r.wamid, charged: true, chargedAmount: pp } } } });
         messagesToCreate.push({ userId, phone: ph, text: "", direction: "out", messageType: "template", mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID });
@@ -216,7 +232,7 @@ async function processCampaignLoop(data: any, jobId: any) {
     if (bd > 0) try { await User.updateOne({ _id: payerId }, { $inc: { balance: -bd } }); } catch (e) {}
     try { await Campaign.updateOne({ _id: campaignId }, { $inc: { sentCount: sent, failedCount: failed, totalDeducted: ded } }); } catch (e) {}
 
-    // 5. Wait 500ms (Rate limit: 20 msgs/sec) and loop back to step 1
+    // 5. Wait 250ms (Rate limit: ~40 msgs/sec) and loop back to step 1
     await new Promise(r => setTimeout(r, 250));
   }
 }
