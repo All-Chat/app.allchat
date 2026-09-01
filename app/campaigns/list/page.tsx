@@ -656,7 +656,8 @@ export default function CampaignList() {
             <div className="p-5 sm:p-6 space-y-5 overflow-y-auto">
               {(() => {
                 const stats = getCampaignStats(viewCampaign);
-                const currentPrice = Number(viewCampaign.currentPrice || viewCampaign.pricePerMessage || 0);
+                // ✅ FIX: Prioritize the locked-in pricePerMessage (what was actually deducted)
+                const currentPrice = Number(viewCampaign.pricePerMessage || viewCampaign.currentPrice || 0);
                 const amountSpent = Number(viewCampaign.totalDeducted || 0);
 
                 return (
@@ -776,8 +777,6 @@ export default function CampaignList() {
                   </>
                 );
               })()}
-
-              {/* ✅ FIX: Removed Audience Preview Block Entirely */}
 
               {viewCampaign.variables?.length > 0 && (
                 <div>
@@ -943,7 +942,8 @@ export default function CampaignList() {
                 const cfg = statusConfig[displayStatus] || statusConfig.saved;
                 const isCompleted = displayStatus === "completed" || displayStatus === "failed";
 
-                const currentPrice = Number(c.currentPrice || c.pricePerMessage || 0);
+                // ✅ FIX: Prioritize the locked-in pricePerMessage (what was actually deducted)
+                const currentPrice = Number(c.pricePerMessage || c.currentPrice || 0);
                 const amountSpent = Number(c.totalDeducted || 0);
 
                 return (
@@ -1132,7 +1132,7 @@ export default function CampaignList() {
                         <span className="text-slate-500">Amount deducted:</span>
                         <span className="font-bold text-blue-700">{formatINR(amountSpent)}</span>
                         {currentPrice > 0 && (
-                          <span className="text-slate-400">(₹{currentPrice}/msg)</span>
+                          <span className="text-slate-400">(@ {formatINR(currentPrice)} / msg)</span>
                         )}
                       </div>
                     )}
