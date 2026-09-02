@@ -2,11 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Agent from "@/models/Agent";
 
-export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
+export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     await connectDB();
     
-    // Await params since it's a Promise in Next.js 15
+    // Await the params promise
     const { id } = await params;
     const body = await req.json();
     
@@ -24,7 +24,7 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
     const updatedAgent = await Agent.findByIdAndUpdate(
       id, 
       body, 
-      { returnDocument: 'after', runValidators: true } // Fixed Mongoose deprecation warning
+      { returnDocument: 'after', runValidators: true }
     );
     
     if (!updatedAgent) return NextResponse.json({ success: false, error: "Agent not found" }, { status: 404 });
@@ -35,11 +35,11 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
   }
 }
 
-export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     await connectDB();
     
-    // Await params
+    // Await the params promise
     const { id } = await params;
     
     const deletedAgent = await Agent.findByIdAndDelete(id);
