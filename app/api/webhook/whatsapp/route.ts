@@ -319,30 +319,56 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string): 
 }
 
 // ============================================================================
-// AI AGENT HANDLER (NEW)
+// AI AGENT HANDLER (WITH LOGS)
 // ============================================================================
 
 async function handleAIAgentMessage(msg: any, num: any, baseUrl: string) {
   try {
+    console.log(`[AI Agent] Webhook passed to AI. Looking for active agent for userId: ${num.userId}`);
+    
     // Find the active agent for this user
     const agent = await Agent.findOne({ userId: num.userId, active: true });
-    if (!agent) return; // No active agent, do nothing
-
-    const { text } = parseMessage(msg);
-    if (!text || !text.trim()) return;
-
-    console.log(`[AI Agent] Checking message against agent: ${agent.name}`);
     
-    // Check against the AI knowledge base
-    const aiResponse = await getAgentResponse(text, agent._id.toString(), agent.details);
-    
-    let finalReply = "";
-    if (aiResponse) {
-      finalReply = aiResponse; // Match found in details
-    } else {
-      finalReply = agent.fallbackMessage; // No match found, use fallback
+    if (!agent) {
+      console.log(`[AI Agent] No active agent found for this user. Aborting.`);
+      return; 
     }
 
+    console.log(`[AI Agent] Found active agent: ${agent.name}`);
+
+    const { text } = parseMessage(msg);
+    if (!text || !text.trim()) {
+      console.log(`[AI Agent] Message has no text. Aborting.`);
+      return;
+    }
+
+    console.log(`[AI Agent] Processing message: "${text}"`);
+    
+    // Check against the AI knowledge base
+    let aiResponse = null;
+    try {
+      aiResponse = await getAgentResponse(text, agent._id.toString(), agent.details);
+    } catch (aiErr) {
+      console.error("❌ [AI Agent] Error fetching AI response:", aiErr);
+    }
+
+    let finalReply = "";
+    if (aiResponse) {
+      console.log(`[AI Agent] Match found in details. Replying with matched info.`);
+      finalReply = aiResponse; 
+    } else {
+      console.log(`[AI Agent] No match found. Using fallback message.`);
+      finalReply = agent.fallbackMessage; 
+    }
+
+    // Double check finalReply isn't empty
+    if (!finalReply || finalReply.trim() === "") {
+      console.log(`[AI Agent] Fallback message is empty. Aborting send.`);
+      return;
+    }
+
+    console.log(`[AI Agent] Sending reply to ${msg.from}...`);
+    
     // Send the reply via WhatsApp
     await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: finalReply, stepType: "text" }, baseUrl);
     
@@ -357,8 +383,11 @@ async function handleAIAgentMessage(msg: any, num: any, baseUrl: string) {
       whatsappPhoneNumberId: num.phoneNumberId, 
       senderNumber: num.phoneNumberId 
     });
+
+    console.log(`[AI Agent] Reply sent successfully!`);
+
   } catch (err) {
-    console.error("❌ [AI Agent] Error:", err);
+    console.error("❌ [AI Agent] Fatal Error in handler:", err);
   }
 }
 
