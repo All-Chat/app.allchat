@@ -1,7 +1,19 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// lib/ai-agent.ts
 import { pipeline } from '@huggingface/transformers';
 
+// Generative model for reasoning and answering
+let generatorPromise: Promise<any> | null = null;
+const getGenerator = async () => {
+  if (!generatorPromise) {
+    // Using a very small instruction-tuned model that can run in Node.js
+    generatorPromise = pipeline('text-generation', 'Xenova/Qwen1.5-0.5B-Chat', {
+      device: 'cpu',
+    });
+  }
+  return generatorPromise;
+};
+
+// Embedding model for semantic search
 let extractorPromise: Promise<any> | null = null;
 const getExtractor = async () => {
   if (!extractorPromise) {
@@ -10,101 +22,92 @@ const getExtractor = async () => {
   return extractorPromise;
 };
 
-const agentCache: Map<string, { chunks: string[], embeddings: number[][], hash: string }> = new Map();
-
-const simpleHash = (str: string) => {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return hash.toString(16);
-};
-
-const chunkText = (rawDocumentation: string) => {
-  const rawLines = rawDocumentation.split('\n');
-  const chunks: string[] = [];
-  let currentChunk = '';
-  const headerRegex = /^[A-Z][A-Z0-9 \-\/&]+:$/;
-
-  for (const line of rawLines) {
-    const trimmedLine = line.trim();
-    if (headerRegex.test(trimmedLine)) {
-      if (currentChunk.trim()) chunks.push(currentChunk.trim());
-      currentChunk = trimmedLine + '\n';
-    } else {
-      currentChunk += line + '\n';
-    }
-  }
-  if (currentChunk.trim()) chunks.push(currentChunk.trim());
-  return chunks;
-};
-
 const calculateSimilarity = (vecA: number[], vecB: number[]) => {
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-
+  let dotProduct = 0, normA = 0, normB = 0;
   for (let i = 0; i < vecA.length; i++) {
-    const aVal = vecA[i];
-    const bVal = vecB[i] ?? 0;
-
-    dotProduct += aVal * bVal;
-    normA += aVal * aVal;
-    normB += bVal * bVal;
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
   }
-
-  if (normA === 0 || normB === 0) return 0;
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-};
-
-const formatBeautifully = (text: string) => {
-  return text.replace(/->/g, ' ➜ ');
 };
 
 export const getAgentResponse = async (userMessage: string, agentId: string, agentDetails: string) => {
   try {
     const extractor = await getExtractor();
-    if (!extractor) return null;
+    const generator = await getGenerator();
 
-    const hash = simpleHash(agentDetails);
-    let cached = agentCache.get(agentId);
+    // 1. Chunk the knowledge base by paragraphs for better context
+    const chunks = agentDetails.split('\n\n').map((c: string) => c.trim()).filter((c: string) => c.length > 0);
+    if (chunks.length === 0) return null;
 
-    if (!cached || cached.hash !== hash) {
-      const chunks = chunkText(agentDetails);
-      const embeddings: number[][] = await Promise.all(
-        chunks.map(async (chunk) => {
-          const output = await extractor(chunk, { pooling: 'mean', normalize: true });
-          return Array.from(output.data as ArrayLike<number>);
-        })
-      );
-      cached = { chunks, embeddings, hash };
-      agentCache.set(agentId, cached);
-    }
+    // 2. Create embeddings for chunks
+    const chunkEmbeddings = await Promise.all(
+      chunks.map(async (chunk: string) => {
+        const output = await extractor(chunk, { pooling: 'mean', normalize: true });
+        return Array.from(output.data) as number[];
+      })
+    );
 
-    const activeCache = cached;
-    if (!activeCache) return null;
-
+    // 3. Embed user question
     const queryOutput = await extractor(userMessage, { pooling: 'mean', normalize: true });
-    const queryEmbedding: number[] = Array.from(queryOutput.data as ArrayLike<number>);
+    const queryEmbedding = Array.from(queryOutput.data) as number[];
 
-    let bestMatch: string | null = null;
+    // 4. Find the best matching chunk (Context)
+    let bestMatch = null;
     let highestScore = 0;
-
-    for (let i = 0; i < activeCache.chunks.length; i++) {
-      const score = calculateSimilarity(queryEmbedding, activeCache.embeddings[i]);
+    for (let i = 0; i < chunks.length; i++) {
+      const score = calculateSimilarity(queryEmbedding, chunkEmbeddings[i]);
       if (score > highestScore) {
         highestScore = score;
-        bestMatch = activeCache.chunks[i];
+        bestMatch = chunks[i];
       }
     }
 
-    if (highestScore > 0.30 && bestMatch) {
-      return formatBeautifully(bestMatch);
+    // If similarity is very low, we don't have relevant context. Return null to trigger fallback.
+    if (highestScore < 0.25 || !bestMatch) {
+      console.log(`[AI Agent] No relevant context found (Score: ${highestScore})`);
+      return null;
     }
 
-    return null; // No match found
+    console.log(`[AI Agent] Found relevant context (Score: ${highestScore}). Generating response...`);
+
+    // 5. Construct the prompt for the generative model
+    const prompt = `<|im_start|>system
+You are a helpful AI assistant. Use the following context to answer the user's question. If the context does not contain the answer, say you don't know. Keep the answer concise and conversational.<|im_end|>
+<|im_start|>user
+Context:
+ ${bestMatch}
+
+Question: ${userMessage}<|im_end|>
+<|im_start|>assistant
+`;
+
+    // 6. Generate response
+    const output = await generator(prompt, {
+      max_new_tokens: 150,
+      temperature: 0.7,
+      do_sample: true,
+      top_k: 50,
+      repetition_penalty: 1.1,
+    });
+
+    let generatedText = output[0].generated_text;
+    
+    // Extract only the assistant's reply
+    const assistantIndex = generatedText.indexOf("<|im_start|>assistant\n");
+    if (assistantIndex !== -1) {
+      generatedText = generatedText.substring(assistantIndex + "<|im_start|>assistant\n".length);
+    }
+    
+    // Clean up any trailing tags
+    generatedText = generatedText.split("<|im_end|>")[0].trim();
+
+    if (!generatedText || generatedText.length === 0) {
+      return null;
+    }
+    
+    return generatedText;
   } catch (error) {
     console.error("AI Agent processing error:", error);
     return null;
