@@ -1,11 +1,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { pipeline } from '@huggingface/transformers';
 
-// Generative model for reasoning and answering
+// --- Model Loaders ---
+
+// Generative model for reasoning and answering (100% Free & Local)
 let generatorPromise: Promise<any> | null = null;
 const getGenerator = async () => {
   if (!generatorPromise) {
-    // Using a very small instruction-tuned model that can run in Node.js
+    // Using Qwen1.5-0.5B-Chat: a very small, fast, free local model good for instructions
     generatorPromise = pipeline('text-generation', 'Xenova/Qwen1.5-0.5B-Chat', {
       device: 'cpu',
     });
@@ -13,7 +15,7 @@ const getGenerator = async () => {
   return generatorPromise;
 };
 
-// Embedding model for semantic search
+// Embedding model for semantic search (100% Free & Local)
 let extractorPromise: Promise<any> | null = null;
 const getExtractor = async () => {
   if (!extractorPromise) {
@@ -22,6 +24,7 @@ const getExtractor = async () => {
   return extractorPromise;
 };
 
+// --- Vector Similarity ---
 const calculateSimilarity = (vecA: number[], vecB: number[]) => {
   let dotProduct = 0, normA = 0, normB = 0;
   for (let i = 0; i < vecA.length; i++) {
@@ -32,6 +35,7 @@ const calculateSimilarity = (vecA: number[], vecB: number[]) => {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 };
 
+// --- Main RAG Function ---
 export const getAgentResponse = async (userMessage: string, agentId: string, agentDetails: string) => {
   try {
     const extractor = await getExtractor();
@@ -45,13 +49,13 @@ export const getAgentResponse = async (userMessage: string, agentId: string, age
     const chunkEmbeddings = await Promise.all(
       chunks.map(async (chunk: string) => {
         const output = await extractor(chunk, { pooling: 'mean', normalize: true });
-        return Array.from(output.data) as number[];
+        return Array.from(output.data as Float32Array);
       })
     );
 
     // 3. Embed user question
     const queryOutput = await extractor(userMessage, { pooling: 'mean', normalize: true });
-    const queryEmbedding = Array.from(queryOutput.data) as number[];
+    const queryEmbedding = Array.from(queryOutput.data as Float32Array);
 
     // 4. Find the best matching chunk (Context)
     let bestMatch = null;
@@ -64,7 +68,7 @@ export const getAgentResponse = async (userMessage: string, agentId: string, age
       }
     }
 
-    // If similarity is very low, we don't have relevant context. Return null to trigger fallback.
+    // If similarity is too low, return null to trigger the fallback message
     if (highestScore < 0.25 || !bestMatch) {
       console.log(`[AI Agent] No relevant context found (Score: ${highestScore})`);
       return null;
@@ -72,32 +76,28 @@ export const getAgentResponse = async (userMessage: string, agentId: string, age
 
     console.log(`[AI Agent] Found relevant context (Score: ${highestScore}). Generating response...`);
 
-    // 5. Construct the prompt for the generative model
-    const prompt = `<|im_start|>system
-You are a helpful AI assistant. Use the following context to answer the user's question. If the context does not contain the answer, say you don't know. Keep the answer concise and conversational.<|im_end|>
-<|im_start|>user
-Context:
- ${bestMatch}
+    // 5. Construct the prompt for the Generative AI
+    // Using the ChatML format which Qwen and similar models understand
+    const systemPrompt = `You are a helpful AI assistant. Answer the user's question using ONLY the provided Context. If the context does not contain the exact answer (like a specific price), follow the rules in the context (e.g., say you don't have the info and offer to connect them with the team). Keep answers short and conversational.`;
+    
+    const prompt = `<|im_start|>system\n${systemPrompt}<|im_end|>\n<|im_start|>user\nContext:\n${bestMatch}\n\nQuestion: ${userMessage}<|im_end|>\n<|im_start|>assistant\n`;
 
-Question: ${userMessage}<|im_end|>
-<|im_start|>assistant
-`;
-
-    // 6. Generate response
+    // 6. Generate the response
     const output = await generator(prompt, {
       max_new_tokens: 150,
-      temperature: 0.7,
+      temperature: 0.3, // Lower temperature for more factual, less creative responses
       do_sample: true,
-      top_k: 50,
       repetition_penalty: 1.1,
     });
 
     let generatedText = output[0].generated_text;
     
-    // Extract only the assistant's reply
-    const assistantIndex = generatedText.indexOf("<|im_start|>assistant\n");
+    // Extract only the assistant's reply (after the last <|im_start|>assistant\n)
+    const assistantTag = "<|im_start|>assistant\n";
+    const assistantIndex = generatedText.lastIndexOf(assistantTag);
+    
     if (assistantIndex !== -1) {
-      generatedText = generatedText.substring(assistantIndex + "<|im_start|>assistant\n".length);
+      generatedText = generatedText.substring(assistantIndex + assistantTag.length);
     }
     
     // Clean up any trailing tags
@@ -107,6 +107,7 @@ Question: ${userMessage}<|im_end|>
       return null;
     }
     
+    console.log(`[AI Agent] Generated Reply: ${generatedText}`);
     return generatedText;
   } catch (error) {
     console.error("AI Agent processing error:", error);
