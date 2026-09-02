@@ -1,13 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { pipeline } from '@huggingface/transformers';
 
-// --- Model Loaders ---
-
 // Generative model for reasoning and answering (100% Free & Local)
 let generatorPromise: Promise<any> | null = null;
 const getGenerator = async () => {
   if (!generatorPromise) {
-    // Using Qwen1.5-0.5B-Chat: a very small, fast, free local model good for instructions
+    // Using Qwen1.5-0.5B-Chat
     generatorPromise = pipeline('text-generation', 'Xenova/Qwen1.5-0.5B-Chat', {
       device: 'cpu',
     });
@@ -24,7 +22,6 @@ const getExtractor = async () => {
   return extractorPromise;
 };
 
-// --- Vector Similarity ---
 const calculateSimilarity = (vecA: number[], vecB: number[]) => {
   let dotProduct = 0, normA = 0, normB = 0;
   for (let i = 0; i < vecA.length; i++) {
@@ -35,7 +32,6 @@ const calculateSimilarity = (vecA: number[], vecB: number[]) => {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 };
 
-// --- Main RAG Function ---
 export const getAgentResponse = async (userMessage: string, agentId: string, agentDetails: string) => {
   try {
     const extractor = await getExtractor();
@@ -49,13 +45,13 @@ export const getAgentResponse = async (userMessage: string, agentId: string, age
     const chunkEmbeddings = await Promise.all(
       chunks.map(async (chunk: string) => {
         const output = await extractor(chunk, { pooling: 'mean', normalize: true });
-        return Array.from(output.data as Float32Array);
+        return Array.from(output.data) as number[];
       })
     );
 
     // 3. Embed user question
     const queryOutput = await extractor(userMessage, { pooling: 'mean', normalize: true });
-    const queryEmbedding = Array.from(queryOutput.data as Float32Array);
+    const queryEmbedding = Array.from(queryOutput.data) as number[];
 
     // 4. Find the best matching chunk (Context)
     let bestMatch = null;
@@ -77,17 +73,16 @@ export const getAgentResponse = async (userMessage: string, agentId: string, age
     console.log(`[AI Agent] Found relevant context (Score: ${highestScore}). Generating response...`);
 
     // 5. Construct the prompt for the Generative AI
-    // Using the ChatML format which Qwen and similar models understand
-    const systemPrompt = `You are a helpful AI assistant. Answer the user's question using ONLY the provided Context. If the context does not contain the exact answer (like a specific price), follow the rules in the context (e.g., say you don't have the info and offer to connect them with the team). Keep answers short and conversational.`;
+    const systemPrompt = `You are a helpful AI assistant. Read the Context and answer the User's question. Provide ONLY the direct answer. Do not add conversational filler. Keep it under 2 sentences.`;
     
     const prompt = `<|im_start|>system\n${systemPrompt}<|im_end|>\n<|im_start|>user\nContext:\n${bestMatch}\n\nQuestion: ${userMessage}<|im_end|>\n<|im_start|>assistant\n`;
 
-    // 6. Generate the response
+    // 6. Generate the response with strict settings to prevent rambling
     const output = await generator(prompt, {
-      max_new_tokens: 150,
-      temperature: 0.3, // Lower temperature for more factual, less creative responses
-      do_sample: true,
-      repetition_penalty: 1.1,
+      max_new_tokens: 60,       // Hard limit so it can't ramble
+      temperature: 0.1,         // Very low temperature for factual answers
+      do_sample: false,         // Greedy decoding: forces the most likely tokens, preventing hallucinations
+      repetition_penalty: 1.5, // Strong penalty to stop repeating text
     });
 
     let generatedText = output[0].generated_text;
@@ -102,6 +97,11 @@ export const getAgentResponse = async (userMessage: string, agentId: string, age
     
     // Clean up any trailing tags
     generatedText = generatedText.split("<|im_end|>")[0].trim();
+
+    // Fallback if the model somehow leaked the prompt or generated garbage
+    if (generatedText.toLowerCase().includes("instead only") || generatedText.toLowerCase().includes("this should come")) {
+      return null; // Trigger fallback message instead of sending garbage
+    }
 
     if (!generatedText || generatedText.length === 0) {
       return null;
