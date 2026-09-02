@@ -10,6 +10,8 @@ import Form from "@/models/Form";
 import FormResponse from "@/models/FormResponse";
 import Campaign from "@/models/Campaign";
 import CampaignReport from "@/models/CampaignReport";
+import Agent from "@/models/Agent"; // NEW IMPORT
+import { getAgentResponse } from "@/lib/ai-agent"; // NEW IMPORT
 import fs from "fs";
 import path from "path";
 import mongoose from "mongoose";
@@ -186,26 +188,26 @@ async function uploadMediaToMetaFromUrl(phoneNumberId: string, accessToken: stri
 }
 
 // ============================================================================
-// WORKFLOW EXECUTION
+// WORKFLOW EXECUTION (Returns TRUE if matched, FALSE if no workflow matches)
 // ============================================================================
 
-async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
+async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string): Promise<boolean> {
   try {
-    if (!["text", "button", "interactive"].includes(msg.type)) return;
+    if (!["text", "button", "interactive"].includes(msg.type)) return false;
     const incomingText = parseMessage(msg).text;
     const buttonPayload = extractButtonPayload(msg);
-    if (!incomingText && !buttonPayload) return;
+    if (!incomingText && !buttonPayload) return false;
     
     await clearWorkflowTimer(msg.from);
     const activeSession = await Session.findOne({ phone: msg.from, userId: num.userId });
 
     if (activeSession && activeSession.formId && !(buttonPayload && buttonPayload.startsWith("restart_form_"))) {
       const form = await Form.findById(activeSession.formId);
-      if (!form) { await Session.deleteOne({ _id: activeSession._id }); return; }
+      if (!form) { await Session.deleteOne({ _id: activeSession._id }); return true; }
       const fieldIndex = activeSession.formFieldIndex;
       const currentField = form.fields[fieldIndex];
-      if (!currentField) { await Session.deleteOne({ _id: activeSession._id }); return; }
-      if (currentField.required && !incomingText.trim()) { await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: "⚠️ Required.", stepType: "text" }, baseUrl); return; }
+      if (!currentField) { await Session.deleteOne({ _id: activeSession._id }); return true; }
+      if (currentField.required && !incomingText.trim()) { await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: "⚠️ Required.", stepType: "text" }, baseUrl); return true; }
       await FormResponse.updateOne({ formId: form._id, phone: msg.from, status: "incomplete" }, { $set: { [`data.${currentField.label}`]: incomingText } });
       const nextFieldIndex = fieldIndex + 1;
       if (nextFieldIndex < form.fields.length) {
@@ -217,21 +219,16 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
         await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: form.completionMessage || "✅ Thank you!", stepType: "text" }, baseUrl);
         await Session.deleteOne({ _id: activeSession._id });
       }
-      return;
+      return true; // Handled by form
     }
 
-    console.log(`[Workflow Check] User: ${num.userId}, PhoneId: ${num.phoneNumberId}, Incoming: ${incomingText}, Button: ${buttonPayload}`);
-    
     let workflows = await Workflow.find({ userId: num.userId, wabaPhoneNumberId: num.phoneNumberId, active: true });
-    console.log(`[Workflow Check] Found ${workflows.length} active workflows for this phone number.`);
-    
     if (workflows.length === 0) {
       const legacy = await Workflow.find({ 
         userId: num.userId, 
         $or: [{ wabaPhoneNumberId: null }, { wabaPhoneNumberId: { $exists: false } }, { wabaPhoneNumberId: "" }], 
         active: true 
       });
-      console.log(`[Workflow Check] Found ${legacy.length} legacy workflows.`);
       if (legacy.length > 0) {
         workflows = legacy;
         await Workflow.updateMany(
@@ -241,7 +238,7 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
       }
     }
 
-    if (workflows.length === 0) return;
+    if (workflows.length === 0) return false; // No workflows, let AI handle it
     
     let matchedWorkflow: any = null; 
     let matchedByButton = false;
@@ -254,7 +251,7 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
           await upsertSession(msg.from, num.userId.toString(), { formId: formData._id, formFieldIndex: 0, updatedAt: new Date() });
           await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: `*${formData.name}*\n\n${formData.fields[0].label}`, stepType: "text" }, baseUrl);
           startFormInactivityTimer(msg.from, num.userId.toString(), formData._id.toString(), 0, formData.fields[0], formData, num.accessToken, num.phoneNumberId, baseUrl);
-          return;
+          return true;
         }
       }
       for (const wf of workflows) {
@@ -280,11 +277,9 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
     }
     
     if (!matchedWorkflow) {
-      console.log(`[Workflow Check] No workflow matched the trigger.`);
-      return;
+      console.log(`[Workflow Check] No workflow matched. Passing to AI...`);
+      return false; // Nothing matched, let AI handle it
     }
-
-    console.log(`[Workflow Check] Matched Workflow: ${matchedWorkflow.name}`);
 
     const steps = matchedWorkflow.steps;
     let currentStepId = matchedWorkflow.rootStepId;
@@ -294,24 +289,21 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
         if (btn?.nextStepId) { currentStepId = btn.nextStepId; break; }
       }
     }
-    if (!currentStepId || !steps[currentStepId]) return;
+    if (!currentStepId || !steps[currentStepId]) return true;
 
-    // ✅ CRITICAL FIX: Restore Trigger Actions execution for the root step
     const rootStep = steps[currentStepId];
     if (rootStep.stepType === "opt_in_node") {
       await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
-      return;
+      return true;
     } else if (rootStep.stepType === "tag_node") {
       if (rootStep.selectedTag) await applyTagToContact(msg.from, rootStep.selectedTag, num.userId.toString());
-      return;
+      return true;
     }
 
     if (rootStep?.triggerActions && rootStep.triggerActions.length > 0) {
-      console.log(`[Workflow Check] Found ${rootStep.triggerActions.length} trigger actions on root step.`);
       for (const action of rootStep.triggerActions) {
-        if (action.type === "opt_in_node") {
-          await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
-        } else if (action.type === "tag_node") {
+        if (action.type === "opt_in_node") await addOptOutNumber(msg.from, num.userId.toString(), num.tenantId);
+        else if (action.type === "tag_node") {
           const tagStep = steps[action.stepId];
           if (tagStep?.selectedTag) await applyTagToContact(msg.from, tagStep.selectedTag, num.userId.toString());
         }
@@ -319,7 +311,55 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string) {
     }
     
     await processWorkflowStep(currentStepId, steps, matchedWorkflow, num.accessToken, num.phoneNumberId, msg.from, num.userId.toString(), num.tenantId, baseUrl);
-  } catch (err) { console.error("❌ [WORKFLOW] Error:", err); }
+    return true; // Handled by workflow
+  } catch (err) { 
+    console.error("❌ [WORKFLOW] Error:", err); 
+    return false; 
+  }
+}
+
+// ============================================================================
+// AI AGENT HANDLER (NEW)
+// ============================================================================
+
+async function handleAIAgentMessage(msg: any, num: any, baseUrl: string) {
+  try {
+    // Find the active agent for this user
+    const agent = await Agent.findOne({ userId: num.userId, active: true });
+    if (!agent) return; // No active agent, do nothing
+
+    const { text } = parseMessage(msg);
+    if (!text || !text.trim()) return;
+
+    console.log(`[AI Agent] Checking message against agent: ${agent.name}`);
+    
+    // Check against the AI knowledge base
+    const aiResponse = await getAgentResponse(text, agent._id.toString(), agent.details);
+    
+    let finalReply = "";
+    if (aiResponse) {
+      finalReply = aiResponse; // Match found in details
+    } else {
+      finalReply = agent.fallbackMessage; // No match found, use fallback
+    }
+
+    // Send the reply via WhatsApp
+    await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: finalReply, stepType: "text" }, baseUrl);
+    
+    // Save the outgoing message to the database
+    await Message.create({ 
+      userId: num.userId, 
+      phone: msg.from, 
+      text: finalReply, 
+      direction: "out", 
+      messageType: "text", 
+      status: "sent", 
+      whatsappPhoneNumberId: num.phoneNumberId, 
+      senderNumber: num.phoneNumberId 
+    });
+  } catch (err) {
+    console.error("❌ [AI Agent] Error:", err);
+  }
 }
 
 // ============================================================================
@@ -338,38 +378,26 @@ async function processWorkflowStep(
   baseUrl: string
 ) {
   const step = steps[stepId];
-  if (!step) {
-    console.error(`❌ [Workflow Step] Step not found for ID: ${stepId}`);
-    return;
-  }
-  console.log(`[Workflow Step] Processing step: ${stepId} (${step.stepType}). Next step: ${step.nextStepId || 'None'}`);
+  if (!step) return;
 
-  // ─── DELAY NODE ───
   if (step.stepType === "delay_node") { 
     if (step.delaySeconds > 0) await new Promise(r => setTimeout(r, step.delaySeconds * 1000)); 
     if (step.nextStepId) return await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl); 
     return; 
   }
 
-  // ─── OPT-OUT NODE ───
   if (step.stepType === "opt_in_node") { 
     await addOptOutNumber(customerNumber, userId, tenantId); 
-    if (step.nextStepId) {
-      return await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
-    }
+    if (step.nextStepId) return await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
     return; 
   }
 
-  // ─── TAG NODE ───
   if (step.stepType === "tag_node") { 
     if (step.selectedTag) await applyTagToContact(customerNumber, step.selectedTag, userId); 
-    if (step.nextStepId) {
-      return await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
-    }
+    if (step.nextStepId) return await processWorkflowStep(step.nextStepId, steps, matchedWorkflow, accessToken, phoneNumberId, customerNumber, userId, tenantId, baseUrl);
     return; 
   }
 
-  // ─── FORM NODE ───
   if (step.stepType === "form_node" && step.selectedForm) {
     const formData = await Form.findById(step.selectedForm);
     if (!formData || !formData.fields.length) return;
@@ -379,7 +407,6 @@ async function processWorkflowStep(
     return;
   }
 
-  // ─── MESSAGE NODE / CALL / URL ACTION / DEFAULT ───
   await sendWorkflowWhatsAppMessage(accessToken, phoneNumberId, customerNumber, step, baseUrl);
   await saveOutgoingWorkflowMessage(userId, customerNumber, phoneNumberId, step);
   await upsertSession(customerNumber, userId, { workflowId: matchedWorkflow._id, currentStepId: step.id, formId: null, formFieldIndex: 0, updatedAt: new Date() });
@@ -453,39 +480,27 @@ async function sendWorkflowWhatsAppMessage(accessToken: string, phoneNumberId: s
 }
 
 // ============================================================================
-// TAG & OPT-OUT HELPERS (With Heavy Logging)
+// TAG & OPT-OUT HELPERS
 // ============================================================================
 
 async function applyTagToContact(phoneNumber: string, tagId: string, userId: string) {
   try { 
-    console.log(`[Tag Apply] Attempting to apply tag ${tagId} to ${phoneNumber}`);
     const { default: Contact } = await import("@/models/Contact"); 
     const { default: Tag } = await import("@/models/Tag"); 
     const tag = await Tag.findById(tagId).lean(); 
     if (tag) {
-      const result = await Contact.findOneAndUpdate({ phone: phoneNumber, userId }, { $addToSet: { tags: tag.name } }, { upsert: true });
-      console.log(`✅ [Tag Apply] Tag applied: ${tag.name} to ${phoneNumber}. Contact updated: ${result ? 'Yes' : 'No'}`);
-    } else {
-      console.error("❌ [Tag Apply] Tag not found for ID:", tagId);
+      await Contact.findOneAndUpdate({ phone: phoneNumber, userId }, { $addToSet: { tags: tag.name } }, { upsert: true });
     }
-  } catch (err) {
-    console.error("❌ [Tag Apply] Error applying tag to contact:", err);
-  }
+  } catch (err) {}
 }
 
 async function addOptOutNumber(phoneNumber: string, userId: string, tenantId: string | null = null) {
   try { 
-    console.log(`[Opt-Out] Attempting to opt-out ${phoneNumber}`);
     const { default: OptNumber } = await import("@/models/OptNumber"); 
     if (!(await OptNumber.findOne({ phoneNumber, userId }))) {
       await OptNumber.create({ phoneNumber, userId, tenantId, createdBy: userId });
-      console.log(`✅ [Opt-Out] Opt-out added: ${phoneNumber}`);
-    } else {
-      console.log(`[Opt-Out] Number already opted out: ${phoneNumber}`);
     }
-  } catch (err) {
-    console.error("❌ [Opt-Out] Error adding opt-out number:", err);
-  }
+  } catch (err) {}
 }
 
 // ============================================================================
@@ -523,7 +538,15 @@ export async function POST(req: NextRequest) {
         for (const msg of value.messages || []) {
           if (msg.type === "reaction" || msg.type === "system") continue;
           await processAndSaveMessage(msg, num);
-          await executeWorkflowsForMessage(msg, num, baseUrl);
+          
+          // 1. Try to match workflow/form
+          const handledByWorkflow = await executeWorkflowsForMessage(msg, num, baseUrl);
+          
+          // 2. If no workflow matched, let the AI Agent handle it
+          if (!handledByWorkflow) {
+            await handleAIAgentMessage(msg, num, baseUrl);
+          }
+          
           await handleCampaignReply(msg, num);
         }
 
