@@ -5,7 +5,6 @@ import { pipeline } from '@huggingface/transformers';
 let generatorPromise: Promise<any> | null = null;
 const getGenerator = async () => {
   if (!generatorPromise) {
-    // Using Qwen1.5-0.5B-Chat
     generatorPromise = pipeline('text-generation', 'Xenova/Qwen1.5-0.5B-Chat', {
       device: 'cpu',
     });
@@ -35,23 +34,22 @@ const calculateSimilarity = (vecA: number[], vecB: number[]) => {
 export const getAgentResponse = async (userMessage: string, agentId: string, agentDetails: string) => {
   try {
     const extractor = await getExtractor();
-    const generator = await getGenerator();
 
     // 1. Chunk the knowledge base by paragraphs for better context
     const chunks = agentDetails.split('\n\n').map((c: string) => c.trim()).filter((c: string) => c.length > 0);
     if (chunks.length === 0) return null;
 
     // 2. Create embeddings for chunks
-    const chunkEmbeddings = await Promise.all(
+    const chunkEmbeddings: number[][] = await Promise.all(
       chunks.map(async (chunk: string) => {
         const output = await extractor(chunk, { pooling: 'mean', normalize: true });
-        return Array.from(output.data) as number[];
+        return Array.from(output.data as number[]);
       })
     );
 
     // 3. Embed user question
     const queryOutput = await extractor(userMessage, { pooling: 'mean', normalize: true });
-    const queryEmbedding = Array.from(queryOutput.data) as number[];
+    const queryEmbedding: number[] = Array.from(queryOutput.data as number[]);
 
     // 4. Find the best matching chunk (Context)
     let bestMatch = null;
@@ -70,24 +68,49 @@ export const getAgentResponse = async (userMessage: string, agentId: string, age
       return null;
     }
 
-    console.log(`[AI Agent] Found relevant context (Score: ${highestScore}). Generating response...`);
+    console.log(`[AI Agent] Found relevant context (Score: ${highestScore}).`);
 
-    // 5. Construct the prompt for the Generative AI
-    const systemPrompt = `You are a helpful AI assistant. Read the Context and answer the User's question. Provide ONLY the direct answer. Do not add conversational filler. Keep it under 2 sentences.`;
+    // 5. SMART EXTRACTION: If the context is a predefined Q&A pair, return the exact answer.
+    // This prevents the AI from hallucinating or rewriting the perfect answer you already wrote.
+    if (bestMatch.includes("Q:") && bestMatch.includes("A:")) {
+      const answerPart = bestMatch.split("A:")[1]?.trim();
+      if (answerPart && answerPart.length > 0) {
+        // If there are multiple Q&A pairs in the chunk, find the one most relevant to the question
+        const qaPairs = bestMatch.split(/Q:/).filter((p: string) => p.trim().length > 0);
+        for (const pair of qaPairs) {
+          if (pair.toLowerCase().includes(userMessage.toLowerCase().split('?')[0]) || pair.includes("?")) {
+            const ans = pair.split("A:")[1]?.trim();
+            if (ans && ans.length > 0) {
+              console.log(`[AI Agent] Returning exact predefined Q&A answer.`);
+              return ans;
+            }
+          }
+        }
+        
+        console.log(`[AI Agent] Returning exact predefined Q&A answer.`);
+        return answerPart;
+      }
+    }
+
+    console.log(`[AI Agent] Generating conversational response...`);
+
+    // 6. If it's a paragraph of rules/info, use the Generative AI
+    const generator = await getGenerator();
+    
+    // Construct the prompt for the Generative AI
+    const systemPrompt = `You are a helpful WhatsApp assistant. Answer the question using ONLY the Context. Do not invent car names or prices. If the Context does not have the exact info, say you don't have it and offer to connect them with the team. Keep it under 2 sentences.`;
     
     const prompt = `<|im_start|>system\n${systemPrompt}<|im_end|>\n<|im_start|>user\nContext:\n${bestMatch}\n\nQuestion: ${userMessage}<|im_end|>\n<|im_start|>assistant\n`;
 
-    // 6. Generate the response with strict settings to prevent rambling
     const output = await generator(prompt, {
-      max_new_tokens: 60,       // Hard limit so it can't ramble
-      temperature: 0.1,         // Very low temperature for factual answers
-      do_sample: false,         // Greedy decoding: forces the most likely tokens, preventing hallucinations
-      repetition_penalty: 1.5, // Strong penalty to stop repeating text
+      max_new_tokens: 60,
+      temperature: 0.1,
+      do_sample: false,
+      repetition_penalty: 1.5,
     });
 
     let generatedText = output[0].generated_text;
     
-    // Extract only the assistant's reply (after the last <|im_start|>assistant\n)
     const assistantTag = "<|im_start|>assistant\n";
     const assistantIndex = generatedText.lastIndexOf(assistantTag);
     
@@ -95,12 +118,11 @@ export const getAgentResponse = async (userMessage: string, agentId: string, age
       generatedText = generatedText.substring(assistantIndex + assistantTag.length);
     }
     
-    // Clean up any trailing tags
     generatedText = generatedText.split("<|im_end|>")[0].trim();
 
-    // Fallback if the model somehow leaked the prompt or generated garbage
+    // Fallback if the model generated garbage or leaked the prompt
     if (generatedText.toLowerCase().includes("instead only") || generatedText.toLowerCase().includes("this should come")) {
-      return null; // Trigger fallback message instead of sending garbage
+      return null;
     }
 
     if (!generatedText || generatedText.length === 0) {
