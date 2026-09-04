@@ -4,16 +4,14 @@ import { connectDB } from "@/lib/mongodb";
 import Agent from "@/models/Agent";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { checkLimit, incrementUsage } from "@/lib/limits";
 
 export async function GET() {
   try {
-    // Run DB connection and auth session in parallel
     const [, session] = await Promise.all([connectDB(), getServerSession(authOptions)]);
     const userId = session?.user?.id;
-    
-    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!userId) return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
 
-    // Fetch agents from latest to oldest
     const agents = await Agent.find({ userId }).sort({ createdAt: -1 }).lean();
     return NextResponse.json({ success: true, agents });
   } catch (error: any) {
@@ -25,20 +23,33 @@ export async function POST(req: Request) {
   try {
     const [, session] = await Promise.all([connectDB(), getServerSession(authOptions)]);
     const userId = session?.user?.id;
-    
-    if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!userId) return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 });
+
+    // ✅ LIMIT CHECK
+    const limitCheck = await checkLimit(userId, "aiAgents" as any);
+    if (!limitCheck.allowed) {
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: `AI Agent limit reached. You have used ${limitCheck.currentUsage}/${limitCheck.limit} agents per ${limitCheck.period}.`, 
+          limitExceeded: true 
+        },
+        { status: 429 }
+      );
+    }
 
     const body = await req.json();
 
-    // Extract tenantId if it exists in the session
     const tenantId = (session.user as any)?.parentTenantId || (session.user as any)?.tenantId || null;
 
-    // Create agent with the correct userId and tenantId
     const newAgent = await Agent.create({
       ...body,
       userId,
       tenantId,
     });
+
+    // ✅ INCREMENT USAGE
+    incrementUsage(userId, "aiAgents" as any).catch(() => {});
 
     return NextResponse.json({ success: true, agent: newAgent });
   } catch (error: any) {
