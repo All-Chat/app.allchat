@@ -13,7 +13,7 @@ Zap, CreditCard, UserCog,
 Timer, Infinity as InfinityIcon, AlertTriangle, BadgeCheck,
 User, Lock, Megaphone, Wrench, ShieldCheck,
 Tag, GitBranch, FileText, Send, UserPlus, ClipboardList,
-RotateCcw, Gauge, Package, Trash2, Check, Globe, LayoutGrid, BarChart3
+RotateCcw, Gauge, Package, Trash2, Check, Globe, LayoutGrid, BarChart3, Bot
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -38,26 +38,28 @@ const LIMIT_RESOURCES_CONFIG = [
 { key: "optNumbers", label: "Opt-in Numbers", icon: UserPlus, color: "cyan", description: "Opt-in contact numbers" },
 { key: "forms", label: "Forms", icon: ClipboardList, color: "amber", description: "Form creation" },
 { key: "whatsappNumbers", label: "WhatsApp Numbers", icon: Phone, color: "indigo", description: "Multiple WA numbers per user" },
+{ key: "aiAgents", label: "AI Agents", icon: Bot, color: "teal", description: "AI Agent creation" },
 ];
 
 const LIMIT_PRESETS = [
-{ label: "Free Tier", limits: { tags: { max: 5, period: "month" }, workflows: { max: 2, period: "total" }, templates: { max: 3, period: "total" }, testMessages: { max: 5, period: "day" }, campaigns: { max: 2, period: "month" }, optNumbers: { max: 50, period: "total" }, forms: { max: 2, period: "total" }, whatsappNumbers: { max: 1, period: "total" } } },
-{ label: "Basic", limits: { tags: { max: 50, period: "month" }, workflows: { max: 5, period: "total" }, templates: { max: 10, period: "total" }, testMessages: { max: 20, period: "day" }, campaigns: { max: 5, period: "month" }, optNumbers: { max: 500, period: "total" }, forms: { max: 5, period: "total" }, whatsappNumbers: { max: 2, period: "total" } } },
-{ label: "Pro", limits: { tags: { max: 200, period: "month" }, workflows: { max: 20, period: "total" }, templates: { max: 50, period: "total" }, testMessages: { max: 100, period: "day" }, campaigns: { max: 20, period: "month" }, optNumbers: { max: 5000, period: "total" }, forms: { max: 20, period: "total" }, whatsappNumbers: { max: 5, period: "total" } } },
-{ label: "Enterprise", limits: { tags: { max: -1, period: "unlimited" }, workflows: { max: -1, period: "unlimited" }, templates: { max: -1, period: "unlimited" }, testMessages: { max: -1, period: "unlimited" }, campaigns: { max: -1, period: "unlimited" }, optNumbers: { max: -1, period: "unlimited" }, forms: { max: -1, period: "unlimited" }, whatsappNumbers: { max: -1, period: "unlimited" } } },
+{ label: "Free Tier", limits: { tags: { max: 5, period: "month" }, workflows: { max: 2, period: "total" }, templates: { max: 3, period: "total" }, testMessages: { max: 5, period: "day" }, campaigns: { max: 2, period: "month" }, optNumbers: { max: 50, period: "total" }, forms: { max: 2, period: "total" }, whatsappNumbers: { max: 1, period: "total" }, aiAgents: { max: 1, period: "total" } } },
+{ label: "Basic", limits: { tags: { max: 50, period: "month" }, workflows: { max: 5, period: "total" }, templates: { max: 10, period: "total" }, testMessages: { max: 20, period: "day" }, campaigns: { max: 5, period: "month" }, optNumbers: { max: 500, period: "total" }, forms: { max: 5, period: "total" }, whatsappNumbers: { max: 2, period: "total" }, aiAgents: { max: 3, period: "total" } } },
+{ label: "Pro", limits: { tags: { max: 200, period: "month" }, workflows: { max: 20, period: "total" }, templates: { max: 50, period: "total" }, testMessages: { max: 100, period: "day" }, campaigns: { max: 20, period: "month" }, optNumbers: { max: 5000, period: "total" }, forms: { max: 20, period: "total" }, whatsappNumbers: { max: 5, period: "total" }, aiAgents: { max: 10, period: "total" } } },
+{ label: "Enterprise", limits: { tags: { max: -1, period: "unlimited" }, workflows: { max: -1, period: "unlimited" }, templates: { max: -1, period: "unlimited" }, testMessages: { max: -1, period: "unlimited" }, campaigns: { max: -1, period: "unlimited" }, optNumbers: { max: -1, period: "unlimited" }, forms: { max: -1, period: "unlimited" }, whatsappNumbers: { max: -1, period: "unlimited" }, aiAgents: { max: -1, period: "unlimited" } } },
 ];
 
 const DEFAULT_LIMITS: Record<string, { max: number; period: string }> = {
 tags: { max: -1, period: "unlimited" }, workflows: { max: -1, period: "unlimited" }, templates: { max: -1, period: "unlimited" },
 testMessages: { max: -1, period: "unlimited" }, campaigns: { max: -1, period: "unlimited" }, optNumbers: { max: -1, period: "unlimited" },
 forms: { max: -1, period: "unlimited" }, whatsappNumbers: { max: -1, period: "unlimited" },
+aiAgents: { max: -1, period: "unlimited" },
 };
 
 const SIDEBAR_SECTIONS = [
 { title: "Top Links", links: [{ name: "Overview", href: "/dashboard" }] },
 { title: "Messaging", links: [ { name: "Live Chat", href: "/chat" }, { name: "Create Templates", href: "/dashboard/templates" }, { name: "View Templates", href: "/dashboard/view-templates" }, { name: "Send Test Message", href: "/send-message" } ] },
 { title: "Campaigns", links: [ { name: "Create Campaign", href: "/campaigns/create" }, { name: "Campaign Lists", href: "/campaigns/list" }, { name: "Reports & Analytics", href: "/campaigns/reports" } ] },
-{ title: "Automation", links: [ { name: "Workflows", href: "/workflows" }, { name: "Tags", href: "/tags" } ] },
+{ title: "Automation", links: [ { name: "Workflows", href: "/workflows" }, { name: "AI Agent", href: "/agents" }, { name: "Tags", href: "/tags" } ] },
 { title: "Contacts", links: [ { name: "Opted-Out Numbers", href: "/opt-numbers" }, { name: "Create Form", href: "/forms" }, { name: "Form Responses", href: "/forms/responses" } ] },
 { title: "Sheets", links: [ { name: "Sheet Sync Manager", href: "/dashboard/google-sheet-manager" }, { name: "Sheet Configurations", href: "/dashboard/sheet-sync-list" }, { name: "Create Campaign", href: "/dashboard/sheet-sync-campaign" }, { name: "Campaign List", href: "/dashboard/sheet-sync-campaign/list" } ] },
 { title: "Team", links: [ { name: "Users", href: "/tenant/users" }, { name: "Team Inbox", href: "/tenant/inbox" } ] },
@@ -76,6 +78,7 @@ rose: { bg: "bg-rose-50", border: "border-rose-200", iconBg: "bg-rose-100", icon
 cyan: { bg: "bg-cyan-50", border: "border-cyan-200", iconBg: "bg-cyan-100", iconText: "text-cyan-600", inputBorder: "border-cyan-200", inputFocus: "focus/30 focus" },
 amber: { bg: "bg-amber-50", border: "border-amber-200", iconBg: "bg-amber-100", iconText: "text-amber-600", inputBorder: "border-amber-200", inputFocus: "focus/30 focus" },
 indigo: { bg: "bg-indigo-50", border: "border-indigo-200", iconBg: "bg-indigo-100", iconText: "text-indigo-600", inputBorder: "border-indigo-200", inputFocus: "focus/30 focus" },
+teal: { bg: "bg-teal-50", border: "border-teal-200", iconBg: "bg-teal-100", iconText: "text-teal-600", inputBorder: "border-teal-200", inputFocus: "focus/30 focus" },
 };
 return map[color] || map.orange;
 }
@@ -121,7 +124,6 @@ const [editMaxSubUsers, setEditMaxSubUsers] = useState("0");
 const [editHideIntegrations, setEditHideIntegrations] = useState(false);
 const [editHiddenLinks, setEditHiddenLinks] = useState<string[]>([]);
 
-// ✅ NEW: State for hidden report actions
 const [editHiddenReports, setEditHiddenReports] = useState<string[]>([]);
 
 const [showCreateModal, setShowCreateModal] = useState(false);
@@ -243,7 +245,7 @@ setShowPassword(false); setShowAccessToken(false);
 setEditIsTenant(user.isTenant || false); setEditMaxSubUsers(user.maxSubUsers?.toString() || "0");
 setEditHideIntegrations(user.hideIntegrations || false);
 setEditHiddenLinks(user.hiddenSidebarLinks || []); 
-setEditHiddenReports(user.hiddenReportActions || []); // ✅ SET HIDDEN REPORTS
+setEditHiddenReports(user.hiddenReportActions || []); 
 
 const userLimits: Record<string, LimitValue> = {};
 for (const res of LIMIT_RESOURCES_CONFIG) userLimits[res.key] = user.limits?.[res.key] || DEFAULT_LIMITS[res.key];
@@ -303,7 +305,7 @@ const body: any = { userId, action, ...extraData };
   if (action === "integrations") { body.hideIntegrations = extraData?.hideIntegrations !== undefined ? extraData.hideIntegrations : editHideIntegrations; }
   if (action === "disconnectGoogle") { body.disconnectGoogle = true; }
   if (action === "sidebar") { body.hiddenSidebarLinks = editHiddenLinks; }
-  if (action === "reports") { body.hiddenReportActions = editHiddenReports; } // ✅ HANDLE REPORTS SAVE
+  if (action === "reports") { body.hiddenReportActions = editHiddenReports; } 
 
   if (action === "resetUsage") { body.resetUsage = extraData?.resetUsage || {}; body.limits = editLimits; }
   if (action === "resetAllUsage") { body.resetAllUsage = true; body.limits = editLimits; }
@@ -354,7 +356,6 @@ return (
 {verifying ? <Loader2 size={18} className="animate-spin" /> : <LogIn size={18} />} {verifying ? "Verifying..." : "Access Admin Panel"}
 </button>
 </div>
-<p className="text-slate-400 text-[10px] text-center mt-6">Set ADMIN_SECRET_KEY in your .env.local file. Default: admin123</p>
 </div>
 </div>
 <ToastContainer position="bottom-right" theme="light" autoClose={3000} />
@@ -737,7 +738,7 @@ return (
                                   <ExternalLink size={12} /> View Sheet 
                                 </a> 
                                 <button onClick={() => saveUser(user._id, "disconnectGoogle")} disabled={saving === user._id + "disconnectGoogle"} className="px-4 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-xs font-bold hover:bg-red-100 transition-all disabled:opacity-50 flex items-center gap-1"> 
-                                  {saving === user._id + "disconnectGoogle" ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />} Disconnect 
+                                  {saving === user._id + "disconnectGoogle" ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}Disconnect 
                                 </button> 
                               </div> 
                             </div> 
@@ -810,48 +811,46 @@ return (
                       </div> 
                     )} 
 
-                    {/* ✅ NEW REPORTS TAB */} 
-{editTab === "reports" && ( 
-  <div className="space-y-5 max-w-2xl"> 
-    <p className="text-sm font-bold text-gray-900">Campaign Report Actions</p> 
-    <p className="text-xs text-slate-400">Hide or show specific action buttons in the user&lsquo;s Campaign Reports page. Hidden buttons cannot be accessed by the user.</p> 
-     
-    <div className="p-4 bg-white rounded-xl border border-slate-200 space-y-3">
-      {[
-        { key: "brief", label: "Brief Report Button" },
-        { key: "loadSheet", label: "Load Shared Sheet Button" },
-        { key: "generateReport", label: "Generate Standalone Report Button" },
-        { key: "downloadExcel", label: "Download Excel Button" }
-      ].map(btn => (
-        <div key={btn.key} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg"> 
-          <span className="text-sm text-slate-700 font-medium">{btn.label}</span> 
-          <button  
-            onClick={() => { 
-              if (editHiddenReports.includes(btn.key)) { 
-                setEditHiddenReports(editHiddenReports.filter(l => l !== btn.key)); 
-              } else { 
-                setEditHiddenReports([...editHiddenReports, btn.key]); 
-              } 
-            }} 
-            className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${ 
-              editHiddenReports.includes(btn.key) ? "bg-gray-300" : "bg-emerald-500" 
-            }`} 
-          > 
-            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${editHiddenReports.includes(btn.key) ? "translate-x-1" : "translate-x-5"}`} /> 
-          </button> 
-        </div> 
-      ))}
-    </div> 
+                    {editTab === "reports" && ( 
+                      <div className="space-y-5 max-w-2xl"> 
+                        <p className="text-sm font-bold text-gray-900">Campaign Report Actions</p> 
+                        <p className="text-xs text-slate-400">Hide or show specific action buttons in the user&lsquo;s Campaign Reports page. Hidden buttons cannot be accessed by the user.</p> 
+                         
+                        <div className="p-4 bg-white rounded-xl border border-slate-200 space-y-3">
+                          {[
+                            { key: "brief", label: "Brief Report Button" },
+                            { key: "loadSheet", label: "Load Shared Sheet Button" },
+                            { key: "generateReport", label: "Generate Standalone Report Button" },
+                            { key: "downloadExcel", label: "Download Excel Button" }
+                          ].map(btn => (
+                            <div key={btn.key} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg"> 
+                              <span className="text-sm text-slate-700 font-medium">{btn.label}</span> 
+                              <button  
+                                onClick={() => { 
+                                  if (editHiddenReports.includes(btn.key)) { 
+                                    setEditHiddenReports(editHiddenReports.filter(l => l !== btn.key)); 
+                                  } else { 
+                                    setEditHiddenReports([...editHiddenReports, btn.key]); 
+                                  } 
+                                }} 
+                                className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${ 
+                                  editHiddenReports.includes(btn.key) ? "bg-gray-300" : "bg-emerald-500" 
+                                }`} 
+                              > 
+                                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${editHiddenReports.includes(btn.key) ? "translate-x-1" : "translate-x-5"}`} /> 
+                              </button> 
+                            </div> 
+                          ))}
+                        </div> 
 
-    {/* YOU MUST CLICK THIS BUTTON TO SAVE TO DB */}
-    <div className="flex justify-end gap-3 pt-3 border-t border-slate-200"> 
-      <button onClick={cancelEdit} className="px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-all">Cancel</button> 
-      <button onClick={() => saveUser(user._id, "reports")} disabled={saving === user._id + "reports"} className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-indigo-500 to-blue-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm"> 
-        {saving === user._id + "reports" ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Report Actions 
-      </button> 
-    </div> 
-  </div> 
-)} 
+                        <div className="flex justify-end gap-3 pt-3 border-t border-slate-200"> 
+                          <button onClick={cancelEdit} className="px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-all">Cancel</button> 
+                          <button onClick={() => saveUser(user._id, "reports")} disabled={saving === user._id + "reports"} className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-indigo-500 to-blue-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm"> 
+                            {saving === user._id + "reports" ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Report Actions 
+                          </button> 
+                        </div> 
+                      </div> 
+                    )} 
                   </div> 
                 </div> 
               )} 
