@@ -32,6 +32,7 @@ import {
   ReceiptText,
   Users,
   UserCog,
+  Bot,
   MessagesSquare,
   FileSpreadsheet, 
   MessageSquareText,
@@ -87,6 +88,7 @@ const categories: NavCategory[] = [
     icon: Workflow,
     items: [
       { name: "Workflows", icon: GitBranch, href: "/workflows" },
+      { name: "AI Agent", icon: Bot, href: "/agents" },
       { name: "Tags", icon: Tags, href: "/tags" },
     ],
   },
