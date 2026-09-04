@@ -2,12 +2,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import styled from "styled-components";
 import Sidebar from "@/components/Sidebar";
 import {
   Bot, Trash2, Pencil, Save, X, Globe, Mail, Clock, 
-  Loader2, PlusCircle, Sparkles, FileText, Power
+  Loader2, Sparkles, FileText, Power,
+  Gauge, AlertTriangle, Infinity as InfinityIcon
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -69,6 +70,13 @@ const ScannerWrapper = styled.div`
    MAIN COMPONENT
 ========================================================= */
 
+interface LimitInfo {
+  limit: { max: number; period: string };
+  usage: { count: number; resetAt: string | null };
+  remaining: number;
+  allowed: boolean;
+}
+
 export default function AgentsPage() {
   const router = useRouter();
   const { status } = useSession();
@@ -79,6 +87,7 @@ export default function AgentsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [activatingId, setActivatingId] = useState<string | null>(null);
+  const [agentLimit, setAgentLimit] = useState<LimitInfo | null>(null);
 
   const [formData, setFormData] = useState({
     name: "",
@@ -110,16 +119,33 @@ export default function AgentsPage() {
   const fetchAgents = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/agents", { cache: "no-store" });
-      if (res.status === 401) {
+      const [agentsRes, limitsRes] = await Promise.all([
+        fetch("/api/agents", { cache: "no-store" }),
+        fetch("/api/user/limits?resource=aiAgents")
+      ]);
+
+      if (agentsRes.status === 401) {
         router.push("/");
         return;
       }
-      const data = await res.json();
-      if (data.success && Array.isArray(data.agents)) {
-        setAgents(data.agents);
+
+      const agentsData = await agentsRes.json();
+      if (agentsData.success && Array.isArray(agentsData.agents)) {
+        setAgents(agentsData.agents);
       } else {
         setAgents([]);
+      }
+
+      if (limitsRes.ok) {
+        const limitsData = await limitsRes.json();
+        if (limitsData.success) {
+          setAgentLimit({
+            limit: { max: limitsData.limit, period: limitsData.period },
+            usage: { count: limitsData.currentUsage || 0, resetAt: null },
+            remaining: limitsData.remaining,
+            allowed: limitsData.allowed,
+          });
+        }
       }
     } catch (err) {
       console.error("Failed to load agents", err);
@@ -151,11 +177,14 @@ export default function AgentsPage() {
     }));
   };
 
+  const isLimitActive = useMemo(() => !!agentLimit && agentLimit.limit.period !== "unlimited" && agentLimit.limit.max !== -1, [agentLimit]);
+  const usagePercent = useMemo(() => isLimitActive && agentLimit ? Math.min(100, Math.round(((agentLimit.usage.count || 0) / agentLimit.limit.max) * 100)) : 0, [isLimitActive, agentLimit]);
+  const isAtLimit = useMemo(() => isLimitActive && agentLimit ? !agentLimit.allowed : false, [isLimitActive, agentLimit]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
 
-    // Replace placeholder with actual email before saving to DB
     let finalFallback = formData.fallbackMessage;
     if (finalFallback.includes("[email]")) {
       finalFallback = finalFallback.replace("[email]", formData.supportEmail);
@@ -174,6 +203,15 @@ export default function AgentsPage() {
       });
 
       const data = await res.json();
+      
+      if (res.status === 429 && data.limitExceeded) {
+        toast.error(data.error);
+        if (data.limitInfo) { 
+          setAgentLimit((prev) => prev ? { ...prev, allowed: false, usage: { count: data.limitInfo.currentUsage, resetAt: null }, remaining: 0 } : prev); 
+        }
+        return;
+      }
+      
       if (data.success) {
         toast.success(editingId ? "Agent updated successfully!" : "Agent created successfully!");
         handleReset();
@@ -219,23 +257,26 @@ export default function AgentsPage() {
     }
   };
 
-  const handleActivate = async (id: string) => {
+  const handleToggleActive = async (id: string, currentStatus: boolean) => {
+    const action = currentStatus ? "Deactivate" : "Activate";
+    if (!confirm(`Are you sure you want to ${action.toLowerCase()} this agent?`)) return;
+    
     setActivatingId(id);
     try {
       const res = await fetch(`/api/agents/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active: true })
+        body: JSON.stringify({ active: !currentStatus }) 
       });
       const data = await res.json();
       if (data.success) {
-        toast.success("Agent Activated! It will now reply to WhatsApp messages.");
+        toast.success(`Agent ${action}d!`);
         fetchAgents();
       } else {
-        toast.error("Failed to activate");
+        toast.error(`Failed to ${action.toLowerCase()}`);
       }
     } catch (err) {
-      toast.error("Failed to activate");
+      toast.error(`Failed to ${action.toLowerCase()}`);
     } finally {
       setActivatingId(null);
     }
@@ -270,17 +311,40 @@ export default function AgentsPage() {
         <div className="max-w-6xl mx-auto space-y-4 sm:space-y-6">
           
           {/* Header */}
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end border-b border-slate-200 pb-4 sm:pb-6 gap-4">
-            <div>
-              <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight text-slate-900 flex items-center gap-2">
-                <Sparkles className="text-emerald-600" size={28} />
-                AI Agents
-              </h1>
-              <p className="text-slate-500 text-xs sm:text-sm mt-1">
-                Create and manage your custom AI Assistants
-              </p>
+          <div className="relative overflow-hidden bg-gradient-to-br from-[#E8F8EF] to-[#D1F4DE] rounded-2xl sm:rounded-3xl p-6 sm:p-8 border border-emerald-100 shadow-lg shadow-emerald-100/60">
+            <div className="absolute -top-12 -right-12 w-56 h-56 bg-[#A5D6A7]/40 rounded-full blur-3xl"></div>
+            <div className="relative z-10 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-4 sm:gap-5">
+                <div className="flex-shrink-0 p-3 sm:p-3.5 bg-gradient-to-br from-emerald-500 to-green-600 rounded-xl sm:rounded-2xl shadow-md shadow-emerald-200/60">
+                  <Sparkles size={24} className="text-white" />
+                </div>
+                <div>
+                  <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-emerald-900">AI Agents</h1>
+                  <p className="text-emerald-700/80 text-xs sm:text-sm mt-1 font-medium">Create and manage your custom AI Assistants</p>
+                </div>
+              </div>
+              {agentLimit && (
+                <div className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold shrink-0 ${isAtLimit ? "bg-red-50 border-red-200 text-red-700" : usagePercent >= 80 ? "bg-amber-50 border-amber-200 text-amber-700" : isLimitActive ? "bg-white border-slate-200 text-slate-600" : "bg-emerald-50 border-emerald-200 text-emerald-600"}`}>
+                  {isLimitActive ? (<><Gauge size={14} /><span>{agentLimit.usage.count}/{agentLimit.limit.max}</span>{agentLimit.limit.period !== "total" && <span className="opacity-60">/{agentLimit.limit.period}</span>}</>) : (<><InfinityIcon size={14} /><span>Unlimited</span></>)}
+                </div>
+              )}
             </div>
           </div>
+
+          {/* Limit Warning Bar */}
+          {isLimitActive && (
+            <div className={`rounded-xl p-3 flex items-center gap-3 text-sm border animate-slide-in ${isAtLimit ? "bg-red-50 border-red-200 text-red-700" : usagePercent >= 80 ? "bg-amber-50 border-amber-200 text-amber-700" : "bg-blue-50 border-blue-200 text-blue-600"}`}>
+              {isAtLimit ? <AlertTriangle size={16} className="shrink-0" /> : <Gauge size={16} className="shrink-0" />}
+              <div className="flex-1">
+                <span className="font-bold">{isAtLimit ? "AI Agent limit reached!" : usagePercent >= 80 ? "Approaching AI Agent limit" : "AI Agent usage"}</span>
+                <span className="ml-2 opacity-80">{agentLimit!.usage.count} of {agentLimit!.limit.max} agents used{agentLimit!.limit.period !== "total" && ` per ${agentLimit!.limit.period}`}</span>
+              </div>
+              <div className="w-24 h-2 bg-white/60 rounded-full overflow-hidden shrink-0">
+                <div className={`h-full rounded-full transition-all ${isAtLimit ? "bg-red-500" : usagePercent >= 80 ? "bg-amber-500" : "bg-emerald-500"}`} style={{ width: `${usagePercent}%` }} />
+              </div>
+              <span className="text-xs font-bold shrink-0">{usagePercent}%</span>
+            </div>
+          )}
 
           {/* Create/Edit Form */}
           <div className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-200 shadow-sm">
@@ -299,6 +363,13 @@ export default function AgentsPage() {
               )}
             </div>
 
+            {isAtLimit && !editingId && (
+              <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2">
+                <AlertTriangle size={16} className="text-red-500 shrink-0 mt-0.5" />
+                <div><p className="text-xs font-bold text-red-700">Agent limit reached</p><p className="text-[11px] text-red-600 mt-0.5">Delete existing agents or contact admin.</p></div>
+              </div>
+            )}
+
             <form onSubmit={handleSubmit} className="space-y-5">
               
               {/* Name & Language */}
@@ -310,8 +381,9 @@ export default function AgentsPage() {
                     required
                     value={formData.name}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all disabled:bg-slate-100"
                     placeholder="e.g. Alex from AllChat"
+                    disabled={isAtLimit && !editingId}
                   />
                 </div>
                 
@@ -320,7 +392,8 @@ export default function AgentsPage() {
                   <select
                     value={formData.language}
                     onChange={(e) => handleLanguageChange(e.target.value)}
-                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none transition-all appearance-none cursor-pointer"
+                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none transition-all appearance-none cursor-pointer disabled:bg-slate-100"
+                    disabled={isAtLimit && !editingId}
                   >
                     <option value="english">🌐 English</option>
                     <option value="hindi">🌐 Hindi</option>
@@ -338,9 +411,10 @@ export default function AgentsPage() {
                   value={formData.details}
                   onChange={(e) => setFormData({ ...formData, details: e.target.value })}
                   rows={8}
-                  className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                  className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all disabled:bg-slate-100"
                   style={{ resize: "vertical", minHeight: "150px" }}
                   placeholder={langData.detailsPh}
+                  disabled={isAtLimit && !editingId}
                 />
                 <p className="text-[11px] text-slate-400 mt-1.5 flex items-center gap-1">
                   <FileText size={10} /> {langData.detailsHint}
@@ -357,9 +431,10 @@ export default function AgentsPage() {
                   value={formData.fallbackMessage}
                   onChange={(e) => setFormData({ ...formData, fallbackMessage: e.target.value })}
                   rows={3}
-                  className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                  className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all disabled:bg-slate-100"
                   style={{ resize: "vertical" }}
                   placeholder={langData.fallbackPh}
+                  disabled={isAtLimit && !editingId}
                 />
                 <p className="text-[11px] text-slate-400 mt-1.5">
                   {langData.fallbackHint}
@@ -375,8 +450,9 @@ export default function AgentsPage() {
                     required
                     value={formData.supportEmail}
                     onChange={(e) => setFormData({ ...formData, supportEmail: e.target.value })}
-                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all disabled:bg-slate-100"
                     placeholder="support@yourcompany.com"
+                    disabled={isAtLimit && !editingId}
                   />
                 </div>
               </div>
@@ -385,11 +461,11 @@ export default function AgentsPage() {
               <div className="flex justify-end">
                 <button
                   type="submit"
-                  disabled={saving}
-                  className="px-6 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-bold hover:from-emerald-600 hover:to-teal-600 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all hover:scale-105 text-sm disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+                  disabled={saving || (isAtLimit && !editingId)}
+                  className={`px-6 py-2.5 text-white rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg transition-all text-sm disabled:opacity-50 disabled:cursor-not-allowed ${isAtLimit && !editingId ? "bg-slate-400" : "bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 hover:scale-105 disabled:hover:scale-100"}`}
                 >
-                  {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-                  {saving ? "Saving..." : editingId ? "Update Agent" : "Save Agent"}
+                  {saving ? <Loader2 size={16} className="animate-spin" /> : isAtLimit && !editingId ? <AlertTriangle size={16} /> : <Save size={16} />}
+                  {saving ? "Saving..." : isAtLimit && !editingId ? "Limit Reached" : editingId ? "Update Agent" : "Save Agent"}
                 </button>
               </div>
             </form>
@@ -442,12 +518,22 @@ export default function AgentsPage() {
 
                       <div className="flex items-center gap-1.5 sm:ml-4 w-full sm:w-auto justify-end">
                         {agent.active ? (
-                          <span className="px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-emerald-500 text-white shadow-sm">
-                            <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span> Active
-                          </span>
+                          <button
+                            onClick={() => handleToggleActive(agent._id, agent.active)}
+                            disabled={activatingId === agent._id}
+                            className="px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-emerald-500 text-white hover:bg-emerald-600 transition-all shadow-sm disabled:opacity-50"
+                            title="Click to deactivate"
+                          >
+                            {activatingId === agent._id ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : (
+                              <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+                            )}
+                            Deactivate
+                          </button>
                         ) : (
                           <button
-                            onClick={() => handleActivate(agent._id)}
+                            onClick={() => handleToggleActive(agent._id, agent.active)}
                             disabled={activatingId === agent._id}
                             className="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 bg-slate-100 text-slate-600 hover:bg-emerald-50 hover:text-emerald-600 transition-all disabled:opacity-50"
                           >
