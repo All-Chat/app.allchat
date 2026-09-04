@@ -51,13 +51,15 @@ function getNextResetDate(period: string): Date | null {
   }
 }
 
-const LIMIT_RESOURCES = ["tags", "workflows", "templates", "testMessages", "campaigns", "optNumbers", "forms", "whatsappNumbers"];
+// ✅ ADDED "aiAgents"
+const LIMIT_RESOURCES = ["tags", "workflows", "templates", "testMessages", "campaigns", "optNumbers", "forms", "whatsappNumbers", "aiAgents"];
 
 const DEFAULT_LIMITS: Record<string, { max: number; period: string }> = {
   tags: { max: -1, period: "unlimited" }, workflows: { max: -1, period: "unlimited" },
   templates: { max: -1, period: "unlimited" }, testMessages: { max: -1, period: "unlimited" },
   campaigns: { max: -1, period: "unlimited" }, optNumbers: { max: -1, period: "unlimited" },
   forms: { max: -1, period: "unlimited" }, whatsappNumbers: { max: -1, period: "unlimited" },
+  aiAgents: { max: -1, period: "unlimited" }, // ✅ ADDED
 };
 
 const DEFAULT_USAGE: Record<string, { count: number; resetAt: null }> = {
@@ -65,6 +67,7 @@ const DEFAULT_USAGE: Record<string, { count: number; resetAt: null }> = {
   templates: { count: 0, resetAt: null }, testMessages: { count: 0, resetAt: null },
   campaigns: { count: 0, resetAt: null }, optNumbers: { count: 0, resetAt: null },
   forms: { count: 0, resetAt: null }, whatsappNumbers: { count: 0, resetAt: null },
+  aiAgents: { count: 0, resetAt: null }, // ✅ ADDED
 };
 
 export async function POST(req: Request) {
@@ -166,7 +169,7 @@ export async function GET(req: Request) {
         maxEnabledCountries: (u as any).maxEnabledCountries || 0,
         enabledCountries: (u as any).enabledCountries || [],
         hiddenSidebarLinks: (u as any).hiddenSidebarLinks || [],
-        hiddenReportActions: (u as any).hiddenReportActions || [], // ✅ RETURN NEW FIELD
+        hiddenReportActions: (u as any).hiddenReportActions || [], 
       });
     }
 
@@ -198,10 +201,9 @@ export async function PUT(req: Request) {
       user.hiddenSidebarLinks = body.hiddenSidebarLinks;
     }
 
-    // ✅ HANDLE REPORTS VISIBILITY
     if (action === "reports" || body.hiddenReportActions !== undefined) {
       user.hiddenReportActions = Array.isArray(body.hiddenReportActions) ? body.hiddenReportActions : [];
-      user.markModified("hiddenReportActions"); // ✅ THIS IS REQUIRED TO SAVE ARRAYS IN MONGOOSE
+      user.markModified("hiddenReportActions"); 
     }
 
     if (action === "disconnectGoogle" || body.disconnectGoogle === true) {
