@@ -38,7 +38,6 @@ export async function GET(req: Request) {
       
       if (!campaign) return NextResponse.json({ success: false, message: "Campaign not found" }, { status: 404 });
 
-      // ✅ FIX: Calculate exact stats AND exact net amount (Spend - Refunds) instantly
       const statsAgg = await CampaignReport.aggregate([
         { $match: { campaignId: new mongoose.Types.ObjectId(viewId) } },
         {
@@ -85,7 +84,7 @@ export async function GET(req: Request) {
 
       return NextResponse.json({ 
         success: true, 
-        campaigns: [{ ...campaign, liveStats, totalDeducted: netDeducted }] // ✅ Return exact net amount
+        campaigns: [{ ...campaign, liveStats, totalDeducted: netDeducted }]
       });
     }
 
@@ -142,6 +141,11 @@ export async function GET(req: Request) {
       const filterOut = searchParams.get("filterOut")?.split(",").filter(Boolean) || [];
       const search = searchParams.get("search") || "";
 
+      // ✅ NEW: Get Button Filter Params
+      const buttonFilterParam = searchParams.get("buttonFilter");
+      const templateButtonsParam = searchParams.get("templateButtons");
+      const excludeButtons = templateButtonsParam ? templateButtonsParam.split(",").filter(Boolean) : [];
+
       const query: any = { campaignId: new mongoose.Types.ObjectId(campaignId) };
       
       if (search) {
@@ -187,6 +191,31 @@ export async function GET(req: Request) {
         andConditions.push(notRepliedCondition);
       } else if (showOnly.includes("replied")) {
         andConditions.push(repliedCondition);
+      }
+
+      // ✅ NEW: Native Backend Button Filtering (No more download=true needed!)
+      if (buttonFilterParam && buttonFilterParam !== "all") {
+        if (buttonFilterParam === "other") {
+          // "Other" means they replied, but their reply is NOT in the list of template buttons
+          andConditions.push({
+            $or: [
+              { "replies.0": { $exists: true } },
+              { reply: { $exists: true, $ne: "" } }
+            ]
+          });
+          if (excludeButtons.length > 0) {
+            andConditions.push({ replies: { $nin: excludeButtons } });
+            andConditions.push({ reply: { $nin: excludeButtons } });
+          }
+        } else {
+          // A specific button was selected. Match if it's in the replies array or the single reply string
+          andConditions.push({
+            $or: [
+              { replies: buttonFilterParam },
+              { reply: buttonFilterParam }
+            ]
+          });
+        }
       }
 
       if (andConditions.length > 0) {
@@ -249,7 +278,7 @@ export async function GET(req: Request) {
         }],
         currentPage: page,
         totalPages: Math.max(1, Math.ceil(totalFiltered / limit)),
-        totalFiltered: totalFiltered, // ✅ ADDED: Exact total filtered count for frontend pagination
+        totalFiltered: totalFiltered,
         campaignStats: liveStats
       });
     }
