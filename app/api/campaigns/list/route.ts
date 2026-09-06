@@ -249,6 +249,7 @@ export async function GET(req: Request) {
         }],
         currentPage: page,
         totalPages: Math.max(1, Math.ceil(totalFiltered / limit)),
+        totalFiltered: totalFiltered, // ✅ ADDED: Exact total filtered count for frontend pagination
         campaignStats: liveStats
       });
     }
