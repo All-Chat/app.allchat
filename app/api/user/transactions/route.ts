@@ -45,9 +45,9 @@ export async function GET(req: Request) {
     }
 
     if (type === "usage") {
-      // ✅ SPEED FIX: Only fetch the most recent 500 records of each type to prevent memory overload.
-      // This ensures the API responds in milliseconds even if you have 100,000 transactions.
-      const [testMsgs, refunds, campaigns] = await Promise.all([
+      // ✅ SPEED FIX: Only fetch the most recent 500 records to prevent memory overload.
+      // ✅ REMOVED: Refund logs are completely removed from this query.
+      const [testMsgs, campaigns] = await Promise.all([
         Transaction.find({ 
           userId: { $in: userIdsToQuery }, 
           type: "test_message",
@@ -56,16 +56,6 @@ export async function GET(req: Request) {
         .select("amount createdAt metadata.templateName metadata.phone")
         .sort({ createdAt: -1 })
         .limit(500) 
-        .lean(),
-        
-        Transaction.find({ 
-          userId: { $in: userIdsToQuery }, 
-          type: "refund",
-          status: "success"
-        })
-        .select("amount createdAt description metadata.campaignName metadata.templateName metadata.phone")
-        .sort({ createdAt: -1 })
-        .limit(500)
         .lean(),
         
         Campaign.find({
@@ -86,20 +76,6 @@ export async function GET(req: Request) {
         createdAt: t.createdAt,
         metadata: {
           campaignName: "-",
-          templateName: t.metadata?.templateName,
-          phone: t.metadata?.phone,
-        }
-      }));
-
-      const refundUsages = refunds.map((t: any) => ({
-        _id: t._id,
-        type: "refund",
-        amount: t.amount,
-        description: t.description || "Refund for failed message",
-        status: "success",
-        createdAt: t.createdAt,
-        metadata: {
-          campaignName: t.metadata?.campaignName || "-",
           templateName: t.metadata?.templateName,
           phone: t.metadata?.phone,
         }
@@ -130,7 +106,8 @@ export async function GET(req: Request) {
         };
       });
 
-      let combined = [...testUsages, ...refundUsages, ...campaignUsages];
+      // ✅ Refunds are no longer included in this array
+      let combined = [...testUsages, ...campaignUsages];
 
       if (search) {
         const searchNum = parseFloat(search);
@@ -147,8 +124,7 @@ export async function GET(req: Request) {
 
       combined.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-      // ✅ SPEED FIX: Cap totalRecords to the combined length we actually fetched
-      // This prevents the frontend from trying to load empty pages beyond our 500-record window
+      // ✅ Cap totalRecords to the combined length we actually fetched
       totalRecords = combined.length;
       transactions = combined.slice(skip, skip + limit);
 
