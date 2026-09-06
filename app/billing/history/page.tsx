@@ -9,12 +9,12 @@ import Sidebar from "@/components/Sidebar";
 import {
   Wallet, ArrowDownCircle, ArrowUpCircle, Loader2, Search,
   ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, FileText, Send, CheckCircle2, XCircle,
-  TrendingUp, TrendingDown, Undo2
+  TrendingUp, TrendingDown
 } from "lucide-react";
 
 type Transaction = {
   _id: string;
-  type: string; // 'recharge', 'usage', or 'refund'
+  type: string; // 'recharge' or 'usage'
   amount: number;
   description: string;
   status: string;
@@ -120,7 +120,7 @@ export default function TransactionHistoryPage() {
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end border-b border-slate-200 pb-4 sm:pb-6 gap-4">
             <div>
               <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900">Transaction History</h1>
-              <p className="text-slate-500 text-xs sm:text-sm mt-1">Track your recharges, campaign usage, and refunds.</p>
+              <p className="text-slate-500 text-xs sm:text-sm mt-1">Track your recharges and campaign usage.</p>
             </div>
             <div className="flex items-center gap-2 px-4 py-2 bg-white rounded-xl border border-slate-200 shadow-sm">
               <Wallet className="w-5 h-5 text-emerald-500" />
@@ -226,7 +226,7 @@ export default function TransactionHistoryPage() {
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {transactions.map((tx) => {
-                      const isCredit = tx.type === "recharge" || tx.type === "refund";
+                      const isCredit = tx.type === "recharge";
                       
                       return (
                         <tr key={tx._id} className="hover:bg-slate-50 transition-colors">
@@ -236,13 +236,7 @@ export default function TransactionHistoryPage() {
                           <td className="px-5 py-4">
                             <div className="flex items-start gap-3">
                               <div className={`p-2 rounded-lg ${isCredit ? "bg-emerald-50" : "bg-blue-50"}`}>
-                                {tx.type === "recharge" ? (
-                                  <ArrowDownCircle className="w-4 h-4 text-emerald-600" />
-                                ) : tx.type === "refund" ? (
-                                  <Undo2 className="w-4 h-4 text-emerald-600" />
-                                ) : (
-                                  <Send className="w-4 h-4 text-blue-600" />
-                                )}
+                                <Send className={`w-4 h-4 ${isCredit ? "text-emerald-600" : "text-blue-600"}`} />
                               </div>
                               <div className="flex-1">
                                 <p className="font-semibold text-slate-900 text-sm">
@@ -295,7 +289,6 @@ export default function TransactionHistoryPage() {
             {/* Pagination */}
             {!loading && transactions.length > 0 && totalPages > 1 && (
               <div className="flex flex-wrap justify-center items-center gap-2 sm:gap-4 p-4 border-t border-slate-100 bg-slate-50">
-                {/* ✅ NEW: First Page Button */}
                 <button
                   onClick={() => setCurrentPage(1)}
                   disabled={currentPage === 1}
@@ -325,7 +318,6 @@ export default function TransactionHistoryPage() {
                   Next <ChevronRight size={14} />
                 </button>
 
-                {/* ✅ NEW: Last Page Button */}
                 <button
                   onClick={() => setCurrentPage(totalPages)}
                   disabled={currentPage === totalPages}
