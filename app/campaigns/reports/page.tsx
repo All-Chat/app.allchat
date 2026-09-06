@@ -126,29 +126,6 @@ type Campaign = {
 };
 
 /* ========================================================= *
-   HELPER FUNCTIONS
- * ========================================================= */
-
-const normalizePhone = (p: string) => String(p || "").replace(/\D/g, "");
-
-const formatExcelDate = (dateStr: string | null | undefined) => {
-  if (!dateStr) return "";
-  try {
-    const date = new Date(dateStr);
-    if (isNaN(date.getTime())) return "";
-    return date.toLocaleString("en-IN", {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return "";
-  }
-};
-
-/* ========================================================= *
    MAIN COMPONENT
  * ========================================================= */
 
@@ -162,9 +139,9 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(true);
 
   const [reportData, setReportData] = useState<ReportItem[]>([]);
-  const [fullReportData, setFullReportData] = useState<ReportItem[]>([]); // ✅ Stores ALL data for client-side filtering
-  const [totalFilteredItems, setTotalFilteredItems] = useState(0); // ✅ Accurate total count
+  const [totalFilteredItems, setTotalFilteredItems] = useState(0); // ✅ Accurate total count from server
   const [loadingReport, setLoadingReport] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0); // ✅ Used to manually trigger a refresh
 
   const [campaignStats, setCampaignStats] = useState<any>({});
   const [campaignStatsCampaignId, setCampaignStatsCampaignId] = useState<string | null>(null);
@@ -275,15 +252,81 @@ export default function ReportsPage() {
     }
   }, [status]);
 
-  // ✅ Fetch all data when campaign or main filters change
+  // ✅ TRUE SERVER-SIDE PAGINATION: Fetches only 10 records per page from backend
   useEffect(() => {
-    if (selectedId) fetchAllReportData(selectedId);
-  }, [selectedId, showOnly, filterOut, search]);
+    if (!selectedId) return;
 
-  // ✅ Reset page to 1 when button filter changes
+    const fetchReportPage = async () => {
+      setLoadingReport(true);
+      setReportData([]);
+      try {
+        const params = new URLSearchParams();
+        params.set("id", selectedId);
+        params.set("page", String(reportCurrentPage));
+        if (showOnly.length > 0) params.set("showOnly", showOnly.join(","));
+        if (filterOut.length > 0) params.set("filterOut", filterOut.join(","));
+        if (search) params.set("search", search);
+
+        // If a button filter is active, we must fetch ALL data to filter on the client
+        const needsFullData = buttonFilter !== "all";
+        if (needsFullData) {
+          params.set("download", "true");
+        }
+
+        const res = await fetch(`/api/campaigns/list?${params.toString()}`);
+        const data = await res.json();
+
+        if (data.success && data.campaigns?.[0]) {
+          if (data.campaignStats) {
+            setCampaignStats(data.campaignStats);
+            setCampaignStatsCache((prev) => ({ ...prev, [selectedId]: data.campaignStats || {} }));
+          }
+
+          let finalList = data.campaigns[0].reportData || [];
+
+          if (needsFullData) {
+            // Apply button filter on client-side since backend doesn't know template buttons
+            if (buttonFilter === "other") {
+              finalList = finalList.filter((d: ReportItem) => {
+                const replies = getRepliesList(d);
+                return replies.length > 0 && !replies.some((r: string) => templateButtons.includes(r));
+              });
+            } else {
+              finalList = finalList.filter((d: ReportItem) => getRepliesList(d).includes(buttonFilter));
+            }
+
+            setTotalFilteredItems(finalList.length);
+            setReportTotalPages(Math.max(1, Math.ceil(finalList.length / 10)));
+
+            // Adjust current page if it exceeds new bounds
+            const adjustedPage = Math.min(reportCurrentPage, Math.max(1, Math.ceil(finalList.length / 10)));
+            const start = (adjustedPage - 1) * 10;
+            setReportData(finalList.slice(start, start + 10));
+          } else {
+            // Server handled pagination perfectly
+            setReportData(finalList);
+            setTotalFilteredItems(data.totalFiltered || 0);
+            setReportTotalPages(data.totalPages || 1);
+          }
+        } else {
+          setReportData([]);
+          setTotalFilteredItems(0);
+          setReportTotalPages(1);
+        }
+      } catch (error) {
+        console.error("Failed to fetch report data", error);
+      } finally {
+        setLoadingReport(false);
+      }
+    };
+
+    fetchReportPage();
+  }, [selectedId, reportCurrentPage, showOnly, filterOut, search, buttonFilter, templateButtons, refreshKey]);
+
+  // ✅ Reset to page 1 when filters or campaign change
   useEffect(() => {
     setReportCurrentPage(1);
-  }, [buttonFilter]);
+  }, [selectedId, showOnly, filterOut, search, buttonFilter]);
 
   // ✅ Reset template states when campaign changes
   useEffect(() => {
@@ -293,35 +336,6 @@ export default function ReportsPage() {
     setButtonFilter("all");
     setShowButtonDropdown(false);
   }, [selectedId]);
-
-  // ✅ Client-side filtering and pagination logic
-  useEffect(() => {
-    if (loadingReport) return;
-
-    let list = [...fullReportData];
-
-    // Apply button filter across ALL data
-    if (buttonFilter && buttonFilter !== "all") {
-      list = list.filter((d) => {
-        const replies = getRepliesList(d);
-        if (buttonFilter === "other") {
-          return replies.length > 0 && !replies.some((r) => templateButtons.includes(r));
-        }
-        return replies.includes(buttonFilter);
-      });
-    }
-
-    setTotalFilteredItems(list.length);
-    setReportTotalPages(Math.max(1, Math.ceil(list.length / 10)));
-
-    // Adjust current page if it exceeds new total pages
-    const currentPage = Math.min(reportCurrentPage, Math.max(1, Math.ceil(list.length / 10)));
-    if (currentPage !== reportCurrentPage) setReportCurrentPage(currentPage);
-
-    const start = (currentPage - 1) * 10;
-    const paginated = list.slice(start, start + 10);
-    setReportData(paginated);
-  }, [fullReportData, buttonFilter, reportCurrentPage, templateButtons, loadingReport, repliesMap]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -429,50 +443,6 @@ export default function ReportsPage() {
     } catch (err) { console.error("Failed to fetch tags", err); }
   };
 
-  // ✅ Fetches ALL report data at once to enable perfect client-side filtering
-  const fetchAllReportData = async (id: string, forceRefresh = false) => {
-    setLoadingReport(true);
-    setReportCurrentPage(1);
-    setReportData([]);
-    setFullReportData([]);
-
-    try {
-      const params = new URLSearchParams();
-      params.set("id", id);
-      params.set("download", "true"); // Ensures we get all rows, not just 1 page
-      if (showOnly.length > 0) params.set("showOnly", showOnly.join(","));
-      if (filterOut.length > 0) params.set("filterOut", filterOut.join(","));
-      if (search) params.set("search", search);
-      if (forceRefresh) params.set("refresh", "true");
-
-      const res = await fetch(`/api/campaigns/list?${params.toString()}`);
-      const data = await res.json();
-
-      if (data.success && Array.isArray(data.campaigns) && data.campaigns[0]) {
-        setFullReportData(data.campaigns[0].reportData || []);
-
-        if (data.campaignStats) {
-          setCampaignStats(data.campaignStats || {});
-          setCampaignStatsCampaignId(id);
-          setCampaignStatsCache((prev) => ({ ...prev, [id]: data.campaignStats || {} }));
-        }
-
-        const newRepliesMap: Record<string, string[]> = {};
-        (data.campaigns[0].reportData || []).forEach((d: ReportItem) => {
-          if (d.phone && d.replies && d.replies.length > 0) newRepliesMap[d.phone] = d.replies;
-        });
-        setRepliesMap(newRepliesMap);
-      } else {
-        setFullReportData([]);
-      }
-    } catch (error: any) {
-      console.error("Failed to fetch report data", error);
-      setFullReportData([]);
-    } finally {
-      setLoadingReport(false);
-    }
-  };
-
   const toggleArrayValue = (arr: string[], value: string, setter: (v: string[]) => void) => {
     if (arr.includes(value)) setter(arr.filter((v) => v !== value));
     else setter([...arr, value]);
@@ -526,7 +496,7 @@ export default function ReportsPage() {
     </div>
   );
 
-  // ✅ UPDATED: Accepts sortOrder parameter and applies sorting before download
+  // ✅ UPDATED: Fetches all data specifically for the Excel file download
   const downloadExcel = async (sortOrder = 'original') => {
     if (!selectedId) { toast.error("No campaign selected"); return; }
     setDownloadingExcel(true);
@@ -537,24 +507,35 @@ export default function ReportsPage() {
       const metaData = await metaRes.json();
       const additionalCols = metaData.success ? metaData.additionalFields : [];
 
-      let fullData = [...fullReportData];
+      // Fetch ALL records just for the download
+      const params = new URLSearchParams();
+      params.set("id", selectedId);
+      params.set("download", "true");
+      if (showOnly.length > 0) params.set("showOnly", showOnly.join(","));
+      if (filterOut.length > 0) params.set("filterOut", filterOut.join(","));
+      if (search) params.set("search", search);
+
+      const res = await fetch(`/api/campaigns/list?${params.toString()}`);
+      const data = await res.json();
+      let fullData = data.campaigns?.[0]?.reportData || [];
 
       // Apply button filter for Excel export
       if (buttonFilter && buttonFilter !== "all") {
-        fullData = fullData.filter((d) => {
-          const replies = getRepliesList(d);
-          if (buttonFilter === "other") {
+        if (buttonFilter === "other") {
+          fullData = fullData.filter((d: ReportItem) => {
+            const replies = getRepliesList(d);
             return replies.length > 0 && !replies.some((r) => templateButtons.includes(r));
-          }
-          return replies.includes(buttonFilter);
-        });
+          });
+        } else {
+          fullData = fullData.filter((d: ReportItem) => getRepliesList(d).includes(buttonFilter));
+        }
       }
 
       if (fullData.length === 0) { toast.error("No data to download"); return; }
 
       // ✅ Apply Sorting
       if (sortOrder === 'latest') {
-        fullData.sort((a, b) => {
+        fullData.sort((a: { repliedAt: any; readAt: any; deliveredAt: any; createdAt: any; }, b: { repliedAt: any; readAt: any; deliveredAt: any; createdAt: any; }) => {
           const timeA = new Date(a.repliedAt || a.readAt || a.deliveredAt || a.createdAt || 0).getTime();
           const timeB = new Date(b.repliedAt || b.readAt || b.deliveredAt || b.createdAt || 0).getTime();
           return timeB - timeA; // Descending (Newest first)
@@ -565,7 +546,7 @@ export default function ReportsPage() {
       const fallbackTime = selectedCamp?.createdAt || selectedCamp?.updatedAt;
 
       // ✅ Build the Excel rows using the fetched additionalCols
-      const wsData = fullData.map((d: any) => {
+      const wsData = fullData.map((d: ReportItem) => {
         const replies = getRepliesList(d).slice(0, 5);
         let currentStatus = d.status;
         if (replies.length > 0) currentStatus = "replied";
@@ -574,7 +555,7 @@ export default function ReportsPage() {
         const row: any = { "Name": d.name || "N/A", "Phone Number": d.phone };
         
         // ✅ Dynamically add the additional fields
-        additionalCols.forEach((field: string | number, idx: string | number) => { 
+        additionalCols.forEach((field: string, idx: number) => { 
           row[field] = d.additionalData?.[idx] || ""; 
         });
         
@@ -819,7 +800,7 @@ export default function ReportsPage() {
                       <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name/phone..." className="w-full sm:w-48 pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none" />
                     </div>
 
-                    <button onClick={() => selectedId && fetchAllReportData(selectedId, true)} disabled={loadingReport} className="px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50" title="Refresh data">
+                    <button onClick={() => setRefreshKey(k => k + 1)} disabled={loadingReport} className="px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50" title="Refresh data">
                       {loadingReport ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Refresh
                     </button>
 
@@ -1033,3 +1014,11 @@ export default function ReportsPage() {
     </div>
   );
 }
+
+function formatExcelDate(arg0: any): any {
+  throw new Error("Function not implemented.");
+}
+function normalizePhone(phone: string) {
+  return String(phone ?? "").replace(/\D/g, "");
+}
+
