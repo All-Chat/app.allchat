@@ -139,9 +139,9 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(true);
 
   const [reportData, setReportData] = useState<ReportItem[]>([]);
-  const [totalFilteredItems, setTotalFilteredItems] = useState(0); // ✅ Accurate total count from server
+  const [totalFilteredItems, setTotalFilteredItems] = useState(0);
   const [loadingReport, setLoadingReport] = useState(false);
-  const [refreshKey, setRefreshKey] = useState(0); // ✅ Used to manually trigger a refresh
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const [campaignStats, setCampaignStats] = useState<any>({});
   const [campaignStatsCampaignId, setCampaignStatsCampaignId] = useState<string | null>(null);
@@ -151,14 +151,12 @@ export default function ReportsPage() {
   const [downloadingExcel, setDownloadingExcel] = useState(false);
   const [syncingStandaloneSheet, setSyncingStandaloneSheet] = useState(false);
 
-  // ✅ NEW: Download Modal State
   const [isDownloadModalOpen, setIsDownloadModalOpen] = useState(false);
 
   const [showOnly, setShowOnly] = useState<string[]>([]);
   const [filterOut, setFilterOut] = useState<string[]>([]);
   const [search, setSearch] = useState("");
 
-  // ✅ Template button filter state
   const [templateButtons, setTemplateButtons] = useState<string[]>([]);
   const [loadingTemplateButtons, setLoadingTemplateButtons] = useState(false);
   const [templateButtonsFetched, setTemplateButtonsFetched] = useState(false);
@@ -252,7 +250,7 @@ export default function ReportsPage() {
     }
   }, [status]);
 
-  // ✅ TRUE SERVER-SIDE PAGINATION: Fetches only 10 records per page from backend
+  // ✅ TRUE SERVER-SIDE PAGINATION & FILTERING (No more download=true)
   useEffect(() => {
     if (!selectedId) return;
 
@@ -267,10 +265,12 @@ export default function ReportsPage() {
         if (filterOut.length > 0) params.set("filterOut", filterOut.join(","));
         if (search) params.set("search", search);
 
-        // If a button filter is active, we must fetch ALL data to filter on the client
-        const needsFullData = buttonFilter !== "all";
-        if (needsFullData) {
-          params.set("download", "true");
+        // ✅ Send button filter data to backend
+        if (buttonFilter !== "all") {
+          params.set("buttonFilter", buttonFilter);
+          if (templateButtons.length > 0) {
+            params.set("templateButtons", templateButtons.join(","));
+          }
         }
 
         const res = await fetch(`/api/campaigns/list?${params.toString()}`);
@@ -282,32 +282,9 @@ export default function ReportsPage() {
             setCampaignStatsCache((prev) => ({ ...prev, [selectedId]: data.campaignStats || {} }));
           }
 
-          let finalList = data.campaigns[0].reportData || [];
-
-          if (needsFullData) {
-            // Apply button filter on client-side since backend doesn't know template buttons
-            if (buttonFilter === "other") {
-              finalList = finalList.filter((d: ReportItem) => {
-                const replies = getRepliesList(d);
-                return replies.length > 0 && !replies.some((r: string) => templateButtons.includes(r));
-              });
-            } else {
-              finalList = finalList.filter((d: ReportItem) => getRepliesList(d).includes(buttonFilter));
-            }
-
-            setTotalFilteredItems(finalList.length);
-            setReportTotalPages(Math.max(1, Math.ceil(finalList.length / 10)));
-
-            // Adjust current page if it exceeds new bounds
-            const adjustedPage = Math.min(reportCurrentPage, Math.max(1, Math.ceil(finalList.length / 10)));
-            const start = (adjustedPage - 1) * 10;
-            setReportData(finalList.slice(start, start + 10));
-          } else {
-            // Server handled pagination perfectly
-            setReportData(finalList);
-            setTotalFilteredItems(data.totalFiltered || 0);
-            setReportTotalPages(data.totalPages || 1);
-          }
+          setReportData(data.campaigns[0].reportData || []);
+          setTotalFilteredItems(data.totalFiltered || 0);
+          setReportTotalPages(data.totalPages || 1);
         } else {
           setReportData([]);
           setTotalFilteredItems(0);
@@ -496,18 +473,16 @@ export default function ReportsPage() {
     </div>
   );
 
-  // ✅ UPDATED: Fetches all data specifically for the Excel file download
+  // ✅ UPDATED: Uses backend filtering for Excel download too!
   const downloadExcel = async (sortOrder = 'original') => {
     if (!selectedId) { toast.error("No campaign selected"); return; }
     setDownloadingExcel(true);
     try {
       
-      // ✅ NEW: Fetch the additional field names (like Region, Dealer Name) from the new route
       const metaRes = await fetch(`/api/campaigns/meta?campaignId=${selectedId}`);
       const metaData = await metaRes.json();
       const additionalCols = metaData.success ? metaData.additionalFields : [];
 
-      // Fetch ALL records just for the download
       const params = new URLSearchParams();
       params.set("id", selectedId);
       params.set("download", "true");
@@ -515,21 +490,17 @@ export default function ReportsPage() {
       if (filterOut.length > 0) params.set("filterOut", filterOut.join(","));
       if (search) params.set("search", search);
 
-      const res = await fetch(`/api/campaigns/list?${params.toString()}`);
-      const data = await res.json();
-      let fullData = data.campaigns?.[0]?.reportData || [];
-
-      // Apply button filter for Excel export
-      if (buttonFilter && buttonFilter !== "all") {
-        if (buttonFilter === "other") {
-          fullData = fullData.filter((d: ReportItem) => {
-            const replies = getRepliesList(d);
-            return replies.length > 0 && !replies.some((r) => templateButtons.includes(r));
-          });
-        } else {
-          fullData = fullData.filter((d: ReportItem) => getRepliesList(d).includes(buttonFilter));
+      // ✅ Let the backend filter the buttons natively for Excel too
+      if (buttonFilter !== "all") {
+        params.set("buttonFilter", buttonFilter);
+        if (templateButtons.length > 0) {
+          params.set("templateButtons", templateButtons.join(","));
         }
       }
+
+      const res = await fetch(`/api/campaigns/list?${params.toString()}`);
+      const data = await res.json();
+      const fullData = data.campaigns?.[0]?.reportData || [];
 
       if (fullData.length === 0) { toast.error("No data to download"); return; }
 
@@ -541,12 +512,10 @@ export default function ReportsPage() {
           return timeB - timeA; // Descending (Newest first)
         });
       }
-      // 'original' keeps the array order as returned from the DB (which matches upload sequence)
 
       const fallbackTime = selectedCamp?.createdAt || selectedCamp?.updatedAt;
 
-      // ✅ Build the Excel rows using the fetched additionalCols
-      const wsData = fullData.map((d: ReportItem) => {
+      const wsData = fullData.map((d: any) => {
         const replies = getRepliesList(d).slice(0, 5);
         let currentStatus = d.status;
         if (replies.length > 0) currentStatus = "replied";
@@ -554,8 +523,7 @@ export default function ReportsPage() {
 
         const row: any = { "Name": d.name || "N/A", "Phone Number": d.phone };
         
-        // ✅ Dynamically add the additional fields
-        additionalCols.forEach((field: string, idx: number) => { 
+        additionalCols.forEach((field: string | number, idx: string | number) => { 
           row[field] = d.additionalData?.[idx] || ""; 
         });
         
@@ -582,7 +550,7 @@ export default function ReportsPage() {
       const fileName = sortOrder === 'latest' ? `${campName}_Latest_Report.xlsx` : `${campName}_Original_Report.xlsx`;
       XLSX.writeFile(wb, fileName);
       
-      setIsDownloadModalOpen(false); // Close modal on success
+      setIsDownloadModalOpen(false);
     } catch (error) { console.error("Failed to download Excel", error); toast.error("Error downloading Excel"); }
     finally { setDownloadingExcel(false); }
   };
@@ -623,7 +591,6 @@ export default function ReportsPage() {
     );
   }
 
-  // ✅ Shows the TOTAL filtered count from all pages, not just the current one
   const getButtonFilterLabel = () => {
     let label = "All Contacts";
     if (buttonFilter === "other") label = "Other";
@@ -635,7 +602,6 @@ export default function ReportsPage() {
     <div className="min-h-screen bg-slate-50 text-gray-900">
       <Sidebar />
 
-      {/* ✅ NEW: Download Excel Popup */}
       {isDownloadModalOpen && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4" onClick={() => setIsDownloadModalOpen(false)}>
           <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col border border-slate-100" onClick={(e) => e.stopPropagation()}>
@@ -818,7 +784,6 @@ export default function ReportsPage() {
                       {selectedCamp.standaloneSheetUrl ? "Update Report" : "Export Report"}
                     </button>
 
-                    {/* ✅ NEW: Opens the Download Modal */}
                     <button onClick={() => setIsDownloadModalOpen(true)} disabled={downloadingExcel || hiddenActions.includes("downloadExcel")} className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed ${hiddenActions.includes("downloadExcel") ? "bg-slate-200 text-slate-500" : "bg-emerald-500 text-white hover:bg-emerald-600"}`}>
                       {downloadingExcel ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />} Excel
                     </button>
@@ -1015,10 +980,21 @@ export default function ReportsPage() {
   );
 }
 
-function formatExcelDate(arg0: any): any {
-  throw new Error("Function not implemented.");
+function formatExcelDate(value: any): string {
+  if (!value) return "";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+
+  return date.toISOString().slice(0, 19).replace("T", " ");
 }
+
 function normalizePhone(phone: string) {
-  return String(phone ?? "").replace(/\D/g, "");
+  if (!phone) return "";
+
+  const digits = String(phone).replace(/\D/g, "");
+  if (!digits) return "";
+
+  return digits.replace(/^0+/, "");
 }
 
