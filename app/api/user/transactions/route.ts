@@ -8,17 +8,39 @@ import Campaign from "@/models/Campaign";
 import User from "@/models/User";
 import Transaction from "@/models/Transaction";
 
+const ADMIN_SECRET = process.env.ADMIN_SECRET_KEY || "admin123";
+
 export async function GET(req: Request) {
   try {
     await connectDB();
     const session = await getServerSession(authOptions);
-    const userId = session?.user?.id;
+    
+    const { searchParams } = new URL(req.url);
+    const type = searchParams.get("type") || "recharge";
+    const page = parseInt(searchParams.get("page") || "1");
+    const limit = parseInt(searchParams.get("limit") || "10");
+    const search = searchParams.get("search") || "";
+    const skip = (page - 1) * limit;
 
-    if (!userId) {
+    // Check if the request is coming from an admin managing a specific user
+    const adminKey = req.headers.get("x-admin-key");
+    const requestedUserId = searchParams.get("userId");
+
+    let targetUserId: string | undefined = session?.user?.id;
+
+    // If admin key and userId are provided, verify admin and override targetUserId
+    if (adminKey && requestedUserId) {
+      if (adminKey !== ADMIN_SECRET) {
+        return NextResponse.json({ success: false, message: "Invalid Admin Key" }, { status: 403 });
+      }
+      targetUserId = requestedUserId;
+    }
+
+    if (!targetUserId) {
       return NextResponse.json({ success: false, message: "Unauthorized" }, { status: 401 });
     }
 
-    const userObjId = new mongoose.Types.ObjectId(userId);
+    const userObjId = new mongoose.Types.ObjectId(targetUserId);
     
     const userDoc = await User.findById(userObjId).select("parentTenantId").lean();
     const parentTenantId = (userDoc as any)?.parentTenantId;
@@ -27,13 +49,6 @@ export async function GET(req: Request) {
     if (parentTenantId) {
       userIdsToQuery.push(new mongoose.Types.ObjectId(parentTenantId));
     }
-
-    const { searchParams } = new URL(req.url);
-    const type = searchParams.get("type") || "recharge";
-    const page = parseInt(searchParams.get("page") || "1");
-    const limit = parseInt(searchParams.get("limit") || "10");
-    const search = searchParams.get("search") || "";
-    const skip = (page - 1) * limit;
 
     let transactions: any[] = [];
     let totalRecords = 0;
