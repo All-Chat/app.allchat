@@ -141,7 +141,6 @@ export async function GET(req: Request) {
       const filterOut = searchParams.get("filterOut")?.split(",").filter(Boolean) || [];
       const search = searchParams.get("search") || "";
 
-      // ✅ NEW: Get Button Filter Params
       const buttonFilterParam = searchParams.get("buttonFilter");
       const templateButtonsParam = searchParams.get("templateButtons");
       const excludeButtons = templateButtonsParam ? templateButtonsParam.split(",").filter(Boolean) : [];
@@ -193,10 +192,8 @@ export async function GET(req: Request) {
         andConditions.push(repliedCondition);
       }
 
-      // ✅ NEW: Native Backend Button Filtering (No more download=true needed!)
       if (buttonFilterParam && buttonFilterParam !== "all") {
         if (buttonFilterParam === "other") {
-          // "Other" means they replied, but their reply is NOT in the list of template buttons
           andConditions.push({
             $or: [
               { "replies.0": { $exists: true } },
@@ -208,7 +205,6 @@ export async function GET(req: Request) {
             andConditions.push({ reply: { $nin: excludeButtons } });
           }
         } else {
-          // A specific button was selected. Match if it's in the replies array or the single reply string
           andConditions.push({
             $or: [
               { replies: buttonFilterParam },
