@@ -2,9 +2,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 // workers/mainWorker.ts
+// Improved campaign worker: renewable job lease, batch report claiming,
+// safe pause handling, bounded concurrent sends, and performance logging.
 
 require('dotenv').config({ path: '.env.local' });
 
+import { randomUUID } from 'crypto';
 import { connectDB } from '../lib/mongodb';
 import Campaign from '../models/Campaign';
 import CampaignReport from '../models/CampaignReport';
@@ -14,401 +17,849 @@ import Session from '../models/Session';
 import mongoose from 'mongoose';
 import { syncCampaignToGoogleSheet } from '../lib/googleSheetSync';
 import { Job, Cache } from '../lib/queue';
-import { getPriceForCategory } from '../lib/billing'; // ✅ NEW: Import the exact same pricing function used by the UI
+import { getPriceForCategory } from '../lib/billing';
+
+const CAMPAIGN_QUEUE = 'campaign-processing';
+const REPORT_BATCH_SIZE = Math.max(1, Number(process.env.CAMPAIGN_BATCH_SIZE || 20));
+const SEND_CONCURRENCY = Math.max(1, Number(process.env.CAMPAIGN_SEND_CONCURRENCY || 20));
+const JOB_LEASE_MS = 2 * 60 * 1000;
+const JOB_HEARTBEAT_MS = 30 * 1000;
+const REPORT_LEASE_MS = 3 * 60 * 1000;
+const REPORT_HEARTBEAT_MS = 30 * 1000;
+const META_API_VERSION = process.env.WHATSAPP_GRAPH_API_VERSION || 'v21.0';
+const BATCH_PAUSE_MS = Math.max(0, Number(process.env.CAMPAIGN_BATCH_PAUSE_MS || 100));
 
 connectDB()
   .then(async () => {
-    console.log('✅ Main Worker process connected to MongoDB');
+    console.log('✅ Main Worker connected to MongoDB');
+    console.log(`⚙️ Campaign config: batch=${REPORT_BATCH_SIZE}, concurrency=${SEND_CONCURRENCY}, pause=${BATCH_PAUSE_MS}ms`);
     startInactivityWorker();
     startCampaignWorker();
     startWorker('counts-processing', async (job) => {
       if (job.name === 'generate-counts') {
-        return await generateCountsData(job.data.userId, job.data.page, job.data.limit, job.data.cacheKey, job.data.lockKey);
+        return generateCountsData(job.data.userId, job.data.page, job.data.limit, job.data.cacheKey, job.data.lockKey);
       }
+      return null;
     }, 5);
     console.log('🚀 Standalone main worker process started.');
   })
-  .catch((err) => { console.error('❌ Worker process failed:', err); process.exit(1); });
+  .catch((err) => {
+    console.error('❌ Worker process failed:', err);
+    process.exit(1);
+  });
 
 export async function ensureDbConnected() {
   if (mongoose.connection.readyState !== 1) await connectDB();
 }
 
-async function startWorker(queueName: string, processor: (job: any) => Promise<any>, concurrency: number = 1) {
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function startWorker(queueName: string, processor: (job: any) => Promise<any>, concurrency = 1) {
   for (let i = 0; i < concurrency; i++) {
     (async () => {
       while (true) {
         try {
+          await ensureDbConnected();
+          const now = new Date();
           const job = await Job.findOneAndUpdate(
-            { queue: queueName, $or: [{ status: "pending" }, { status: "processing", lockedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } }] },
-            { $set: { status: "processing", lockedAt: new Date() } },
-            { sort: { createdAt: 1 }, returnDocument: "after" }
+            {
+              queue: queueName,
+              $or: [
+                { status: 'pending' },
+                { status: 'processing', lockedAt: { $lt: new Date(now.getTime() - JOB_LEASE_MS) } },
+              ],
+            },
+            { $set: { status: 'processing', lockedAt: now } },
+            { sort: { createdAt: 1 }, returnDocument: 'after' },
           ).lean();
-          if (job) {
-            try {
-              const result = await processor({ id: job._id.toString(), name: job.name, data: job.data });
-              if (job.opts?.removeOnComplete || job.opts?.removeOnFail) await Job.deleteOne({ _id: job._id });
-              else await Job.updateOne({ _id: job._id }, { $set: { status: "completed", result } });
-            } catch (err: any) {
-              await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } });
+
+          if (!job) {
+            await sleep(1000);
+            continue;
+          }
+
+          const heartbeat = setInterval(() => {
+            Job.updateOne({ _id: job._id, status: 'processing' }, { $set: { lockedAt: new Date() } })
+              .catch((e: { message: any; }) => console.error(`[${queueName}] heartbeat failed:`, e?.message || e));
+          }, JOB_HEARTBEAT_MS);
+
+          try {
+            const result = await processor({ id: job._id.toString(), name: job.name, data: job.data });
+            if (job.opts?.removeOnComplete || job.opts?.removeOnFail) {
+              await Job.deleteOne({ _id: job._id });
+            } else {
+              await Job.updateOne({ _id: job._id }, { $set: { status: 'completed', result }, $unset: { lockedAt: 1 } });
             }
-          } else { await new Promise((r) => setTimeout(r, 1000)); }
-        } catch (err) { await new Promise((r) => setTimeout(r, 2000)); }
+          } catch (err: any) {
+            console.error(`[${queueName}] job ${job._id} failed:`, err?.stack || err);
+            await Job.updateOne(
+              { _id: job._id },
+              { $set: { status: 'failed', error: err?.message || 'Unknown worker error' }, $unset: { lockedAt: 1 } },
+            ).catch(() => {});
+          } finally {
+            clearInterval(heartbeat);
+          }
+        } catch (err: any) {
+          console.error(`[${queueName}] polling error:`, err?.message || err);
+          await sleep(2000);
+        }
       }
     })();
   }
 }
 
-// ============================================================================
-// CAMPAIGN WORKER (Dynamic Atomic Loop)
-// ============================================================================
+// ---------------------------------------------------------------------------
+// CAMPAIGN WORKER
+// ---------------------------------------------------------------------------
 
 async function startCampaignWorker() {
-  console.log('🚀 Worker started for queue: campaign-processing (Dynamic Loop, 10 msgs/sec)');
+  console.log(`🚀 Worker started for ${CAMPAIGN_QUEUE}`);
 
   while (true) {
+    let job: any = null;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
     try {
-      const job = await Job.findOneAndUpdate(
-        { queue: 'campaign-processing', $or: [{ status: "pending" }, { status: "processing", lockedAt: { $lt: new Date(Date.now() - 5 * 60 * 1000) } }] },
-        { $set: { status: "processing", lockedAt: new Date() } },
-        { sort: { createdAt: 1 }, returnDocument: "after" }
+      await ensureDbConnected();
+      const now = new Date();
+      job = await Job.findOneAndUpdate(
+        {
+          queue: CAMPAIGN_QUEUE,
+          $or: [
+            { status: 'pending' },
+            { status: 'processing', lockedAt: { $lt: new Date(now.getTime() - JOB_LEASE_MS) } },
+          ],
+        },
+        { $set: { status: 'processing', lockedAt: now } },
+        { sort: { createdAt: 1 }, returnDocument: 'after' },
       ).lean();
 
-      if (job) {
-        if (job.name === 'process-campaign') {
-          await processCampaignLoop(job.data, job._id);
-          await Job.deleteOne({ _id: job._id }); // Delete job when loop finishes
-        } else {
-          // Fallback for any old chunk jobs
-          await Job.deleteOne({ _id: job._id });
-        }
-      } else { await new Promise(r => setTimeout(r, 1000)); }
-    } catch (err) {
-      console.error('Polling error for campaign-processing:', err);
-      await new Promise(r => setTimeout(r, 2000));
+      if (!job) {
+        await sleep(750);
+        continue;
+      }
+
+      heartbeat = setInterval(() => {
+        Job.updateOne({ _id: job._id, status: 'processing' }, { $set: { lockedAt: new Date() } })
+          .catch((e: { message: any; }) => console.error('[campaign-processing] heartbeat failed:', e?.message || e));
+      }, JOB_HEARTBEAT_MS);
+
+      if (job.name !== 'process-campaign') {
+        await Job.deleteOne({ _id: job._id });
+        continue;
+      }
+
+      const result = await processCampaignLoop(job.data, job._id);
+
+      // IMPORTANT: paused jobs are deliberately kept pending by processCampaignLoop.
+      // Do not delete them here or the campaign cannot resume.
+      if (result === 'paused') {
+        console.log(`⏸ Campaign job ${job._id} paused and returned to queue.`);
+      } else {
+        await Job.deleteOne({ _id: job._id });
+      }
+    } catch (err: any) {
+      console.error('[campaign-processing] worker error:', err?.stack || err);
+      // Leave a failed campaign job visible for diagnosis rather than silently deleting it.
+      if (job?._id) {
+        await Job.updateOne(
+          { _id: job._id },
+          { $set: { status: 'failed', error: err?.message || 'Campaign worker error' }, $unset: { lockedAt: 1 } },
+        ).catch(() => {});
+      }
+      await sleep(1500);
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
     }
   }
 }
 
-async function processCampaignLoop(data: any, jobId: any) {
+async function claimReportBatch(campaignId: any, limit: number) {
+  // Use the native collection to avoid Mongoose strict-schema stripping the lease fields.
+  // Each candidate is claimed conditionally, so two workers cannot both claim the same report.
+  const collection = CampaignReport.collection;
+  const candidates = await collection
+    .find({ campaignId: new mongoose.Types.ObjectId(String(campaignId)), status: 'pending' }, { projection: { _id: 1 } })
+    .sort({ index: 1 })
+    .limit(limit)
+    .toArray();
+
+  if (!candidates.length) return { token: '', reports: [] as any[] };
+
+  const token = randomUUID();
+  const leaseExpiresAt = new Date(Date.now() + REPORT_LEASE_MS);
+  await collection.bulkWrite(
+    candidates.map((candidate: any) => ({
+      updateOne: {
+        filter: { _id: candidate._id, status: 'pending' },
+        update: { $set: { status: 'queued', workerClaimToken: token, leaseExpiresAt, queuedAt: new Date() } },
+      },
+    })),
+    { ordered: false },
+  );
+
+  const reports = await collection
+    .find({ campaignId: new mongoose.Types.ObjectId(String(campaignId)), status: 'queued', workerClaimToken: token })
+    .sort({ index: 1 })
+    .toArray();
+
+  return { token, reports };
+}
+
+async function renewReportLease(campaignId: any, token: string) {
+  if (!token) return;
+  await CampaignReport.collection.updateMany(
+    { campaignId: new mongoose.Types.ObjectId(String(campaignId)), status: 'queued', workerClaimToken: token },
+    { $set: { leaseExpiresAt: new Date(Date.now() + REPORT_LEASE_MS) } },
+  );
+}
+
+async function releaseClaimedReports(campaignId: any, token: string) {
+  if (!token) return;
+  await CampaignReport.collection.updateMany(
+    { campaignId: new mongoose.Types.ObjectId(String(campaignId)), status: 'queued', workerClaimToken: token },
+    { $set: { status: 'pending' }, $unset: { workerClaimToken: 1, leaseExpiresAt: 1, queuedAt: 1 } },
+  );
+}
+
+async function recoverExpiredReports(campaignId: any) {
+  const now = new Date();
+  const result = await CampaignReport.collection.updateMany(
+    { campaignId: new mongoose.Types.ObjectId(String(campaignId)), status: 'queued', leaseExpiresAt: { $lt: now } },
+    { $set: { status: 'pending' }, $unset: { workerClaimToken: 1, leaseExpiresAt: 1, queuedAt: 1 } },
+  );
+  if (result.modifiedCount) {
+    console.warn(`[campaign ${campaignId}] Recovered ${result.modifiedCount} expired report lease(s).`);
+  }
+}
+
+async function processCampaignLoop(data: any, jobId: any): Promise<'paused' | 'finished' | 'stopped'> {
   const { campaignId, userId, payerId, PHONE_NUMBER_ID, ACCESS_TOKEN } = data;
   await ensureDbConnected();
 
-  // ✅ FIX: Reset any stuck "queued" documents back to "pending" (in case of crash/restart)
-  await CampaignReport.updateMany({ campaignId, status: "queued" }, { $set: { status: "pending" } });
+  // Legacy queued reports without leases may remain from the previous worker version.
+  // Deployment note: stop ALL old worker processes before deploying this version.
+  await CampaignReport.collection.updateMany(
+    {
+      campaignId: new mongoose.Types.ObjectId(String(campaignId)),
+      status: 'queued',
+      leaseExpiresAt: { $exists: false },
+    },
+    { $set: { status: 'pending' }, $unset: { workerClaimToken: 1, queuedAt: 1 } },
+  );
 
-  let thf = "";
-  const batchSize = 20;
-  
-  // Fetch payer once at the start to calculate prices dynamically if needed
   const payer: any = await User.findById(payerId).lean();
   if (!payer) {
-    console.error("Payer not found, stopping campaign.");
-    await Campaign.updateOne({ _id: campaignId }, { $set: { status: "failed" } });
-    return;
+    console.error(`[campaign ${campaignId}] Payer not found; marking campaign failed.`);
+    await Campaign.updateOne({ _id: campaignId }, { $set: { status: 'failed' } });
+    return 'stopped';
   }
-  
+
+  let headerFormat = '';
+  let lastStatusCheck = 0;
+  let campaign: any = null;
+  let totalApiMs = 0;
+  let totalApiRequests = 0;
+
   while (true) {
-    // 1. Check Campaign Status (Pause / Stop)
-    const campaign: any = await Campaign.findById(campaignId).lean();
-    if (!campaign) break;
-    
-    if (campaign.status === "paused") {
-      await Job.updateOne({ _id: jobId }, { $set: { status: "pending", lockedAt: null } }).catch(()=>{});
-      console.log(`⏸ Campaign ${campaign.name} paused. Job returned to queue.`);
-      return; 
-    }
-    if (campaign.status === "stopped" || campaign.status === "completed") {
-      console.log(`⏹ Campaign ${campaign.name} stopped/completed. Exiting loop.`);
-      return; 
+    await ensureDbConnected();
+    if (Date.now() - lastStatusCheck >= 2000 || !campaign) {
+      campaign = await Campaign.findById(campaignId).lean();
+      lastStatusCheck = Date.now();
     }
 
-    if (!thf) {
-      thf = campaign.templateHeaderFormat || "";
-      if (!thf) { 
-        thf = await fetchTemplateHeaderFormat(PHONE_NUMBER_ID, ACCESS_TOKEN, cleanStr(campaign.templateName).toLowerCase(), cleanStr(campaign.languageCode || "en"), cleanStr(campaign.mediaType || "none")); 
-        await Campaign.updateOne({ _id: campaignId }, { $set: { templateHeaderFormat: thf } }); 
+    if (!campaign) {
+      await releaseAnyExpiredAndFinish(campaignId);
+      return 'stopped';
+    }
+
+    if (campaign.status === 'paused') {
+      await releaseClaimedReportsForCampaign(campaignId);
+      await Job.updateOne({ _id: jobId }, { $set: { status: 'pending' }, $unset: { lockedAt: 1 } });
+      console.log(`⏸ Campaign ${campaign.name} paused.`);
+      return 'paused';
+    }
+
+    if (campaign.status === 'stopped' || campaign.status === 'completed' || campaign.status === 'failed') {
+      console.log(`⏹ Campaign ${campaign.name} status is ${campaign.status}; exiting.`);
+      return 'stopped';
+    }
+
+    if (!headerFormat) {
+      headerFormat = cleanStr(campaign.templateHeaderFormat || '');
+      if (!headerFormat) {
+        headerFormat = await fetchTemplateHeaderFormat(
+          PHONE_NUMBER_ID,
+          ACCESS_TOKEN,
+          cleanStr(campaign.templateName).toLowerCase(),
+          cleanStr(campaign.languageCode || 'en'),
+          cleanStr(campaign.mediaType || 'none'),
+        );
+        await Campaign.updateOne({ _id: campaignId }, { $set: { templateHeaderFormat: headerFormat } });
       }
     }
 
-    const tc = { 
-      templateName: cleanStr(campaign.templateName).toLowerCase(), 
-      languageCode: cleanStr(campaign.languageCode || "en"), 
-      templateCategory: campaign.templateCategory, 
-      generateOtp: campaign.generateOtp, 
-      otpLength: campaign.otpLength || 4, 
-      mediaUrl: campaign.mediaUrl 
-    };
+    // Requeue only expired claims. Active reports are protected by their lease heartbeat.
+    await recoverExpiredReports(campaignId);
 
-    // 2. ATOMIC FETCH: Grab the next 20 PENDING contacts and lock them
-    const reports = [];
-    for (let i = 0; i < batchSize; i++) {
-      const doc = await CampaignReport.findOneAndUpdate(
-        { campaignId, status: "pending" },
-        { $set: { status: "queued" } },
-        { sort: { index: 1 }, new: true }
-      ).lean();
-      if (doc) reports.push(doc);
-      else break;
-    }
-    
-    // 3. If none left, Campaign is Complete!
-    if (reports.length === 0) {
-      const pendingCount = await CampaignReport.countDocuments({ campaignId, status: "pending" });
-      const queuedCount = await CampaignReport.countDocuments({ campaignId, status: "queued" });
-      
+    const { token, reports } = await claimReportBatch(campaignId, REPORT_BATCH_SIZE);
+
+    if (!reports.length) {
+      const [pendingCount, queuedCount] = await Promise.all([
+        CampaignReport.countDocuments({ campaignId, status: 'pending' }),
+        CampaignReport.countDocuments({ campaignId, status: 'queued' }),
+      ]);
+
       if (pendingCount === 0 && queuedCount === 0) {
-        await Campaign.updateOne({ _id: campaignId }, { $set: { status: "completed", completedAt: new Date() } });
-        console.log(`✅ Campaign ${campaign.name} fully processed!`);
+        await Campaign.updateOne(
+          { _id: campaignId, status: { $nin: ['paused', 'stopped', 'failed'] } },
+          { $set: { status: 'completed', completedAt: new Date() } },
+        );
+        console.log(`✅ Campaign ${campaign.name} fully processed. API requests=${totalApiRequests}, avg API latency=${totalApiRequests ? Math.round(totalApiMs / totalApiRequests) : 0}ms`);
         try {
           const finalCampaign = await Campaign.findById(campaignId).lean();
-          const plainReportData = await CampaignReport.find({ campaignId }).select("name phone status error replies reply tags additionalData -_id").lean();
-          await syncCampaignToGoogleSheet(userId, { name: finalCampaign?.name || "Campaign", reportData: plainReportData });
-        } catch (e) {}
+          const plainReportData = await CampaignReport.find({ campaignId })
+            .select('name phone status error replies reply tags additionalData -_id')
+            .lean();
+          await syncCampaignToGoogleSheet(userId, {
+            name: finalCampaign?.name || 'Campaign',
+            reportData: plainReportData,
+          });
+        } catch (e: any) {
+          console.error(`[campaign ${campaignId}] Google Sheets sync failed:`, e?.message || e);
+        }
+        return 'finished';
       }
-      return; // Exit loop
+
+      // Another live claim may still be processing, or the database has not yet observed a lease expiry.
+      await sleep(500);
+      continue;
     }
 
-    const metaPromises: Promise<any>[] = [];
-    const batchPhones: string[] = [];
+    const leaseHeartbeat = setInterval(() => {
+      renewReportLease(campaignId, token).catch((e) => {
+        console.error(`[campaign ${campaignId}] report lease heartbeat failed:`, e?.message || e);
+      });
+    }, REPORT_HEARTBEAT_MS);
 
-    for (let i = 0; i < reports.length; i++) {
-      const report: any = reports[i];
-      let cv: string[] = [];
-      const absoluteIndex = report.index; // Use stored index for variables
+    const tc = {
+      templateName: cleanStr(campaign.templateName).toLowerCase(),
+      languageCode: cleanStr(campaign.languageCode || 'en'),
+      templateCategory: campaign.templateCategory,
+      generateOtp: campaign.generateOtp,
+      otpLength: campaign.otpLength || 4,
+      mediaUrl: campaign.mediaUrl,
+    };
 
-      if (campaign.templateCategory === "AUTHENTICATION") {
-        if (campaign.generateOtp || !campaign.mappedVariables?.[absoluteIndex]?.length) {
-          const l = campaign.otpLength || 4; const min = Math.pow(10, l - 1); const max = Math.pow(10, l) - 1;
-          cv = [Math.floor(Math.random() * (max - min + 1) + min).toString()];
-        } else cv = campaign.mappedVariables[absoluteIndex];
-      } else cv = (campaign.mappedVariables?.[absoluteIndex]?.length > 0) ? campaign.mappedVariables[absoluteIndex] : (campaign.variables || []);
+    try {
+      const batchStartedAt = Date.now();
+      // A batch can contain more reports than the number of simultaneous Meta requests.
+      // This helper preserves report order while limiting active sends.
+      const outcomes = await mapSettledWithConcurrency(reports, SEND_CONCURRENCY, async (report: any) => {
+        const reportStartedAt = Date.now();
+        let variables: string[] = [];
+        const absoluteIndex = Number(report.index);
 
-      cv = (Array.isArray(cv) ? cv : []).filter((v: string) => v && String(v).trim() !== "");
-      metaPromises.push(metaSenderWorker(report.phone, cv, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, thf));
-      batchPhones.push(report.phone);
-    }
-
-    // 4. Send them via Meta API
-    const metaResults = await Promise.allSettled(metaPromises);
-    let bd = 0, sent = 0, failed = 0, ded = 0;
-    const messagesToCreate: any[] = [];
-    const bulkReportOps: any[] = [];
-
-    for (let i = 0; i < metaResults.length; i++) {
-      const res = metaResults[i];
-      const reportId = reports[i]._id;
-      const ph = batchPhones[i].replace(/\+/g, "");
-
-      if (res.status !== 'fulfilled') {
-        failed++;
-        bulkReportOps.push({ updateOne: { filter: { _id: reportId }, update: { $set: { status: "failed", error: "System Error: Promise rejected" } } } });
-        continue;
-      }
-      const r = res.value;
-
-      if (r.status === "sent") {
-        sent++;
-        
-        // ✅ CRITICAL FIX: Calculate the EXACT price the same way the UI does
-        let pp = Number(campaign.pricePerMessage);
-        if (!pp || pp <= 0) {
-           // Fallback to dynamic calculation using the payer's current settings
-           pp = getPriceForCategory(payer, campaign.templateCategory || "MARKETING");
+        if (campaign.templateCategory === 'AUTHENTICATION') {
+          if (campaign.generateOtp || !campaign.mappedVariables?.[absoluteIndex]?.length) {
+            const length = campaign.otpLength || 4;
+            const min = Math.pow(10, length - 1);
+            const max = Math.pow(10, length) - 1;
+            variables = [Math.floor(Math.random() * (max - min + 1) + min).toString()];
+          } else {
+            variables = campaign.mappedVariables[absoluteIndex];
+          }
+        } else {
+          variables = campaign.mappedVariables?.[absoluteIndex]?.length
+            ? campaign.mappedVariables[absoluteIndex]
+            : (campaign.variables || []);
         }
 
-        bd += pp;
-        bulkReportOps.push({ updateOne: { filter: { _id: reportId }, update: { $set: { status: "sent", sentWamid: r.wamid, charged: true, chargedAmount: pp } } } });
-        messagesToCreate.push({ userId, phone: ph, text: "", direction: "out", messageType: "template", mediaUrl: tc.mediaUrl || null, whatsappMessageId: r.wamid, status: "sent", templateName: tc.templateName, templateLanguage: tc.languageCode, whatsappPhoneNumberId: PHONE_NUMBER_ID });
-      } else {
-        failed++;
-        bulkReportOps.push({ updateOne: { filter: { _id: reportId }, update: { $set: { status: "failed", error: r.error || "Unknown error" } } } });
+        variables = (Array.isArray(variables) ? variables : []).filter(
+          (value: any) => value != null && String(value).trim() !== '',
+        );
+
+        const result = await metaSenderWorker(
+          String(report.phone), variables, tc, ACCESS_TOKEN, PHONE_NUMBER_ID, headerFormat,
+        );
+        const elapsed = Date.now() - reportStartedAt;
+        totalApiMs += elapsed;
+        totalApiRequests += 1;
+        return { report, result, elapsed };
+      });
+      const messagesToCreate: any[] = [];
+      const reportOps: any[] = [];
+      let sent = 0;
+      let failed = 0;
+      let totalDeducted = 0;
+      let apiErrors = 0;
+
+      for (let i = 0; i < outcomes.length; i++) {
+        const outcome = outcomes[i];
+        const report: any = reports[i];
+        const phone = String(report.phone || '').replace(/\+/g, '');
+
+        if (outcome.status === 'rejected') {
+          failed++;
+          apiErrors++;
+          reportOps.push({
+            updateOne: {
+              filter: { _id: report._id, workerClaimToken: token },
+              update: { $set: { status: 'failed', error: 'System error: send task rejected' }, $unset: { workerClaimToken: 1, leaseExpiresAt: 1, queuedAt: 1 } },
+            },
+          });
+          continue;
+        }
+
+        const { result } = outcome.value;
+        if (result.status === 'sent') {
+          sent++;
+          let price = Number(campaign.pricePerMessage);
+          if (!Number.isFinite(price) || price <= 0) {
+            price = Number(getPriceForCategory(payer, campaign.templateCategory || 'MARKETING')) || 0;
+          }
+          totalDeducted += price;
+          reportOps.push({
+            updateOne: {
+              filter: { _id: report._id, workerClaimToken: token },
+              update: {
+                $set: { status: 'sent', sentWamid: result.wamid, charged: true, chargedAmount: price },
+                $unset: { workerClaimToken: 1, leaseExpiresAt: 1, queuedAt: 1 },
+              },
+            },
+          });
+          messagesToCreate.push({
+            userId,
+            phone,
+            text: '',
+            direction: 'out',
+            messageType: 'template',
+            mediaUrl: tc.mediaUrl || null,
+            whatsappMessageId: result.wamid,
+            status: 'sent',
+            templateName: tc.templateName,
+            templateLanguage: tc.languageCode,
+            whatsappPhoneNumberId: PHONE_NUMBER_ID,
+          });
+        } else {
+          failed++;
+          apiErrors++;
+          reportOps.push({
+            updateOne: {
+              filter: { _id: report._id, workerClaimToken: token },
+              update: {
+                $set: { status: 'failed', error: result.error || 'Unknown Meta API error' },
+                $unset: { workerClaimToken: 1, leaseExpiresAt: 1, queuedAt: 1 },
+              },
+            },
+          });
+        }
       }
+
+      // Persist results in batches. Log failures rather than silently swallowing them.
+      if (reportOps.length) {
+        try {
+          const writeResult = await CampaignReport.collection.bulkWrite(reportOps, { ordered: false });
+          if (writeResult.matchedCount < reportOps.length) {
+            console.warn(`[campaign ${campaignId}] ${reportOps.length - writeResult.matchedCount} report updates did not match their claim token.`);
+          }
+        } catch (e: any) {
+          console.error(`[campaign ${campaignId}] Report bulk write failed:`, e?.message || e);
+          // Keep any unpersisted reports claimed; their leases will expire and be recovered.
+          throw e;
+        }
+      }
+
+      if (messagesToCreate.length) {
+        try {
+          await Message.insertMany(messagesToCreate, { ordered: false });
+        } catch (e: any) {
+          console.error(`[campaign ${campaignId}] Message insertMany failed:`, e?.message || e);
+        }
+      }
+
+      if (totalDeducted > 0) {
+        try {
+          await User.updateOne({ _id: payerId }, { $inc: { balance: -Math.round(totalDeducted * 100) / 100 } });
+        } catch (e: any) {
+          console.error(`[campaign ${campaignId}] Balance deduction failed:`, e?.message || e);
+        }
+      }
+
+      try {
+        await Campaign.updateOne(
+          { _id: campaignId },
+          { $inc: { sentCount: sent, failedCount: failed, totalDeducted: Math.round(totalDeducted * 100) / 100 } },
+        );
+      } catch (e: any) {
+        console.error(`[campaign ${campaignId}] Campaign counter update failed:`, e?.message || e);
+      }
+
+      const elapsedBatch = outcomes.reduce((sum, outcome) => sum + (outcome.status === 'fulfilled' ? outcome.value.elapsed : 0), 0);
+      const batchWallMs = Date.now() - batchStartedAt;
+      const actualRate = sent / Math.max(batchWallMs / 1000, 0.001);
+      console.log(
+        `[campaign ${campaignId}] batch=${reports.length} sent=${sent} failed=${failed} apiErrors=${apiErrors} ` +
+        `batchWallMs=${batchWallMs} avgRequestMs=${reports.length ? Math.round(elapsedBatch / reports.length) : 0} ` +
+        `successfulSendRate=${actualRate.toFixed(2)}/sec`,
+      );
+    } finally {
+      clearInterval(leaseHeartbeat);
     }
 
-    if (bd > 0) ded = Math.round((ded + bd) * 100) / 100;
-    if (bulkReportOps.length > 0) try { await CampaignReport.bulkWrite(bulkReportOps); } catch (e) {}
-    if (messagesToCreate.length > 0) try { await Message.insertMany(messagesToCreate, { ordered: false }); } catch (e) {}
-    if (bd > 0) try { await User.updateOne({ _id: payerId }, { $inc: { balance: -bd } }); } catch (e) {}
-    try { await Campaign.updateOne({ _id: campaignId }, { $inc: { sentCount: sent, failedCount: failed, totalDeducted: ded } }); } catch (e) {}
-
-    // 5. Wait 250ms (Rate limit: ~40 msgs/sec) and loop back to step 1
-    await new Promise(r => setTimeout(r, 250));
+    if (BATCH_PAUSE_MS > 0) await sleep(BATCH_PAUSE_MS);
   }
 }
 
-// ============================================================================
-// INACTIVITY TIMER WORKER
-// ============================================================================
+async function releaseClaimedReportsForCampaign(campaignId: any) {
+  // Release only reports not currently owned by a still-live lease. The active batch's
+  // heartbeat will stop when the loop returns; its reports will be recovered on expiry.
+  const now = new Date();
+  await CampaignReport.collection.updateMany(
+    {
+      campaignId: new mongoose.Types.ObjectId(String(campaignId)),
+      status: 'queued',
+      leaseExpiresAt: { $lt: now },
+    },
+    { $set: { status: 'pending' }, $unset: { workerClaimToken: 1, leaseExpiresAt: 1, queuedAt: 1 } },
+  );
+}
+
+async function releaseAnyExpiredAndFinish(campaignId: any) {
+  await recoverExpiredReports(campaignId);
+}
+
+async function mapSettledWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(Math.floor(concurrency) || 1, items.length || 1));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      try {
+        results[index] = { status: 'fulfilled', value: await mapper(items[index], index) };
+      } catch (reason) {
+        results[index] = { status: 'rejected', reason };
+      }
+    }
+  }));
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// INACTIVITY WORKER
+// ---------------------------------------------------------------------------
 
 async function startInactivityWorker() {
   while (true) {
     try {
       await ensureDbConnected();
       const job = await Job.findOneAndUpdate(
-        { queue: "workflow-inactivity", status: "pending", $expr: { $lt: [{ $add: ["$createdAt", { $multiply: [{ $ifNull: ["$data.delaySeconds", 30] }, 1000] }] }, new Date()] } },
-        { $set: { status: "processing", lockedAt: new Date() } },
-        { sort: { createdAt: 1 }, returnDocument: "after" }
+        {
+          queue: 'workflow-inactivity',
+          status: 'pending',
+          $expr: {
+            $lt: [
+              { $add: ['$createdAt', { $multiply: [{ $ifNull: ['$data.delaySeconds', 30] }, 1000] }] },
+              new Date(),
+            ],
+          },
+        },
+        { $set: { status: 'processing', lockedAt: new Date() } },
+        { sort: { createdAt: 1 }, returnDocument: 'after' },
       ).lean();
-      if (job) {
-        try {
-          const data = job.data;
-          const session = await Session.findOne({ phone: data.phone, userId: data.userId });
-          if (session && session.formId) { await Job.deleteOne({ _id: job._id }); }
-          else if (data.sentCount < data.repeatCount) {
-            await fetch(`https://graph.facebook.com/v21.0/${data.phoneNumberId}/messages`, { method: "POST", headers: { Authorization: `Bearer ${data.accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ messaging_product: "whatsapp", to: data.phone, type: "text", text: { body: data.message, preview_url: true } }) });
-            await Message.create({ userId: data.userId, phone: data.phone, text: data.message, direction: "out", messageType: "text", status: "sent", whatsappPhoneNumberId: data.phoneNumberId });
-            if (data.sentCount + 1 < data.repeatCount) await Job.create({ queue: "workflow-inactivity", name: "send-inactivity-message", data: { ...data, sentCount: data.sentCount + 1 }, status: "pending", createdAt: new Date() });
-            await Job.deleteOne({ _id: job._id });
-          } else { await Job.deleteOne({ _id: job._id }); }
-        } catch (err: any) { await Job.updateOne({ _id: job._id }, { $set: { status: "failed", error: err.message } }); }
-        await new Promise(r => setTimeout(r, 1000));
-      } else { await new Promise(r => setTimeout(r, 2000)); }
-    } catch (err) { await new Promise(r => setTimeout(r, 2000)); }
+
+      if (!job) {
+        await sleep(1500);
+        continue;
+      }
+
+      try {
+        const data = job.data;
+        const session = await Session.findOne({ phone: data.phone, userId: data.userId });
+        if (session?.formId) {
+          await Job.deleteOne({ _id: job._id });
+        } else if (data.sentCount < data.repeatCount) {
+          const response = await fetch(`https://graph.facebook.com/${META_API_VERSION}/${data.phoneNumberId}/messages`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${data.accessToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              messaging_product: 'whatsapp',
+              to: data.phone,
+              type: 'text',
+              text: { body: data.message, preview_url: true },
+            }),
+          });
+          if (!response.ok) {
+            const errorText = await response.text().catch(() => 'Unknown Meta API error');
+            throw new Error(`Inactivity message failed (${response.status}): ${errorText.slice(0, 500)}`);
+          }
+          const responseData: any = await response.json().catch(() => ({}));
+          await Message.create({
+            userId: data.userId,
+            phone: data.phone,
+            text: data.message,
+            direction: 'out',
+            messageType: 'text',
+            status: 'sent',
+            whatsappMessageId: responseData?.messages?.[0]?.id,
+            whatsappPhoneNumberId: data.phoneNumberId,
+          });
+          if (data.sentCount + 1 < data.repeatCount) {
+            await Job.create({
+              queue: 'workflow-inactivity',
+              name: 'send-inactivity-message',
+              data: { ...data, sentCount: data.sentCount + 1 },
+              status: 'pending',
+              createdAt: new Date(),
+            });
+          }
+          await Job.deleteOne({ _id: job._id });
+        } else {
+          await Job.deleteOne({ _id: job._id });
+        }
+      } catch (err: any) {
+        console.error('[workflow-inactivity] job failed:', err?.message || err);
+        await Job.updateOne(
+          { _id: job._id },
+          { $set: { status: 'failed', error: err?.message || 'Inactivity worker error' }, $unset: { lockedAt: 1 } },
+        );
+      }
+      await sleep(250);
+    } catch (err: any) {
+      console.error('[workflow-inactivity] polling error:', err?.message || err);
+      await sleep(2000);
+    }
   }
 }
 
-function cleanStr(val: any): string { if (val == null) return ""; let s = String(val).trim(); if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1); if (s.startsWith("'") && s.endsWith("'")) s = s.slice(1, -1); s = s.replace(/\\"/g, '"').replace(/\\'/g, "'"); return s; }
+function cleanStr(value: any): string {
+  if (value == null) return '';
+  let result = String(value).trim();
+  if (result.startsWith('"') && result.endsWith('"')) result = result.slice(1, -1);
+  if (result.startsWith("'") && result.endsWith("'")) result = result.slice(1, -1);
+  return result.replace(/\\"/g, '"').replace(/\\'/g, "'");
+}
 
-async function metaSenderWorker(phone: string, variables: string[], tc: any, token: string, pnId: string, thf: string): Promise<{ status: string; wamid?: string | null; error?: string }> {
-  let comps = buildCampaignComponents(thf, variables, tc.mediaUrl || "");
-  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-  const url = `https://graph.facebook.com/v21.0/${pnId}/messages`;
+async function metaSenderWorker(
+  phone: string,
+  variables: string[],
+  tc: any,
+  token: string,
+  phoneNumberId: string,
+  headerFormat: string,
+): Promise<{ status: 'sent' | 'failed'; wamid?: string | null; error?: string }> {
+  let components = buildCampaignComponents(headerFormat, variables, tc.mediaUrl || '');
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const url = `https://graph.facebook.com/${META_API_VERSION}/${phoneNumberId}/messages`;
   const maxRetries = 3;
   let attempt = 0;
 
   while (attempt <= maxRetries) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 30000);
+    const startedAt = Date.now();
     try {
-      const payload = JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "template", template: { name: tc.templateName, language: { code: tc.languageCode || "en" }, components: comps } });
-      const sendRes = await fetch(url, { method: "POST", headers, body: payload, signal: controller.signal });
+      const payload = JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: phone,
+        type: 'template',
+        template: {
+          name: tc.templateName,
+          language: { code: tc.languageCode || 'en' },
+          components,
+        },
+      });
+      const response = await fetch(url, { method: 'POST', headers, body: payload, signal: controller.signal });
       clearTimeout(timeoutId);
+      const latency = Date.now() - startedAt;
 
-      if (sendRes.ok) {
-        let wamid: string | null = null;
-        let data: any = null;
-        try { data = await sendRes.json(); wamid = data?.messages?.[0]?.id || data?.message_id || null; }
-        catch (e) { console.error(`[Meta API] Failed to parse success JSON for ${phone}:`, e); }
+      let responseData: any = {};
+      try { responseData = await response.json(); } catch { /* handled below */ }
 
-        if (wamid) return { status: "sent", wamid };
+      if (response.ok) {
+        const wamid = responseData?.messages?.[0]?.id || responseData?.message_id || null;
+        if (wamid) return { status: 'sent', wamid };
+        const message = responseData?.error?.message || 'Meta API returned success without a message ID';
+        return { status: 'failed', error: message };
+      }
 
-        if (data?.error) {
-          const errorMsg = data.error.message || "Meta API error";
-          const errorCode = data.error.code;
-          if (errorCode === 132012 && tc.mediaUrl) {
-            const m = (data.error?.error_data?.details || "").match(/expected\s+(\w+)/i);
-            if (m && ["IMAGE", "VIDEO", "DOCUMENT"].includes(m[1].toUpperCase())) { comps = buildCampaignComponents(m[1].toUpperCase(), variables, tc.mediaUrl); attempt++; continue; }
-          }
-          if (errorCode === 132012 && comps.length > 0 && comps[0].type === "header") { comps = comps.filter((c: any) => c.type !== "header"); attempt++; continue; }
-          return { status: "failed", error: errorMsg };
+      const errorCode = responseData?.error?.code;
+      const errorMessage = responseData?.error?.message || 'Meta API request failed';
+      const details = responseData?.error?.error_data?.details || '';
+
+      if (errorCode === 132012 && tc.mediaUrl) {
+        const match = String(details).match(/expected\s+(\w+)/i);
+        if (match && ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(match[1].toUpperCase())) {
+          components = buildCampaignComponents(match[1].toUpperCase(), variables, tc.mediaUrl);
+          attempt++;
+          continue;
         }
-        return { status: "failed", error: "Meta API returned 200 but no message ID" };
+      }
+      if (errorCode === 132012 && components.some((component: any) => component.type === 'header')) {
+        components = components.filter((component: any) => component.type !== 'header');
+        attempt++;
+        continue;
       }
 
-      let sendData: any = null;
-      try { sendData = await sendRes.json(); } catch { return { status: "failed", error: "Meta API invalid response" }; }
-
-      const statusCode = sendRes.status;
-      const errorMsg = sendData?.error?.message || "Failed to send";
-
-      if (sendData.error?.code === 132012 && tc.mediaUrl) {
-        const m = (sendData.error?.error_data?.details || "").match(/expected\s+(\w+)/i);
-        if (m && ["IMAGE", "VIDEO", "DOCUMENT"].includes(m[1].toUpperCase())) { comps = buildCampaignComponents(m[1].toUpperCase(), variables, tc.mediaUrl); attempt++; continue; }
+      const retryable = response.status === 429 || response.status >= 500;
+      if (retryable && attempt < maxRetries) {
+        const retryAfter = Number(response.headers.get('retry-after'));
+        const backoff = Number.isFinite(retryAfter) && retryAfter > 0
+          ? Math.min(retryAfter * 1000, 30000)
+          : Math.min(1000 * (2 ** attempt), 15000);
+        console.warn(`[Meta API] retryable status=${response.status} code=${errorCode || 'n/a'} latency=${latency}ms attempt=${attempt + 1}/${maxRetries} wait=${backoff}ms`);
+        await sleep(backoff);
+        attempt++;
+        continue;
       }
-      if (sendData.error?.code === 132012 && comps.length > 0 && comps[0].type === "header") { comps = comps.filter((c: any) => c.type !== "header"); attempt++; continue; }
 
-      if (statusCode === 429 || statusCode >= 500) {
-        if (attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000)); attempt++; continue; }
-        return { status: "failed", error: `Retry limit reached: ${errorMsg}` };
+      if (response.status === 429 || response.status >= 500) {
+        console.error(`[Meta API] retries exhausted status=${response.status} code=${errorCode || 'n/a'} latency=${latency}ms message=${errorMessage}`);
       }
-      return { status: "failed", error: errorMsg };
-
+      return { status: 'failed', error: `${response.status}${errorCode ? ` / ${errorCode}` : ''}: ${errorMessage}` };
     } catch (err: any) {
       clearTimeout(timeoutId);
-      if (err.name === 'AbortError') {
-        if (attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000)); attempt++; continue; }
-        return { status: "failed", error: "Meta API Timeout (30s)" };
+      const retryable = err?.name === 'AbortError' || err instanceof TypeError;
+      if (retryable && attempt < maxRetries) {
+        const backoff = Math.min(1000 * (2 ** attempt), 15000);
+        console.warn(`[Meta API] network/timeout error attempt=${attempt + 1}/${maxRetries}; retrying in ${backoff}ms: ${err?.message || err}`);
+        await sleep(backoff);
+        attempt++;
+        continue;
       }
-      if (attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000)); attempt++; continue; }
-      return { status: "failed", error: err.message || "System error" };
+      return { status: 'failed', error: err?.name === 'AbortError' ? 'Meta API Timeout (30s)' : (err?.message || 'System error') };
     }
   }
-  return { status: "failed", error: "Exited retry loop unexpectedly" };
+  return { status: 'failed', error: 'Retry limit reached' };
 }
 
-async function fetchTemplateHeaderFormat(phoneNumberId: string, accessToken: string, templateName: string, languageCode: string, userProvidedMediaType: string): Promise<string> {
-  const valid = ["image", "video", "document"];
-  const clean = cleanStr(userProvidedMediaType).toLowerCase().trim();
+async function fetchTemplateHeaderFormat(
+  phoneNumberId: string,
+  accessToken: string,
+  templateName: string,
+  languageCode: string,
+  userProvidedMediaType: string,
+): Promise<string> {
+  const valid = ['image', 'video', 'document'];
+  const fallback = cleanStr(userProvidedMediaType).toLowerCase();
+  const baseUrl = `https://graph.facebook.com/${META_API_VERSION}/${phoneNumberId}/message_templates`;
   try {
-    let res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}&language=${encodeURIComponent(languageCode)}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (res.ok) { const d = await res.json(); const t = d?.data?.[0]; if (t?.components) for (const c of t.components) if (c.type === "HEADER") return (c.format || "none").toUpperCase(); }
-    res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/message_templates?name=${encodeURIComponent(templateName)}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (res.ok) { const d = await res.json(); const t = d?.data?.[0]; if (t?.components) for (const c of t.components) if (c.type === "HEADER") return (c.format || "none").toUpperCase(); }
-  } catch (e) {}
-  if (valid.includes(clean)) return clean.toUpperCase();
-  return "none";
+    let response = await fetch(`${baseUrl}?name=${encodeURIComponent(templateName)}&language=${encodeURIComponent(languageCode)}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (response.ok) {
+      const data: any = await response.json();
+      const template = data?.data?.[0];
+      if (template?.components) {
+        for (const component of template.components) {
+          if (component.type === 'HEADER') return (component.format || 'none').toUpperCase();
+        }
+      }
+    }
+    response = await fetch(`${baseUrl}?name=${encodeURIComponent(templateName)}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (response.ok) {
+      const data: any = await response.json();
+      const template = data?.data?.[0];
+      if (template?.components) {
+        for (const component of template.components) {
+          if (component.type === 'HEADER') return (component.format || 'none').toUpperCase();
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Meta API] Unable to fetch template header format:', err?.message || err);
+  }
+  if (valid.includes(fallback)) return fallback.toUpperCase();
+  return 'none';
 }
 
 function buildCampaignComponents(headerFormat: string, variables: string[], mediaUrl: string): any[] {
-  const comps: any[] = [];
-  const valid = ["image", "video", "document"];
-  if (valid.includes(headerFormat.toLowerCase()) && mediaUrl) {
-    const hType = headerFormat.toLowerCase();
-    const mObj: any = mediaUrl.startsWith("http") ? { link: mediaUrl } : { id: mediaUrl };
-    const param: any = { type: hType };
-    if (hType === "image") param.image = mObj;
-    else if (hType === "video") param.video = mObj;
-    else if (hType === "document") param.document = { ...mObj, filename: "document.pdf" };
-    comps.push({ type: "header", parameters: [param] });
+  const components: any[] = [];
+  const valid = ['image', 'video', 'document'];
+  if (valid.includes(String(headerFormat).toLowerCase()) && mediaUrl) {
+    const headerType = String(headerFormat).toLowerCase();
+    const mediaObject: any = mediaUrl.startsWith('http') ? { link: mediaUrl } : { id: mediaUrl };
+    const parameter: any = { type: headerType };
+    if (headerType === 'image') parameter.image = mediaObject;
+    else if (headerType === 'video') parameter.video = mediaObject;
+    else if (headerType === 'document') parameter.document = { ...mediaObject, filename: 'document.pdf' };
+    components.push({ type: 'header', parameters: [parameter] });
   }
-  if (variables.length > 0) {
-    const params = new Array(variables.length);
-    for (let i = 0; i < variables.length; i++) params[i] = { type: "text", text: String(variables[i]) };
-    comps.push({ type: "body", parameters: params });
+  if (variables.length) {
+    components.push({
+      type: 'body',
+      parameters: variables.map((value) => ({ type: 'text', text: String(value) })),
+    });
   }
-  return comps;
+  return components;
 }
 
 async function generateCountsData(userId: string, page: number, limit: number, cacheKey: string, lockKey: string) {
   try {
     await ensureDbConnected();
     const skip = (page - 1) * limit;
-
     const campaigns = await Campaign.aggregate([
       { $match: { userId: new mongoose.Types.ObjectId(userId) } },
-      { $sort: { createdAt: -1 } }, { $skip: skip }, { $limit: limit },
+      { $sort: { createdAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
       {
         $project: {
-          name: 1, templateName: 1, templateCategory: 1, variables: 1, mappedVariables: 1, generateOtp: 1, otpLength: 1,
-          phoneNumbers: { $slice: [{ $ifNull: ["$phoneNumbers", []] }, 15] }, names: { $slice: [{ $ifNull: ["$names", []] }, 15] },
-          additionalFieldsData: { $slice: [{ $ifNull: ["$additionalFieldsData", []] }, 15] }, mediaUrl: 1, mediaType: 1, languageCode: 1,
-          status: 1, totalMessages: 1, totalDeducted: 1, scheduledAt: 1, createdAt: 1, additionalFields: 1, sentCount: 1, failedCount: 1, skippedCount: 1,
-          liveStats: 1
-        }
-      }
+          name: 1, templateName: 1, templateCategory: 1, variables: 1, mappedVariables: 1,
+          generateOtp: 1, otpLength: 1,
+          phoneNumbers: { $slice: [{ $ifNull: ['$phoneNumbers', []] }, 15] },
+          names: { $slice: [{ $ifNull: ['$names', []] }, 15] },
+          additionalFieldsData: { $slice: [{ $ifNull: ['$additionalFieldsData', []] }, 15] },
+          mediaUrl: 1, mediaType: 1, languageCode: 1, status: 1, totalMessages: 1,
+          totalDeducted: 1, scheduledAt: 1, createdAt: 1, additionalFields: 1,
+          sentCount: 1, failedCount: 1, skippedCount: 1, liveStats: 1,
+        },
+      },
     ]).allowDiskUse(false);
 
-    const fixedCampaigns = campaigns.map((c: any) => {
-      const ls = c.liveStats || {};
-      const total = ls.total || 0; const read = ls.read || 0; const delivered = ls.delivered || 0;
-      const sent = ls.sent || 0; const failed = ls.failed || 0; const invalid = ls.invalid || 0; const duplicate = ls.duplicate || 0;
+    const fixedCampaigns = campaigns.map((campaign: any) => {
+      const stats = campaign.liveStats || {};
+      const total = stats.total || 0;
+      const read = stats.read || 0;
+      const delivered = stats.delivered || 0;
+      const sent = stats.sent || 0;
+      const failed = stats.failed || 0;
+      const invalid = stats.invalid || 0;
+      const duplicate = stats.duplicate || 0;
       const processed = read + delivered + sent + failed + invalid + duplicate;
       const pending = Math.max(0, total - processed);
       const progress = total > 0 ? Math.min(100, Math.round(((delivered + read + sent) / total) * 100)) : 0;
-      return { ...c, liveStats: { ...ls, pending, deliveredRead: delivered + read, failedInvalid: failed + invalid, progress }, languageCode: c.languageCode || "en", totalDeducted: c.totalDeducted || 0 };
+      return {
+        ...campaign,
+        liveStats: { ...stats, pending, deliveredRead: delivered + read, failedInvalid: failed + invalid, progress },
+        languageCode: campaign.languageCode || 'en',
+        totalDeducted: campaign.totalDeducted || 0,
+      };
     });
 
     const result = { success: true, campaigns: fixedCampaigns, page, limit };
-    const cachePayload = JSON.stringify(result);
-    await Cache.updateOne({ key: cacheKey }, { $set: { value: cachePayload, expireAt: new Date(Date.now() + 3600 * 1000) } }, { upsert: true });
+    await Cache.updateOne(
+      { key: cacheKey },
+      { $set: { value: JSON.stringify(result), expireAt: new Date(Date.now() + 3600 * 1000) } },
+      { upsert: true },
+    );
     await Cache.deleteOne({ key: lockKey }).catch(() => {});
     return result;
   } catch (error) {
-    console.error("❌ Counts generation error:", error);
+    console.error('❌ Counts generation error:', error);
     await Cache.deleteOne({ key: lockKey }).catch(() => {});
-    return { success: false, message: "Failed to generate counts" };
+    return { success: false, message: 'Failed to generate counts' };
   }
 }
 
-process.on('SIGTERM', async () => { console.log('Main Worker process shutting down...'); process.exit(0); });
+process.on('SIGTERM', async () => {
+  console.log('Main Worker process shutting down...');
+  process.exit(0);
+});
