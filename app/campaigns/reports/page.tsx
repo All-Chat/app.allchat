@@ -20,6 +20,44 @@ import * as XLSX from "xlsx";
 import { useSession } from "next-auth/react";
 
 /* ========================================================= *
+   HELPER FUNCTIONS
+ * ========================================================= */
+
+// Fetches names from the Live Chat API for a specific list of phones
+const fetchNamesFromChat = async (phones: string[]) => {
+  const newNames: Record<string, string> = {};
+  const concurrencyLimit = 5; // Fetch 5 at a time to prevent overload
+  let activePromises: Promise<void>[] = [];
+
+  for (const phone of phones) {
+    const promise = (async () => {
+      try {
+        const res = await fetch(`/api/chat?phone=${encodeURIComponent(phone)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.success && data.messages?.length > 0) {
+          // Find the first message that has a contactName attached
+          const msgWithName = data.messages.find((m: any) => m.contactName && m.contactName.trim() !== "");
+          if (msgWithName) {
+            newNames[phone] = msgWithName.contactName;
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch name for", phone, err);
+      }
+    })();
+
+    activePromises.push(promise);
+    if (activePromises.length >= concurrencyLimit) {
+      await Promise.all(activePromises);
+      activePromises = [];
+    }
+  }
+  await Promise.all(activePromises);
+  return newNames;
+};
+
+/* ========================================================= *
    LOADER COMPONENT
  * ========================================================= */
 
@@ -144,7 +182,6 @@ export default function ReportsPage() {
   const [refreshKey, setRefreshKey] = useState(0);
 
   const [campaignStats, setCampaignStats] = useState<any>({});
-  const [campaignStatsCampaignId, setCampaignStatsCampaignId] = useState<string | null>(null);
   const [campaignStatsCache, setCampaignStatsCache] = useState<Record<string, any>>({});
 
   const [syncingSheet, setSyncingSheet] = useState(false);
@@ -163,13 +200,13 @@ export default function ReportsPage() {
   const [showButtonDropdown, setShowButtonDropdown] = useState(false);
   const [buttonFilter, setButtonFilter] = useState<string>("all");
 
-  const [repliesMap, setRepliesMap] = useState<Record<string, string[]>>({});
+  // State to hold the dynamically fetched names from Live Chat
+  const [namesMap, setNamesMap] = useState<Record<string, string>>({});
+  
   const [whatsappNumbers, setWhatsappNumbers] = useState<any[]>([]);
   const [showCampaignList, setShowCampaignList] = useState(true);
   const [isBriefOpen, setIsBriefOpen] = useState(false);
-  const [tags, setTags] = useState<any[]>([]);
-  const [tagFilter, setTagFilter] = useState("all");
-
+  
   const [reportCurrentPage, setReportCurrentPage] = useState(1);
   const [reportTotalPages, setReportTotalPages] = useState(1);
 
@@ -179,21 +216,15 @@ export default function ReportsPage() {
 
   /* -------------------- HELPER FUNCTIONS -------------------- */
 
-  const getRepliesList = (d: ReportItem): string[] => {
-    if (d.phone) {
-      if (repliesMap[d.phone]?.length > 0) return repliesMap[d.phone];
-      const p10 = normalizePhone(d.phone).slice(-10);
-      if (p10.length >= 7) {
-        for (const key in repliesMap) {
-          if (normalizePhone(key).slice(-10) === p10 && repliesMap[key].length > 0) {
-            return repliesMap[key];
-          }
-        }
-      }
+  const getDisplayName = (d: ReportItem) => {
+    const fetchedName = namesMap[d.phone];
+    const existingName = d.name?.trim();
+    
+    // If the sheet name is missing or "Unknown"/"—", use the fetched Live Chat name
+    if (!existingName || existingName.toLowerCase() === "unknown" || existingName === "N/A" || existingName === "—" || existingName === "-") {
+      return fetchedName || "—";
     }
-    if (d.replies && d.replies.length > 0) return d.replies;
-    if (d.reply && d.reply.trim().length > 0) return [d.reply];
-    return [];
+    return existingName;
   };
 
   const getCampaignStats = (c: Campaign): LiveStats => {
@@ -244,19 +275,21 @@ export default function ReportsPage() {
 
   useEffect(() => {
     if (status === "authenticated") {
-      fetchCampaigns(); fetchTags(); fetchWhatsappNumbers(); fetchUserSettings();
+      fetchCampaigns(); fetchWhatsappNumbers(); fetchUserSettings();
     } else if (status === "unauthenticated") {
       window.location.href = "/";
     }
   }, [status]);
 
-  // ✅ TRUE SERVER-SIDE PAGINATION & FILTERING (No more download=true)
+  // ✅ Fetch Report Data from Backend
   useEffect(() => {
     if (!selectedId) return;
 
     const fetchReportPage = async () => {
       setLoadingReport(true);
       setReportData([]);
+      setNamesMap({}); // Clear old names when new page loads
+      
       try {
         const params = new URLSearchParams();
         params.set("id", selectedId);
@@ -265,7 +298,6 @@ export default function ReportsPage() {
         if (filterOut.length > 0) params.set("filterOut", filterOut.join(","));
         if (search) params.set("search", search);
 
-        // ✅ Send button filter data to backend
         if (buttonFilter !== "all") {
           params.set("buttonFilter", buttonFilter);
           if (templateButtons.length > 0) {
@@ -300,12 +332,30 @@ export default function ReportsPage() {
     fetchReportPage();
   }, [selectedId, reportCurrentPage, showOnly, filterOut, search, buttonFilter, templateButtons, refreshKey]);
 
-  // ✅ Reset to page 1 when filters or campaign change
+  // ✅ DYNAMIC FRONTEND NAME FETCHER: When the 10 report items load, fetch their names from Live Chat
+  useEffect(() => {
+    if (reportData.length === 0) return;
+
+    let isMounted = true;
+    const phonesToFetch = reportData.map(d => d.phone).filter(Boolean);
+
+    const runFetch = async () => {
+      const fetchedNames = await fetchNamesFromChat(phonesToFetch);
+      if (!isMounted) return;
+      setNamesMap(prev => ({ ...prev, ...fetchedNames }));
+    };
+
+    runFetch();
+
+    return () => { isMounted = false; };
+  }, [reportData]);
+
+  // Reset to page 1 when filters or campaign change
   useEffect(() => {
     setReportCurrentPage(1);
   }, [selectedId, showOnly, filterOut, search, buttonFilter]);
 
-  // ✅ Reset template states when campaign changes
+  // Reset template states when campaign changes
   useEffect(() => {
     setTemplateButtons([]);
     setTemplateButtonsFetched(false);
@@ -412,20 +462,11 @@ export default function ReportsPage() {
     return "Unknown Sender";
   };
 
-  const fetchTags = async () => {
-    try {
-      const res = await fetch("/api/tags");
-      const data = await res.json();
-      if (data.tags) setTags(data.tags);
-    } catch (err) { console.error("Failed to fetch tags", err); }
-  };
-
   const toggleArrayValue = (arr: string[], value: string, setter: (v: string[]) => void) => {
     if (arr.includes(value)) setter(arr.filter((v) => v !== value));
     else setter([...arr, value]);
   };
 
-  const additionalFieldsCount = selectedCamp?.additionalFields?.length || 0;
   const handleSelectCampaign = (id: string) => { setSelectedId(id); setShowCampaignList(false); };
 
   const selectedCampData = campaigns.find((c) => c._id === selectedId);
@@ -473,7 +514,6 @@ export default function ReportsPage() {
     </div>
   );
 
-  // ✅ UPDATED: Uses backend filtering for Excel download too!
   const downloadExcel = async (sortOrder = 'original') => {
     if (!selectedId) { toast.error("No campaign selected"); return; }
     setDownloadingExcel(true);
@@ -490,7 +530,6 @@ export default function ReportsPage() {
       if (filterOut.length > 0) params.set("filterOut", filterOut.join(","));
       if (search) params.set("search", search);
 
-      // ✅ Let the backend filter the buttons natively for Excel too
       if (buttonFilter !== "all") {
         params.set("buttonFilter", buttonFilter);
         if (templateButtons.length > 0) {
@@ -504,24 +543,45 @@ export default function ReportsPage() {
 
       if (fullData.length === 0) { toast.error("No data to download"); return; }
 
-      // ✅ Apply Sorting
+      // ✅ Fetch names for ALL replied contacts in the full dataset for Excel
+      const repliedPhonesInFullData = fullData
+        .filter((d: any) => (d.status === 'replied' || (d.replies && d.replies.length > 0)))
+        .map((d: any) => d.phone)
+        .filter(Boolean);
+
+      let excelNamesMap = { ...namesMap };
+
+      if (repliedPhonesInFullData.length > 0) {
+        toast.info(`Fetching live chat names for ${repliedPhonesInFullData.length} replied contacts...`);
+        const fetchedNames = await fetchNamesFromChat(repliedPhonesInFullData);
+        excelNamesMap = { ...excelNamesMap, ...fetchedNames };
+      }
+
+      // Apply Sorting
       if (sortOrder === 'latest') {
-        fullData.sort((a: { repliedAt: any; readAt: any; deliveredAt: any; createdAt: any; }, b: { repliedAt: any; readAt: any; deliveredAt: any; createdAt: any; }) => {
+        fullData.sort((a: any, b: any) => {
           const timeA = new Date(a.repliedAt || a.readAt || a.deliveredAt || a.createdAt || 0).getTime();
           const timeB = new Date(b.repliedAt || b.readAt || b.deliveredAt || b.createdAt || 0).getTime();
-          return timeB - timeA; // Descending (Newest first)
+          return timeB - timeA;
         });
       }
 
       const fallbackTime = selectedCamp?.createdAt || selectedCamp?.updatedAt;
 
       const wsData = fullData.map((d: any) => {
-        const replies = getRepliesList(d).slice(0, 5);
         let currentStatus = d.status;
-        if (replies.length > 0) currentStatus = "replied";
-        const statusConfig = getStatusConfig(currentStatus, replies, d.error);
+        if (d.replies?.length > 0 || d.reply?.trim()) currentStatus = "replied";
+        const statusConfig = getStatusConfig(currentStatus, d.replies || [], d.error);
 
-        const row: any = { "Name": d.name || "N/A", "Phone Number": d.phone };
+        // Use fetched name if original name is missing
+        const fetchedName = excelNamesMap[d.phone];
+        const existingName = d.name?.trim();
+        let finalName = existingName;
+        if (!existingName || existingName.toLowerCase() === "unknown" || existingName === "N/A" || existingName === "—" || existingName === "-") {
+          finalName = fetchedName || "N/A";
+        }
+
+        const row: any = { "Name": finalName, "Phone Number": d.phone };
         
         additionalCols.forEach((field: string | number, idx: string | number) => { 
           row[field] = d.additionalData?.[idx] || ""; 
@@ -534,6 +594,7 @@ export default function ReportsPage() {
         row["Error Reason"] = d.error || "";
         row["Tags"] = d.tags?.join(", ") || "None";
 
+        const replies = d.replies && d.replies.length > 0 ? d.replies : (d.reply ? [d.reply] : []);
         for (let i = 0; i < 5; i++) {
           const replyText = replies[i] || "";
           row[`Reply ${i + 1}`] = replyText;
@@ -906,14 +967,17 @@ export default function ReportsPage() {
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {reportData.map((d, i) => {
-                          const replies = getRepliesList(d);
+                          const replies = d.replies && d.replies.length > 0 ? d.replies : (d.reply ? [d.reply] : []);
                           let currentStatus = d.status;
                           if (replies.length > 0) currentStatus = "replied";
                           const statusConfig = getStatusConfig(currentStatus, replies, d.error);
                           return (
                             <tr key={`${d.phone}-${i}`} className="hover:bg-slate-50 transition-colors">
                               <td className="px-4 py-3 text-xs text-slate-400">{((reportCurrentPage - 1) * 10) + i + 1}</td>
-                              <td className="px-4 py-3 font-medium text-slate-900 text-xs sm:text-sm">{d.name || "—"}</td>
+                              <td className="px-4 py-3 font-medium text-slate-900 text-xs sm:text-sm">
+                                {/* ✅ Uses the dynamically fetched name */}
+                                {getDisplayName(d)}
+                              </td>
                               <td className="px-4 py-3 font-mono text-xs">{d.phone}</td>
                               <td className="px-4 py-3">
                                 <span title={statusConfig.tooltip} className={`px-2.5 py-1 rounded-full text-[10px] font-bold border inline-flex items-center gap-1 cursor-default ${statusConfig.color}`}>
@@ -988,13 +1052,3 @@ function formatExcelDate(value: any): string {
 
   return date.toISOString().slice(0, 19).replace("T", " ");
 }
-
-function normalizePhone(phone: string) {
-  if (!phone) return "";
-
-  const digits = String(phone).replace(/\D/g, "");
-  if (!digits) return "";
-
-  return digits.replace(/^0+/, "");
-}
-
