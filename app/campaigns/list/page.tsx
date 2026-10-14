@@ -1126,7 +1126,7 @@ export default function CampaignList() {
                       </div>
                     </div>
 
-                    {amountSpent > 0 && (
+                    {/* {amountSpent > 0 && (
                       <div className="mt-3 flex items-center gap-2 text-xs">
                         <Wallet size={12} className="text-blue-500" />
                         <span className="text-slate-500">Amount deducted:</span>
@@ -1135,7 +1135,7 @@ export default function CampaignList() {
                           <span className="text-slate-400">(@ {formatINR(currentPrice)} / msg)</span>
                         )}
                       </div>
-                    )}
+                    )} */}
 
                     {isCompleted && totalCount === 0 && (
                       <div className="mt-3 flex items-center gap-2 text-xs">
