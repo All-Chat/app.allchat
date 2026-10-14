@@ -7,7 +7,7 @@ import Sidebar from "@/components/Sidebar";
 import {
   Type, Image, Video, FileText, MousePointerClick, ExternalLink, Phone,
   Trash2, Send, Loader2, Upload, X, Globe, AlertTriangle, CheckCircle2,
-  Gauge, Infinity as InfinityIcon, 
+  Gauge, Infinity as InfinityIcon, Bold, Italic, Strikethrough, Code2, Braces,
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -43,17 +43,17 @@ export default function TemplatesPage() {
   const [buttons, setButtons] = useState<TemplateButton[]>([]);
 
   const [mediaPermissionWarning, setMediaPermissionWarning] = useState(false);
-
-  // ✅ NEW: State to track if the media URL fails to load in preview
   const [mediaPreviewError, setMediaPreviewError] = useState(false);
 
-  // ✅ LIMIT ADDED: Limit State
   const [templateLimit, setTemplateLimit] = useState<any>(null);
   const isLimitActive = templateLimit && templateLimit.limit.period !== "unlimited" && templateLimit.limit.max !== -1;
   const usagePercent = isLimitActive ? Math.min(100, Math.round(((templateLimit?.usage?.count || 0) / templateLimit.limit.max) * 100)) : 0;
   const isAtLimit = isLimitActive && !templateLimit.allowed;
 
   const isAuthTemplate = category === "AUTHENTICATION";
+
+  // ✅ NEW: Ref for Body Textarea to handle formatting
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
 
   const bodyVariables = useMemo(() => {
     if (isAuthTemplate) return [1]; // Auth templates always have {{1}} for the code
@@ -75,7 +75,6 @@ export default function TemplatesPage() {
       window.location.href = "/";
     }
     if (status === "authenticated") {
-      // ✅ Fetch Limits
       fetch("/api/user/limits?resource=templates")
         .then((res) => res.json())
         .then((data) => {
@@ -90,7 +89,6 @@ export default function TemplatesPage() {
         })
         .catch(console.error);
 
-      // ✅ NEW: Fetch Existing Template Names for Live Validation
       fetch("/api/campaigns/templates")
         .then((res) => res.json())
         .then((data) => {
@@ -102,7 +100,6 @@ export default function TemplatesPage() {
     }
   }, [status]);
 
-  // ✅ NEW: Live Debounced Name Check
   const handleNameChange = (val: string) => {
     const formatted = val.toLowerCase().replace(/[^a-z0-9_]/g, "_");
     setName(formatted);
@@ -162,6 +159,61 @@ export default function TemplatesPage() {
 
   const isMediaHeader = ["image", "video", "document"].includes(headerType);
 
+  // ✅ NEW: Text Formatting Handler
+  const applyFormatting = (marker: string) => {
+    const textarea = bodyRef.current;
+    if (!textarea) return;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const selectedText = bodyText.substring(start, end);
+    
+    let newText;
+    if (selectedText) {
+      newText = bodyText.substring(0, start) + marker + selectedText + marker + bodyText.substring(end);
+    } else {
+      newText = bodyText.substring(0, start) + marker + marker + bodyText.substring(end);
+    }
+    
+    setBodyText(newText);
+    
+    setTimeout(() => {
+      textarea.focus();
+      if (selectedText) {
+        textarea.setSelectionRange(start + marker.length, end + marker.length);
+      } else {
+        textarea.setSelectionRange(start + marker.length, start + marker.length);
+      }
+    }, 0);
+  };
+
+  // ✅ NEW: Add Variable Handler
+  const addVariable = () => {
+    const textarea = bodyRef.current;
+    if (!textarea) return;
+    
+    // Find the highest variable number currently in the text
+    const matches = bodyText.match(/\{\{(\d+)\}\}/g);
+    let maxNum = 0;
+    if (matches) {
+      maxNum = Math.max(...matches.map(m => parseInt(m.replace(/\D/g, ""))));
+    }
+    
+    const nextVar = maxNum + 1;
+    const insertText = `{{${nextVar}}}`;
+    
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const newText = bodyText.substring(0, start) + insertText + bodyText.substring(end);
+    
+    setBodyText(newText);
+    
+    setTimeout(() => {
+      textarea.focus();
+      const newCursorPos = start + insertText.length;
+      textarea.setSelectionRange(newCursorPos, newCursorPos);
+    }, 0);
+  };
+
   const resetForm = () => {
     setName(""); setBodyText(""); setHeaderText(""); setFooterText("");
     setHeaderType("none"); setSampleFile(null); setSampleUrl("");
@@ -171,7 +223,6 @@ export default function TemplatesPage() {
 
   const createTemplate = async () => {
     if (!name) { toast.error("Template name is required"); return; }
-    // ✅ Prevent submission if name is taken
     if (nameStatus === "taken") { toast.error("Template name already exists. Please use another name."); return; }
     
     if (!isAuthTemplate) {
@@ -187,6 +238,7 @@ export default function TemplatesPage() {
       }
       for (const btn of buttons) {
         if (!btn.text.trim()) { toast.error("All buttons must have label text"); return; }
+        if (btn.text.length > 25) { toast.error(`Button "${btn.text.substring(0,10)}..." exceeds 25 character limit`); return; }
         if (btn.type === "URL" && !btn.url?.trim()) { toast.error("URL buttons must have a URL"); return; }
         if (btn.type === "PHONE_NUMBER" && !btn.phone?.trim()) { toast.error("Phone buttons must have a phone number"); return; }
       }
@@ -295,7 +347,6 @@ export default function TemplatesPage() {
       }
 
       resetForm();
-      // ✅ NEW: Add the newly created template name to the local list so it shows as taken if they type it again
       setExistingTemplateNames(prev => [...prev, name]);
       
       fetch("/api/user/limits?resource=templates")
@@ -421,7 +472,6 @@ export default function TemplatesPage() {
                       onChange={(e) => handleNameChange(e.target.value)} 
                       disabled={isAtLimit} 
                     />
-                    {/* ✅ NEW: Live Status Messages */}
                     {nameStatus === "taken" && (
                       <p className="text-xs text-red-600 font-medium mt-1.5 flex items-center gap-1">
                         <AlertTriangle size={12} /> This template name already exists in your Meta account.
@@ -569,8 +619,38 @@ export default function TemplatesPage() {
               {!isAuthTemplate && (
                 <div className="bg-white border border-gray-200 rounded-2xl p-4 sm:p-5 shadow-sm">
                   <h3 className="text-xs font-bold text-gray-800 mb-3">Body</h3>
+                  
+                  {/* ✅ NEW: Formatting Toolbar */}
+                  <div className="flex gap-1 mb-2 p-1 bg-gray-50 rounded-lg border border-gray-100">
+                    <button type="button" onClick={() => applyFormatting("*")} className="p-1.5 rounded hover:bg-gray-200 text-gray-600 transition" title="Bold">
+                      <Bold size={14} />
+                    </button>
+                    <button type="button" onClick={() => applyFormatting("_")} className="p-1.5 rounded hover:bg-gray-200 text-gray-600 transition" title="Italic">
+                      <Italic size={14} />
+                    </button>
+                    <button type="button" onClick={() => applyFormatting("~")} className="p-1.5 rounded hover:bg-gray-200 text-gray-600 transition" title="Strikethrough">
+                      <Strikethrough size={14} />
+                    </button>
+                    <button type="button" onClick={() => applyFormatting("```")} className="p-1.5 rounded hover:bg-gray-200 text-gray-600 transition" title="Monospace">
+                      <Code2 size={14} />
+                    </button>
+                    
+                    <div className="w-px bg-gray-200 mx-1 my-0.5"></div>
+                    
+                    {/* ✅ NEW: Add Variable Button */}
+                    <button 
+                      type="button" 
+                      onClick={addVariable} 
+                      className="p-1.5 px-2 rounded hover:bg-gray-200 text-gray-600 transition flex items-center gap-1 text-[11px] font-bold" 
+                      title="Add Variable"
+                    >
+                      <Braces size={14} /> Variable
+                    </button>
+                  </div>
+
                   <textarea
-                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 h-28 transition resize-none text-sm"
+                    ref={bodyRef}
+                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 min-h-[140px] transition resize-y text-sm"
                     placeholder="Write your message here... (use {{1}} for variables)"
                     value={bodyText}
                     onChange={(e) => setBodyText(e.target.value)}
@@ -578,7 +658,7 @@ export default function TemplatesPage() {
                     disabled={isAtLimit}
                   />
                   <div className="flex justify-between mt-1.5 px-1">
-                    <p className="text-[10px] text-gray-400">Variables: {"{{1}}"}</p>
+                    <p className="text-[10px] text-gray-400">Variables: {"{{1}}"} • <span className="text-gray-300">Drag corner to resize</span></p>
                     <p className="text-[10px] text-gray-400">{bodyText.length} / 1024</p>
                   </div>
                   {bodyVariables.length > 0 && (
@@ -636,7 +716,19 @@ export default function TemplatesPage() {
                       {buttons.map((btn) => (
                         <div key={btn.id} className="bg-gray-50 border border-gray-200 rounded-xl p-2.5 flex items-start gap-2">
                           <div className="flex-1 space-y-1.5 min-w-0">
-                            <input className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" placeholder="Button Label" value={btn.text} onChange={(e) => updateButton(btn.id, { text: e.target.value })} disabled={isAtLimit} />
+                            <div className="relative">
+                              <input 
+                                className="w-full px-3 py-1.5 pr-12 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" 
+                                placeholder="Button Label" 
+                                value={btn.text} 
+                                onChange={(e) => updateButton(btn.id, { text: e.target.value })} 
+                                disabled={isAtLimit}
+                                maxLength={25}
+                              />
+                              <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-mono ${btn.text.length >= 25 ? 'text-red-500' : 'text-gray-400'}`}>
+                                {btn.text.length}/25
+                              </span>
+                            </div>
                             {btn.type === "URL" && <input className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" placeholder="https://example.com" value={btn.url || ""} onChange={(e) => updateButton(btn.id, { url: e.target.value })} disabled={isAtLimit} />}
                             {btn.type === "PHONE_NUMBER" && <input className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-emerald-400 transition" placeholder="+1234567890" value={btn.phone || ""} onChange={(e) => updateButton(btn.id, { phone: e.target.value })} disabled={isAtLimit} />}
                           </div>
