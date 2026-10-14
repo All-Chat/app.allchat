@@ -3,12 +3,14 @@
 /* =====================================================================
    GET /api/chats - UNIFIED TENANT VIEW WITH WABA ISOLATION
    ✅ repliedOnly parameter — only shows chats where contact replied
+   ✅ search parameter — global live search (optimized for numbers & names)
    ===================================================================== */
 
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import Message from "@/models/Message";
 import User from "@/models/User";
+import Contact from "@/models/Contact"; 
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import mongoose from "mongoose";
@@ -19,6 +21,11 @@ const getCoreNumber = (phone: string) => {
   if (clean.length === 12 && clean.startsWith("91")) clean = clean.substring(2);
   else if (clean.length === 11 && clean.startsWith("0")) clean = clean.substring(1);
   return clean;
+};
+
+// Helper to escape user input for regex
+const escapeRegex = (text: string) => {
+  return text.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&");
 };
 
 export async function GET(req: Request) {
@@ -34,8 +41,8 @@ export async function GET(req: Request) {
     const limit = parseInt(searchParams.get("limit") || "20");
     const skip = (page - 1) * limit;
 
-    // ✅ FIX: repliedOnly — only show chats where contact has replied
     const repliedOnly = searchParams.get("repliedOnly") === "true";
+    const search = searchParams.get("search") || "";
 
     const currentUser = await User.findById(session.user.id)
       .select("whatsappNumbers isTenant tenantId parentTenantId")
@@ -115,9 +122,40 @@ export async function GET(req: Request) {
       ...wabaIsolationFilter,
     };
 
+    // ✅ NEW: Build Search Filter (Optimized for Numbers & Names)
+    let searchMatch = {};
+    if (search) {
+      const safeSearch = escapeRegex(search);
+      const searchRegex = new RegExp(safeSearch, "i");
+      
+      // Check if the search query is purely numbers (fast phone search)
+      const isNumericSearch = /^\d+$/.test(search);
+      
+      if (isNumericSearch) {
+        // ✅ FAST PATH: If typing numbers, skip Contact DB and search Messages directly
+        searchMatch = { phone: searchRegex };
+      } else {
+        // ✅ NAME PATH: Search Contacts collection for names
+        const matchedContacts = await Contact.find({
+          userId: { $in: targetUserIds },
+          name: searchRegex
+        }).select("phone").lean();
+        
+        const matchedPhones = matchedContacts.map(c => c.phone);
+        
+        searchMatch = {
+          $or: [
+            { phone: searchRegex },
+            { phone: { $in: matchedPhones } }
+          ]
+        };
+      }
+    }
+
     // ✅ FIX: If repliedOnly, ONLY fetch phones with incoming messages
     const matchingPhones = await Message.distinct("phone", {
       ...baseMatch,
+      ...searchMatch,
       direction: "in",
     }).lean();
 
@@ -128,6 +166,7 @@ export async function GET(req: Request) {
     } else {
       const outPhones = await Message.distinct("phone", {
         ...baseMatch,
+        ...searchMatch,
         direction: "out",
       }).lean();
       allPhones = [...new Set([...matchingPhones, ...outPhones])];
