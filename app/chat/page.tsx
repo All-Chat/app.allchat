@@ -1,8 +1,10 @@
+/* eslint-disable react/no-unescaped-entities */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable react-hooks/set-state-in-effect */
 /* =====================================================================
    LIVE CHAT PAGE - MULTI-WABA SUPPORT & CHAT TRANSFER & DELETE
    ✅ FIX: Only shows contacts who have replied (3 layers of filtering)
+   ✅ FIX: Global server-side search for name & number
    ===================================================================== */
 
 "use client";
@@ -191,10 +193,12 @@ export default function ChatPage() {
   const activeChatRef = useRef<string | null>(null);
   const contactDetailsRef = useRef<Record<string, ContactDetails>>({});
   const activeChatDataRef = useRef<Chat | null>(null);
+  const searchQueryRef = useRef<string>(""); // ✅ Ref to hold current search for polling
 
   useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
   useEffect(() => { contactDetailsRef.current = contactDetails; }, [contactDetails]);
   useEffect(() => { activeChatDataRef.current = activeChatData; }, [activeChatData]);
+  useEffect(() => { searchQueryRef.current = searchQuery; }, [searchQuery]);
 
   /* -------------------- FETCH CURRENT USER INFO -------------------- */
 
@@ -345,7 +349,6 @@ export default function ChatPage() {
   }, [messages]);
 
   /* -------------------- FETCH TRANSFERRED CHATS -------------------- */
-  // ✅ FIX: Filter out unreplied transferred chats
 
   const fetchTransferredChats = useCallback(async () => {
     try {
@@ -369,9 +372,9 @@ export default function ChatPage() {
   }, []);
 
   /* -------------------- LOAD CHATS -------------------- */
-  // ✅ FIX: Sends repliedOnly=true to only get replied contacts
+  // ✅ ADDED: searchTerm parameter to send to API
 
-  const loadChats = useCallback(async (pageNum = 1, isPolling = false) => {
+  const loadChats = useCallback(async (pageNum = 1, isPolling = false, searchTerm = "") => {
     if (isFetchingChats.current || !selectedWabaId) return;
     isFetchingChats.current = true;
 
@@ -382,8 +385,12 @@ export default function ChatPage() {
       params.set("page", String(pageNum));
       params.set("limit", "20");
       params.set("whatsappPhoneNumberId", selectedWabaId);
-      // ✅ FIX: Only fetch chats where contact has replied
       params.set("repliedOnly", "true");
+      
+      // ✅ Send search query to API
+      if (searchTerm) {
+        params.set("search", searchTerm);
+      }
 
       const res = await fetch(`/api/chats?${params.toString()}`, { cache: "no-store" });
       if (handleUnauthorized(res)) return;
@@ -468,7 +475,8 @@ export default function ChatPage() {
       setLoadingMoreChats(true);
       setChatPage((prev) => {
         const next = prev + 1;
-        loadChats(next, false);
+        // ✅ Pass searchQuery when scrolling for pagination
+        loadChats(next, false, searchQuery);
         return next;
       });
     }
@@ -632,6 +640,7 @@ export default function ChatPage() {
 
   const handleWabaChange = (newId: string) => {
     setSelectedWabaId(newId);
+    setSearchQuery(""); // ✅ Clear search when changing numbers
     setActiveChat(null);
     setActiveChatData(null);
     activeChatDataRef.current = null;
@@ -663,11 +672,24 @@ export default function ChatPage() {
     if (status === "authenticated" && !loadingNumbers && selectedWabaId) {
       setChatPage(1);
       setHasMoreChats(true);
-      loadChats(1, false);
+      loadChats(1, false, "");
       fetchTransferredChats();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, loadingNumbers, selectedWabaId]);
+
+  // ✅ ADDED: Debounce search effect (Sped up to 300ms)
+  useEffect(() => {
+    if (!selectedWabaId) return;
+    
+    const timer = setTimeout(() => {
+      setChatPage(1);
+      setHasMoreChats(true);
+      loadChats(1, false, searchQuery);
+    }, 300); // Changed from 500 to 300 for instant feel
+
+    return () => clearTimeout(timer);
+  }, [searchQuery, selectedWabaId, loadChats]);
 
   useEffect(() => {
     prevMessageCount.current = 0;
@@ -683,7 +705,8 @@ export default function ChatPage() {
   useEffect(() => {
     if (status !== "authenticated" || loadingNumbers || !selectedWabaId) return;
     const pollData = () => {
-      loadChats(1, true);
+      // ✅ Pass the current search query to the polling so it doesn't overwrite search results
+      loadChats(1, true, searchQueryRef.current);
       fetchTransferredChats();
       if (activeChatRef.current) loadMessages();
     };
@@ -729,7 +752,7 @@ export default function ChatPage() {
         setSelectedFile(null);
         loadMessages();
         fetchContactDetails(activeChat.replace(/\D/g, ""));
-        setTimeout(() => loadChats(1, true), 500);
+        setTimeout(() => loadChats(1, true, searchQueryRef.current), 500);
       } else { toast.error(data.message || "Failed to send"); }
     } catch { toast.error("Error sending message"); }
     finally { setSending(false); }
@@ -1075,45 +1098,34 @@ export default function ChatPage() {
                 </div>
               ) : (
                 <>
-                  {chats
-                    .filter((chat) => {
-                      // ✅ FIX: No lastDirection filter — the API already filters with repliedOnly=true
-                      // Removing this so ALL replied contacts show (even if we sent the last message)
-
-                      // Search filter only
-                      if (!searchQuery) return true;
-                      const name = getResolvedName(chat).toLowerCase();
-                      const phone = (chat.phone || chat._id).toLowerCase();
-                      const query = searchQuery.toLowerCase();
-                      return name.includes(query) || phone.includes(query);
-                    })
-                    .map((chat) => (
-                      <div
-                        key={chat._id}
-                        onClick={() => handleChatSelect(chat)}
-                        className={`group flex items-center gap-3 px-3 sm:px-4 py-3 cursor-pointer transition-all duration-150 border-b border-gray-50 ${
-                          activeChat === chat._id ? "bg-emerald-50 border-l-4 border-l-emerald-500" : "hover:bg-gray-50 border-l-4 border-l-transparent"
-                        }`}
-                      >
-                        {renderAvatar(chat._id, "w-11 h-11 sm:w-12 sm:h-12", "text-sm")}
-                        <div className="flex-1 min-w-0 overflow-hidden">
-                          <div className="flex justify-between items-center">
-                            <h3 className="font-semibold text-[14px] sm:text-[15px] text-gray-900 truncate">{getDisplayName(chat)}</h3>
-                            <div className="flex items-center gap-2 ml-2 flex-shrink-0">
-                              <span className={`text-[11px] font-medium ${chat.lastDirection === "out" ? "text-gray-400" : "text-emerald-600"}`}>
-                                {formatTime(chat.updatedAt)}
-                              </span>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1.5 mt-0.5">
-                            {chat.lastDirection === "out" && <CheckCheck className="w-4 h-4 text-blue-500 shrink-0" />}
-                            <p className="text-sm text-gray-500 truncate leading-tight">
-                              {chat.lastMessageType === "template" ? "[Template]" : chat.lastMessage}
-                            </p>
+                  {/* ✅ REMOVED Client Side filter. Rendering directly from server response array */}
+                  {chats.map((chat) => (
+                    <div
+                      key={chat._id}
+                      onClick={() => handleChatSelect(chat)}
+                      className={`group flex items-center gap-3 px-3 sm:px-4 py-3 cursor-pointer transition-all duration-150 border-b border-gray-50 ${
+                        activeChat === chat._id ? "bg-emerald-50 border-l-4 border-l-emerald-500" : "hover:bg-gray-50 border-l-4 border-l-transparent"
+                      }`}
+                    >
+                      {renderAvatar(chat._id, "w-11 h-11 sm:w-12 sm:h-12", "text-sm")}
+                      <div className="flex-1 min-w-0 overflow-hidden">
+                        <div className="flex justify-between items-center">
+                          <h3 className="font-semibold text-[14px] sm:text-[15px] text-gray-900 truncate">{getDisplayName(chat)}</h3>
+                          <div className="flex items-center gap-2 ml-2 flex-shrink-0">
+                            <span className={`text-[11px] font-medium ${chat.lastDirection === "out" ? "text-gray-400" : "text-emerald-600"}`}>
+                              {formatTime(chat.updatedAt)}
+                            </span>
                           </div>
                         </div>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          {chat.lastDirection === "out" && <CheckCheck className="w-4 h-4 text-blue-500 shrink-0" />}
+                          <p className="text-sm text-gray-500 truncate leading-tight">
+                            {chat.lastMessageType === "template" ? "[Template]" : chat.lastMessage}
+                          </p>
+                        </div>
                       </div>
-                    ))}
+                    </div>
+                  ))}
 
                   {loadingMoreChats && (
                     <div className="py-4 flex justify-center">
@@ -1122,6 +1134,9 @@ export default function ChatPage() {
                   )}
                   {!hasMoreChats && chats.length > 0 && (
                     <div className="py-4 text-center text-xs text-gray-400">No more chats to load.</div>
+                  )}
+                  {!loadingMoreChats && chats.length === 0 && searchQuery && (
+                     <div className="py-4 text-center text-xs text-gray-400">No chats found matching "{searchQuery}"</div>
                   )}
                 </>
               )}
