@@ -10,8 +10,8 @@ import Form from "@/models/Form";
 import FormResponse from "@/models/FormResponse";
 import Campaign from "@/models/Campaign";
 import CampaignReport from "@/models/CampaignReport";
-import Agent from "@/models/Agent"; // NEW IMPORT
-import { getAgentResponse } from "@/lib/ai-agent"; // NEW IMPORT
+import Agent from "@/models/Agent"; 
+import { getAgentResponse } from "@/lib/ai-agent"; 
 import fs from "fs";
 import path from "path";
 import mongoose from "mongoose";
@@ -140,7 +140,7 @@ async function findUserByPhoneNumberId(phoneNumberId: string) {
   let matchedNumber: any = user.whatsappNumbers?.find((n: any) => n.whatsappPhoneNumberId === phoneNumberId && n.whatsappAccessToken);
   if (!matchedNumber && user.whatsappPhoneNumberId === phoneNumberId && user.whatsappAccessToken) matchedNumber = { whatsappPhoneNumberId: user.whatsappPhoneNumberId, whatsappAccessToken: user.whatsappAccessToken, wabaId: user.wabaId, name: "Default" };
   if (!matchedNumber) return null;
-  return { userId: user._id, tenantId: (user as any).tenantId || (user as any).parentTenantId || null, name: matchedNumber.name || user.name || "Unknown", phoneNumberId: matchedNumber.whatsappPhoneNumberId, accessToken: matchedNumber.whatsappAccessToken, wabaId: matchedNumber.wabaId || user.wabaId };
+  return { userId: user._id, tenantId: (user as any).tenantId || (user as any).parentTenantId || null, name: matchedNumber.name || user.name || "Unknown", phoneNumberId: matchedNumber.whatsappPhoneNumberId, accessToken: matchedNumber.whatsappAccessToken, wabaId: matchedNumber.wabaId };
 }
 
 function parseMessage(msg: any) {
@@ -188,7 +188,7 @@ async function uploadMediaToMetaFromUrl(phoneNumberId: string, accessToken: stri
 }
 
 // ============================================================================
-// WORKFLOW EXECUTION (Returns TRUE if matched, FALSE if no workflow matches)
+// WORKFLOW EXECUTION
 // ============================================================================
 
 async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string): Promise<boolean> {
@@ -219,7 +219,7 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string): 
         await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: form.completionMessage || "✅ Thank you!", stepType: "text" }, baseUrl);
         await Session.deleteOne({ _id: activeSession._id });
       }
-      return true; // Handled by form
+      return true; 
     }
 
     let workflows = await Workflow.find({ userId: num.userId, wabaPhoneNumberId: num.phoneNumberId, active: true });
@@ -238,7 +238,7 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string): 
       }
     }
 
-    if (workflows.length === 0) return false; // No workflows, let AI handle it
+    if (workflows.length === 0) return false;
     
     let matchedWorkflow: any = null; 
     let matchedByButton = false;
@@ -278,7 +278,7 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string): 
     
     if (!matchedWorkflow) {
       console.log(`[Workflow Check] No workflow matched. Passing to AI...`);
-      return false; // Nothing matched, let AI handle it
+      return false; 
     }
 
     const steps = matchedWorkflow.steps;
@@ -311,7 +311,7 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string): 
     }
     
     await processWorkflowStep(currentStepId, steps, matchedWorkflow, num.accessToken, num.phoneNumberId, msg.from, num.userId.toString(), num.tenantId, baseUrl);
-    return true; // Handled by workflow
+    return true; 
   } catch (err) { 
     console.error("❌ [WORKFLOW] Error:", err); 
     return false; 
@@ -319,23 +319,19 @@ async function executeWorkflowsForMessage(msg: any, num: any, baseUrl: string): 
 }
 
 // ============================================================================
-// AI AGENT HANDLER (WITH LOGS)
+// AI AGENT HANDLER 
 // ============================================================================
 
 async function handleAIAgentMessage(msg: any, num: any, baseUrl: string) {
   try {
     console.log(`[AI Agent] Webhook passed to AI. Looking for active agent for userId: ${num.userId}`);
-    
-    // Find the active agent for this user
     const agent = await Agent.findOne({ userId: num.userId, active: true });
-    
     if (!agent) {
       console.log(`[AI Agent] No active agent found for this user. Aborting.`);
       return; 
     }
 
     console.log(`[AI Agent] Found active agent: ${agent.name}`);
-
     const { text } = parseMessage(msg);
     if (!text || !text.trim()) {
       console.log(`[AI Agent] Message has no text. Aborting.`);
@@ -343,8 +339,6 @@ async function handleAIAgentMessage(msg: any, num: any, baseUrl: string) {
     }
 
     console.log(`[AI Agent] Processing message: "${text}"`);
-    
-    // Check against the AI knowledge base
     let aiResponse = null;
     try {
       aiResponse = await getAgentResponse(text, agent._id.toString(), agent.details);
@@ -361,50 +355,32 @@ async function handleAIAgentMessage(msg: any, num: any, baseUrl: string) {
       finalReply = agent.fallbackMessage; 
     }
 
-    // Double check finalReply isn't empty
     if (!finalReply || finalReply.trim() === "") {
       console.log(`[AI Agent] Fallback message is empty. Aborting send.`);
       return;
     }
 
     console.log(`[AI Agent] Sending reply to ${msg.from}...`);
-    
-    // Send the reply via WhatsApp
     await sendWorkflowWhatsAppMessage(num.accessToken, num.phoneNumberId, msg.from, { message: finalReply, stepType: "text" }, baseUrl);
-    
-    // Save the outgoing message to the database
     await Message.create({ 
-      userId: num.userId, 
-      phone: msg.from, 
-      text: finalReply, 
-      direction: "out", 
-      messageType: "text", 
-      status: "sent", 
-      whatsappPhoneNumberId: num.phoneNumberId, 
-      senderNumber: num.phoneNumberId 
+      userId: num.userId, phone: msg.from, text: finalReply, direction: "out", 
+      messageType: "text", status: "sent", whatsappPhoneNumberId: num.phoneNumberId, senderNumber: num.phoneNumberId 
     });
 
     console.log(`[AI Agent] Reply sent successfully!`);
-
   } catch (err) {
     console.error("❌ [AI Agent] Fatal Error in handler:", err);
   }
 }
 
 // ============================================================================
-// WORKFLOW STEP PROCESSOR (Fixed Chaining)
+// WORKFLOW STEP PROCESSOR 
 // ============================================================================
 
 async function processWorkflowStep(
-  stepId: string, 
-  steps: Record<string, any>, 
-  matchedWorkflow: any, 
-  accessToken: string, 
-  phoneNumberId: string, 
-  customerNumber: string, 
-  userId: string, 
-  tenantId: string | null, 
-  baseUrl: string
+  stepId: string, steps: Record<string, any>, matchedWorkflow: any, 
+  accessToken: string, phoneNumberId: string, customerNumber: string, 
+  userId: string, tenantId: string | null, baseUrl: string
 ) {
   const step = steps[stepId];
   if (!step) return;
@@ -568,10 +544,8 @@ export async function POST(req: NextRequest) {
           if (msg.type === "reaction" || msg.type === "system") continue;
           await processAndSaveMessage(msg, num);
           
-          // 1. Try to match workflow/form
           const handledByWorkflow = await executeWorkflowsForMessage(msg, num, baseUrl);
           
-          // 2. If no workflow matched, let the AI Agent handle it
           if (!handledByWorkflow) {
             await handleAIAgentMessage(msg, num, baseUrl);
           }
@@ -611,13 +585,26 @@ export async function POST(req: NextRequest) {
 }
 
 // ============================================================================
-// CAMPAIGN REPLY HANDLER
+// CAMPAIGN REPLY HANDLER (FIXED)
 // ============================================================================
 
 async function handleCampaignReply(msg: any, num: any) {
   try {
     const phone = msg.from;
-    const text = msg?.text?.body || msg?.button?.text || msg?.interactive?.button_reply?.title || "[Media/Non-text reply]";
+    
+    // ✅ FIXED: Properly extracting text from BOTH button replies and list replies
+    let text = "";
+    if (msg.type === "text") {
+      text = msg.text?.body || "";
+    } else if (msg.type === "button") {
+      text = msg.button?.text || msg.button?.payload || "";
+    } else if (msg.type === "interactive") {
+      // This handles both standard quick replies AND list menu replies
+      text = msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || "";
+    }
+    
+    if (!text) text = "[Media/Non-text reply]";
+
     const replyTime = msg.timestamp ? new Date(parseInt(msg.timestamp) * 1000) : new Date();
 
     const report = await CampaignReport.findOne({ userId: num.userId, phone }).sort({ createdAt: -1 });
