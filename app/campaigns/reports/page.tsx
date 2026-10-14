@@ -176,6 +176,9 @@ export default function ReportsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // ✅ ADDED: State for the campaign search bar
+  const [campaignSearch, setCampaignSearch] = useState("");
+
   const [reportData, setReportData] = useState<ReportItem[]>([]);
   const [totalFilteredItems, setTotalFilteredItems] = useState(0);
   const [loadingReport, setLoadingReport] = useState(false);
@@ -515,6 +518,11 @@ export default function ReportsPage() {
     </div>
   );
 
+  // ✅ ADDED: Filtered campaigns based on search input
+  const filteredCampaigns = campaigns.filter((c) =>
+    c.name.toLowerCase().includes(campaignSearch.toLowerCase())
+  );
+
   const downloadExcel = async (sortOrder = 'original') => {
     if (!selectedId) { toast.error("No campaign selected"); return; }
     setDownloadingExcel(true);
@@ -772,11 +780,26 @@ export default function ReportsPage() {
             <h2 className="font-bold text-slate-800 flex items-center gap-2"><BarChart3 size={16} /> Campaign Reports</h2>
           </div>
 
+          {/* ✅ ADDED: Search bar for campaigns list */}
+          <div className="p-3 border-b border-slate-200 bg-white">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2.5 w-4 h-4 text-slate-400" />
+              <input 
+                value={campaignSearch} 
+                onChange={(e) => setCampaignSearch(e.target.value)} 
+                placeholder="Search campaigns by name..." 
+                className="w-full pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none" 
+              />
+            </div>
+          </div>
+
           <div className="flex-1 overflow-y-auto">
             {campaigns.length === 0 ? (
               <p className="p-4 text-sm text-slate-400 text-center">No completed campaigns yet</p>
+            ) : filteredCampaigns.length === 0 ? (
+              <p className="p-4 text-sm text-slate-400 text-center">No campaigns match your search</p>
             ) : (
-              campaigns.map((c) => {
+              filteredCampaigns.map((c) => {
                 const stats = getCampaignStats(c);
                 return (
                   <button key={c._id} onClick={() => handleSelectCampaign(c._id)} className={`w-full text-left p-4 border-b border-slate-50 transition-colors ${selectedId === c._id ? "bg-emerald-50 border-l-4 border-l-emerald-500" : "hover:bg-slate-50 border-l-4 border-l-transparent"}`}>
