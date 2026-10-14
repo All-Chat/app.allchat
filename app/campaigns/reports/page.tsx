@@ -805,7 +805,15 @@ export default function ReportsPage() {
                   <button key={c._id} onClick={() => handleSelectCampaign(c._id)} className={`w-full text-left p-4 border-b border-slate-50 transition-colors ${selectedId === c._id ? "bg-emerald-50 border-l-4 border-l-emerald-500" : "hover:bg-slate-50 border-l-4 border-l-transparent"}`}>
                     <div className="flex items-center justify-between gap-2 mb-1">
                       <p className="font-semibold text-sm truncate flex-1">{c.name}</p>
-                      <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md shrink-0 ${c.status === "running" ? "bg-emerald-100 text-emerald-700" : c.status === "paused" ? "bg-blue-100 text-blue-700" : c.status === "failed" ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-600"}`}>{c.status}</span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {/* ✅ ADDED: Campaign creation date with year in front of status */}
+                        {c.createdAt && (
+                          <span className="text-[9px] font-medium text-slate-400 whitespace-nowrap">
+                            {new Date(c.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                          </span>
+                        )}
+                        <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md ${c.status === "running" ? "bg-emerald-100 text-emerald-700" : c.status === "paused" ? "bg-blue-100 text-blue-700" : c.status === "failed" ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-600"}`}>{c.status}</span>
+                      </div>
                     </div>
                     <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px]">
                       {stats.replied > 0 && (<span className="flex items-center gap-1 text-indigo-600 font-medium"><MessageSquare size={10} /> {stats.replied} Replied</span>)}
