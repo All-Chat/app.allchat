@@ -379,7 +379,8 @@ export default function ReportsPage() {
 
   const fetchCampaigns = async () => {
     try {
-      const res = await fetch("/api/campaigns/counts");
+      // ✅ FIX: Added ?limit=1000 to fetch more than the default 25 campaigns
+      const res = await fetch("/api/campaigns/counts?limit=1000");
       if (res.status === 401) { window.location.href = "/"; return; }
       const data = await res.json();
       if (data.success) {
