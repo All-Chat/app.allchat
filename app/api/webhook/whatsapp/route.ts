@@ -67,9 +67,12 @@ async function chargeOutgoingMessage(userId: string, phone: string, description:
     if (user.parentTenantId) {
       const parent = await User.findOne({ tenantId: user.parentTenantId }).select("balance outgoingMessageBillingEnabled pricePerOutgoingMessage");
       if (parent) {
-        payerId = parent._id;
-        enabled = parent.outgoingMessageBillingEnabled;
-        price = Number(parent.pricePerOutgoingMessage || 0);
+        payerId = parent._id; // Always charge the parent's wallet (sub-users share it)
+        // If the sub-user has NOT enabled their own billing, fall back to parent
+        if (!enabled) {
+          enabled = parent.outgoingMessageBillingEnabled;
+          price = Number(parent.pricePerOutgoingMessage || 0);
+        }
       }
     }
 
