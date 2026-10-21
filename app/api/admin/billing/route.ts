@@ -51,7 +51,6 @@ function getNextResetDate(period: string): Date | null {
   }
 }
 
-// ✅ ADDED "aiAgents"
 const LIMIT_RESOURCES = ["tags", "workflows", "templates", "testMessages", "campaigns", "optNumbers", "forms", "whatsappNumbers", "aiAgents"];
 
 const DEFAULT_LIMITS: Record<string, { max: number; period: string }> = {
@@ -59,7 +58,7 @@ const DEFAULT_LIMITS: Record<string, { max: number; period: string }> = {
   templates: { max: -1, period: "unlimited" }, testMessages: { max: -1, period: "unlimited" },
   campaigns: { max: -1, period: "unlimited" }, optNumbers: { max: -1, period: "unlimited" },
   forms: { max: -1, period: "unlimited" }, whatsappNumbers: { max: -1, period: "unlimited" },
-  aiAgents: { max: -1, period: "unlimited" }, // ✅ ADDED
+  aiAgents: { max: -1, period: "unlimited" },
 };
 
 const DEFAULT_USAGE: Record<string, { count: number; resetAt: null }> = {
@@ -67,7 +66,7 @@ const DEFAULT_USAGE: Record<string, { count: number; resetAt: null }> = {
   templates: { count: 0, resetAt: null }, testMessages: { count: 0, resetAt: null },
   campaigns: { count: 0, resetAt: null }, optNumbers: { count: 0, resetAt: null },
   forms: { count: 0, resetAt: null }, whatsappNumbers: { count: 0, resetAt: null },
-  aiAgents: { count: 0, resetAt: null }, // ✅ ADDED
+  aiAgents: { count: 0, resetAt: null },
 };
 
 export async function POST(req: Request) {
@@ -151,6 +150,11 @@ export async function GET(req: Request) {
         priceMarketing: (u as any).priceMarketing ?? (u as any).pricePerMessage ?? 0.90,
         priceUtility: (u as any).priceUtility ?? 0.50,
         priceAuthentication: (u as any).priceAuthentication ?? 0.30,
+        
+        // ✅ NEW: Outgoing Message Billing Fields
+        outgoingMessageBillingEnabled: (u as any).outgoingMessageBillingEnabled || false,
+        pricePerOutgoingMessage: (u as any).pricePerOutgoingMessage ?? 0.50,
+
         accountStatus: (u as any).accountStatus || "active",
         planExpiry: (u as any).planExpiry,
         planDuration: (u as any).planDuration || "",
@@ -204,6 +208,16 @@ export async function PUT(req: Request) {
     if (action === "reports" || body.hiddenReportActions !== undefined) {
       user.hiddenReportActions = Array.isArray(body.hiddenReportActions) ? body.hiddenReportActions : [];
       user.markModified("hiddenReportActions"); 
+    }
+
+    // ✅ NEW: Handle Message Billing Settings
+    if (action === "msgBilling") {
+      if (body.outgoingMessageBillingEnabled !== undefined) {
+        user.outgoingMessageBillingEnabled = body.outgoingMessageBillingEnabled;
+      }
+      if (body.pricePerOutgoingMessage !== undefined && body.pricePerOutgoingMessage !== null) {
+        user.pricePerOutgoingMessage = Math.round(Number(body.pricePerOutgoingMessage) * 100) / 100;
+      }
     }
 
     if (action === "disconnectGoogle" || body.disconnectGoogle === true) {
