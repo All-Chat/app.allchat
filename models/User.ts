@@ -52,20 +52,20 @@ const whatsappNumberSchema = new mongoose.Schema(
     },
     creditLineStatus: {
       type: String,
-      enum: ["PENDING", "PROCESSING", "READY", "FAILED", "CONNECTED"], // Added CONNECTED
+      enum: ["PENDING", "PROCESSING", "READY", "FAILED", "CONNECTED"],
       default: "PENDING",
     },
     creditLineId: { type: String, default: null },
     creditLineError: { type: String, default: null },
     subscriptionStatus: {
       type: String,
-      enum: ["PENDING", "SUBSCRIBING", "SUBSCRIBED", "FAILED", "CONNECTED"], // Added CONNECTED
+      enum: ["PENDING", "SUBSCRIBING", "SUBSCRIBED", "FAILED", "CONNECTED"],
       default: "PENDING",
     },
     subscriptionError: { type: String, default: null },
     registrationStatus: {
       type: String,
-      enum: ["PENDING", "REGISTERING", "REGISTERED", "FAILED", "PROCESSING"], // Added PROCESSING
+      enum: ["PENDING", "REGISTERING", "REGISTERED", "FAILED", "PROCESSING"],
       default: "PENDING",
     },
     registrationError: { type: String, default: null },
@@ -111,6 +111,10 @@ const UserSchema = new mongoose.Schema(
     priceMarketing: { type: Number, default: 0.9 },
     priceUtility: { type: Number, default: 0.5 },
     priceAuthentication: { type: Number, default: 0.3 },
+    
+    // ✅ NEW: Outgoing Message Billing Settings
+    outgoingMessageBillingEnabled: { type: Boolean, default: false },
+    pricePerOutgoingMessage: { type: Number, default: 0.5 },
 
     maxEnabledCountries: { type: Number, default: 0 },
     enabledCountries: [
@@ -154,7 +158,7 @@ const UserSchema = new mongoose.Schema(
     hiddenSidebarLinks: { type: [String], default: [] },
     
     /* =====================================================
-       HIDDEN REPORT ACTIONS (NEW)
+       HIDDEN REPORT ACTIONS
     ===================================================== */
     hiddenReportActions: {
       type: [String],
@@ -170,7 +174,7 @@ const UserSchema = new mongoose.Schema(
       optNumbers: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
       forms: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
       whatsappNumbers: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
-      aiAgents: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) }, // ✅ ADDED LIMIT
+      aiAgents: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
     },
     usage: {
       tags: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
@@ -181,7 +185,7 @@ const UserSchema = new mongoose.Schema(
       optNumbers: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
       forms: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
       whatsappNumbers: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
-      aiAgents: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) }, // ✅ ADDED USAGE
+      aiAgents: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
     },
   },
   { timestamps: true }
