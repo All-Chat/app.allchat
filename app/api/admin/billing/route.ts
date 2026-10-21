@@ -78,6 +78,28 @@ const DEFAULT_USAGE: Record<string, { count: number; resetAt: null }> = {
   aiAgents: { count: 0, resetAt: null },
 };
 
+/**
+ * ✅ Helper: safely set a numeric field on a Mongoose document.
+ * Always assigns the value and explicitly marks the field as modified so
+ * Mongoose persists it even when the previous value was `undefined`.
+ */
+function setNumberField(doc: any, field: string, value: any): number {
+  const n = Math.max(0, Number(value) || 0);
+  doc[field] = n;
+  doc.markModified(field);
+  return n;
+}
+
+/**
+ * ✅ Helper: safely set a boolean field on a Mongoose document.
+ */
+function setBooleanField(doc: any, field: string, value: any): boolean {
+  const b = Boolean(value);
+  doc[field] = b;
+  doc.markModified(field);
+  return b;
+}
+
 // ===========================================================================
 // POST — verify admin key OR create a new user
 // ===========================================================================
@@ -170,12 +192,13 @@ export async function GET(req: Request) {
         priceAuthentication: (u as any).priceAuthentication ?? 0.30,
 
         // ✅ Outgoing Message Billing Fields
-        outgoingMessageBillingEnabled: (u as any).outgoingMessageBillingEnabled || false,
-        pricePerOutgoingMessage: (u as any).pricePerOutgoingMessage ?? 0.50,
+        outgoingMessageBillingEnabled: (u as any).outgoingMessageBillingEnabled === true,
+        pricePerOutgoingMessage: Number((u as any).pricePerOutgoingMessage ?? 0.50),
 
         // ✅ FREE MESSAGE QUOTA — exposed to admin UI
-        freeOutgoingMessages: (u as any).freeOutgoingMessages || 0,
-        outgoingMessagesSent: (u as any).outgoingMessagesSent || 0,
+        // (use Number() to ensure type is number; fall back to 0 if missing)
+        freeOutgoingMessages: Number((u as any).freeOutgoingMessages ?? 0),
+        outgoingMessagesSent: Number((u as any).outgoingMessagesSent ?? 0),
 
         accountStatus: (u as any).accountStatus || "active",
         planExpiry: (u as any).planExpiry,
@@ -222,14 +245,24 @@ export async function PUT(req: Request) {
     const user = await User.findById(userId);
     if (!user) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
+    // Capture original values for diagnostic diff
+    const beforeMsgBilling = {
+      enabled: user.outgoingMessageBillingEnabled,
+      price: user.pricePerOutgoingMessage,
+      free: user.freeOutgoingMessages,
+      sent: user.outgoingMessagesSent,
+    };
+
     // -------------------- Integrations visibility --------------------
     if (action === "integrations" || body.hideIntegrations !== undefined) {
       user.hideIntegrations = body.hideIntegrations;
+      user.markModified("hideIntegrations");
     }
 
     // -------------------- Sidebar visibility --------------------
     if (action === "sidebar" || body.hiddenSidebarLinks !== undefined) {
       user.hiddenSidebarLinks = body.hiddenSidebarLinks;
+      user.markModified("hiddenSidebarLinks");
     }
 
     // -------------------- Report actions visibility --------------------
@@ -240,25 +273,36 @@ export async function PUT(req: Request) {
 
     // -------------------- Message Billing (price + free quota) --------------------
     // ✅ Handles: toggle, price per outgoing message, free message quota
+    // ✅ Uses markModified() explicitly to ensure Mongoose persists the changes
     if (action === "msgBilling") {
+      // 1. Toggle
       if (body.outgoingMessageBillingEnabled !== undefined) {
-        user.outgoingMessageBillingEnabled = body.outgoingMessageBillingEnabled;
+        setBooleanField(user, "outgoingMessageBillingEnabled", body.outgoingMessageBillingEnabled);
       }
+
+      // 2. Price per outgoing message
       if (body.pricePerOutgoingMessage !== undefined && body.pricePerOutgoingMessage !== null) {
-        user.pricePerOutgoingMessage = Math.round(Number(body.pricePerOutgoingMessage) * 100) / 100;
+        const parsedPrice = Math.round(Number(body.pricePerOutgoingMessage) * 100) / 100;
+        user.pricePerOutgoingMessage = Math.max(0, parsedPrice || 0);
+        user.markModified("pricePerOutgoingMessage");
       }
 
-      // ✅ Free outgoing message quota (e.g. set to 1000 → first 1000 messages free)
-      if (body.freeOutgoingMessages !== undefined && body.freeOutgoingMessages !== null) {
-        const newFree = Math.max(0, parseInt(body.freeOutgoingMessages) || 0);
-        // If admin reduces the quota below what's already used, we don't retroactively charge —
-        // we just start charging from the next message.
+      // 3. ✅ FREE MESSAGE QUOTA — the key fix
+      // We always set the field when the admin submits the form, even if the
+      // value is 0 (which disables the free quota). Use markModified() to force
+      // Mongoose to persist it even when the previous value was undefined.
+      if (body.freeOutgoingMessages !== undefined && body.freeOutgoingMessages !== null && body.freeOutgoingMessages !== "") {
+        const newFree = Math.max(0, parseInt(String(body.freeOutgoingMessages)) || 0);
         user.freeOutgoingMessages = newFree;
+        user.markModified("freeOutgoingMessages");
+        console.log(`[admin/billing PUT] Setting freeOutgoingMessages = ${newFree} for user ${user._id}`);
       }
 
-      // ✅ Optional: admin can manually reset the sent counter (e.g. to grant a fresh quota)
+      // 4. ✅ Optional: admin can manually reset the sent counter
       if (body.resetOutgoingMessagesSent === true) {
         user.outgoingMessagesSent = 0;
+        user.markModified("outgoingMessagesSent");
+        console.log(`[admin/billing PUT] Reset outgoingMessagesSent to 0 for user ${user._id}`);
       }
     }
 
@@ -266,12 +310,15 @@ export async function PUT(req: Request) {
     if (action === "disconnectGoogle" || body.disconnectGoogle === true) {
       user.googleSheetId = undefined;
       user.googleTokens = undefined;
+      user.markModified("googleSheetId");
+      user.markModified("googleTokens");
     }
 
     // -------------------- Tenancy --------------------
     if (body.isTenant !== undefined) {
       user.isTenant = body.isTenant;
       if (body.isTenant && !user.tenantId) user.tenantId = new mongoose.Types.ObjectId().toString();
+      user.markModified("isTenant");
     }
     if (body.maxSubUsers !== undefined) user.maxSubUsers = Number(body.maxSubUsers) || 0;
 
@@ -387,6 +434,17 @@ export async function PUT(req: Request) {
     // -------------------- Persist --------------------
     await user.save();
 
+    // ✅ Re-fetch from DB to confirm the values were actually persisted
+    const refreshed = await User.findById(userId).select("outgoingMessageBillingEnabled pricePerOutgoingMessage freeOutgoingMessages outgoingMessagesSent").lean();
+    const afterMsgBilling = refreshed ? {
+      enabled: (refreshed as any).outgoingMessageBillingEnabled,
+      price: (refreshed as any).pricePerOutgoingMessage,
+      free: (refreshed as any).freeOutgoingMessages,
+      sent: (refreshed as any).outgoingMessagesSent,
+    } : null;
+
+    console.log(`[admin/billing PUT] action=${action} | before=${JSON.stringify(beforeMsgBilling)} | after=${JSON.stringify(afterMsgBilling)}`);
+
     // -------------------- Log recharge transaction --------------------
     if (rechargeAppliedAmount > 0) {
       try {
@@ -404,10 +462,17 @@ export async function PUT(req: Request) {
       }
     }
 
-    return NextResponse.json({ success: true, message: "User updated successfully", user: user.toObject() });
+    // ✅ Include the diagnostic diff in the response so the admin page can verify
+    return NextResponse.json({
+      success: true,
+      message: "User updated successfully",
+      user: user.toObject(),
+      // Diagnostic block — helps confirm the new fields are persisted
+      msgBillingDiff: { before: beforeMsgBilling, after: afterMsgBilling }
+    });
   } catch (error) {
     console.error("Error updating user billing:", error);
-    return NextResponse.json({ message: "Internal server error" }, { status: 500 });
+    return NextResponse.json({ message: "Internal server error", error: String(error) }, { status: 500 });
   }
 }
 
