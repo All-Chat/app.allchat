@@ -6,6 +6,9 @@ import mongoose from "mongoose";
 
 const ADMIN_SECRET = process.env.ADMIN_SECRET_KEY || "admin123";
 
+// ---------------------------------------------------------------------------
+// TRANSACTION MODEL (local to this route — kept in sync with webhook & history)
+// ---------------------------------------------------------------------------
 const TransactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   type: String,
@@ -17,10 +20,15 @@ const TransactionSchema = new mongoose.Schema({
 });
 const Transaction = mongoose.models.Transaction || mongoose.model('Transaction', TransactionSchema);
 
+// ---------------------------------------------------------------------------
+// HELPERS
+// ---------------------------------------------------------------------------
+
 function validateAdminKey(req: Request): boolean {
   return req.headers.get("x-admin-key") === ADMIN_SECRET;
 }
 
+/** Parse duration strings like "1mo", "2w", "30d" into a future Date. */
 function parseDuration(duration: string): Date | null {
   if (!duration || duration === "unlimited") return null;
   const match = duration.match(/^(\d+)\s*(s|m|h|d|w|mo|y)$/i);
@@ -41,6 +49,7 @@ function parseDuration(duration: string): Date | null {
   return now;
 }
 
+/** Compute the next reset date for periodic usage limits. */
 function getNextResetDate(period: string): Date | null {
   const now = new Date();
   switch (period) {
@@ -69,6 +78,9 @@ const DEFAULT_USAGE: Record<string, { count: number; resetAt: null }> = {
   aiAgents: { count: 0, resetAt: null },
 };
 
+// ===========================================================================
+// POST — verify admin key OR create a new user
+// ===========================================================================
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -96,11 +108,15 @@ export async function POST(req: Request) {
   }
 }
 
+// ===========================================================================
+// GET — list all users with billing/limits/usage for the admin UI
+// ===========================================================================
 export async function GET(req: Request) {
   try {
     if (!validateAdminKey(req)) return NextResponse.json({ message: "Unauthorized. Invalid admin key." }, { status: 403 });
 
     await connectDB();
+    // Auto-expire any active user whose plan has elapsed
     await User.updateMany(
       { accountStatus: "active", planExpiry: { $ne: null, $lt: new Date() } },
       { accountStatus: "expired" }
@@ -108,6 +124,7 @@ export async function GET(req: Request) {
 
     const users = await User.find({}).select("+password +whatsappAccessToken").sort({ createdAt: -1 }).lean();
 
+    // Pre-fetch tenant balances so sub-users can show the shared wallet
     const tenantBalances: Record<string, { balance: number; totalRecharged: number }> = {};
     for (const u of users) {
       if (u.isTenant && u.tenantId) {
@@ -126,6 +143,7 @@ export async function GET(req: Request) {
         usage[resource] = userUsage[resource] || DEFAULT_USAGE[resource];
       }
 
+      // Build sub-user list for tenant accounts
       let subUsersList: { id: string; name: string }[] = [];
       if (u.isTenant && u.tenantId) {
         const subs = await User.find({ parentTenantId: u.tenantId }).select("name").lean();
@@ -150,10 +168,14 @@ export async function GET(req: Request) {
         priceMarketing: (u as any).priceMarketing ?? (u as any).pricePerMessage ?? 0.90,
         priceUtility: (u as any).priceUtility ?? 0.50,
         priceAuthentication: (u as any).priceAuthentication ?? 0.30,
-        
-        // ✅ NEW: Outgoing Message Billing Fields
+
+        // ✅ Outgoing Message Billing Fields
         outgoingMessageBillingEnabled: (u as any).outgoingMessageBillingEnabled || false,
         pricePerOutgoingMessage: (u as any).pricePerOutgoingMessage ?? 0.50,
+
+        // ✅ FREE MESSAGE QUOTA — exposed to admin UI
+        freeOutgoingMessages: (u as any).freeOutgoingMessages || 0,
+        outgoingMessagesSent: (u as any).outgoingMessagesSent || 0,
 
         accountStatus: (u as any).accountStatus || "active",
         planExpiry: (u as any).planExpiry,
@@ -167,13 +189,13 @@ export async function GET(req: Request) {
         tenantId: (u as any).tenantId || null,
         parentTenantId: (u as any).parentTenantId || null,
         maxSubUsers: (u as any).maxSubUsers || 0,
-        subUsersList, 
+        subUsersList,
         googleSheetId: (u as any).googleSheetId || null,
         hideIntegrations: (u as any).hideIntegrations || false,
         maxEnabledCountries: (u as any).maxEnabledCountries || 0,
         enabledCountries: (u as any).enabledCountries || [],
         hiddenSidebarLinks: (u as any).hiddenSidebarLinks || [],
-        hiddenReportActions: (u as any).hiddenReportActions || [], 
+        hiddenReportActions: (u as any).hiddenReportActions || [],
       });
     }
 
@@ -184,6 +206,9 @@ export async function GET(req: Request) {
   }
 }
 
+// ===========================================================================
+// PUT — update a user (billing, plan, account, credentials, limits, msgBilling, etc.)
+// ===========================================================================
 export async function PUT(req: Request) {
   try {
     if (!validateAdminKey(req)) return NextResponse.json({ message: "Unauthorized. Invalid admin key." }, { status: 403 });
@@ -197,20 +222,24 @@ export async function PUT(req: Request) {
     const user = await User.findById(userId);
     if (!user) return NextResponse.json({ message: "User not found" }, { status: 404 });
 
+    // -------------------- Integrations visibility --------------------
     if (action === "integrations" || body.hideIntegrations !== undefined) {
       user.hideIntegrations = body.hideIntegrations;
     }
 
+    // -------------------- Sidebar visibility --------------------
     if (action === "sidebar" || body.hiddenSidebarLinks !== undefined) {
       user.hiddenSidebarLinks = body.hiddenSidebarLinks;
     }
 
+    // -------------------- Report actions visibility --------------------
     if (action === "reports" || body.hiddenReportActions !== undefined) {
       user.hiddenReportActions = Array.isArray(body.hiddenReportActions) ? body.hiddenReportActions : [];
-      user.markModified("hiddenReportActions"); 
+      user.markModified("hiddenReportActions");
     }
 
-    // ✅ NEW: Handle Message Billing Settings
+    // -------------------- Message Billing (price + free quota) --------------------
+    // ✅ Handles: toggle, price per outgoing message, free message quota
     if (action === "msgBilling") {
       if (body.outgoingMessageBillingEnabled !== undefined) {
         user.outgoingMessageBillingEnabled = body.outgoingMessageBillingEnabled;
@@ -218,21 +247,37 @@ export async function PUT(req: Request) {
       if (body.pricePerOutgoingMessage !== undefined && body.pricePerOutgoingMessage !== null) {
         user.pricePerOutgoingMessage = Math.round(Number(body.pricePerOutgoingMessage) * 100) / 100;
       }
+
+      // ✅ Free outgoing message quota (e.g. set to 1000 → first 1000 messages free)
+      if (body.freeOutgoingMessages !== undefined && body.freeOutgoingMessages !== null) {
+        const newFree = Math.max(0, parseInt(body.freeOutgoingMessages) || 0);
+        // If admin reduces the quota below what's already used, we don't retroactively charge —
+        // we just start charging from the next message.
+        user.freeOutgoingMessages = newFree;
+      }
+
+      // ✅ Optional: admin can manually reset the sent counter (e.g. to grant a fresh quota)
+      if (body.resetOutgoingMessagesSent === true) {
+        user.outgoingMessagesSent = 0;
+      }
     }
 
+    // -------------------- Google disconnect --------------------
     if (action === "disconnectGoogle" || body.disconnectGoogle === true) {
       user.googleSheetId = undefined;
       user.googleTokens = undefined;
     }
 
+    // -------------------- Tenancy --------------------
     if (body.isTenant !== undefined) {
       user.isTenant = body.isTenant;
       if (body.isTenant && !user.tenantId) user.tenantId = new mongoose.Types.ObjectId().toString();
     }
     if (body.maxSubUsers !== undefined) user.maxSubUsers = Number(body.maxSubUsers) || 0;
 
-    let rechargeAppliedAmount = 0; 
+    let rechargeAppliedAmount = 0;
 
+    // -------------------- Billing (prices + recharge + country pricing) --------------------
     if (action === "billing") {
       if (body.priceMarketing !== undefined && body.priceMarketing !== null) user.priceMarketing = Math.round(Number(body.priceMarketing) * 100) / 100;
       if (body.priceUtility !== undefined && body.priceUtility !== null) user.priceUtility = Math.round(Number(body.priceUtility) * 100) / 100;
@@ -243,7 +288,7 @@ export async function PUT(req: Request) {
         const amount = Math.round(Number(body.rechargeAmount) * 100) / 100;
         user.balance = Math.round(((user.balance || 0) + amount) * 100) / 100;
         user.totalRecharged = Math.round(((user.totalRecharged || 0) + amount) * 100) / 100;
-        rechargeAppliedAmount = amount; 
+        rechargeAppliedAmount = amount;
       }
 
       if (body.maxEnabledCountries !== undefined) {
@@ -261,6 +306,7 @@ export async function PUT(req: Request) {
       }
     }
 
+    // -------------------- Plan activation/clear --------------------
     if (body.activatePlan && body.planDuration) {
       user.planDuration = body.planDuration;
       user.planActivatedAt = new Date();
@@ -269,48 +315,52 @@ export async function PUT(req: Request) {
       user.suspendedAt = null;
       user.suspendedReason = null;
     }
-    if (body.clearPlan) { 
-      user.planDuration = null; 
-      user.planActivatedAt = null; 
-      user.planExpiry = null; 
-      user.accountStatus = "active"; 
+    if (body.clearPlan) {
+      user.planDuration = null;
+      user.planActivatedAt = null;
+      user.planExpiry = null;
+      user.accountStatus = "active";
     }
-    
+
+    // -------------------- Credentials --------------------
     if (body.name !== undefined && body.name !== null && body.name !== "") user.name = body.name;
     if (body.password !== undefined && body.password !== null && body.password !== "") user.password = body.password;
     if (body.whatsappAccessToken !== undefined && body.whatsappAccessToken !== null && body.whatsappAccessToken !== "") user.whatsappAccessToken = body.whatsappAccessToken;
     if (body.whatsappPhoneNumberId !== undefined) user.whatsappPhoneNumberId = body.whatsappPhoneNumberId?.trim() || null;
     if (body.wabaId !== undefined) user.wabaId = body.wabaId?.trim() || null;
 
-    if (body.suspendAccount) { 
-      user.accountStatus = "suspended"; 
-      user.suspendedAt = new Date(); 
-      user.suspendedReason = body.suspendReason || "Suspended by admin"; 
+    // -------------------- Account status --------------------
+    if (body.suspendAccount) {
+      user.accountStatus = "suspended";
+      user.suspendedAt = new Date();
+      user.suspendedReason = body.suspendReason || "Suspended by admin";
     }
-    if (body.reactivateAccount) { 
-      user.accountStatus = "active"; 
-      user.suspendedAt = null; 
-      user.suspendedReason = null; 
+    if (body.reactivateAccount) {
+      user.accountStatus = "active";
+      user.suspendedAt = null;
+      user.suspendedReason = null;
     }
 
+    // -------------------- Resource limits --------------------
     if (body.limits && typeof body.limits === "object") {
       const currentLimits = (user as any).limits || {};
       const newLimits: any = {};
       for (const resource of LIMIT_RESOURCES) {
         if (body.limits[resource] !== undefined) {
           const { max, period } = body.limits[resource];
-          newLimits[resource] = { 
-            max: period === "unlimited" ? -1 : Math.max(0, Number(max) || 0), 
-            period: ["day", "month", "year", "total", "unlimited"].includes(period) ? period : "unlimited" 
+          newLimits[resource] = {
+            max: period === "unlimited" ? -1 : Math.max(0, Number(max) || 0),
+            period: ["day", "month", "year", "total", "unlimited"].includes(period) ? period : "unlimited"
           };
-        } else { 
-          newLimits[resource] = currentLimits[resource] || DEFAULT_LIMITS[resource]; 
+        } else {
+          newLimits[resource] = currentLimits[resource] || DEFAULT_LIMITS[resource];
         }
       }
       user.limits = newLimits;
       user.markModified("limits");
     }
 
+    // -------------------- Reset specific usage --------------------
     if (body.resetUsage && typeof body.resetUsage === "object") {
       const currentUsage = (user as any).usage || {};
       const currentLimits = (user as any).limits || {};
@@ -325,6 +375,7 @@ export async function PUT(req: Request) {
       user.markModified("usage");
     }
 
+    // -------------------- Reset ALL usage --------------------
     if (body.resetAllUsage) {
       const currentLimits = (user as any).limits || {};
       const newUsage: any = {};
@@ -333,8 +384,10 @@ export async function PUT(req: Request) {
       user.markModified("usage");
     }
 
+    // -------------------- Persist --------------------
     await user.save();
 
+    // -------------------- Log recharge transaction --------------------
     if (rechargeAppliedAmount > 0) {
       try {
         await Transaction.create({
@@ -358,10 +411,13 @@ export async function PUT(req: Request) {
   }
 }
 
+// ===========================================================================
+// DELETE — remove a user
+// ===========================================================================
 export async function DELETE(req: Request) {
   try {
     if (!validateAdminKey(req)) return NextResponse.json({ message: "Unauthorized" }, { status: 403 });
-    
+
     const { searchParams } = new URL(req.url);
     const userId = searchParams.get("userId");
 
@@ -369,7 +425,7 @@ export async function DELETE(req: Request) {
 
     await connectDB();
     await User.findByIdAndDelete(userId);
-    
+
     return NextResponse.json({ success: true, message: "User deleted successfully" });
   } catch (error) {
     console.error("Error deleting user:", error);
