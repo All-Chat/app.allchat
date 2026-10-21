@@ -16,7 +16,7 @@ import {
   Tag, GitBranch, FileText, Send, UserPlus, ClipboardList,
   RotateCcw, Gauge, Package, Trash2, Check, Globe, LayoutGrid, BarChart3, Bot,
   History, ArrowDownCircle, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
-  CheckCircle2, XCircle
+  CheckCircle2, XCircle, MessageSquare // ✅ Added MessageSquare icon
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -70,6 +70,7 @@ const SIDEBAR_SECTIONS = [
 ];
 
 type LimitValue = { max: number; period: string };
+type EditTab = "billing" | "plan" | "account" | "credentials" | "limits" | "tenancy" | "integrations" | "sidebar" | "reports" | "logs" | "msgBilling";
 
 function getLimitColor(color: string) {
   const map: Record<string, any> = {
@@ -97,7 +98,7 @@ export default function AdminBillingPage() {
   const [statusFilter, setStatusFilter] = useState("all");
 
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
-  const [editTab, setEditTab] = useState<"billing" | "plan" | "account" | "credentials" | "limits" | "tenancy" | "integrations" | "sidebar" | "reports" | "logs">("billing");
+  const [editTab, setEditTab] = useState<EditTab>("billing");
   const [editRecharge, setEditRecharge] = useState("");
   const [editPlanDuration, setEditPlanDuration] = useState("1mo");
   const [editCustomDuration, setEditCustomDuration] = useState("");
@@ -106,6 +107,10 @@ export default function AdminBillingPage() {
   const [editPriceMarketing, setEditPriceMarketing] = useState("0.90");
   const [editPriceUtility, setEditPriceUtility] = useState("0.50");
   const [editPriceAuthentication, setEditPriceAuthentication] = useState("0.30");
+
+  // ✅ NEW: State for Message Billing
+  const [editMsgBillingEnabled, setEditMsgBillingEnabled] = useState(false);
+  const [editMsgPrice, setEditMsgPrice] = useState("0.50");
 
   const [editMaxCountries, setEditMaxCountries] = useState("0");
   const [editEnabledCountries, setEditEnabledCountries] = useState<any[]>([]);
@@ -269,12 +274,16 @@ export default function AdminBillingPage() {
     } catch { toast.error("Error processing request"); } finally { setProcessingReqId(null); }
   };
 
-  const startEdit = (user: any, tab: "billing" | "plan" | "account" | "credentials" | "limits" | "tenancy" | "integrations" | "sidebar" | "reports" | "logs" = "billing") => {
+  const startEdit = (user: any, tab: EditTab = "billing") => {
     setEditingUserId(user._id);
     setEditTab(tab);
     setEditPriceMarketing(user.priceMarketing?.toString() || "0.90");
     setEditPriceUtility(user.priceUtility?.toString() || "0.50");
     setEditPriceAuthentication(user.priceAuthentication?.toString() || "0.30");
+
+    // ✅ NEW: Load Msg Billing settings
+    setEditMsgBillingEnabled(user.outgoingMessageBillingEnabled || false);
+    setEditMsgPrice(user.pricePerOutgoingMessage?.toString() || "0.50");
 
     setEditMaxCountries(user.maxEnabledCountries?.toString() || "0");
     setEditEnabledCountries(user.enabledCountries || []);
@@ -292,7 +301,6 @@ export default function AdminBillingPage() {
     for (const res of LIMIT_RESOURCES_CONFIG) userLimits[res.key] = user.limits?.[res.key] || DEFAULT_LIMITS[res.key];
     setEditLimits(userLimits); setSelectedPreset("");
 
-    // Reset logs state when opening a new user
     setLogsTransactions([]);
     setLogsPage(1);
     setLogsTotalPages(1);
@@ -348,6 +356,12 @@ export default function AdminBillingPage() {
       if (action === "limits") body.limits = editLimits;
       if (action === "tenancy") { body.isTenant = editIsTenant; body.maxSubUsers = Number(editMaxSubUsers); }
       
+      // ✅ NEW: Handle msgBilling action
+      if (action === "msgBilling") {
+        body.outgoingMessageBillingEnabled = editMsgBillingEnabled;
+        body.pricePerOutgoingMessage = Number(editMsgPrice);
+      }
+
       if (action === "integrations") { body.hideIntegrations = extraData?.hideIntegrations !== undefined ? extraData.hideIntegrations : editHideIntegrations; }
       if (action === "disconnectGoogle") { body.disconnectGoogle = true; }
       if (action === "sidebar") { body.hiddenSidebarLinks = editHiddenLinks; }
@@ -362,7 +376,7 @@ export default function AdminBillingPage() {
         toast.success(`Updated ${data.user.name}`); fetchUsers();
         if (action === "disconnectGoogle") {
           toast.success("Google account disconnected for this user.");
-        } else if (action !== "integrations" && action !== "sidebar" && action !== "reports") {
+        } else if (action !== "integrations" && action !== "sidebar" && action !== "reports" && action !== "msgBilling") {
           cancelEdit();
         }
       } else { toast.error(data.message || "Failed to update"); }
@@ -588,22 +602,34 @@ export default function AdminBillingPage() {
 
                   {isEditing && (
                     <div className="border-t border-slate-100 bg-slate-50/50">
-                      <div className="flex overflow-x-auto border-b border-slate-200 px-4 sm:px-6">
-                        {[
-                          { id: "billing", label: "Billing", icon: Wallet }, 
-                          { id: "plan", label: "Plan", icon: CalendarDays }, 
-                          { id: "account", label: "Account", icon: UserCog }, 
-                          { id: "credentials", label: "Credentials", icon: KeyRound }, 
-                          { id: "limits", label: "Limits", icon: Gauge }, 
-                          { id: "tenancy", label: "Tenancy", icon: Building2 }, 
-                          { id: "integrations", label: "Integrations", icon: FileText }, 
-                          { id: "sidebar", label: "Sidebar", icon: LayoutGrid }, 
-                          { id: "reports", label: "Reports", icon: BarChart3 }, 
-                          { id: "logs", label: "Logs", icon: History }
-                        ].map(tab => (
-                          <button key={tab.id} onClick={() => setEditTab(tab.id as any)} className={`flex items-center gap-2 px-4 sm:px-5 py-3 text-xs font-bold border-b-2 transition-all whitespace-nowrap ${editTab === tab.id ? "border-amber-500 text-amber-700" : "border-transparent text-slate-400 hover:text-slate-600"}`}><tab.icon size={14} /> {tab.label}</button>
-                        ))}
-                      </div>
+                      <div className="flex flex-nowrap items-center overflow-hidden border-b border-slate-200 px-4 sm:px-6">
+  {[
+    { id: "billing", label: "Billing", icon: Wallet }, 
+    { id: "plan", label: "Plan", icon: CalendarDays }, 
+    { id: "account", label: "Account", icon: UserCog }, 
+    { id: "credentials", label: "Credentials", icon: KeyRound }, 
+    { id: "limits", label: "Limits", icon: Gauge }, 
+    { id: "tenancy", label: "Tenancy", icon: Building2 }, 
+    { id: "integrations", label: "Integrations", icon: FileText }, 
+    { id: "sidebar", label: "Sidebar", icon: LayoutGrid }, 
+    { id: "reports", label: "Reports", icon: BarChart3 }, 
+    { id: "logs", label: "Logs", icon: History },
+    { id: "msgBilling", label: "Msg Billing", icon: MessageSquare }
+  ].map(tab => (
+    <button 
+      key={tab.id} 
+      onClick={() => setEditTab(tab.id as EditTab)} 
+      className={`flex items-center gap-1.5 px-3 sm:px-4 py-3 text-[11px] sm:text-xs font-bold border-b-2 transition-all whitespace-nowrap ${
+        editTab === tab.id 
+          ? "border-amber-500 text-amber-700" 
+          : "border-transparent text-slate-400 hover:text-slate-600"
+      }`}
+    >
+      <tab.icon size={14} /> 
+      {tab.label}
+    </button>
+  ))}
+</div>
                       <div className="p-4 sm:p-6">
                         {editTab === "billing" && (
                           <div className="space-y-5 sm:space-y-6 max-w-2xl">
@@ -907,6 +933,52 @@ export default function AdminBillingPage() {
                             </div> 
                           </div> 
                         )} 
+
+                        {/* ✅ NEW: Msg Billing Tab UI */}
+                        {editTab === "msgBilling" && (
+                          <div className="space-y-5 max-w-2xl">
+                            <div className="p-4 bg-white rounded-xl border border-slate-200">
+                              <div className="flex items-center justify-between mb-4">
+                                <div>
+                                  <p className="text-sm font-bold text-gray-900">Enable Message Billing</p>
+                                  <p className="text-xs text-slate-400 mt-0.5">Charge the user for every outgoing message except template messages.</p>
+                                </div>
+                                <button 
+                                  onClick={() => setEditMsgBillingEnabled(!editMsgBillingEnabled)} 
+                                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${editMsgBillingEnabled ? "bg-emerald-600" : "bg-gray-200"}`}
+                                >
+                                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${editMsgBillingEnabled ? "translate-x-6" : "translate-x-1"}`} />
+                                </button>
+                              </div>
+                              
+                              {editMsgBillingEnabled && (
+                                <div className="mt-4 pt-4 border-t border-slate-100">
+                                  <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2 block">Price Per Outgoing Message (₹)</label>
+                                  <input 
+                                    type="number" 
+                                    step="0.01" 
+                                    min="0" 
+                                    value={editMsgPrice} 
+                                    onChange={e => setEditMsgPrice(e.target.value)} 
+                                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-gray-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 transition-all text-sm" 
+                                  />
+                                  <p className="text-[10px] text-slate-400 mt-1">This amount will be deducted for every Workflow, Form, AI, or Manual message sent.</p>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex justify-end gap-3 pt-3">
+                              <button onClick={cancelEdit} className="px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-all">Cancel</button>
+                              <button 
+                                onClick={() => saveUser(user._id, "msgBilling")} 
+                                disabled={saving === user._id + "msgBilling"} 
+                                className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm"
+                              >
+                                {saving === user._id + "msgBilling" ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Billing Settings
+                              </button>
+                            </div>
+                          </div>
+                        )}
 
                         {editTab === "logs" && (
                           <div className="space-y-5">
