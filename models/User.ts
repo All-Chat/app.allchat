@@ -94,7 +94,7 @@ const UserSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, unique: true },
     password: { type: String, required: true },
-    
+
     isTenant: { type: Boolean, default: false },
     tenantId: { type: String, default: null, index: true },
     parentTenantId: { type: String, default: null, index: true },
@@ -111,10 +111,17 @@ const UserSchema = new mongoose.Schema(
     priceMarketing: { type: Number, default: 0.9 },
     priceUtility: { type: Number, default: 0.5 },
     priceAuthentication: { type: Number, default: 0.3 },
-    
-    // ✅ NEW: Outgoing Message Billing Settings
+
+    // ✅ Outgoing Message Billing Settings
     outgoingMessageBillingEnabled: { type: Boolean, default: false },
     pricePerOutgoingMessage: { type: Number, default: 0.5 },
+
+    // ✅ FREE MESSAGE QUOTA
+    // Admin grants N free non-template outgoing messages per user.
+    // When outgoingMessagesSent < freeOutgoingMessages, no charge is deducted.
+    // The (N+1)th message onward is charged at pricePerOutgoingMessage.
+    freeOutgoingMessages: { type: Number, default: 0 },
+    outgoingMessagesSent: { type: Number, default: 0 },
 
     maxEnabledCountries: { type: Number, default: 0 },
     enabledCountries: [
@@ -156,7 +163,7 @@ const UserSchema = new mongoose.Schema(
     },
     hideIntegrations: { type: Boolean, default: false },
     hiddenSidebarLinks: { type: [String], default: [] },
-    
+
     /* =====================================================
        HIDDEN REPORT ACTIONS
     ===================================================== */
