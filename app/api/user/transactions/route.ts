@@ -10,11 +10,27 @@ import Transaction from "@/models/Transaction";
 
 const ADMIN_SECRET = process.env.ADMIN_SECRET_KEY || "admin123";
 
+// ✅ NEW: Outgoing message charge description patterns
+// These match what the webhook writes in chargeOutgoingMessage() descriptions
+const MESSAGE_CHARGE_DESCRIPTIONS = [
+  "outgoing message charge",
+  "workflow/automated message charge",
+  "workflow",
+  "form message charge",
+  "form inactivity message charge",
+  "form abandonment message charge",
+  "form completion message charge",
+  "form restart message charge",
+  "form validation message charge",
+  "form initiation message charge",
+  "ai agent message charge",
+];
+
 export async function GET(req: Request) {
   try {
     await connectDB();
     const session = await getServerSession(authOptions);
-    
+
     const { searchParams } = new URL(req.url);
     const type = searchParams.get("type") || "recharge";
     const page = parseInt(searchParams.get("page") || "1");
@@ -41,7 +57,7 @@ export async function GET(req: Request) {
     }
 
     const userObjId = new mongoose.Types.ObjectId(targetUserId);
-    
+
     const userDoc = await User.findById(userObjId).select("parentTenantId").lean();
     const parentTenantId = (userDoc as any)?.parentTenantId;
 
@@ -59,20 +75,21 @@ export async function GET(req: Request) {
       if (parent) billingUser = parent;
     }
 
+    // =========================================================================
+    // USAGE TAB — Test messages + Campaign usage (UNCHANGED)
+    // =========================================================================
     if (type === "usage") {
-      // ✅ SPEED FIX: Only fetch the most recent 500 records to prevent memory overload.
-      // ✅ REMOVED: Refund logs are completely removed from this query.
       const [testMsgs, campaigns] = await Promise.all([
-        Transaction.find({ 
-          userId: { $in: userIdsToQuery }, 
+        Transaction.find({
+          userId: { $in: userIdsToQuery },
           type: "test_message",
           status: "success"
         })
         .select("amount createdAt metadata.templateName metadata.phone")
         .sort({ createdAt: -1 })
-        .limit(500) 
+        .limit(500)
         .lean(),
-        
+
         Campaign.find({
           userId: { $in: userIdsToQuery },
           status: { $in: ["running", "paused", "completed", "failed", "stopped"] }
@@ -98,7 +115,7 @@ export async function GET(req: Request) {
 
       const campaignUsages = campaigns.map((camp: any) => {
         const ls = camp.liveStats || {};
-        const deliveredCombined = 
+        const deliveredCombined =
           Number(ls.sent || 0) +
           Number(ls.delivered || 0) +
           Number(ls.read || 0) +
@@ -121,14 +138,13 @@ export async function GET(req: Request) {
         };
       });
 
-      // ✅ Refunds are no longer included in this array
       let combined = [...testUsages, ...campaignUsages];
 
       if (search) {
         const searchNum = parseFloat(search);
         const isNum = !isNaN(searchNum);
         combined = combined.filter(t => {
-          const matchesText = 
+          const matchesText =
             t.description?.toLowerCase().includes(search.toLowerCase()) ||
             t.metadata?.campaignName?.toLowerCase().includes(search.toLowerCase()) ||
             t.metadata?.templateName?.toLowerCase().includes(search.toLowerCase());
@@ -139,14 +155,47 @@ export async function GET(req: Request) {
 
       combined.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-      // ✅ Cap totalRecords to the combined length we actually fetched
       totalRecords = combined.length;
       transactions = combined.slice(skip, skip + limit);
+    }
 
-    } else {
-      const query: any = { 
-        userId: { $in: userIdsToQuery }, 
-        type: "recharge" 
+    // =========================================================================
+    // ✅ NEW: MESSAGES TAB — Outgoing non-template message charges
+    // =========================================================================
+    else if (type === "messages") {
+      const query: any = {
+        userId: { $in: userIdsToQuery },
+        type: { $in: ["debit", "charge", "usage"] },
+        description: { $regex: MESSAGE_CHARGE_DESCRIPTIONS.join("|"), $options: "i" }
+      };
+
+      if (search) {
+        const searchNum = parseFloat(search);
+        const isNum = !isNaN(searchNum);
+        query.$or = [
+          { description: { $regex: search, $options: "i" } },
+          { "metadata.phone": { $regex: search, $options: "i" } }
+        ];
+        if (isNum) {
+          query.$or.push({ amount: searchNum });
+        }
+      }
+
+      totalRecords = await Transaction.countDocuments(query);
+      transactions = await Transaction.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean();
+    }
+
+    // =========================================================================
+    // RECHARGE TAB (UNCHANGED)
+    // =========================================================================
+    else {
+      const query: any = {
+        userId: { $in: userIdsToQuery },
+        type: "recharge"
       };
 
       if (search) {
@@ -168,6 +217,9 @@ export async function GET(req: Request) {
         .lean();
     }
 
+    // =========================================================================
+    // SUMMARY — includes message charges in totalSpent
+    // =========================================================================
     let balance = 0;
     let totalRecharged = 0;
     let totalSpent = 0;
@@ -175,9 +227,23 @@ export async function GET(req: Request) {
     try {
       balance = billingUser?.balance || 0;
       totalRecharged = billingUser?.totalRecharged || 0;
-      totalSpent = Math.round((totalRecharged - balance) * 100) / 100;
+
+      // ✅ Compute totalSpent as actual sum of all debits (more accurate than recharged-balance)
+      const spentAgg = await Transaction.aggregate([
+        { $match: { userId: { $in: userIdsToQuery }, type: { $in: ["debit", "charge", "usage", "test_message", "campaign"] } } },
+        { $group: { _id: null, total: { $sum: "$amount" } } }
+      ]);
+      const spentFromAgg = spentAgg[0]?.total || 0;
+      const spentFromBalance = Math.round((totalRecharged - balance) * 100) / 100;
+
+      // Use whichever is larger to avoid negative or zero when refunds happened
+      totalSpent = Math.max(spentFromAgg, spentFromBalance, 0);
     } catch (summaryErr) {
       console.error("Error computing transaction summary:", summaryErr);
+      // Fallback to old method
+      balance = billingUser?.balance || 0;
+      totalRecharged = billingUser?.totalRecharged || 0;
+      totalSpent = Math.round((totalRecharged - balance) * 100) / 100;
     }
 
     return NextResponse.json({
