@@ -16,7 +16,7 @@ import {
   Tag, GitBranch, FileText, Send, UserPlus, ClipboardList,
   RotateCcw, Gauge, Package, Trash2, Check, Globe, LayoutGrid, BarChart3, Bot,
   History, ArrowDownCircle, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
-  CheckCircle2, XCircle, MessageSquare // ✅ Added MessageSquare icon
+  CheckCircle2, XCircle, MessageSquare, Gift // ✅ Added MessageSquare + Gift icons
 } from "lucide-react";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -108,9 +108,12 @@ export default function AdminBillingPage() {
   const [editPriceUtility, setEditPriceUtility] = useState("0.50");
   const [editPriceAuthentication, setEditPriceAuthentication] = useState("0.30");
 
-  // ✅ NEW: State for Message Billing
+  // ✅ Message Billing state
   const [editMsgBillingEnabled, setEditMsgBillingEnabled] = useState(false);
   const [editMsgPrice, setEditMsgPrice] = useState("0.50");
+  // ✅ Free message quota state
+  const [editFreeMsgCount, setEditFreeMsgCount] = useState("0");
+  const [editMsgSentCount, setEditMsgSentCount] = useState(0);
 
   const [editMaxCountries, setEditMaxCountries] = useState("0");
   const [editEnabledCountries, setEditEnabledCountries] = useState<any[]>([]);
@@ -281,9 +284,12 @@ export default function AdminBillingPage() {
     setEditPriceUtility(user.priceUtility?.toString() || "0.50");
     setEditPriceAuthentication(user.priceAuthentication?.toString() || "0.30");
 
-    // ✅ NEW: Load Msg Billing settings
+    // ✅ Load Message Billing settings
     setEditMsgBillingEnabled(user.outgoingMessageBillingEnabled || false);
     setEditMsgPrice(user.pricePerOutgoingMessage?.toString() || "0.50");
+    // ✅ Load free quota settings
+    setEditFreeMsgCount(user.freeOutgoingMessages?.toString() || "0");
+    setEditMsgSentCount(user.outgoingMessagesSent || 0);
 
     setEditMaxCountries(user.maxEnabledCountries?.toString() || "0");
     setEditEnabledCountries(user.enabledCountries || []);
@@ -294,8 +300,8 @@ export default function AdminBillingPage() {
     setShowPassword(false); setShowAccessToken(false);
     setEditIsTenant(user.isTenant || false); setEditMaxSubUsers(user.maxSubUsers?.toString() || "0");
     setEditHideIntegrations(user.hideIntegrations || false);
-    setEditHiddenLinks(user.hiddenSidebarLinks || []); 
-    setEditHiddenReports(user.hiddenReportActions || []); 
+    setEditHiddenLinks(user.hiddenSidebarLinks || []);
+    setEditHiddenReports(user.hiddenReportActions || []);
 
     const userLimits: Record<string, LimitValue> = {};
     for (const res of LIMIT_RESOURCES_CONFIG) userLimits[res.key] = user.limits?.[res.key] || DEFAULT_LIMITS[res.key];
@@ -330,11 +336,11 @@ export default function AdminBillingPage() {
       const body: any = { userId, action, ...extraData };
 
       if (action === "billing") {
-        body.priceMarketing = Number(editPriceMarketing); 
-        body.priceUtility = Number(editPriceUtility); 
+        body.priceMarketing = Number(editPriceMarketing);
+        body.priceUtility = Number(editPriceUtility);
         body.priceAuthentication = Number(editPriceAuthentication);
         if (editRecharge !== "" && Number(editRecharge) > 0) body.rechargeAmount = Number(editRecharge);
-        
+
         body.maxEnabledCountries = Number(editMaxCountries) || 0;
         body.enabledCountries = editEnabledCountries.map((c: any) => ({
           name: String(c.name || ""),
@@ -355,17 +361,18 @@ export default function AdminBillingPage() {
       }
       if (action === "limits") body.limits = editLimits;
       if (action === "tenancy") { body.isTenant = editIsTenant; body.maxSubUsers = Number(editMaxSubUsers); }
-      
-      // ✅ NEW: Handle msgBilling action
+
+      // ✅ Handle msgBilling action — now also sends free quota
       if (action === "msgBilling") {
         body.outgoingMessageBillingEnabled = editMsgBillingEnabled;
         body.pricePerOutgoingMessage = Number(editMsgPrice);
+        body.freeOutgoingMessages = Number(editFreeMsgCount) || 0;
       }
 
       if (action === "integrations") { body.hideIntegrations = extraData?.hideIntegrations !== undefined ? extraData.hideIntegrations : editHideIntegrations; }
       if (action === "disconnectGoogle") { body.disconnectGoogle = true; }
       if (action === "sidebar") { body.hiddenSidebarLinks = editHiddenLinks; }
-      if (action === "reports") { body.hiddenReportActions = editHiddenReports; } 
+      if (action === "reports") { body.hiddenReportActions = editHiddenReports; }
 
       if (action === "resetUsage") { body.resetUsage = extraData?.resetUsage || {}; body.limits = editLimits; }
       if (action === "resetAllUsage") { body.resetAllUsage = true; body.limits = editLimits; }
@@ -535,6 +542,11 @@ export default function AdminBillingPage() {
                             {user.hideIntegrations && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 flex items-center gap-1 shrink-0"><EyeOff size={9} /> Integrations Hidden</span>}
                             {user.hiddenSidebarLinks?.length > 0 && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 flex items-center gap-1 shrink-0"><LayoutGrid size={9} /> {user.hiddenSidebarLinks.length} Links Hidden</span>}
                             {user.hiddenReportActions?.length > 0 && <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 border border-slate-200 flex items-center gap-1 shrink-0"><BarChart3 size={9} /> {user.hiddenReportActions.length} Reports Hidden</span>}
+                            {user.outgoingMessageBillingEnabled && user.freeOutgoingMessages > 0 && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-violet-50 text-violet-700 border border-violet-200 flex items-center gap-1 shrink-0" title="Free message quota">
+                                <Gift size={9} /> {Math.max(0, user.freeOutgoingMessages - user.outgoingMessagesSent)} free left
+                              </span>
+                            )}
                           </div>
                           <div className="flex flex-wrap items-center gap-x-3 sm:gap-x-4 gap-y-1 text-[11px] sm:text-xs text-gray-400">
                             {user.whatsappPhoneNumberId && <span className="font-mono truncate">{user.whatsappPhoneNumberId}</span>}
@@ -556,7 +568,7 @@ export default function AdminBillingPage() {
                         </div>
                         <div className="flex items-center gap-1.5 ml-auto sm:ml-0">
                           <button onClick={() => window.open("/", "_blank")} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Open User Dashboard"><ExternalLink size={16} /></button>
-                          
+
                           {user.accountStatus === "active" ? (
                             <button onClick={() => saveUser(user._id, "suspend")} disabled={saving === user._id + "suspend"} className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors" title="Suspend Account">{saving === user._id + "suspend" ? <Loader2 size={16} className="animate-spin" /> : <Ban size={16} />}</button>
                           ) : (
@@ -603,34 +615,35 @@ export default function AdminBillingPage() {
                   {isEditing && (
                     <div className="border-t border-slate-100 bg-slate-50/50">
                       <div className="flex flex-nowrap items-center overflow-hidden border-b border-slate-200 px-4 sm:px-6">
-  {[
-    { id: "billing", label: "Billing", icon: Wallet }, 
-    { id: "plan", label: "Plan", icon: CalendarDays }, 
-    { id: "account", label: "Account", icon: UserCog }, 
-    { id: "credentials", label: "Credentials", icon: KeyRound }, 
-    { id: "limits", label: "Limits", icon: Gauge }, 
-    { id: "tenancy", label: "Tenancy", icon: Building2 }, 
-    { id: "integrations", label: "Integrations", icon: FileText }, 
-    { id: "sidebar", label: "Sidebar", icon: LayoutGrid }, 
-    { id: "reports", label: "Reports", icon: BarChart3 }, 
-    { id: "logs", label: "Logs", icon: History },
-    { id: "msgBilling", label: "Msg Billing", icon: MessageSquare }
-  ].map(tab => (
-    <button 
-      key={tab.id} 
-      onClick={() => setEditTab(tab.id as EditTab)} 
-      className={`flex items-center gap-1.5 px-3 sm:px-4 py-3 text-[11px] sm:text-xs font-bold border-b-2 transition-all whitespace-nowrap ${
-        editTab === tab.id 
-          ? "border-amber-500 text-amber-700" 
-          : "border-transparent text-slate-400 hover:text-slate-600"
-      }`}
-    >
-      <tab.icon size={14} /> 
-      {tab.label}
-    </button>
-  ))}
-</div>
+                        {[
+                          { id: "billing", label: "Billing", icon: Wallet },
+                          { id: "plan", label: "Plan", icon: CalendarDays },
+                          { id: "account", label: "Account", icon: UserCog },
+                          { id: "credentials", label: "Credentials", icon: KeyRound },
+                          { id: "limits", label: "Limits", icon: Gauge },
+                          { id: "tenancy", label: "Tenancy", icon: Building2 },
+                          { id: "integrations", label: "Integrations", icon: FileText },
+                          { id: "sidebar", label: "Sidebar", icon: LayoutGrid },
+                          { id: "reports", label: "Reports", icon: BarChart3 },
+                          { id: "logs", label: "Logs", icon: History },
+                          { id: "msgBilling", label: "Msg Billing", icon: MessageSquare }
+                        ].map(tab => (
+                          <button
+                            key={tab.id}
+                            onClick={() => setEditTab(tab.id as EditTab)}
+                            className={`flex items-center gap-1.5 px-3 sm:px-4 py-3 text-[11px] sm:text-xs font-bold border-b-2 transition-all whitespace-nowrap ${
+                              editTab === tab.id
+                                ? "border-amber-500 text-amber-700"
+                                : "border-transparent text-slate-400 hover:text-slate-600"
+                            }`}
+                          >
+                            <tab.icon size={14} />
+                            {tab.label}
+                          </button>
+                        ))}
+                      </div>
                       <div className="p-4 sm:p-6">
+                        {/* ==================== BILLING TAB ==================== */}
                         {editTab === "billing" && (
                           <div className="space-y-5 sm:space-y-6 max-w-2xl">
                             <div>
@@ -693,6 +706,7 @@ export default function AdminBillingPage() {
                             </div>
                           </div>
                         )}
+                        {/* ==================== PLAN TAB ==================== */}
                         {editTab === "plan" && (
                           <div className="max-w-2xl space-y-5 sm:space-y-6">
                             <div className="p-4 bg-white rounded-xl border border-slate-200"><p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3">Current Plan</p><div className="flex flex-wrap items-center gap-3"><span className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${sc.bg} ${sc.text} ${sc.border}`}>{planLabel}</span>{user.planExpiry ? <span className={`text-xs ${isExpired ? "text-red-500 font-bold" : "text-slate-400"}`}>{isExpired ? "EXPIRED" : `Expires ${formatDate(user.planExpiry)}`}</span> : <span className="text-xs text-slate-400">No plan assigned</span>}</div></div>
@@ -704,6 +718,7 @@ export default function AdminBillingPage() {
                             </div>
                           </div>
                         )}
+                        {/* ==================== ACCOUNT TAB ==================== */}
                         {editTab === "account" && (
                           <div className="max-w-2xl space-y-5">
                             <div className="p-4 bg-white rounded-xl border border-slate-200"><div className="flex justify-between items-center"><div><p className="text-sm font-bold text-gray-900">Account Status</p><p className="text-xs text-slate-400 mt-0.5">{user.accountStatus === "active" ? "Account is active." : "Needs attention."}</p></div><span className={`px-3 py-1.5 rounded-full text-xs font-bold border ${sc.bg} ${sc.text} ${sc.border}`}>{user.accountStatus?.toUpperCase()}</span></div></div>
@@ -722,6 +737,7 @@ export default function AdminBillingPage() {
                             )}
                           </div>
                         )}
+                        {/* ==================== CREDENTIALS TAB ==================== */}
                         {editTab === "credentials" && (
                           <div className="space-y-5 sm:space-y-6 max-w-2xl">
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
@@ -765,6 +781,7 @@ export default function AdminBillingPage() {
                             </div>
                           </div>
                         )}
+                        {/* ==================== LIMITS TAB ==================== */}
                         {editTab === "limits" && (
                           <div className="space-y-5 sm:space-y-6 max-w-4xl">
                             <div className="p-4 bg-white rounded-xl border border-slate-200"><p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3 flex items-center gap-1.5"><Package size={12} /> Quick Apply Preset</p><div className="grid grid-cols-2 sm:grid-cols-4 gap-2">{LIMIT_PRESETS.map(preset => <button key={preset.label} onClick={() => applyPreset(preset.label)} className={`px-3 py-2.5 rounded-xl text-xs font-bold border transition-all ${selectedPreset === preset.label ? "bg-indigo-50 border-indigo-300 text-indigo-700 shadow-sm" : "bg-white border-slate-200 text-slate-600 hover:border-slate-300"}`}>{preset.label}</button>)}</div></div>
@@ -772,6 +789,7 @@ export default function AdminBillingPage() {
                             <div className="flex justify-end gap-3 pt-3 border-t border-slate-200"><button onClick={cancelEdit} className="px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-all">Cancel</button><button onClick={() => saveUser(user._id, "limits")} disabled={saving === user._id + "limits"} className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-indigo-500 to-violet-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm">{saving === user._id + "limits" ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Limits</button></div>
                           </div>
                         )}
+                        {/* ==================== TENANCY TAB ==================== */}
                         {editTab === "tenancy" && (
                           <div className="space-y-5 max-w-2xl">
                             <div className="p-4 bg-white rounded-xl border border-slate-200">
@@ -784,7 +802,7 @@ export default function AdminBillingPage() {
                             <div className="flex justify-end gap-3 pt-3"><button onClick={cancelEdit} className="px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-all">Cancel</button><button onClick={() => saveUser(user._id, "tenancy")} disabled={saving === user._id + "tenancy"} className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-indigo-500 to-blue-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm">{saving === user._id + "tenancy" ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Tenancy</button></div>
                           </div>
                         )}
-                        
+                        {/* ==================== INTEGRATIONS TAB ==================== */}
                         {editTab === "integrations" && (
                           <div className="space-y-5 max-w-2xl">
                             <div className="p-4 bg-white rounded-xl border border-slate-200">
@@ -793,16 +811,16 @@ export default function AdminBillingPage() {
                                   <p className="text-sm font-bold text-gray-900">Integrations Visibility</p>
                                   <p className="text-xs text-slate-400 mt-0.5">Hide or show the Integrations section in the user&apos;s Settings. Background syncs continue to work even if hidden.</p>
                                 </div>
-                                <button 
-                                  onClick={() => toggleHideIntegrations(user._id)} 
+                                <button
+                                  onClick={() => toggleHideIntegrations(user._id)}
                                   disabled={saving === user._id + "integrations"}
                                   className={`px-4 py-2 rounded-lg text-xs font-bold border transition-all flex items-center gap-1.5 shrink-0 ${
-                                    editHideIntegrations 
-                                      ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100" 
+                                    editHideIntegrations
+                                      ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
                                       : "bg-red-50 text-red-600 border-red-200 hover:bg-red-100"
                                   }`}
                                 >
-                                  {saving === user._id + "integrations" ? <Loader2 size={14} className="animate-spin" /> : 
+                                  {saving === user._id + "integrations" ? <Loader2 size={14} className="animate-spin" /> :
                                     editHideIntegrations ? <Eye size={14} /> : <EyeOff size={14} />
                                   }
                                   {editHideIntegrations ? "Unhide Integrations" : "Hide Integrations"}
@@ -816,88 +834,88 @@ export default function AdminBillingPage() {
                                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mt-3">
                                   <span className="px-3 py-1.5 bg-green-50 text-green-700 border border-green-200 rounded-lg text-xs font-bold">Connected</span>
                                   <div className="flex gap-2">
-                                    <a href={`https://docs.google.com/spreadsheets/d/${user.googleSheetId}/edit`} target="_blank" rel="noopener noreferrer" className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-xs font-bold hover:bg-slate-200 transition-all flex items-center gap-1"> 
-                                      <ExternalLink size={12} /> View Sheet 
-                                    </a> 
-                                    <button onClick={() => saveUser(user._id, "disconnectGoogle")} disabled={saving === user._id + "disconnectGoogle"} className="px-4 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-xs font-bold hover:bg-red-100 transition-all disabled:opacity-50 flex items-center gap-1"> 
-                                      {saving === user._id + "disconnectGoogle" ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}Disconnect 
-                                    </button> 
-                                  </div> 
-                                </div> 
-                              ) : ( 
-                                <p className="text-xs text-slate-400 mt-2">User has not connected a Google Account.</p> 
-                              )} 
-                            </div> 
-                          </div> 
-                        )} 
+                                    <a href={`https://docs.google.com/spreadsheets/d/${user.googleSheetId}/edit`} target="_blank" rel="noopener noreferrer" className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-xs font-bold hover:bg-slate-200 transition-all flex items-center gap-1">
+                                      <ExternalLink size={12} /> View Sheet
+                                    </a>
+                                    <button onClick={() => saveUser(user._id, "disconnectGoogle")} disabled={saving === user._id + "disconnectGoogle"} className="px-4 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-xs font-bold hover:bg-red-100 transition-all disabled:opacity-50 flex items-center gap-1">
+                                      {saving === user._id + "disconnectGoogle" ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}Disconnect
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <p className="text-xs text-slate-400 mt-2">User has not connected a Google Account.</p>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {/* ==================== SIDEBAR TAB ==================== */}
+                        {editTab === "sidebar" && (
+                          <div className="space-y-5 max-w-2xl">
+                            <p className="text-sm font-bold text-gray-900">Sidebar Visibility</p>
+                            <p className="text-xs text-slate-400">Hide or show specific sidebar sections or links for this user. If a section has all links hidden or is hidden entirely, it will automatically disappear from the sidebar.</p>
 
-                        {editTab === "sidebar" && ( 
-                          <div className="space-y-5 max-w-2xl"> 
-                            <p className="text-sm font-bold text-gray-900">Sidebar Visibility</p> 
-                            <p className="text-xs text-slate-400">Hide or show specific sidebar sections or links for this user. If a section has all links hidden or is hidden entirely, it will automatically disappear from the sidebar.</p> 
-                            
-                            <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2"> 
-                              {SIDEBAR_SECTIONS.map(section => ( 
-                                <div key={section.title} className="border border-slate-200 rounded-xl p-3 bg-white"> 
-                                  <div className="flex items-center justify-between mb-2"> 
-                                    <p className="text-xs font-bold text-slate-700 uppercase tracking-wider">{section.title}</p> 
-                                    <button 
-                                      onClick={() => { 
-                                        const isCategoryHidden = editHiddenLinks.includes(`category:${section.title}`); 
-                                        if (isCategoryHidden) { 
-                                          setEditHiddenLinks(editHiddenLinks.filter(l => l !== `category:${section.title}`)); 
-                                        } else { 
-                                          setEditHiddenLinks([...editHiddenLinks, `category:${section.title}`]); 
-                                        } 
-                                      }} 
-                                      className={`text-[10px] font-bold px-2 py-1 rounded-md border ${ 
-                                        editHiddenLinks.includes(`category:${section.title}`) 
-                                          ? "bg-emerald-50 text-emerald-700 border-emerald-200" 
-                                          : "bg-red-50 text-red-600 border-red-200" 
-                                      }`} 
-                                    > 
-                                      {editHiddenLinks.includes(`category:${section.title}`) ? "Show Category" : "Hide Category"} 
-                                    </button> 
-                                  </div> 
-                                  <div className="grid grid-cols-2 gap-2 pl-2 border-l-2 border-slate-100"> 
-                                    {section.links.map(link => ( 
-                                      <div key={link.href} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg"> 
-                                        <span className="text-xs text-slate-600">{link.name}</span> 
-                                        <button 
-                                          onClick={() => { 
-                                            if (editHiddenLinks.includes(link.href)) { 
-                                              setEditHiddenLinks(editHiddenLinks.filter(l => l !== link.href)); 
-                                            } else { 
-                                              setEditHiddenLinks([...editHiddenLinks, link.href]); 
-                                            } 
-                                          }} 
-                                          className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors ${ 
-                                            editHiddenLinks.includes(link.href) ? "bg-gray-300" : "bg-emerald-500" 
-                                          }`} 
-                                        > 
-                                          <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${editHiddenLinks.includes(link.href) ? "translate-x-1" : "translate-x-5"}`} /> 
-                                        </button> 
-                                      </div> 
-                                    ))} 
-                                  </div> 
-                                </div> 
-                              ))} 
-                            </div> 
+                            <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+                              {SIDEBAR_SECTIONS.map(section => (
+                                <div key={section.title} className="border border-slate-200 rounded-xl p-3 bg-white">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <p className="text-xs font-bold text-slate-700 uppercase tracking-wider">{section.title}</p>
+                                    <button
+                                      onClick={() => {
+                                        const isCategoryHidden = editHiddenLinks.includes(`category:${section.title}`);
+                                        if (isCategoryHidden) {
+                                          setEditHiddenLinks(editHiddenLinks.filter(l => l !== `category:${section.title}`));
+                                        } else {
+                                          setEditHiddenLinks([...editHiddenLinks, `category:${section.title}`]);
+                                        }
+                                      }}
+                                      className={`text-[10px] font-bold px-2 py-1 rounded-md border ${
+                                        editHiddenLinks.includes(`category:${section.title}`)
+                                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                          : "bg-red-50 text-red-600 border-red-200"
+                                      }`}
+                                    >
+                                      {editHiddenLinks.includes(`category:${section.title}`) ? "Show Category" : "Hide Category"}
+                                    </button>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-2 pl-2 border-l-2 border-slate-100">
+                                    {section.links.map(link => (
+                                      <div key={link.href} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg">
+                                        <span className="text-xs text-slate-600">{link.name}</span>
+                                        <button
+                                          onClick={() => {
+                                            if (editHiddenLinks.includes(link.href)) {
+                                              setEditHiddenLinks(editHiddenLinks.filter(l => l !== link.href));
+                                            } else {
+                                              setEditHiddenLinks([...editHiddenLinks, link.href]);
+                                            }
+                                          }}
+                                          className={`relative inline-flex h-4 w-8 items-center rounded-full transition-colors ${
+                                            editHiddenLinks.includes(link.href) ? "bg-gray-300" : "bg-emerald-500"
+                                          }`}
+                                        >
+                                          <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${editHiddenLinks.includes(link.href) ? "translate-x-1" : "translate-x-5"}`} />
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
 
-                            <div className="flex justify-end gap-3 pt-3 border-t border-slate-200"> 
-                              <button onClick={cancelEdit} className="px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-all">Cancel</button> 
-                              <button onClick={() => saveUser(user._id, "sidebar")} disabled={saving === user._id + "sidebar"} className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-indigo-500 to-blue-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm"> 
-                                {saving === user._id + "sidebar" ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Sidebar 
-                              </button> 
-                            </div> 
-                          </div> 
-                        )} 
+                            <div className="flex justify-end gap-3 pt-3 border-t border-slate-200">
+                              <button onClick={cancelEdit} className="px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-all">Cancel</button>
+                              <button onClick={() => saveUser(user._id, "sidebar")} disabled={saving === user._id + "sidebar"} className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-indigo-500 to-blue-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm">
+                                {saving === user._id + "sidebar" ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Sidebar
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        {/* ==================== REPORTS TAB ==================== */}
+                        {editTab === "reports" && (
+                          <div className="space-y-5 max-w-2xl">
+                            <p className="text-sm font-bold text-gray-900">Campaign Report Actions</p>
+                            <p className="text-xs text-slate-400">Hide or show specific action buttons in the user&lsquo;s Campaign Reports page. Hidden buttons cannot be accessed by the user.</p>
 
-                        {editTab === "reports" && ( 
-                          <div className="space-y-5 max-w-2xl"> 
-                            <p className="text-sm font-bold text-gray-900">Campaign Report Actions</p> 
-                            <p className="text-xs text-slate-400">Hide or show specific action buttons in the user&lsquo;s Campaign Reports page. Hidden buttons cannot be accessed by the user.</p> 
-                            
                             <div className="p-4 bg-white rounded-xl border border-slate-200 space-y-3">
                               {[
                                 { key: "brief", label: "Brief Report Button" },
@@ -905,36 +923,35 @@ export default function AdminBillingPage() {
                                 { key: "generateReport", label: "Generate Standalone Report Button" },
                                 { key: "downloadExcel", label: "Download Excel Button" }
                               ].map(btn => (
-                                <div key={btn.key} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg"> 
-                                  <span className="text-sm text-slate-700 font-medium">{btn.label}</span> 
-                                  <button 
-                                    onClick={() => { 
-                                      if (editHiddenReports.includes(btn.key)) { 
-                                        setEditHiddenReports(editHiddenReports.filter(l => l !== btn.key)); 
-                                      } else { 
-                                        setEditHiddenReports([...editHiddenReports, btn.key]); 
-                                      } 
-                                    }} 
-                                    className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${ 
-                                      editHiddenReports.includes(btn.key) ? "bg-gray-300" : "bg-emerald-500" 
-                                    }`} 
-                                  > 
-                                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${editHiddenReports.includes(btn.key) ? "translate-x-1" : "translate-x-5"}`} /> 
-                                  </button> 
-                                </div> 
+                                <div key={btn.key} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg">
+                                  <span className="text-sm text-slate-700 font-medium">{btn.label}</span>
+                                  <button
+                                    onClick={() => {
+                                      if (editHiddenReports.includes(btn.key)) {
+                                        setEditHiddenReports(editHiddenReports.filter(l => l !== btn.key));
+                                      } else {
+                                        setEditHiddenReports([...editHiddenReports, btn.key]);
+                                      }
+                                    }}
+                                    className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors ${
+                                      editHiddenReports.includes(btn.key) ? "bg-gray-300" : "bg-emerald-500"
+                                    }`}
+                                  >
+                                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${editHiddenReports.includes(btn.key) ? "translate-x-1" : "translate-x-5"}`} />
+                                  </button>
+                                </div>
                               ))}
-                            </div> 
+                            </div>
 
-                            <div className="flex justify-end gap-3 pt-3 border-t border-slate-200"> 
-                              <button onClick={cancelEdit} className="px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-all">Cancel</button> 
-                              <button onClick={() => saveUser(user._id, "reports")} disabled={saving === user._id + "reports"} className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-indigo-500 to-blue-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm"> 
-                                {saving === user._id + "reports" ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Report Actions 
-                              </button> 
-                            </div> 
-                          </div> 
-                        )} 
-
-                        {/* ✅ NEW: Msg Billing Tab UI */}
+                            <div className="flex justify-end gap-3 pt-3 border-t border-slate-200">
+                              <button onClick={cancelEdit} className="px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-all">Cancel</button>
+                              <button onClick={() => saveUser(user._id, "reports")} disabled={saving === user._id + "reports"} className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-indigo-500 to-blue-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm">
+                                {saving === user._id + "reports" ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Report Actions
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        {/* ==================== ✅ MSG BILLING TAB (with free quota) ==================== */}
                         {editTab === "msgBilling" && (
                           <div className="space-y-5 max-w-2xl">
                             <div className="p-4 bg-white rounded-xl border border-slate-200">
@@ -943,35 +960,89 @@ export default function AdminBillingPage() {
                                   <p className="text-sm font-bold text-gray-900">Enable Message Billing</p>
                                   <p className="text-xs text-slate-400 mt-0.5">Charge the user for every outgoing message except template messages.</p>
                                 </div>
-                                <button 
-                                  onClick={() => setEditMsgBillingEnabled(!editMsgBillingEnabled)} 
+                                <button
+                                  onClick={() => setEditMsgBillingEnabled(!editMsgBillingEnabled)}
                                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${editMsgBillingEnabled ? "bg-emerald-600" : "bg-gray-200"}`}
                                 >
                                   <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${editMsgBillingEnabled ? "translate-x-6" : "translate-x-1"}`} />
                                 </button>
                               </div>
-                              
+
                               {editMsgBillingEnabled && (
-                                <div className="mt-4 pt-4 border-t border-slate-100">
-                                  <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2 block">Price Per Outgoing Message (₹)</label>
-                                  <input 
-                                    type="number" 
-                                    step="0.01" 
-                                    min="0" 
-                                    value={editMsgPrice} 
-                                    onChange={e => setEditMsgPrice(e.target.value)} 
-                                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-gray-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 transition-all text-sm" 
-                                  />
-                                  <p className="text-[10px] text-slate-400 mt-1">This amount will be deducted for every Workflow, Form, AI, or Manual message sent.</p>
+                                <div className="mt-4 pt-4 border-t border-slate-100 space-y-4">
+                                  {/* Price per outgoing message */}
+                                  <div>
+                                    <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-2 block">Price Per Outgoing Message (₹)</label>
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      min="0"
+                                      value={editMsgPrice}
+                                      onChange={e => setEditMsgPrice(e.target.value)}
+                                      className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-gray-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 transition-all text-sm"
+                                    />
+                                    <p className="text-[10px] text-slate-400 mt-1">This amount will be deducted for every Workflow, Form, AI, or Manual message sent.</p>
+                                  </div>
+
+                                  {/* ✅ Free message quota card */}
+                                  <div className="p-4 bg-violet-50 border border-violet-200 rounded-xl">
+                                    <div className="flex items-start gap-2 mb-3">
+                                      <Gift size={16} className="text-violet-600 shrink-0 mt-0.5" />
+                                      <div>
+                                        <p className="text-sm font-bold text-violet-900">Free Message Quota</p>
+                                        <p className="text-xs text-violet-600 mt-0.5">First N outgoing messages are free. The (N+1)th message onward will be charged.</p>
+                                      </div>
+                                    </div>
+                                    <label className="text-[11px] font-bold text-violet-700 uppercase tracking-widest mb-2 block">Free Messages Count</label>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="1"
+                                      value={editFreeMsgCount}
+                                      onChange={e => setEditFreeMsgCount(e.target.value)}
+                                      className="w-full px-4 py-2.5 bg-white border border-violet-200 rounded-xl text-gray-900 focus:outline-none focus:ring-2 focus:ring-violet-500/30 focus:border-violet-400 transition-all text-sm font-bold"
+                                    />
+                                    <p className="text-[10px] text-violet-500 mt-1.5">
+                                      Set <code className="bg-violet-100 px-1 rounded">0</code> to disable free quota (charge from message #1).
+                                      Set <code className="bg-violet-100 px-1 rounded">1000</code> for first 1000 messages free.
+                                    </p>
+
+                                    {/* Usage progress bar */}
+                                    {editMsgBillingEnabled && (
+                                      <div className="mt-3 pt-3 border-t border-violet-200">
+                                        <div className="flex items-center justify-between mb-1.5">
+                                          <span className="text-[10px] font-bold text-violet-700 uppercase">Quota Used</span>
+                                          <span className="text-xs font-bold text-violet-900">
+                                            {editMsgSentCount} / {editFreeMsgCount || 0}
+                                          </span>
+                                        </div>
+                                        <div className="w-full h-2 bg-white rounded-full overflow-hidden border border-violet-200">
+                                          <div
+                                            className="h-full bg-gradient-to-r from-violet-500 to-purple-500 transition-all"
+                                            style={{
+                                              width: `${Math.min(100, (editMsgSentCount / Math.max(1, Number(editFreeMsgCount) || 1)) * 100)}%`
+                                            }}
+                                          />
+                                        </div>
+                                        <p className="text-[10px] text-violet-500 mt-1.5">
+                                          {Number(editFreeMsgCount) > 0 && editMsgSentCount >= Number(editFreeMsgCount)
+                                            ? "✅ Free quota exhausted — next message will be charged."
+                                            : Number(editFreeMsgCount) > 0
+                                            ? `✅ ${Number(editFreeMsgCount) - editMsgSentCount} free messages remaining.`
+                                            : "No free quota set — all messages are charged."}
+                                        </p>
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
                               )}
                             </div>
 
                             <div className="flex justify-end gap-3 pt-3">
                               <button onClick={cancelEdit} className="px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-medium hover:bg-slate-50 transition-all">Cancel</button>
-                              <button 
-                                onClick={() => saveUser(user._id, "msgBilling")} 
-                                disabled={saving === user._id + "msgBilling"} 
+                              <button
+                                onClick={() => saveUser(user._id, "msgBilling")}
+                                disabled={saving === user._id + "msgBilling"}
                                 className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50 text-sm"
                               >
                                 {saving === user._id + "msgBilling" ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Save Billing Settings
@@ -979,7 +1050,7 @@ export default function AdminBillingPage() {
                             </div>
                           </div>
                         )}
-
+                        {/* ==================== LOGS TAB ==================== */}
                         {editTab === "logs" && (
                           <div className="space-y-5">
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1108,31 +1179,31 @@ export default function AdminBillingPage() {
                             </div>
                           </div>
                         )}
-                      </div> 
-                    </div> 
-                  )} 
-                </div> 
-              ); 
-            })} 
-          </div> 
-        )} 
-      </div> 
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
-      {showCreateModal && ( 
-        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"> 
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 relative"> 
-            <button onClick={() => setShowCreateModal(false)} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X size={20} /></button> 
-            <div className="flex items-center gap-3 mb-6"><div className="p-2 bg-indigo-100 rounded-xl"><UserPlus className="w-5 h-5 text-indigo-600" /></div><h2 className="text-xl font-bold">Create New User</h2></div> 
-            <form onSubmit={handleCreateUser} className="space-y-4"> 
-              <div><label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 block">Username</label><input type="text" value={newUser.name} onChange={e => setNewUser({ ...newUser, name: e.target.value })} required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 transition-all" /></div> 
-              <div><label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 block">Password</label><input type="password" value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 transition-all" /></div> 
-              <button type="submit" disabled={creatingUser} className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-gradient-to-r from-indigo-500 to-blue-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50">{creatingUser ? <Loader2 size={18} className="animate-spin" /> : <UserPlus size={18} />} Create User</button> 
-            </form> 
-          </div> 
-        </div> 
-      )} 
+      {showCreateModal && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 relative">
+            <button onClick={() => setShowCreateModal(false)} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X size={20} /></button>
+            <div className="flex items-center gap-3 mb-6"><div className="p-2 bg-indigo-100 rounded-xl"><UserPlus className="w-5 h-5 text-indigo-600" /></div><h2 className="text-xl font-bold">Create New User</h2></div>
+            <form onSubmit={handleCreateUser} className="space-y-4">
+              <div><label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 block">Username</label><input type="text" value={newUser.name} onChange={e => setNewUser({ ...newUser, name: e.target.value })} required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 transition-all" /></div>
+              <div><label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 block">Password</label><input type="password" value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 transition-all" /></div>
+              <button type="submit" disabled={creatingUser} className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-gradient-to-r from-indigo-500 to-blue-500 text-white font-bold rounded-xl shadow-md transition-all disabled:opacity-50">{creatingUser ? <Loader2 size={18} className="animate-spin" /> : <UserPlus size={18} />} Create User</button>
+            </form>
+          </div>
+        </div>
+      )}
 
-      <ToastContainer position="bottom-right" theme="light" autoClose={3000} /> 
-    </div> 
+      <ToastContainer position="bottom-right" theme="light" autoClose={3000} />
+    </div>
   );
 }
