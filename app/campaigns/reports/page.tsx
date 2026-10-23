@@ -23,27 +23,139 @@ import { useSession } from "next-auth/react";
    HELPER FUNCTIONS
  * ========================================================= */
 
-// Fetches names from the Live Chat API for a specific list of phones
-const fetchNamesFromChat = async (phones: string[]) => {
-  const newNames: Record<string, string> = {};
+/* ========================================================= *
+   ✅ FIXED NAME MATCHING (webhook names -> report numbers)
+   Names are stored by the webhook in the Contact collection and
+   served by  GET /api/contacts?phone=...  ->  { contact: { name } }
+   That is the PRIMARY source. /api/chat is kept as a fallback in
+   case a name is also attached to chat messages. Names are matched
+   to report phone numbers no matter how either side is formatted.
+ * ========================================================= */
+
+// ✅ Normalizes any phone to digits-only: "+91 98765-43210", "919876543210@c.us" -> "919876543210"
+const normalizePhone = (phone: any): string => {
+  if (!phone) return "";
+  return String(phone).replace(/\D/g, "");
+};
+
+// ✅ Module-level cache: never ask the chat API twice for the same number
+// (survives page changes, filter changes and Excel downloads within the session)
+const chatNameCache: Record<string, string> = {};
+
+// ✅ Every field name the webhook / chat API might use to store the contact name
+const NAME_FIELDS = [
+  "contactName", "contact_name", "name", "pushName", "pushname",
+  "profileName", "profile_name", "waName", "wa_name", "notifyName",
+  "notify_name", "senderName", "sender_name", "fromName", "userName", "user_name",
+];
+
+// Picks the first non-empty name value out of an object (also checks nested contact object)
+const pickName = (obj: any): string => {
+  if (!obj || typeof obj !== "object") return "";
+  for (const key of NAME_FIELDS) {
+    const v = obj[key];
+    if (typeof v === "string" && v.trim() !== "" && v.trim().toLowerCase() !== "unknown") {
+      return v.trim();
+    }
+  }
+  if (obj.contact && typeof obj.contact === "object") return pickName(obj.contact);
+  return "";
+};
+
+// ✅ Extracts a contact name from ANY response shape either API might return:
+// /api/contacts -> { contact: { name } }   (handled via the nested contact check)
+// /api/chat     -> { messages: [...] }, { data: [...] }, a bare array,
+//                  or the name directly on the root like { contactName: "John" }
+const extractNameFromResponse = (data: any): string => {
+  if (!data) return "";
+
+  // Bare array response, e.g. [ { ...message } ]
+  if (Array.isArray(data)) {
+    for (const m of data) {
+      const n = pickName(m);
+      if (n) return n;
+    }
+    return "";
+  }
+
+  // Name directly on the response root
+  const rootName = pickName(data);
+  if (rootName) return rootName;
+
+  // Name inside any message array under common container keys
+  const containers = ["messages", "data", "chats", "conversation", "items", "results", "docs"];
+  for (const key of containers) {
+    const arr = data[key];
+    if (Array.isArray(arr)) {
+      for (const m of arr) {
+        const n = pickName(m);
+        if (n) return n;
+      }
+    }
+  }
+  return "";
+};
+
+// ✅ Fetches the webhook-stored contact names for a list of phones.
+//    PRIMARY source:  GET /api/contacts?phone=...  -> { contact: { name, phone, tags } }
+//                     (your Contact collection — this is where the names actually live)
+//    FALLBACK source: GET /api/chat?phone=...      -> messages that may carry a name
+//    ✅ Tries digits-only first, then the raw variant, and caches every result.
+//    ✅ Returns a map keyed by NORMALIZED phone so it always matches the report numbers.
+const fetchContactNames = async (phones: string[]) => {
+  const newNames: Record<string, string> = {}; // keyed by NORMALIZED phone
+
+  const phonesToFetch = phones
+    .map((p) => String(p || "").trim())
+    .filter(Boolean);
+
+  // 1. Serve everything we already have from cache (instant, zero network calls)
+  const uncached: string[] = [];
+  for (const raw of phonesToFetch) {
+    const key = normalizePhone(raw) || raw;
+    if (chatNameCache[key]) newNames[key] = chatNameCache[key];
+    else if (!uncached.includes(raw)) uncached.push(raw);
+  }
+  if (uncached.length === 0) return newNames;
+
   const concurrencyLimit = 5; // Fetch 5 at a time to prevent overload
   let activePromises: Promise<void>[] = [];
 
-  for (const phone of phones) {
+  for (const phone of uncached) {
     const promise = (async () => {
-      try {
-        const res = await fetch(`/api/chat?phone=${encodeURIComponent(phone)}`);
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data.success && data.messages?.length > 0) {
-          // Find the first message that has a contactName attached
-          const msgWithName = data.messages.find((m: any) => m.contactName && m.contactName.trim() !== "");
-          if (msgWithName) {
-            newNames[phone] = msgWithName.contactName;
+      const digits = normalizePhone(phone);
+      // /api/contacts strips "+" and matches exactly, so try digits-only FIRST, then raw
+      const variants = Array.from(new Set([digits, phone].filter(Boolean)));
+      // ✅ Names actually live in /api/contacts (Contact collection); /api/chat is a fallback
+      const endpoints = ["/api/contacts", "/api/chat"];
+      let found = "";
+
+      for (const endpoint of endpoints) {
+        if (found) break;
+        for (const variant of variants) {
+          try {
+            const res = await fetch(`${endpoint}?phone=${encodeURIComponent(variant)}`);
+            if (!res.ok) continue;
+            const data = await res.json();
+            // ✅ Handles { contact: { name } } AND message-based shapes
+            found = extractNameFromResponse(data);
+            if (found) break;
+          } catch (err) {
+            console.error(`Failed to fetch name for ${variant} via ${endpoint}`, err);
           }
         }
-      } catch (err) {
-        console.error("Failed to fetch name for", phone, err);
+      }
+
+      if (found) {
+        const key = digits || phone;
+        chatNameCache[key] = found;
+        newNames[key] = found;
+      } else {
+        console.warn(
+          "[Reports] No name found for phone:", phone,
+          "(tried /api/contacts and /api/chat with variants:", variants.join(", ") + ").",
+          "If this number REPLIED, the Contact document may not exist or its phone is stored in a different format — see api-contacts-route-improved.ts"
+        );
       }
     })();
 
@@ -220,10 +332,11 @@ export default function ReportsPage() {
   /* -------------------- HELPER FUNCTIONS -------------------- */
 
   const getDisplayName = (d: ReportItem) => {
-    const fetchedName = namesMap[d.phone];
+    // ✅ Look up by normalized phone so "919876543210" matches "+91 98765 43210" etc.
+    const fetchedName = namesMap[normalizePhone(d.phone)] || namesMap[d.phone];
     const existingName = d.name?.trim();
     
-    // If the sheet name is missing or "Unknown"/"—", use the fetched Live Chat name
+    // If the sheet name is missing or "Unknown"/"—", use the fetched webhook/contact name
     if (!existingName || existingName.toLowerCase() === "unknown" || existingName === "N/A" || existingName === "—" || existingName === "-") {
       return fetchedName || "—";
     }
@@ -335,7 +448,8 @@ export default function ReportsPage() {
     fetchReportPage();
   }, [selectedId, reportCurrentPage, showOnly, filterOut, search, buttonFilter, templateButtons, refreshKey]);
 
-  // ✅ DYNAMIC FRONTEND NAME FETCHER: When the 10 report items load, fetch their names from Live Chat
+  // ✅ DYNAMIC NAME FETCHER: when the report items load, fetch their names
+  // from /api/contacts (webhook-stored) with /api/chat as fallback
   useEffect(() => {
     if (reportData.length === 0) return;
 
@@ -343,7 +457,7 @@ export default function ReportsPage() {
     const phonesToFetch = reportData.map(d => d.phone).filter(Boolean);
 
     const runFetch = async () => {
-      const fetchedNames = await fetchNamesFromChat(phonesToFetch);
+      const fetchedNames = await fetchContactNames(phonesToFetch);
       if (!isMounted) return;
       setNamesMap(prev => ({ ...prev, ...fetchedNames }));
     };
@@ -552,17 +666,23 @@ export default function ReportsPage() {
 
       if (fullData.length === 0) { toast.error("No data to download"); return; }
 
-      // ✅ Fetch names for ALL replied contacts in the full dataset for Excel
+      // ✅ Fetch names from /api/contacts (webhook-stored) for the Excel export.
+      // The webhook stores names when people reply, so replied contacts are always fetched.
+      // For small campaigns (<= 100 rows) we also try every row, so any contact with an
+      // existing chat history gets their name too.
       const repliedPhonesInFullData = fullData
         .filter((d: any) => (d.status === 'replied' || (d.replies && d.replies.length > 0)))
         .map((d: any) => d.phone)
         .filter(Boolean);
 
+      const allPhonesInFullData = fullData.map((d: any) => d.phone).filter(Boolean);
+      const phonesForNameLookup = allPhonesInFullData.length <= 100 ? allPhonesInFullData : repliedPhonesInFullData;
+
       let excelNamesMap = { ...namesMap };
 
-      if (repliedPhonesInFullData.length > 0) {
-        toast.info(`Fetching live chat names for ${repliedPhonesInFullData.length} replied contacts...`);
-        const fetchedNames = await fetchNamesFromChat(repliedPhonesInFullData);
+      if (phonesForNameLookup.length > 0) {
+        toast.info(`Fetching contact names for ${phonesForNameLookup.length} contacts...`);
+        const fetchedNames = await fetchContactNames(phonesForNameLookup);
         excelNamesMap = { ...excelNamesMap, ...fetchedNames };
       }
 
@@ -582,8 +702,8 @@ export default function ReportsPage() {
         if (d.replies?.length > 0 || d.reply?.trim()) currentStatus = "replied";
         const statusConfig = getStatusConfig(currentStatus, d.replies || [], d.error);
 
-        // Use fetched name if original name is missing
-        const fetchedName = excelNamesMap[d.phone];
+        // Use fetched name if original name is missing (matched by normalized phone)
+        const fetchedName = excelNamesMap[normalizePhone(d.phone)] || excelNamesMap[d.phone];
         const existingName = d.name?.trim();
         let finalName = existingName;
         if (!existingName || existingName.toLowerCase() === "unknown" || existingName === "N/A" || existingName === "—" || existingName === "-") {
