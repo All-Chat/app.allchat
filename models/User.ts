@@ -1,3 +1,4 @@
+
 import mongoose from "mongoose";
 
 /* =========================================================
@@ -45,37 +46,76 @@ const whatsappNumberSchema = new mongoose.Schema(
     source: { type: String, default: "manual" },
     addedAt: { type: Date, default: Date.now },
     businessId: { type: String, default: null },
+
     setupStatus: {
       type: String,
-      enum: ["PROCESSING", "WAITING_CREDIT_LINE", "CREDIT_LINE_READY", "SUBSCRIBING", "REGISTERING", "READY", "FAILED"],
+      enum: [
+        "PROCESSING",
+        "WAITING_CREDIT_LINE",
+        "CREDIT_LINE_READY",
+        "SUBSCRIBING",
+        "REGISTERING",
+        "READY",
+        "FAILED",
+      ],
       default: "PROCESSING",
     },
+
     creditLineStatus: {
       type: String,
-      enum: ["PENDING", "PROCESSING", "READY", "FAILED", "CONNECTED"],
+      enum: [
+        "PENDING",
+        "PROCESSING",
+        "READY",
+        "FAILED",
+        "CONNECTED",
+      ],
       default: "PENDING",
     },
+
     creditLineId: { type: String, default: null },
     creditLineError: { type: String, default: null },
+
     subscriptionStatus: {
       type: String,
-      enum: ["PENDING", "SUBSCRIBING", "SUBSCRIBED", "FAILED", "CONNECTED"],
+      enum: [
+        "PENDING",
+        "SUBSCRIBING",
+        "SUBSCRIBED",
+        "FAILED",
+        "CONNECTED",
+      ],
       default: "PENDING",
     },
+
     subscriptionError: { type: String, default: null },
+
     registrationStatus: {
       type: String,
-      enum: ["PENDING", "REGISTERING", "REGISTERED", "FAILED", "PROCESSING"],
+      enum: [
+        "PENDING",
+        "REGISTERING",
+        "REGISTERED",
+        "FAILED",
+        "PROCESSING",
+      ],
       default: "PENDING",
     },
+
     registrationError: { type: String, default: null },
     registrationPin: { type: String, default: null },
+
     pinbotEmbeddedDetailStatus: {
       type: String,
       enum: ["PENDING", "PROCESSING", "SUCCESS", "FAILED"],
       default: "PENDING",
     },
-    pinbotEmbeddedDetailResponse: { type: mongoose.Schema.Types.Mixed, default: null },
+
+    pinbotEmbeddedDetailResponse: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
+
     pinbotEmbeddedDetailError: { type: String, default: null },
     pinbotEmbeddedDetailAt: { type: Date, default: null },
     setupError: { type: String, default: null },
@@ -100,11 +140,36 @@ const UserSchema = new mongoose.Schema(
     parentTenantId: { type: String, default: null, index: true },
     maxSubUsers: { type: Number, default: 0 },
 
+    /* WhatsApp details */
     wabaId: { type: String, default: null },
     whatsappPhoneNumberId: { type: String, default: null },
     whatsappAccessToken: { type: String, default: null },
-    whatsappNumbers: { type: [whatsappNumberSchema], default: [] },
+    whatsappNumbers: {
+      type: [whatsappNumberSchema],
+      default: [],
+    },
 
+    /* =====================================================
+       META PRODUCT CATALOGUE DETAILS
+    ===================================================== */
+
+    metaCatalogId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+
+    metaCatalogName: {
+      type: String,
+      default: null,
+    },
+
+    metaCatalogBusinessId: {
+      type: String,
+      default: null,
+    },
+
+    /* Balance and message pricing */
     balance: { type: Number, default: 0 },
     totalRecharged: { type: Number, default: 0 },
     pricePerMessage: { type: Number, default: 0.9 },
@@ -112,18 +177,30 @@ const UserSchema = new mongoose.Schema(
     priceUtility: { type: Number, default: 0.5 },
     priceAuthentication: { type: Number, default: 0.3 },
 
-    // ✅ Outgoing Message Billing Settings
-    outgoingMessageBillingEnabled: { type: Boolean, default: false },
-    pricePerOutgoingMessage: { type: Number, default: 0.5 },
+    /* Outgoing Message Billing Settings */
+    outgoingMessageBillingEnabled: {
+      type: Boolean,
+      default: false,
+    },
 
-    // ✅ FREE MESSAGE QUOTA
-    // Admin grants N free non-template outgoing messages per user.
-    // When outgoingMessagesSent < freeOutgoingMessages, no charge is deducted.
-    // The (N+1)th message onward is charged at pricePerOutgoingMessage.
-    freeOutgoingMessages: { type: Number, default: 0 },
-    outgoingMessagesSent: { type: Number, default: 0 },
+    pricePerOutgoingMessage: {
+      type: Number,
+      default: 0.5,
+    },
+
+    /* Free Message Quota */
+    freeOutgoingMessages: {
+      type: Number,
+      default: 0,
+    },
+
+    outgoingMessagesSent: {
+      type: Number,
+      default: 0,
+    },
 
     maxEnabledCountries: { type: Number, default: 0 },
+
     enabledCountries: [
       {
         name: { type: String, default: "" },
@@ -134,17 +211,20 @@ const UserSchema = new mongoose.Schema(
       },
     ],
 
+    /* Account status and plan */
     accountStatus: {
       type: String,
       enum: ["active", "expired", "suspended"],
       default: "active",
     },
+
     planExpiry: { type: Date, default: null },
     planDuration: { type: String, default: null },
     planActivatedAt: { type: Date, default: null },
     suspendedAt: { type: Date, default: null },
     suspendedReason: { type: String, default: null },
 
+    /* White Label Settings */
     whiteLabel: {
       enabled: { type: Boolean, default: false },
       appName: { type: String, default: "" },
@@ -154,49 +234,113 @@ const UserSchema = new mongoose.Schema(
       brandUrl: { type: String, default: "" },
     },
 
+    /* Google Sheets Integration */
     googleSheetId: { type: String, default: null },
+
     googleTokens: {
       access_token: { type: String, default: null },
       refresh_token: { type: String, default: null },
       scope: { type: String, default: null },
       expiry_date: { type: Number, default: null },
     },
+
     hideIntegrations: { type: Boolean, default: false },
     hiddenSidebarLinks: { type: [String], default: [] },
 
     /* =====================================================
        HIDDEN REPORT ACTIONS
     ===================================================== */
+
     hiddenReportActions: {
       type: [String],
       default: [],
     },
 
+    /* Limits */
     limits: {
-      tags: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
-      workflows: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
-      templates: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
-      testMessages: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
-      campaigns: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
-      optNumbers: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
-      forms: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
-      whatsappNumbers: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
-      aiAgents: { type: limitItemSchema, default: () => ({ max: -1, period: "unlimited" }) },
+      tags: {
+        type: limitItemSchema,
+        default: () => ({ max: -1, period: "unlimited" }),
+      },
+      workflows: {
+        type: limitItemSchema,
+        default: () => ({ max: -1, period: "unlimited" }),
+      },
+      templates: {
+        type: limitItemSchema,
+        default: () => ({ max: -1, period: "unlimited" }),
+      },
+      testMessages: {
+        type: limitItemSchema,
+        default: () => ({ max: -1, period: "unlimited" }),
+      },
+      campaigns: {
+        type: limitItemSchema,
+        default: () => ({ max: -1, period: "unlimited" }),
+      },
+      optNumbers: {
+        type: limitItemSchema,
+        default: () => ({ max: -1, period: "unlimited" }),
+      },
+      forms: {
+        type: limitItemSchema,
+        default: () => ({ max: -1, period: "unlimited" }),
+      },
+      whatsappNumbers: {
+        type: limitItemSchema,
+        default: () => ({ max: -1, period: "unlimited" }),
+      },
+      aiAgents: {
+        type: limitItemSchema,
+        default: () => ({ max: -1, period: "unlimited" }),
+      },
     },
+
+    /* Usage */
     usage: {
-      tags: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
-      workflows: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
-      templates: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
-      testMessages: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
-      campaigns: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
-      optNumbers: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
-      forms: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
-      whatsappNumbers: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
-      aiAgents: { type: usageItemSchema, default: () => ({ count: 0, resetAt: null }) },
+      tags: {
+        type: usageItemSchema,
+        default: () => ({ count: 0, resetAt: null }),
+      },
+      workflows: {
+        type: usageItemSchema,
+        default: () => ({ count: 0, resetAt: null }),
+      },
+      templates: {
+        type: usageItemSchema,
+        default: () => ({ count: 0, resetAt: null }),
+      },
+      testMessages: {
+        type: usageItemSchema,
+        default: () => ({ count: 0, resetAt: null }),
+      },
+      campaigns: {
+        type: usageItemSchema,
+        default: () => ({ count: 0, resetAt: null }),
+      },
+      optNumbers: {
+        type: usageItemSchema,
+        default: () => ({ count: 0, resetAt: null }),
+      },
+      forms: {
+        type: usageItemSchema,
+        default: () => ({ count: 0, resetAt: null }),
+      },
+      whatsappNumbers: {
+        type: usageItemSchema,
+        default: () => ({ count: 0, resetAt: null }),
+      },
+      aiAgents: {
+        type: usageItemSchema,
+        default: () => ({ count: 0, resetAt: null }),
+      },
     },
   },
   { timestamps: true }
 );
 
-const User = mongoose.models.User || mongoose.model("User", UserSchema);
+const User =
+  mongoose.models.User ||
+  mongoose.model("User", UserSchema);
+
 export default User;
