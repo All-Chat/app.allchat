@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
@@ -8,75 +7,188 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { checkLimit, incrementUsage } from "@/lib/limits";
 
-const WHATSAPP_API = "https://graph.facebook.com/v25.0";
+export const runtime = "nodejs";
 
-/**
- * WhatsApp Resumable Upload API
- * Uses the USER's token and WABA ID from the database
- */
-async function uploadWhatsAppMedia(
+const GRAPH_API = "https://graph.facebook.com/v25.0";
+
+const MAX_MEDIA_SIZE: Record<string, number> = {
+  IMAGE: 5 * 1024 * 1024,
+  VIDEO: 16 * 1024 * 1024,
+  DOCUMENT: 100 * 1024 * 1024,
+};
+
+const MIME_TYPES: Record<string, string[]> = {
+  IMAGE: ["image/jpeg", "image/png"],
+  VIDEO: ["video/mp4"],
+  DOCUMENT: ["application/pdf"],
+};
+
+const EXTENSIONS: Record<string, string> = {
+  IMAGE: ".jpg",
+  VIDEO: ".mp4",
+  DOCUMENT: ".pdf",
+};
+
+function getMimeTypeFromName(fileName: string): string | null {
+  const lower = fileName.toLowerCase();
+
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".mp4")) return "video/mp4";
+  if (lower.endsWith(".pdf")) return "application/pdf";
+
+  return null;
+}
+
+// ==========================================
+// META TEMPLATE SAMPLE RESUMABLE UPLOAD
+// ==========================================
+
+async function uploadTemplateSample(
   token: string,
-  phoneNumberId: string,
+  appId: string,
   fileBuffer: Buffer,
   fileName: string,
   mimeType: string
-): Promise<{ mediaId: string | null; error?: string }> {
+): Promise<{ handle?: string; error?: string }> {
   try {
-    const formData = new FormData();
+    if (!appId) {
+      return { error: "META_APP_ID is missing in environment variables." };
+    }
 
-    const arrayBuffer = fileBuffer.buffer.slice(
-      fileBuffer.byteOffset,
-      fileBuffer.byteOffset + fileBuffer.byteLength
-    );
-    const blob = new Blob([new Uint8Array(arrayBuffer as ArrayBuffer)], {
-      type: mimeType,
+    const params = new URLSearchParams({
+      file_name: fileName,
+      file_length: String(fileBuffer.length),
+      file_type: mimeType,
     });
 
-    formData.append("file", blob, fileName);
-    formData.append("messaging_product", "whatsapp");
-
-    const response = await fetch(
-      `https://graph.facebook.com/v25.0/${phoneNumberId}/media`,
+    // STEP 1: Create upload session
+    const sessionResponse = await fetch(
+      `${GRAPH_API}/${appId}/uploads?${params.toString()}`,
       {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
         },
-        body: formData,
       }
     );
 
-    const result = await response.json();
+    const sessionData = await sessionResponse.json();
 
-    console.log("📤 MEDIA UPLOAD RESPONSE:", JSON.stringify(result, null, 2));
+    console.log("META UPLOAD SESSION:", sessionData);
 
-    if (!response.ok) {
-      console.error("Media Upload Error:", result);
+    if (!sessionResponse.ok || !sessionData.id) {
       return {
-        mediaId: null,
-        error: result?.error?.message || "Upload failed",
+        error:
+          sessionData?.error?.error_user_msg ||
+          sessionData?.error?.message ||
+          JSON.stringify(sessionData),
       };
     }
 
-    return {
-      mediaId: result.id,
-    };
+    // STEP 2: Upload binary file
+    const uploadResponse = await fetch(
+      `${GRAPH_API}/${sessionData.id}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `OAuth ${token}`,
+          file_offset: "0",
+          "Content-Type": "application/octet-stream",
+        },
+        body: new Uint8Array(fileBuffer),
+      }
+    );
+
+    const uploadData = await uploadResponse.json();
+
+    console.log("META BINARY UPLOAD:", uploadData);
+
+    if (!uploadResponse.ok || !uploadData.h) {
+      return {
+        error:
+          uploadData?.error?.error_user_msg ||
+          uploadData?.error?.message ||
+          JSON.stringify(uploadData),
+      };
+    }
+
+    return { handle: uploadData.h };
   } catch (error) {
-    console.error(error);
+    console.error("Template sample upload error:", error);
+
     return {
-      mediaId: null,
-      error: error instanceof Error ? error.message : "Unknown error",
+      error: error instanceof Error ? error.message : "Unknown upload error",
     };
   }
 }
+
+// ==========================================
+// DOWNLOAD SAMPLE MEDIA FROM URL
+// ==========================================
+
+async function downloadSampleFromUrl(
+  url: string,
+  expectedMimeTypes: string[]
+): Promise<{
+  buffer?: Buffer;
+  mimeType?: string;
+  fileName?: string;
+  error?: string;
+}> {
+  try {
+    const response = await fetch(url, { redirect: "follow" });
+
+    if (!response.ok) {
+      return {
+        error: `Could not download sample URL. HTTP ${response.status}`,
+      };
+    }
+
+    const contentType = (response.headers.get("content-type") || "")
+      .split(";")[0]
+      .trim()
+      .toLowerCase();
+
+    if (contentType && !expectedMimeTypes.includes(contentType)) {
+      return {
+        error: `URL returned ${contentType}. Expected ${expectedMimeTypes.join(" or ")}.`,
+      };
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const mimeType = contentType || expectedMimeTypes[0];
+
+    let extension = ".jpg";
+
+    if (mimeType === "video/mp4") extension = ".mp4";
+    if (mimeType === "application/pdf") extension = ".pdf";
+    if (mimeType === "image/png") extension = ".png";
+
+    return {
+      buffer,
+      mimeType,
+      fileName: `template-sample${extension}`,
+    };
+  } catch (error) {
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to download sample URL.",
+    };
+  }
+}
+
+// ==========================================
+// CREATE TEMPLATE API
+// ==========================================
 
 export async function POST(req: Request) {
   try {
     await connectDB();
 
-    // ==========================================
     // 1. AUTH CHECK
-    // ==========================================
     const session = await getServerSession(authOptions);
     const userId = session?.user?.id;
 
@@ -87,8 +199,9 @@ export async function POST(req: Request) {
       );
     }
 
-    // ✅ LIMIT ADDED: Check template creation limit
+    // 2. TEMPLATE LIMIT CHECK
     const limitCheck = await checkLimit(userId, "templates");
+
     if (!limitCheck.allowed) {
       return NextResponse.json(
         {
@@ -107,202 +220,274 @@ export async function POST(req: Request) {
       );
     }
 
-    // ==========================================
-    // 2. GET CREDENTIALS FROM DATABASE (NOT .env)
-    // ==========================================
+    // 3. GET USER CREDENTIALS
     const user = await User.findById(userId);
 
-    const META_TOKEN = user?.whatsappAccessToken || process.env.META_ACCESS_TOKEN || "";
-    const WABA_ID = user?.wabaId || process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || "";
-    const PHONE_NUMBER_ID = user?.whatsappPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || "";
+    const META_TOKEN =
+      user?.whatsappAccessToken ||
+      process.env.META_ACCESS_TOKEN ||
+      "";
+
+    const WABA_ID =
+      user?.wabaId ||
+      process.env.WHATSAPP_BUSINESS_ACCOUNT_ID ||
+      "";
+
+    const PHONE_NUMBER_ID =
+      user?.whatsappPhoneNumberId ||
+      process.env.WHATSAPP_PHONE_NUMBER_ID ||
+      "";
+
+    const APP_ID = process.env.META_APP_ID || "";
 
     if (!META_TOKEN || !WABA_ID) {
       return NextResponse.json(
         {
           success: false,
-          message: "WhatsApp credentials not configured. Please update your Settings with your Access Token and WhatsApp Business Account ID.",
+          message: "WhatsApp credentials not configured. Please update Settings.",
         },
         { status: 400 }
       );
     }
 
-    // ==========================================
-    // 🚨 CRITICAL CHECK: WABA ID ≠ Phone Number ID
-    // ==========================================
-    if (WABA_ID === PHONE_NUMBER_ID) {
-      console.error(
-        `❌ WABA ID (${WABA_ID}) is the same as Phone Number ID (${PHONE_NUMBER_ID}). These must be different!`
-      );
+    if (PHONE_NUMBER_ID && WABA_ID === PHONE_NUMBER_ID) {
       return NextResponse.json(
         {
           success: false,
-          message:
-            "❌ Your WhatsApp Business Account ID (WABA ID) and Phone Number ID are the SAME — they should be DIFFERENT.\n\n" +
-            "📱 Phone Number ID: Used for SENDING messages\n" +
-            "🏢 WABA ID: Used for CREATING templates and uploading media\n\n" +
-            "How to find your real WABA ID:\n" +
-            "1. Go to Meta Business Settings → Business Assets → WhatsApp Accounts\n" +
-            "2. Click your WhatsApp account\n" +
-            "3. The ID at the top is your WABA ID (it's a different number than your Phone Number ID)\n\n" +
-            "Update the WABA ID in your Settings page and try again.",
           wrongWabaId: true,
+          message:
+            "WABA ID and Phone Number ID must be different. Use your WhatsApp Business Account ID for template creation.",
         },
         { status: 400 }
       );
     }
 
-    console.log(`🏢 Using WABA ID: ${WABA_ID}`);
-    console.log(`📱 Using Phone Number ID: ${PHONE_NUMBER_ID}`);
-
-    // ==========================================
-    // 3. PARSE FORM DATA
-    // ==========================================
+    // 4. PARSE FORM DATA
     const formData = await req.formData();
 
-    const name = (formData.get("name") as string) || "";
-    const category = (formData.get("category") as string) || "MARKETING";
-    const language = (formData.get("language") as string) || "en";
-    const componentsStr = formData.get("components") as string;
-    const sampleFile = formData.get("sampleFile") as File | null;
-    const sampleSource = (formData.get("sampleSource") as string) || "upload";
-    const sampleUrl = (formData.get("sampleUrl") as string) || "";
+    const name = String(formData.get("name") || "").trim();
+    const category = String(formData.get("category") || "MARKETING").toUpperCase();
+    const language = String(formData.get("language") || "en");
 
-    if (!name || !componentsStr) {
+    const componentsStr = formData.get("components");
+    const sampleFile = formData.get("sampleFile");
+    const sampleSource = String(formData.get("sampleSource") || "upload");
+    const sampleUrl = String(formData.get("sampleUrl") || "").trim();
+
+    if (!name || typeof componentsStr !== "string") {
       return NextResponse.json(
-        { success: false, message: "Name and components are required" },
+        { success: false, message: "Name and components are required." },
         { status: 400 }
       );
     }
 
     let components: any[];
+
     try {
       components = JSON.parse(componentsStr);
+
+      if (!Array.isArray(components)) {
+        throw new Error("Components must be an array.");
+      }
     } catch {
       return NextResponse.json(
-        { success: false, message: "Invalid components JSON" },
+        { success: false, message: "Invalid components JSON." },
         { status: 400 }
       );
     }
 
-const safeName = name
-  .toLowerCase()
-  .trim()
-  .replace(/[^a-z0-9_]/g, "_")
-  .replace(/__+/g, "_")
-  .replace(/^_+|_+$/g, "")
-  .substring(0, 40);
+    const safeName = name
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9_]/g, "_")
+      .replace(/__+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .substring(0, 40);
+
+    if (!safeName) {
+      return NextResponse.json(
+        { success: false, message: "Template name is invalid." },
+        { status: 400 }
+      );
+    }
 
     // ==========================================
-    // 4. HANDLE SAMPLE MEDIA
+    // 5. HANDLE HEADER SAMPLE MEDIA
     // ==========================================
-    const headerComp = components.find((c: any) => c.type === "HEADER");
 
-    const isMediaHeader =
-      headerComp &&
-      ["IMAGE", "VIDEO", "DOCUMENT"].includes(headerComp.format);
+    const headerComp = components.find(
+      (component: any) =>
+        String(component.type).toUpperCase() === "HEADER"
+    );
+
+    const headerFormat = String(headerComp?.format || "").toUpperCase();
+
+    const isMediaHeader = ["IMAGE", "VIDEO", "DOCUMENT"].includes(
+      headerFormat
+    );
 
     if (isMediaHeader) {
+      const allowedMimeTypes = MIME_TYPES[headerFormat];
+
       let fileBuffer: Buffer | null = null;
-      let fileType: string = "application/octet-stream";
+      let fileType = "";
+      let fileName = "";
 
-      // Source 1: File upload
-      if (sampleSource === "upload" && sampleFile && sampleFile.size > 0) {
+      // SOURCE 1: UPLOADED FILE
+      if (
+        sampleSource === "upload" &&
+        sampleFile instanceof File &&
+        sampleFile.size > 0
+      ) {
         fileBuffer = Buffer.from(await sampleFile.arrayBuffer());
-        fileType = sampleFile.type || "application/octet-stream";
-      }
-      // Source 2: URL download
-      else if (sampleSource === "url" && sampleUrl.trim()) {
-        try {
-          console.log(`📥 Downloading sample from URL: ${sampleUrl}`);
-          const imgRes = await fetch(sampleUrl.trim());
-          if (!imgRes.ok) throw new Error("Failed to download URL");
-          fileBuffer = Buffer.from(await imgRes.arrayBuffer());
-          fileType = imgRes.headers.get("content-type") || "application/octet-stream";
 
-          if (fileBuffer.length > 5 * 1024 * 1024) {
-            return NextResponse.json(
-              { success: false, message: "Sample media exceeds 5MB limit." },
-              { status: 400 }
-            );
-          }
-        } catch (err) {
-          console.error("URL download error:", err);
+        fileName =
+          sampleFile.name ||
+          `template-sample${EXTENSIONS[headerFormat]}`;
+
+        const browserMime = (sampleFile.type || "").toLowerCase();
+        const extensionMime = getMimeTypeFromName(fileName);
+
+        fileType = browserMime || extensionMime || "";
+
+        if (
+          (!browserMime || browserMime === "application/octet-stream") &&
+          extensionMime &&
+          allowedMimeTypes.includes(extensionMime)
+        ) {
+          fileType = extensionMime;
+        }
+
+        if (!allowedMimeTypes.includes(fileType)) {
           return NextResponse.json(
             {
               success: false,
-              message: "Failed to download the sample URL. Make sure it's publicly accessible.",
+              message: `Unsupported ${headerFormat.toLowerCase()} file. Accepted: ${allowedMimeTypes.join(", ")}.`,
+              receivedMimeType: browserMime || "unknown",
+              fileName,
             },
             { status: 400 }
           );
         }
+      }
+
+      // SOURCE 2: PUBLIC URL
+      else if (sampleSource === "url" && sampleUrl) {
+        const downloaded = await downloadSampleFromUrl(
+          sampleUrl,
+          allowedMimeTypes
+        );
+
+        if (!downloaded.buffer || !downloaded.mimeType) {
+          return NextResponse.json(
+            {
+              success: false,
+              message:
+                downloaded.error || "Could not download sample media.",
+            },
+            { status: 400 }
+          );
+        }
+
+        fileBuffer = downloaded.buffer;
+        fileType = downloaded.mimeType;
+        fileName =
+          downloaded.fileName ||
+          `template-sample${EXTENSIONS[headerFormat]}`;
       } else {
         return NextResponse.json(
-          { success: false, message: "Media header requires a sample file or URL." },
+          {
+            success: false,
+            message: "Media header requires a sample file or URL.",
+          },
           { status: 400 }
         );
       }
 
-      // Upload to WhatsApp using the USER's token and WABA ID from DB
-      if (fileBuffer) {
-        const result = await tryResumableUpload(
-          META_TOKEN,
-          process.env.META_APP_ID!,
-          fileBuffer,
-          fileType
+      if (!fileBuffer || fileBuffer.length === 0) {
+        return NextResponse.json(
+          { success: false, message: "The selected sample file is empty." },
+          { status: 400 }
         );
-
-        if (result.handle) {
-          headerComp.example = {
-            header_handle: [result.handle],
-          };
-          console.log("✅ Applied header_handle to payload");
-        } else if (result.permissionMissing) {
-          return NextResponse.json(
-            {
-              success: false,
-              permissionMissing: true,
-              message:
-                `❌ Cannot upload media — your token is missing the 'whatsapp_business_management' permission.\n\n` +
-                `🔧 How to fix:\n` +
-                `1. Go to Meta Business Settings → Apps → Your App → App Review\n` +
-                `2. Request 'whatsapp_business_management' permission\n` +
-                `3. Once approved, generate a NEW token with BOTH permissions:\n` +
-                `   ✅ whatsapp_business_messaging\n` +
-                `   ✅ whatsapp_business_management\n` +
-                `4. Update the token in your Settings page\n\n` +
-                `✅ For now, you CAN create TEXT-ONLY templates (header type = None or Text).`,
-            },
-            { status: 403 }
-          );
-        } else {
-          return NextResponse.json(
-            {
-              success: false,
-              message: `Failed to upload media to WhatsApp: ${result.error}`,
-            },
-            { status: 500 }
-          );
-        }
       }
+
+      // FILE SIZE VALIDATION
+      const maxSize = MAX_MEDIA_SIZE[headerFormat];
+
+      if (fileBuffer.length > maxSize) {
+        return NextResponse.json(
+          {
+            success: false,
+            message: `${headerFormat} sample exceeds the ${Math.floor(maxSize / (1024 * 1024))} MB limit.`,
+          },
+          { status: 400 }
+        );
+      }
+
+      if (!APP_ID) {
+        return NextResponse.json(
+          {
+            success: false,
+            message: "META_APP_ID is missing in environment variables.",
+          },
+          { status: 500 }
+        );
+      }
+
+      // UPLOAD SAMPLE TO META
+      const uploadResult = await uploadTemplateSample(
+        META_TOKEN,
+        APP_ID,
+        fileBuffer,
+        fileName,
+        fileType
+      );
+
+      if (!uploadResult.handle) {
+        return NextResponse.json(
+          {
+            success: false,
+            message: `Failed to upload template sample to Meta: ${uploadResult.error || "Unknown error"}`,
+          },
+          { status: 400 }
+        );
+      }
+
+      // ATTACH META HANDLE TO HEADER
+      headerComp.example = {
+        ...(headerComp.example || {}),
+        header_handle: [uploadResult.handle],
+      };
+
+      console.log("Template header handle attached successfully.");
     }
 
     // ==========================================
-    // 5. VALIDATE BODY VARIABLES
+    // 6. VALIDATE BODY VARIABLES
     // ==========================================
+
     if (category !== "AUTHENTICATION") {
-      const bodyComp = components.find((c: any) => c.type === "BODY");
-      if (bodyComp && bodyComp.text) {
+      const bodyComp = components.find(
+        (component: any) =>
+          String(component.type).toUpperCase() === "BODY"
+      );
+
+      if (bodyComp?.text) {
         const variableMatches = bodyComp.text.match(/\{\{(\d+)\}\}/g);
-        if (variableMatches && variableMatches.length > 0) {
+
+        if (variableMatches?.length) {
           const hasBodyExample =
-            bodyComp.example?.body_text &&
+            Array.isArray(bodyComp.example?.body_text) &&
             bodyComp.example.body_text.length > 0 &&
+            Array.isArray(bodyComp.example.body_text[0]) &&
             bodyComp.example.body_text[0].length > 0;
+
           if (!hasBodyExample) {
             return NextResponse.json(
               {
                 success: false,
-                message: "Templates with variables {{1}}, {{2}}, etc. require sample values.",
+                message:
+                  "Templates with variables {{1}}, {{2}}, etc. require sample values.",
               },
               { status: 400 }
             );
@@ -312,63 +497,78 @@ const safeName = name
     }
 
     // ==========================================
-    // 6. BUILD META API PAYLOAD
+    // 7. BUILD META TEMPLATE COMPONENTS
     // ==========================================
+
     let metaComponents: any[] = [];
 
     if (category === "AUTHENTICATION") {
-      // AUTHENTICATION templates are strictly formatted by Meta.
-      // We must ignore custom body text and enforce the OTP button structure.
       metaComponents.push({
         type: "BODY",
-        add_security_recommendation: true
+        add_security_recommendation: true,
       });
 
-      // Optional: Code expiration footer
-      const footerComp = components.find((c: any) => c.type.toUpperCase() === "FOOTER");
-      if (footerComp && footerComp.code_expiration_minutes) {
+      const footerComp = components.find(
+        (component: any) =>
+          String(component.type).toUpperCase() === "FOOTER"
+      );
+
+      if (footerComp?.code_expiration_minutes) {
         metaComponents.push({
           type: "FOOTER",
-          code_expiration_minutes: Number(footerComp.code_expiration_minutes)
+          code_expiration_minutes: Number(
+            footerComp.code_expiration_minutes
+          ),
         });
       }
 
-      // Mandatory: Exactly one OTP button
       metaComponents.push({
         type: "BUTTONS",
         buttons: [
           {
             type: "OTP",
             otp_type: "COPY_CODE",
-            text: "Copy Code"
-          }
-        ]
+            text: "Copy Code",
+          },
+        ],
       });
     } else {
-      // MARKETING / UTILITY templates mapping
       metaComponents = components.map((comp: any) => {
-        const compType = comp.type.toUpperCase();
+        const compType = String(comp.type || "").toUpperCase();
         const metaComp: any = { type: compType };
 
         if (compType === "HEADER") {
           metaComp.format = comp.format;
+
           if (comp.text) metaComp.text = comp.text;
           if (comp.example) metaComp.example = comp.example;
         } else if (compType === "BODY") {
           metaComp.text = comp.text;
+
           if (comp.example) metaComp.example = comp.example;
         } else if (compType === "FOOTER") {
           metaComp.text = comp.text;
         } else if (compType === "BUTTONS") {
-          metaComp.buttons = comp.buttons.map((btn: any) => {
-            const metaBtn: any = { type: btn.type, text: btn.text };
-            if (btn.type === "URL" && btn.url) metaBtn.url = btn.url;
-            if (btn.type === "PHONE_NUMBER" && btn.phone_number) metaBtn.phone_number = btn.phone_number;
-            return metaBtn;
+          metaComp.buttons = (comp.buttons || []).map((button: any) => {
+            const metaButton: any = {
+              type: button.type,
+              text: button.text,
+            };
+
+            if (button.type === "URL" && button.url) {
+              metaButton.url = button.url;
+            }
+
+            if (button.type === "PHONE_NUMBER" && button.phone_number) {
+              metaButton.phone_number = button.phone_number;
+            }
+
+            return metaButton;
           });
         }
+
         return metaComp;
-      }).filter(Boolean);
+      });
     }
 
     const metaPayload = {
@@ -379,13 +579,13 @@ const safeName = name
     };
 
     // ==========================================
-    // 7. SUBMIT TO META (using USER's token + WABA ID)
+    // 8. SUBMIT TEMPLATE TO META
     // ==========================================
-    console.log(`📤 Creating template "${safeName}" with WABA: ${WABA_ID}, language: "${language}"`);
-    console.log("📤 TEMPLATE PAYLOAD:", JSON.stringify(metaPayload, null, 2));
 
-    const metaRes = await fetch(
-      `${WHATSAPP_API}/${WABA_ID}/message_templates`,
+    console.log("META TEMPLATE PAYLOAD:", JSON.stringify(metaPayload, null, 2));
+
+    const metaResponse = await fetch(
+      `${GRAPH_API}/${WABA_ID}/message_templates`,
       {
         method: "POST",
         headers: {
@@ -396,32 +596,39 @@ const safeName = name
       }
     );
 
-    const metaData = await metaRes.json();
+    const metaData = await metaResponse.json();
 
-    if (!metaRes.ok || metaData.error) {
+    if (!metaResponse.ok || metaData.error) {
       const errorMessage =
         metaData.error?.error_user_msg ||
         metaData.error?.message ||
-        "Meta rejected template";
+        "Meta rejected the template.";
 
-      console.error("Meta template error:", JSON.stringify(metaData.error, null, 2));
+      console.error("Meta template creation error:", metaData.error || metaData);
 
       return NextResponse.json(
-        { success: false, message: errorMessage },
+        {
+          success: false,
+          message: errorMessage,
+          metaError: metaData.error || null,
+        },
         { status: 400 }
       );
     }
 
     // ==========================================
-    // 8. SAVE TO LOCAL DB
+    // 9. SAVE TEMPLATE IN DATABASE
     // ==========================================
-    // 🔴 MULTI-TENANT DATA ISOLATION
-    const tenantId = (session.user as any)?.parentTenantId || (session.user as any)?.tenantId || null;
+
+    const tenantId =
+      (session.user as any)?.parentTenantId ||
+      (session.user as any)?.tenantId ||
+      null;
 
     const template = await Template.create({
       userId,
-      tenantId, // ✅ ATTACH TENANT ID FOR AGGREGATED VIEWS
-      createdBy: userId, // ✅ TRACK WHO CREATED IT
+      tenantId,
+      createdBy: userId,
       name: safeName,
       category,
       language,
@@ -430,10 +637,7 @@ const safeName = name
       metaTemplateId: metaData.id,
     });
 
-    // ✅ LIMIT ADDED: Increment usage after successful creation
     await incrementUsage(userId, "templates");
-
-    console.log(`✅ Template "${safeName}" submitted successfully!`);
 
     return NextResponse.json({
       success: true,
@@ -441,83 +645,16 @@ const safeName = name
       meta: metaData,
       template,
     });
-  } catch (err: any) {
-    console.error("Error in /api/templates/create:", err);
+  } catch (error) {
+    console.error("Error in /api/templates/create:", error);
+
     return NextResponse.json(
-      { success: false, message: err.message || "Internal server error" },
+      {
+        success: false,
+        message:
+          error instanceof Error ? error.message : "Internal server error",
+      },
       { status: 500 }
     );
-  }
-}
-
-async function tryResumableUpload(
-  META_TOKEN: string,
-  APP_ID: string,
-  fileBuffer: Buffer,
-  fileType: string
-): Promise<{ permissionMissing: any; handle?: string; error?: string }> {
-  try {
-    // STEP 1 - Create upload session
-    const createSession = await fetch(
-      `https://graph.facebook.com/v25.0/${APP_ID}/uploads`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${META_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          file_length: fileBuffer.length,
-          file_type: fileType,
-        }),
-      }
-    );
-
-    const sessionData = await createSession.json();
-
-    console.log("SESSION:", sessionData);
-    if (!createSession.ok) {
-      console.log("SESSION ERROR:", sessionData);
-      return {
-        permissionMissing: false,
-        error: JSON.stringify(sessionData),
-      };
-    }
-
-    const uploadId = sessionData.id;
-
-    // STEP 2 - Upload binary
-    const uploadRes = await fetch(
-      `https://graph.facebook.com/v25.0/${uploadId}`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${META_TOKEN}`,
-          file_offset: "0",
-        },
-        body: Buffer.from(fileBuffer),
-      }
-    );
-
-    const uploadData = await uploadRes.json();
-
-    console.log("UPLOAD:", uploadData);
-    if (!uploadRes.ok) {
-      console.log("UPLOAD ERROR:", uploadData);
-      return {
-        permissionMissing: false,
-        error: JSON.stringify(uploadData),
-      };
-    }
-
-    return {
-      permissionMissing: false,
-      handle: uploadData.h,
-    };
-  } catch (err: any) {
-    return {
-      permissionMissing: false,
-      error: err.message,
-    };
   }
 }
