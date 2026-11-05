@@ -757,14 +757,28 @@ async function captureLeadFromReply(
 
     if (!leadTypes.length) return;
 
-    // If multiple Lead Types match, the oldest matching Lead Type is selected.
-    const matchedLeadType: any = leadTypes.find((leadType: any) =>
-      (leadType.keywords || []).some((keyword: string) =>
-        keywordMatches(text, keyword)
-      )
-    );
+// Find all matching Lead Types and keywords.
+const matchingLeadTypes: any[] = [];
 
-    if (!matchedLeadType) return;
+for (const leadType of leadTypes as any[]) {
+  for (const keyword of leadType.keywords || []) {
+    if (keywordMatches(String(text), String(keyword))) {
+      matchingLeadTypes.push({
+        leadType,
+        keyword: String(keyword).trim(),
+      });
+    }
+  }
+}
+
+if (!matchingLeadTypes.length) return;
+
+// Prefer the longest matching keyword.
+matchingLeadTypes.sort(
+  (a, b) => b.keyword.length - a.keyword.length
+);
+
+const matchedLeadType = matchingLeadTypes[0].leadType;
 
     const finalName =
       String(contactName || "").trim() || customerPhone;
@@ -792,13 +806,13 @@ async function captureLeadFromReply(
         return;
       }
 
-      // Customer matched another Lead Type, so move the existing contact.
-      leadType.contacts = (leadType.contacts || []).filter(
-        (contact: any) =>
-          normalizeLeadPhone(contact.phone) !== normalizedPhone
-      );
+// Customer already exists in another Lead Type.
+// Do not move or delete the existing contact.
+console.log(
+  `[AUTO LEAD] ${customerPhone} already exists in another Lead Type: "${leadType.name}". No changes made.`
+);
 
-      await leadType.save();
+return;
     }
 
     // Add the customer to the matched Lead Type.
