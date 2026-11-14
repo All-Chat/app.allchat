@@ -1,3 +1,4 @@
+
 import mongoose, { Schema, models } from "mongoose";
 
 const ContactSchema = new Schema(
@@ -7,15 +8,38 @@ const ContactSchema = new Schema(
       required: true,
       trim: true,
     },
+
     phone: {
       type: String,
       required: true,
       trim: true,
     },
+
     notes: {
       type: String,
       default: "",
       trim: true,
+    },
+
+    // Lead Source
+    source: {
+      type: String,
+      enum: ["WhatsApp", "Instagram", "Facebook", "Other"],
+      default: "WhatsApp",
+    },
+
+    // Custom source when "Other" is selected
+    customSource: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    assignedTo: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
     },
   },
   {
@@ -71,7 +95,7 @@ const LeadTypeSchema = new Schema(
 );
 
 // Recompile the model in development so an older cached schema
-// without the contacts field does not continue being used.
+// does not continue being used.
 if (process.env.NODE_ENV === "development" && models.LeadType) {
   delete mongoose.models.LeadType;
 }
