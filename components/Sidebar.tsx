@@ -31,11 +31,14 @@ import {
   ChevronDown,
   ReceiptText,
   Users,
+  ContactRound,
   UserCog,
+  Kanban,
   Bot,
   MessagesSquare,
   FileSpreadsheet, 
   MessageSquareText,
+  CalendarDays,
   Database,
   // ✅ NEW UNIQUE ICONS ADDED BELOW
   SlidersHorizontal, 
@@ -109,6 +112,14 @@ const categories: NavCategory[] = [
       { name: "Sheet Configurations", icon: SlidersHorizontal, href: "/dashboard/sheet-sync-list" }, // ✅ Unique Icon
       { name: "Create Campaign", icon: FilePlus2, href: "/dashboard/sheet-sync-campaign" }, // ✅ Unique Icon
       { name: "Campaign List", icon: ListTree, href: "/dashboard/sheet-sync-campaign/list" }, // ✅ Unique Icon
+    ],
+  },
+    {
+    title: "Leads",
+    icon: ContactRound,
+    items: [
+      { name: "Lead Pipeline", icon: Kanban, href: "/lead-management" },
+      { name: "Calendar", icon: CalendarDays, href: "/calendar" },
     ],
   },
   {
