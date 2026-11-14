@@ -1,12 +1,13 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
+
 import "./globals.css";
+
 import Navbar from "@/components/Navbar";
 import Providers from "@/components/Providers";
-import BrandManager from "@/components/BrandManager"; // ✅ ADDED
-import Chatbot from "@/components/Chatbot"; // ✅ ADDED Chatbot import
-
-import { startInternalScheduler } from "@/lib/scheduler";
+import BrandManager from "@/components/BrandManager";
+import Chatbot from "@/components/Chatbot";
+import ReminderCenter from "@/components/ReminderCenter";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -19,23 +20,24 @@ export const metadata: Metadata = {
   },
 };
 
-if (typeof window === "undefined") {
-  try {
-    startInternalScheduler();
-  } catch (e) {
-    console.error("Failed to start scheduler", e);
-  }
-}
-
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
     <html lang="en">
       <body className={`${inter.className} antialiased`}>
         <Providers>
-          <BrandManager /> {/* ✅ ADDED */}
+          <BrandManager />
+
           <Navbar />
+
           {children}
-          <Chatbot /> {/* ✅ ADDED Chatbot component here */}
+
+          <Chatbot />
+
+          <ReminderCenter />
         </Providers>
       </body>
     </html>
