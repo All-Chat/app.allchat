@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { getNextAutoAssignedUser } from "@/lib/autoAssignment";
 import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import User from "@/models/User";
@@ -729,109 +730,177 @@ function keywordMatches(message: string, keyword: string): boolean {
   return pattern.test(cleanMessage);
 }
 
+
 async function captureLeadFromReply(
   msg: any,
   num: any,
   contactName: string = ""
 ) {
   try {
-    // Only text, button and interactive replies trigger keyword matching.
     if (!["text", "button", "interactive"].includes(msg.type)) return;
 
     const { text } = parseMessage(msg);
+
     if (!text || !text.trim()) return;
+
+    await connectDB();
 
     const customerPhone = String(msg.from || "").trim();
     const normalizedPhone = normalizeLeadPhone(customerPhone);
 
     if (!normalizedPhone) return;
 
-    // Match the tenant/user scope used by Lead Management.
-    const leadTypeFilter: any = num.tenantId
-      ? { tenantId: String(num.tenantId) }
-      : { userId: num.userId };
+    // Resolve the WhatsApp number owner.
+    const numberOwnerId = num.userId;
 
-    const leadTypes = await LeadType.find(leadTypeFilter).sort({
-      createdAt: 1,
-    });
-
-    if (!leadTypes.length) return;
-
-// Find all matching Lead Types and keywords.
-const matchingLeadTypes: any[] = [];
-
-for (const leadType of leadTypes as any[]) {
-  for (const keyword of leadType.keywords || []) {
-    if (keywordMatches(String(text), String(keyword))) {
-      matchingLeadTypes.push({
-        leadType,
-        keyword: String(keyword).trim(),
-      });
+    if (!numberOwnerId || !mongoose.Types.ObjectId.isValid(String(numberOwnerId))) {
+      console.error("[AUTO LEAD] Invalid WhatsApp number owner:", numberOwnerId);
+      return;
     }
-  }
-}
 
-if (!matchingLeadTypes.length) return;
+    const numberOwner: any = await User.findById(numberOwnerId).lean();
 
-// Prefer the longest matching keyword.
-matchingLeadTypes.sort(
-  (a, b) => b.keyword.length - a.keyword.length
-);
+    if (!numberOwner) {
+      console.error("[AUTO LEAD] WhatsApp number owner not found.");
+      return;
+    }
 
-const matchedLeadType = matchingLeadTypes[0].leadType;
+    // Resolve the actual tenant.
+    const tenantId = numberOwner.isTenant
+      ? String(numberOwner.tenantId || numberOwner._id)
+      : String(
+          numberOwner.parentTenantId ||
+          numberOwner.tenantId ||
+          numberOwner._id
+        );
+
+    // Each user's Lead Types belong to their own userId.
+    const leadTypes = await LeadType.find({
+      userId: numberOwner._id,
+    }).sort({ createdAt: 1 });
+
+    if (!leadTypes.length) {
+      console.log("[AUTO LEAD] No Lead Types found for WhatsApp owner.");
+      return;
+    }
+
+    // Find matching Lead Type by keyword.
+    const matchingLeadTypes: any[] = [];
+
+    for (const leadType of leadTypes) {
+      for (const keyword of leadType.keywords || []) {
+        if (keywordMatches(String(text), String(keyword))) {
+          matchingLeadTypes.push({
+            leadType,
+            keyword: String(keyword).trim(),
+          });
+        }
+      }
+    }
+
+    if (!matchingLeadTypes.length) return;
+
+    // Prefer the longest matching keyword.
+    matchingLeadTypes.sort(
+      (a, b) => b.keyword.length - a.keyword.length
+    );
+
+    const matchedLeadType = matchingLeadTypes[0].leadType;
 
     const finalName =
       String(contactName || "").trim() || customerPhone;
 
-    // Check whether the customer already exists in any Lead Type.
-    for (const leadType of leadTypes as any[]) {
+    // Check duplicate phone across the owner's Lead Types.
+    for (const leadType of leadTypes) {
       const existingContact = (leadType.contacts || []).find(
         (contact: any) =>
           normalizeLeadPhone(contact.phone) === normalizedPhone
       );
 
-      if (!existingContact) continue;
-
-      // Customer already exists in the matched Lead Type.
-      if (String(leadType._id) === String(matchedLeadType._id)) {
-        if (contactName && String(contactName).trim()) {
-          existingContact.name = String(contactName).trim();
+      if (existingContact) {
+        if (
+          String(leadType._id) === String(matchedLeadType._id) &&
+          contactName?.trim()
+        ) {
+          existingContact.name = contactName.trim();
           await leadType.save();
         }
 
         console.log(
-          `[AUTO LEAD] Customer ${customerPhone} already exists in "${matchedLeadType.name}".`
+          `[AUTO LEAD] ${customerPhone} already exists. No duplicate created.`
         );
 
         return;
       }
-
-// Customer already exists in another Lead Type.
-// Do not move or delete the existing contact.
-console.log(
-  `[AUTO LEAD] ${customerPhone} already exists in another Lead Type: "${leadType.name}". No changes made.`
-);
-
-return;
     }
 
-    // Add the customer to the matched Lead Type.
+    // ------------------------------------------------
+    // AUTO ASSIGNMENT
+    // ------------------------------------------------
+
+    let assignedTo: any = null;
+
+    if (numberOwner.isTenant && tenantId) {
+      try {
+        const nextUserId = await getNextAutoAssignedUser(tenantId);
+
+        if (nextUserId) {
+          const assignedUser: any = await User.findOne({
+            _id: nextUserId,
+            parentTenantId: tenantId,
+            isTenant: false,
+            accountStatus: "active",
+          })
+            .select("_id name")
+            .lean();
+
+          if (assignedUser) {
+            assignedTo = assignedUser._id;
+          }
+        }
+      } catch (assignmentError) {
+        console.error(
+          "[AUTO LEAD] Auto assignment failed:",
+          assignmentError
+        );
+      }
+    } else if (!numberOwner.isTenant) {
+      // A WhatsApp number owned by a sub-user assigns
+      // the lead to that same sub-user.
+      assignedTo = numberOwner._id;
+    }
+
+    // ------------------------------------------------
+    // SAVE CONTACT WITH ASSIGNED USER ID
+    // ------------------------------------------------
+
+    if (!Array.isArray(matchedLeadType.contacts)) {
+      matchedLeadType.contacts = [];
+    }
+
     matchedLeadType.contacts.push({
       name: finalName,
       phone: customerPhone,
       notes: `Automatically captured from WhatsApp reply: "${text}"`,
-    });
+      source: "WhatsApp",
+      customSource: "",
+      assignedTo: assignedTo,
+    } as any);
 
     await matchedLeadType.save();
 
-    console.log(
-      `[AUTO LEAD] Added ${customerPhone} to Lead Type "${matchedLeadType.name}".`
-    );
+    console.log("[AUTO LEAD] Contact successfully captured:", {
+      phone: customerPhone,
+      leadType: matchedLeadType.name,
+      assignedTo: assignedTo ? String(assignedTo) : null,
+      tenantId,
+    });
+
   } catch (error) {
-    // Lead capture must never interrupt the existing webhook processing.
     console.error("[AUTO LEAD] Failed to capture lead:", error);
   }
 }
+
 
 // ===========================================================================
 // MEDIA UPLOAD HELPER
