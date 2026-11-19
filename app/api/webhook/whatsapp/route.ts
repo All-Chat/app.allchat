@@ -758,7 +758,6 @@ async function captureLeadFromReply(
     if (!["text", "button", "interactive"].includes(msg.type)) return;
 
     const { text } = parseMessage(msg);
-
     if (!text || !text.trim()) return;
 
     await connectDB();
@@ -789,6 +788,47 @@ async function captureLeadFromReply(
       return;
     }
 
+    // Resolve the campaign associated with this reply.
+    let replyCampaignName = "";
+
+    try {
+      const contextMessageId = String(msg.context?.id || "").trim();
+      let campaignReport: any = null;
+
+      // First preference: match the exact outgoing campaign message.
+      if (contextMessageId) {
+        campaignReport = await CampaignReport.findOne({
+          userId: numberOwnerId,
+          sentWamid: contextMessageId,
+        }).lean();
+      }
+
+      // Fallback: find the latest campaign report for this phone.
+      if (!campaignReport) {
+        campaignReport = await CampaignReport.findOne({
+          userId: numberOwnerId,
+          phone: customerPhone,
+        })
+          .sort({ createdAt: -1 })
+          .lean();
+      }
+
+      if (campaignReport?.campaignId) {
+        const campaign: any = await Campaign.findById(
+          campaignReport.campaignId
+        )
+          .select("name")
+          .lean();
+
+        replyCampaignName = String(campaign?.name || "").trim();
+      }
+    } catch (campaignLookupError) {
+      console.error(
+        "[AUTO LEAD] Could not resolve campaign name:",
+        campaignLookupError
+      );
+    }
+
     // Resolve the actual tenant.
     const tenantId = numberOwner.isTenant
       ? String(numberOwner.tenantId || numberOwner._id)
@@ -798,15 +838,13 @@ async function captureLeadFromReply(
             numberOwner._id
         );
 
-    // Each user's Lead Types belong to their own userId.
+    // Get this owner's Lead Types.
     const leadTypes = await LeadType.find({
       userId: numberOwner._id,
     }).sort({ createdAt: 1 });
 
     if (!leadTypes.length) {
-      console.log(
-        "[AUTO LEAD] No Lead Types found for WhatsApp owner."
-      );
+      console.log("[AUTO LEAD] No Lead Types found for WhatsApp owner.");
       return;
     }
 
@@ -851,7 +889,7 @@ async function captureLeadFromReply(
     const finalName =
       String(contactName || "").trim() || customerPhone;
 
-    // Check duplicate phone across the owner's Lead Types.
+    // Prevent duplicate contacts across the owner's Lead Types.
     for (const leadType of leadTypes) {
       const existingContact = (leadType.contacts || []).find(
         (contact: any) =>
@@ -870,15 +908,11 @@ async function captureLeadFromReply(
         console.log(
           `[AUTO LEAD] ${customerPhone} already exists. No duplicate created.`
         );
-
         return;
       }
     }
 
-    // ------------------------------------------------
     // AUTO ASSIGNMENT
-    // ------------------------------------------------
-
     let assignedTo: any = null;
 
     if (numberOwner.isTenant && tenantId) {
@@ -906,23 +940,22 @@ async function captureLeadFromReply(
         );
       }
     } else if (!numberOwner.isTenant) {
-      // A WhatsApp number owned by a sub-user assigns
-      // the lead to that same sub-user.
       assignedTo = numberOwner._id;
     }
 
-    // ------------------------------------------------
-    // SAVE CONTACT WITH ASSIGNED USER ID
-    // ------------------------------------------------
-
+    // SAVE CONTACT WITH CAMPAIGN NAME IN NOTES.
     if (!Array.isArray(matchedLeadType.contacts)) {
       matchedLeadType.contacts = [];
     }
 
+    const campaignNote = replyCampaignName
+      ? `Campaign: ${replyCampaignName}\n`
+      : "";
+
     matchedLeadType.contacts.push({
       name: finalName,
       phone: customerPhone,
-      notes: `Automatically captured from WhatsApp reply: "${text}"`,
+      notes: `${campaignNote}Automatically captured from WhatsApp reply: "${text}"`,
       source: "WhatsApp",
       customSource: "",
       assignedTo: assignedTo,
@@ -931,7 +964,7 @@ async function captureLeadFromReply(
     await matchedLeadType.save();
 
     console.log(
-      `[AUTO LEAD] Added ${customerPhone} to Lead Type "${matchedLeadType.name}" using ${matchingLeadTypes[0].matchMode.toUpperCase()} matching.`
+      `[AUTO LEAD] Added ${customerPhone} to Lead Type "${matchedLeadType.name}" using ${matchingLeadTypes[0].matchMode.toUpperCase()} matching. Campaign: ${replyCampaignName || "Not identified"}`
     );
   } catch (error) {
     // Lead capture must never interrupt existing webhook processing.
