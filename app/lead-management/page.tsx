@@ -88,6 +88,10 @@ type Contact = {
 
   customSource?: string;
 
+  campaignName?: string;
+
+  createdAt?: string;
+
 };
 
 type LeadType = {
@@ -105,6 +109,25 @@ type LeadType = {
   createdAt?: string;
 
 };
+
+function getContactCampaignName(contact: Contact): string {
+  const notes = String(contact.notes || "");
+  // Notes may contain other text before the Campaign: label.
+  const match = notes.match(/Campaign\s*:\s*([^\r\n]+)/i);
+  return match?.[1]?.trim() || String(contact.campaignName || "").trim();
+}
+
+function getContactCreatedTime(contact: Contact): number {
+  const createdAt = contact.createdAt ? new Date(contact.createdAt).getTime() : NaN;
+  if (Number.isFinite(createdAt)) return createdAt;
+
+  // Mongo subdocument ObjectIds contain their creation timestamp in the first 8 hex characters.
+  const id = String(contact._id || "");
+  if (/^[a-f0-9]{24}$/i.test(id)) {
+    return parseInt(id.slice(0, 8), 16) * 1000;
+  }
+  return 0;
+}
 
 const emptyContactForm = {
 
@@ -209,359 +232,162 @@ function getLeadIcon(name: string) {
 }
 
 type LeadTypeReportExportProps = {
-
   leadTypeId: string;
-
   leadTypeName: string;
-
+  campaignNames: string[];
 };
 
 function LeadTypeReportExport({
-
   leadTypeId,
-
   leadTypeName,
-
+  campaignNames,
 }: LeadTypeReportExportProps) {
-
   const [isOpen, setIsOpen] = useState(false);
-
+  const [selectedCampaign, setSelectedCampaign] = useState("all");
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
-
   const [progress, setProgress] = useState(0);
-
   const [hasProgress, setHasProgress] = useState(false);
-
   const [errorMessage, setErrorMessage] = useState("");
-
   const [fileName, setFileName] = useState("");
 
   const startExport = async () => {
-
     setStatus("loading");
-
     setProgress(0);
-
     setHasProgress(false);
-
     setErrorMessage("");
-
     setFileName("");
-
     try {
-
+      const query = selectedCampaign !== "all"
+        ? `?campaign=${encodeURIComponent(selectedCampaign)}`
+        : "";
       const response = await fetch(
-
-        `/api/lead-types/${encodeURIComponent(leadTypeId)}/report`,
-
+        `/api/lead-types/${encodeURIComponent(leadTypeId)}/report${query}`,
         { method: "GET", cache: "no-store" }
-
       );
-
       if (!response.ok) {
-
         let message = `Report export failed (${response.status}).`;
-
         try {
-
           const payload = await response.clone().json();
-
           message = payload.message || payload.error || message;
-
-        } catch {
-
-          // Keep the HTTP status message when the response is not JSON.
-
-        }
-
+        } catch {}
         throw new Error(message);
-
       }
-
       const disposition = response.headers.get("content-disposition") || "";
-
-      const encodedName = disposition.match(/filename\\\*=UTF-8''([^;]+)/i)?.[1];
-
+      const encodedName = disposition.match(/filename\\*=UTF-8''([^;]+)/i)?.[1];
       const plainName = disposition.match(/filename="?([^";]+)"?/i)?.[1];
-
       const resolvedName = encodedName
-
         ? decodeURIComponent(encodedName)
-
         : plainName || `${leadTypeName.replace(/[^a-z0-9-_]+/gi, "_")}_report.xlsx`;
-
       const total = Number(response.headers.get("content-length") || 0);
-
       if (total > 0) setHasProgress(true);
-
       let blob: Blob;
-
       if (response.body) {
-
         const reader = response.body.getReader();
-
         const chunks: Uint8Array[] = [];
-
         let received = 0;
-
         while (true) {
-
           const { done, value } = await reader.read();
-
           if (done) break;
-
           if (value) {
-
             chunks.push(value);
-
             received += value.length;
-
             if (total > 0) setProgress(Math.min(100, Math.round((received / total) * 100)));
-
           }
-
         }
-
         blob = new Blob(chunks as BlobPart[], {
-
           type: response.headers.get("content-type") || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-
         });
-
       } else {
-
         blob = await response.blob();
-
         setProgress(100);
-
       }
-
       if (!blob.size) throw new Error("The server returned an empty report. Please try again.");
-
       const objectUrl = URL.createObjectURL(blob);
-
       const anchor = document.createElement("a");
-
       anchor.href = objectUrl;
-
       anchor.download = resolvedName;
-
       document.body.appendChild(anchor);
-
       anchor.click();
-
       anchor.remove();
-
       window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-
       setProgress(100);
-
       setFileName(resolvedName);
-
       setStatus("success");
-
     } catch (error) {
-
       setErrorMessage(error instanceof Error ? error.message : "Unable to download the report.");
-
       setStatus("error");
-
     }
-
-  };
-
-  const openExport = () => {
-
-    setIsOpen(true);
-
-    void startExport();
-
   };
 
   return (
-
     <>
-
       <button
-
         type="button"
-
-        onClick={openExport}
-
+        onClick={() => { setStatus("idle"); setIsOpen(true); }}
         title={`Export ${leadTypeName} report`}
-
         className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 py-2 text-xs font-semibold text-emerald-700 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50"
-
       >
-
         <Download size={14} />
-
         <span>Export</span>
-
       </button>
-
       {isOpen && (
-
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
-
           <div className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-
             <div className="flex items-start justify-between border-b border-slate-100 px-5 py-4">
-
               <div className="flex items-center gap-3">
-
                 <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
-
                   <FileSpreadsheet size={22} />
-
                 </div>
-
                 <div>
-
                   <h3 className="text-base font-bold text-slate-900">Export report</h3>
-
                   <p className="mt-0.5 max-w-[250px] truncate text-xs text-slate-500">{leadTypeName}</p>
-
                 </div>
-
               </div>
-
-              <button
-
-                type="button"
-
-                onClick={() => setIsOpen(false)}
-
-                aria-label="Close export dialog"
-
-                className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
-
-              >
-
+              <button type="button" onClick={() => setIsOpen(false)} aria-label="Close export dialog" className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700">
                 <X size={18} />
-
               </button>
-
             </div>
-
-            <div className="px-6 py-7 text-center">
-
+            <div className="space-y-4 px-6 py-6">
+              <div className="text-left">
+                <label className="mb-2 block text-xs font-semibold text-slate-700">Select campaign</label>
+                <select
+                  value={selectedCampaign}
+                  onChange={(event) => setSelectedCampaign(event.target.value)}
+                  disabled={status === "loading"}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-700 outline-none focus:border-[#0CCB66]"
+                >
+                  <option value="all">All Campaigns — All Contacts</option>
+                  {campaignNames.map((campaign) => <option key={campaign} value={campaign}>{campaign}</option>)}
+                </select>
+                <p className="mt-2 text-xs text-slate-500">
+                  {selectedCampaign === "all" ? "The report will include all contacts." : `The report will include contacts from ${selectedCampaign} only.`}
+                </p>
+              </div>
               {status === "loading" && (
-
-                <>
-
-                  <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50">
-
-                    <Loader2 size={30} className="animate-spin text-emerald-600" />
-
+                <div className="py-2 text-center">
+                  <Loader2 size={26} className="mx-auto animate-spin text-emerald-600" />
+                  <p className="mt-2 text-sm font-semibold text-slate-800">Preparing your Excel report…</p>
+                  <div className="mx-auto mt-4 h-2 max-w-xs overflow-hidden rounded-full bg-slate-100">
+                    <div className={`h-full rounded-full bg-emerald-500 ${hasProgress ? "" : "w-1/3 animate-pulse"}`} style={hasProgress ? { width: `${progress}%` } : undefined} />
                   </div>
-
-                  <h4 className="mt-4 text-base font-bold text-slate-900">Preparing your Excel report</h4>
-
-                  <p className="mt-1 text-sm text-slate-500">Please wait while we collect the data and generate your file.</p>
-
-                  <div className="mx-auto mt-6 max-w-xs">
-
-                    <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-
-                      <div
-
-                        className={`h-full rounded-full bg-emerald-500 transition-all duration-300 ${hasProgress ? "" : "w-1/3 animate-pulse"}`}
-
-                        style={hasProgress ? { width: `${progress}%` } : undefined}
-
-                      />
-
-                    </div>
-
-                    <p className="mt-2 text-xs font-medium text-slate-500">
-
-                      {hasProgress ? `${progress}% downloaded` : "Generating report…"}
-
-                    </p>
-
-                  </div>
-
-                </>
-
+                  <p className="mt-1 text-xs text-slate-500">{hasProgress ? `${progress}% downloaded` : "Generating report…"}</p>
+                </div>
               )}
-
-              {status === "success" && (
-
-                <>
-
-                  <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
-
-                    <CheckCircle2 size={34} />
-
-                  </div>
-
-                  <h4 className="mt-4 text-base font-bold text-slate-900">Download started successfully</h4>
-
-                  <p className="mt-1 break-all text-sm text-slate-500">{fileName}</p>
-
-                  <button
-
-                    type="button"
-
-                    onClick={() => setIsOpen(false)}
-
-                    className="mt-6 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
-
-                  >
-
-                    Done
-
-                  </button>
-
-                </>
-
-              )}
-
-              {status === "error" && (
-
-                <>
-
-                  <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-red-50 text-red-600">
-
-                    <AlertCircle size={34} />
-
-                  </div>
-
-                  <h4 className="mt-4 text-base font-bold text-slate-900">Could not export report</h4>
-
-                  <p className="mt-2 text-sm text-slate-600">{errorMessage}</p>
-
-                  <button
-
-                    type="button"
-
-                    onClick={() => void startExport()}
-
-                    className="mt-6 inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
-
-                  >
-
-                    <RefreshCw size={15} /> Try again
-
-                  </button>
-
-                </>
-
-              )}
-
+              {status === "success" && <p className="text-sm text-emerald-700">Download started: {fileName}</p>}
+              {status === "error" && <p className="text-sm text-red-600">{errorMessage}</p>}
+              <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
+                <button type="button" onClick={() => setIsOpen(false)} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-600">Close</button>
+                <button type="button" onClick={() => void startExport()} disabled={status === "loading"} className="inline-flex items-center gap-2 rounded-xl bg-[#0CCB66] px-4 py-2.5 text-sm font-semibold text-white hover:bg-green-600 disabled:opacity-50">
+                  {status === "loading" ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+                  {status === "success" ? "Download Again" : "Download Excel"}
+                </button>
+              </div>
             </div>
-
           </div>
-
         </div>
-
       )}
-
     </>
-
   );
-
 }
 
 export default function LeadManagementPage() {
@@ -581,6 +407,8 @@ export default function LeadManagementPage() {
     Record<string, string>
 
   >({});
+
+  const [campaignFilters, setCampaignFilters] = useState<Record<string, string>>({});
 
   const [showStageModal, setShowStageModal] = useState(false);
 
@@ -1446,26 +1274,34 @@ const toggleAutoAssignment = async () => {
   }, [leadTypes, stageSearch, selectedLeadTypeId]);
 
   const getFilteredContacts = (stage: LeadType) => {
+    const query = (contactSearches[stage._id] || "").trim().toLowerCase();
+    const selectedCampaign = campaignFilters[stage._id] || "all";
 
-    const query = (contactSearches[stage._id] || "")
-
-      .trim()
-
-      .toLowerCase();
-
-    if (!query) return stage.contacts;
-
-    return stage.contacts.filter(
-
-      (contact) =>
-
-        contact.name.toLowerCase().includes(query) ||
-
-        contact.phone.toLowerCase().includes(query)
-
-    );
-
+    return [...stage.contacts]
+      .filter((contact) => {
+        const campaignName = getContactCampaignName(contact);
+        const matchesSearch =
+          !query ||
+          contact.name.toLowerCase().includes(query) ||
+          contact.phone.toLowerCase().includes(query) ||
+          campaignName.toLowerCase().includes(query) ||
+          (contact.notes || "").toLowerCase().includes(query);
+        const matchesCampaign =
+          selectedCampaign === "all" || campaignName === selectedCampaign;
+        return matchesSearch && matchesCampaign;
+      })
+      .sort((a, b) => getContactCreatedTime(b) - getContactCreatedTime(a));
   };
+
+  const getStageCampaigns = (stage: LeadType) =>
+    Array.from(
+      new Set(
+        (Array.isArray(stage.contacts) ? stage.contacts : [])
+          .map((contact) => getContactCampaignName(contact))
+          .filter((campaign): campaign is string => Boolean(campaign))
+      )
+    ).sort((a, b) => a.localeCompare(b));
+
 
   const updateContactSearch = (stageId: string, value: string) => {
 
@@ -1887,6 +1723,8 @@ const toggleAutoAssignment = async () => {
 
                             leadTypeName={stage.name}
 
+                            campaignNames={getStageCampaigns(stage)}
+
                           />
 
                           <button
@@ -2020,43 +1858,41 @@ const toggleAutoAssignment = async () => {
                       {/* CONTACT SEARCH */}
 
                       {stage.contacts.length > 0 && (
-
-                        <div className="relative mb-3">
-
-                          <Search
-
-                            size={14}
-
-                            className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-
-                          />
-
-                          <input
-
-                            type="text"
-
-                            value={contactSearches[stage._id] || ""}
-
+                        <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <div className="relative min-w-0">
+                            <Search
+                              size={14}
+                              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                            />
+                            <input
+                              type="text"
+                              value={contactSearches[stage._id] || ""}
+                              onChange={(event) =>
+                                updateContactSearch(stage._id, event.target.value)
+                              }
+                              placeholder="Search name, number or campaign..."
+                              className="w-full rounded-lg border border-slate-200 py-2 pl-8 pr-3 text-xs outline-none transition focus:border-[#0CCB66]"
+                            />
+                          </div>
+                          <select
+                            value={campaignFilters[stage._id] || "all"}
                             onChange={(event) =>
-
-                              updateContactSearch(
-
-                                stage._id,
-
-                                event.target.value
-
-                              )
-
+                              setCampaignFilters((previous) => ({
+                                ...previous,
+                                [stage._id]: event.target.value,
+                              }))
                             }
-
-                            placeholder="Search contacts..."
-
-                            className="w-full rounded-lg border border-slate-200 py-2 pl-8 pr-3 text-xs outline-none transition focus:border-[#0CCB66]"
-
-                          />
-
+                            aria-label={`Filter ${stage.name} contacts by campaign`}
+                            className="w-full min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 outline-none transition focus:border-[#0CCB66]"
+                          >
+                            <option value="all">All Campaigns</option>
+                            {getStageCampaigns(stage).map((campaign) => (
+                              <option key={campaign} value={campaign}>
+                                {campaign}
+                              </option>
+                            ))}
+                          </select>
                         </div>
-
                       )}
 
                       {/* CONTACT LIST */}
@@ -2149,6 +1985,19 @@ const toggleAutoAssignment = async () => {
 
                                     </span>
 
+                                    {(() => {
+                                      const campaignNameFromNotes = getContactCampaignName(contact);
+
+                                      return campaignNameFromNotes ? (
+                                        <span
+                                          className="inline-flex max-w-full items-center rounded-full border border-violet-100 bg-violet-50 px-2 py-0.5 text-[10px] font-semibold leading-4 text-violet-700"
+                                          title={`Campaign: ${campaignNameFromNotes}`}
+                                        >
+                                          Campaign: <span className="ml-1 truncate">{campaignNameFromNotes}</span>
+                                        </span>
+                                      ) : null;
+                                    })()}
+
                                   </div>
 
                                   <div className="mt-2 flex min-w-0 items-center gap-2 text-xs text-slate-500">
@@ -2170,13 +2019,9 @@ const toggleAutoAssignment = async () => {
                                   </div>
 
                                   {contact.notes && (
-
                                     <p className="mt-2 break-words text-xs leading-relaxed text-slate-500">
-
                                       {contact.notes}
-
                                     </p>
-
                                   )}
 
                                 </div>
