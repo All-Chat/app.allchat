@@ -1,4 +1,3 @@
-
 import mongoose, { Schema, models } from "mongoose";
 
 const ContactSchema = new Schema(
@@ -82,6 +81,15 @@ const LeadTypeSchema = new Schema(
         validator: (items: string[]) => items.length <= 100,
         message: "A maximum of 100 keywords is allowed.",
       },
+    },
+
+    // Keyword matching mode
+    // exact: Entire incoming message must equal a keyword (case-insensitive).
+    // include: Keyword can appear anywhere in the incoming message.
+    keywordMatchMode: {
+      type: String,
+      enum: ["exact", "include"],
+      default: "exact",
     },
 
     contacts: {
