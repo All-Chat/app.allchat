@@ -211,7 +211,7 @@ export default function ReminderCenter() {
   return (
     <>
       {/* Reminder button and panel */}
-      <div className="fixed right-5 top-24 z-[90]">
+      <div className="fixed right-5 top-29 z-[90]">
         <button
           type="button"
           onClick={() => setPanelOpen((value) => !value)}
