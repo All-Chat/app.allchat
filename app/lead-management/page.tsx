@@ -98,6 +98,8 @@ type LeadType = {
 
   keywords: string[];
 
+  keywordMatchMode: "exact" | "include";
+
   contacts: Contact[];
 
   createdAt?: string;
@@ -572,6 +574,8 @@ export default function LeadManagementPage() {
 
   const [stageSearch, setStageSearch] = useState("");
 
+  const [selectedLeadTypeId, setSelectedLeadTypeId] = useState("all");
+
   const [contactSearches, setContactSearches] = useState<
 
     Record<string, string>
@@ -599,6 +603,8 @@ export default function LeadManagementPage() {
   const [keywordInput, setKeywordInput] = useState("");
 
   const [keywords, setKeywords] = useState<string[]>([]);
+
+  const [keywordMatchMode, setKeywordMatchMode] = useState<"exact" | "include">("exact");
 
   const [movingContact, setMovingContact] = useState<{
 
@@ -657,6 +663,8 @@ const [showAutoAssignmentControls, setShowAutoAssignmentControls] = useState(fal
           name: stage.name || "",
 
           keywords: Array.isArray(stage.keywords) ? stage.keywords : [],
+
+          keywordMatchMode: stage.keywordMatchMode === "include" ? "include" : "exact",
 
           contacts: Array.isArray(stage.contacts)
 
@@ -1282,6 +1290,8 @@ const toggleAutoAssignment = async () => {
 
     setKeywords(stage.keywords || []);
 
+    setKeywordMatchMode(stage.keywordMatchMode === "include" ? "include" : "exact");
+
     setKeywordInput("");
 
     setShowKeywordModal(true);
@@ -1352,6 +1362,8 @@ const toggleAutoAssignment = async () => {
 
           keywords,
 
+          keywordMatchMode,
+
         }),
 
       });
@@ -1390,15 +1402,21 @@ const toggleAutoAssignment = async () => {
 
     const query = stageSearch.trim().toLowerCase();
 
-    if (!query) return leadTypes;
+    return leadTypes.filter((stage) => {
 
-    return leadTypes.filter((stage) =>
+      const matchesSearch =
 
-      stage.name.toLowerCase().includes(query)
+        !query || stage.name.toLowerCase().includes(query);
 
-    );
+      const matchesLeadType =
 
-  }, [leadTypes, stageSearch]);
+        selectedLeadTypeId === "all" || stage._id === selectedLeadTypeId;
+
+      return matchesSearch && matchesLeadType;
+
+    });
+
+  }, [leadTypes, stageSearch, selectedLeadTypeId]);
 
   const getFilteredContacts = (stage: LeadType) => {
 
@@ -1631,33 +1649,71 @@ const toggleAutoAssignment = async () => {
 
           </div>
 
-          {/* SEARCH */}
+          {/* SEARCH AND LEAD TYPE FILTER */}
 
           <div className="mb-6 rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
 
-            <div className="relative">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
 
-              <Search
+              {/* SEARCH LEAD TYPES */}
 
-                size={17}
+              <div className="relative">
 
-                className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
+                <Search
 
-              />
+                  size={17}
 
-              <input
+                  className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
 
-                type="text"
+                />
 
-                value={stageSearch}
+                <input
 
-                onChange={(event) => setStageSearch(event.target.value)}
+                  type="text"
 
-                placeholder="Search Lead Types..."
+                  value={stageSearch}
 
-                className="w-full rounded-xl border border-slate-200 py-3 pl-10 pr-4 text-sm outline-none transition focus:border-[#0CCB66] focus:ring-4 focus:ring-green-500/10"
+                  onChange={(event) => setStageSearch(event.target.value)}
 
-              />
+                  placeholder="Search Lead Types..."
+
+                  className="w-full rounded-xl border border-slate-200 py-3 pl-10 pr-4 text-sm outline-none transition focus:border-[#0CCB66] focus:ring-4 focus:ring-green-500/10"
+
+                />
+
+              </div>
+
+              {/* FILTER BY LEAD TYPE */}
+
+              <div>
+
+                <select
+
+                  value={selectedLeadTypeId}
+
+                  onChange={(event) => setSelectedLeadTypeId(event.target.value)}
+
+                  aria-label="Filter by Lead Type"
+
+                  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-[#0CCB66] focus:ring-4 focus:ring-green-500/10"
+
+                >
+
+                  <option value="all">All Lead Types</option>
+
+                  {leadTypes.map((stage) => (
+
+                    <option key={stage._id} value={stage._id}>
+
+                      {stage.name}
+
+                    </option>
+
+                  ))}
+
+                </select>
+
+              </div>
 
             </div>
 
@@ -1837,37 +1893,53 @@ const toggleAutoAssignment = async () => {
 
                       </div>
 
-                      {/* KEYWORDS */}
+                      {/* KEYWORD MATCHING MODE + KEYWORDS */}
 
                       {stage.keywords.length > 0 && (
 
-                        <div className="mt-3 flex flex-wrap gap-1.5">
+                        <div className="mt-3 space-y-2.5">
 
-                          {stage.keywords.slice(0, 5).map((keyword) => (
+                          <div className="flex flex-wrap items-center gap-2">
 
-                            <span
+                            <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-bold ${stage.keywordMatchMode === "include" ? "border-violet-200 bg-violet-50 text-violet-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
 
-                              key={keyword}
+                              <span className={`h-1.5 w-1.5 rounded-full ${stage.keywordMatchMode === "include" ? "bg-violet-500" : "bg-emerald-500"}`} />
 
-                              className="rounded-full bg-green-50 px-2.5 py-1 text-[10px] font-medium text-green-700"
-
-                            >
-
-                              {keyword}
+                              {stage.keywordMatchMode === "include" ? "INCLUDE MATCH" : "EXACT MATCH"}
 
                             </span>
 
-                          ))}
+                            <span className="text-[10px] text-slate-400">
 
-                          {stage.keywords.length > 5 && (
-
-                            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-medium text-slate-500">
-
-                              +{stage.keywords.length - 5} more
+                              {stage.keywordMatchMode === "include" ? "Keyword can appear anywhere" : "Entire message must match"}
 
                             </span>
 
-                          )}
+                          </div>
+
+                          <div className="flex flex-wrap gap-1.5">
+
+                            {stage.keywords.slice(0, 5).map((keyword) => (
+
+                              <span key={keyword} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-medium text-slate-700">
+
+                                {keyword}
+
+                              </span>
+
+                            ))}
+
+                            {stage.keywords.length > 5 && (
+
+                              <span className="rounded-lg bg-slate-100 px-2.5 py-1 text-[10px] font-medium text-slate-500">
+
+                                +{stage.keywords.length - 5} more
+
+                              </span>
+
+                            )}
+
+                          </div>
 
                         </div>
 
@@ -1947,7 +2019,7 @@ const toggleAutoAssignment = async () => {
 
                       {/* CONTACT LIST */}
 
-                      <div className="min-w-0 space-y-2">
+                      <div className="min-w-0 max-h-[420px] space-y-2 overflow-y-auto overscroll-contain pr-2">
 
                         {stage.contacts.length === 0 ? (
 
@@ -2844,6 +2916,76 @@ const toggleAutoAssignment = async () => {
 
             </p>
 
+            <div className="mb-5 rounded-xl border border-slate-200 p-4">
+
+              <p className="mb-3 text-sm font-semibold text-slate-700">Keyword Matching Mode</p>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+
+                <label className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition ${keywordMatchMode === "exact" ? "border-[#0CCB66] bg-green-50" : "border-slate-200 bg-white"}`}>
+
+                  <input type="radio" name="keywordMatchMode" value="exact" checked={keywordMatchMode === "exact"} onChange={() => setKeywordMatchMode("exact")} className="mt-1 accent-[#0CCB66]" />
+
+                  <span>
+
+                    <span className="block text-sm font-semibold text-slate-800">Exact Match</span>
+
+                    <span className="mt-1 block text-xs leading-relaxed text-slate-500">The complete incoming message must equal the keyword. Matching is case-insensitive.</span>
+
+                  </span>
+
+                </label>
+
+                <label className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition ${keywordMatchMode === "include" ? "border-[#0CCB66] bg-green-50" : "border-slate-200 bg-white"}`}>
+
+                  <input type="radio" name="keywordMatchMode" value="include" checked={keywordMatchMode === "include"} onChange={() => setKeywordMatchMode("include")} className="mt-1 accent-[#0CCB66]" />
+
+                  <span>
+
+                    <span className="block text-sm font-semibold text-slate-800">Include</span>
+
+                    <span className="mt-1 block text-xs leading-relaxed text-slate-500">The keyword can appear anywhere in the incoming message. Matching is case-insensitive.</span>
+
+                  </span>
+
+                </label>
+
+              </div>
+
+              {/* <div className="mt-4 rounded-lg bg-slate-50 p-3">
+
+                <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">Matching preview · keyword: interested</p>
+
+                <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 gap-y-2 text-xs">
+
+                  <span className="font-medium text-slate-500">Incoming message</span>
+
+                  <span className="text-center font-semibold text-slate-500">Exact</span>
+
+                  <span className="text-center font-semibold text-slate-500">Include</span>
+
+                  {[
+                    { message: "interested", exact: true, include: true },
+                    { message: "INTERESTED", exact: true, include: true },
+                    { message: "I am interested", exact: false, include: true },
+                    { message: "not interested", exact: false, include: true },
+                    { message: "very interested", exact: false, include: true },
+                  ].map((item) => (
+                    <div key={item.message} className="contents">
+                      <span className="text-slate-700">{item.message}</span>
+                      <span className={`text-center font-bold ${item.exact ? "text-emerald-600" : "text-slate-300"}`}>{item.exact ? "✓" : "—"}</span>
+                      <span className={`text-center font-bold ${item.include ? "text-emerald-600" : "text-slate-300"}`}>{item.include ? "✓" : "—"}</span>
+                    </div>
+                  ))}
+
+                </div>
+
+                <p className="mt-3 text-[11px] leading-relaxed text-slate-500">Both modes ignore letter casing. Include checks whether the keyword appears anywhere, even inside a negative phrase such as “not interested”.</p>
+
+              </div> */}
+
+            </div>
+
             <div className="flex gap-2">
 
               <input
@@ -2922,11 +3064,17 @@ const toggleAutoAssignment = async () => {
 
                       key={keyword}
 
-                      className="flex items-center gap-2 rounded-full bg-green-50 px-3 py-1.5 text-sm text-green-700"
+                      className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm"
 
                     >
 
-                      {keyword}
+                      <span className="font-semibold">{keyword}</span>
+
+                      <span className={`rounded-md px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${keywordMatchMode === "include" ? "bg-violet-50 text-violet-700" : "bg-emerald-50 text-emerald-700"}`}>
+
+                        {keywordMatchMode === "include" ? "Include" : "Exact"}
+
+                      </span>
 
                       <button
 
