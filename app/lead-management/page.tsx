@@ -627,7 +627,9 @@ export default function LeadManagementPage() {
   // AUTO ASSIGNMENT
 const [autoAssignmentEnabled, setAutoAssignmentEnabled] = useState(false);
 const [autoAssignmentLoading, setAutoAssignmentLoading] = useState(false);
-const [showAutoAssignmentControls, setShowAutoAssignmentControls] = useState(false);
+// Keep the control visible while the initial status request is loading.
+const [showAutoAssignmentControls, setShowAutoAssignmentControls] = useState(true);
+const [refreshing, setRefreshing] = useState(false);
 
 
   /* LOAD LEAD TYPES */
@@ -725,7 +727,11 @@ const loadAutoAssignmentStatus = useCallback(async () => {
     const data = await response.json();
 
     if (!response.ok || !data.success) {
-      setShowAutoAssignmentControls(false);
+      console.error(
+        "Unable to load Auto Assignment status:",
+        data.message || "Request failed"
+      );
+      // Do not hide the button if the status request temporarily fails.
       return;
     }
 
@@ -733,13 +739,34 @@ const loadAutoAssignmentStatus = useCallback(async () => {
     setShowAutoAssignmentControls(true);
   } catch (error) {
     console.error("Auto Assignment Status Error:", error);
-    setShowAutoAssignmentControls(false);
+    // Keep the control visible; a temporary network error must not hide it.
   }
 }, []);
 
 useEffect(() => {
   void loadAutoAssignmentStatus();
 }, [loadAutoAssignmentStatus]);
+
+// REFRESH LEAD MANAGEMENT DATA
+const handleRefresh = async () => {
+  if (refreshing) return;
+
+  setRefreshing(true);
+
+  try {
+    await Promise.all([
+      loadLeadTypes(),
+      loadAutoAssignmentStatus(),
+    ]);
+
+    toast.success("Lead Management data refreshed successfully.");
+  } catch (error) {
+    console.error("Refresh Lead Management Error:", error);
+    toast.error("Unable to refresh Lead Management data.");
+  } finally {
+    setRefreshing(false);
+  }
+};
 
 // START / STOP AUTO ASSIGNMENT
 const toggleAutoAssignment = async () => {
@@ -1519,6 +1546,19 @@ const toggleAutoAssignment = async () => {
             </div>
 
 <div className="flex flex-wrap items-center gap-2">
+  {/* Refresh Button */}
+  <button
+    type="button"
+    onClick={handleRefresh}
+    disabled={refreshing}
+    title="Refresh Lead Management"
+    className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-[#0CCB66] hover:bg-green-50 hover:text-[#0CCB66] disabled:cursor-not-allowed disabled:opacity-50"
+  >
+    <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
+    {refreshing ? "Refreshing..." : "Refresh"}
+  </button>
+
+  {/* Auto Assignment Button */}
   {showAutoAssignmentControls && (
     <button
       type="button"
@@ -1542,7 +1582,9 @@ const toggleAutoAssignment = async () => {
     </button>
   )}
 
+  {/* Create Lead Type Button */}
   <button
+    type="button"
     onClick={openCreateStage}
     className={primaryButtonClass}
   >
