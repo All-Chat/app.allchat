@@ -706,30 +706,48 @@ async function processAndSaveMessage(msg: any, num: any) {
 }
 
 // ===========================================================================
-// AUTOMATIC LEAD CAPTURE FROM WHATSAPP REPLIES — ADDED
+// AUTOMATIC LEAD CAPTURE FROM WHATSAPP REPLIES
 // ===========================================================================
+
 function normalizeLeadPhone(phone: any): string {
   return String(phone || "").replace(/\D/g, "");
 }
 
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function normalizeKeywordMatchMode(
+  mode: any
+): "exact" | "include" {
+  return String(mode || "").toLowerCase() === "include"
+    ? "include"
+    : "exact";
 }
 
-function keywordMatches(message: string, keyword: string): boolean {
-  const cleanMessage = String(message || "").trim();
-  const cleanKeyword = String(keyword || "").trim();
+/**
+ * EXACT MATCH:
+ * The complete incoming message must equal the keyword.
+ *
+ * INCLUDE MATCH:
+ * The keyword can appear anywhere in the incoming message.
+ *
+ * Both modes are case-insensitive.
+ */
+function keywordMatches(
+  message: string,
+  keyword: string,
+  mode: "exact" | "include" = "exact"
+): boolean {
+  const cleanMessage = String(message || "").trim().toLowerCase();
+  const cleanKeyword = String(keyword || "").trim().toLowerCase();
 
   if (!cleanMessage || !cleanKeyword) return false;
 
-  const pattern = new RegExp(
-    `(^|[^a-z0-9])${escapeRegex(cleanKeyword)}(?=$|[^a-z0-9])`,
-    "i"
-  );
+  if (mode === "exact") {
+    return cleanMessage === cleanKeyword;
+  }
 
-  return pattern.test(cleanMessage);
+  // Include means substring matching, not whole-word matching.
+  // This intentionally matches phrases such as "not interested".
+  return cleanMessage.includes(cleanKeyword);
 }
-
 
 async function captureLeadFromReply(
   msg: any,
@@ -753,8 +771,14 @@ async function captureLeadFromReply(
     // Resolve the WhatsApp number owner.
     const numberOwnerId = num.userId;
 
-    if (!numberOwnerId || !mongoose.Types.ObjectId.isValid(String(numberOwnerId))) {
-      console.error("[AUTO LEAD] Invalid WhatsApp number owner:", numberOwnerId);
+    if (
+      !numberOwnerId ||
+      !mongoose.Types.ObjectId.isValid(String(numberOwnerId))
+    ) {
+      console.error(
+        "[AUTO LEAD] Invalid WhatsApp number owner:",
+        numberOwnerId
+      );
       return;
     }
 
@@ -770,8 +794,8 @@ async function captureLeadFromReply(
       ? String(numberOwner.tenantId || numberOwner._id)
       : String(
           numberOwner.parentTenantId ||
-          numberOwner.tenantId ||
-          numberOwner._id
+            numberOwner.tenantId ||
+            numberOwner._id
         );
 
     // Each user's Lead Types belong to their own userId.
@@ -780,19 +804,36 @@ async function captureLeadFromReply(
     }).sort({ createdAt: 1 });
 
     if (!leadTypes.length) {
-      console.log("[AUTO LEAD] No Lead Types found for WhatsApp owner.");
+      console.log(
+        "[AUTO LEAD] No Lead Types found for WhatsApp owner."
+      );
       return;
     }
 
-    // Find matching Lead Type by keyword.
+    // Find matching Lead Type using its saved matching mode.
     const matchingLeadTypes: any[] = [];
 
     for (const leadType of leadTypes) {
+      const matchMode = normalizeKeywordMatchMode(
+        leadType.keywordMatchMode
+      );
+
       for (const keyword of leadType.keywords || []) {
-        if (keywordMatches(String(text), String(keyword))) {
+        const cleanKeyword = String(keyword || "").trim();
+
+        if (!cleanKeyword) continue;
+
+        if (
+          keywordMatches(
+            String(text),
+            cleanKeyword,
+            matchMode
+          )
+        ) {
           matchingLeadTypes.push({
             leadType,
-            keyword: String(keyword).trim(),
+            keyword: cleanKeyword,
+            matchMode,
           });
         }
       }
@@ -889,15 +930,15 @@ async function captureLeadFromReply(
 
     await matchedLeadType.save();
 
-    console.log("[AUTO LEAD] Contact successfully captured:", {
-      phone: customerPhone,
-      leadType: matchedLeadType.name,
-      assignedTo: assignedTo ? String(assignedTo) : null,
-      tenantId,
-    });
-
+    console.log(
+      `[AUTO LEAD] Added ${customerPhone} to Lead Type "${matchedLeadType.name}" using ${matchingLeadTypes[0].matchMode.toUpperCase()} matching.`
+    );
   } catch (error) {
-    console.error("[AUTO LEAD] Failed to capture lead:", error);
+    // Lead capture must never interrupt existing webhook processing.
+    console.error(
+      "[AUTO LEAD] Failed to capture lead:",
+      error
+    );
   }
 }
 
