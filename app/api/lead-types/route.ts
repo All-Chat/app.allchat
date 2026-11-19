@@ -1,14 +1,21 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 
 import { NextRequest, NextResponse } from "next/server";
+
 import mongoose from "mongoose";
+
 import { getServerSession } from "next-auth";
 
 import { connectDB } from "@/lib/mongodb";
+
 import { authOptions } from "@/lib/auth";
+
 import User from "@/models/User";
+
 import LeadType from "@/models/LeadType";
+
 import { getNextAutoAssignedUser } from "@/lib/autoAssignment";
 
 export const dynamic = "force-dynamic";
