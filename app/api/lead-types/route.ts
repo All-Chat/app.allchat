@@ -1,5 +1,5 @@
-
 /* eslint-disable @typescript-eslint/no-explicit-any */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 
 import { NextRequest, NextResponse } from "next/server";
 import mongoose from "mongoose";
@@ -7,10 +7,8 @@ import { getServerSession } from "next-auth";
 
 import { connectDB } from "@/lib/mongodb";
 import { authOptions } from "@/lib/auth";
-
 import User from "@/models/User";
 import LeadType from "@/models/LeadType";
-
 import { getNextAutoAssignedUser } from "@/lib/autoAssignment";
 
 export const dynamic = "force-dynamic";
@@ -63,6 +61,21 @@ function cleanKeywords(keywords: unknown) {
   ).slice(0, 100);
 }
 
+/**
+ * Supported modes:
+ * exact   = complete message must match the keyword
+ * include = keyword can appear anywhere in the message
+ *
+ * Both modes are case-insensitive.
+ */
+function normalizeKeywordMatchMode(
+  value: unknown
+): "exact" | "include" {
+  return String(value || "").toLowerCase() === "include"
+    ? "include"
+    : "exact";
+}
+
 function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -77,6 +90,9 @@ function serializeLeadType(leadType: any) {
     ...item,
     _id: String(item._id),
     keywords: Array.isArray(item.keywords) ? item.keywords : [],
+    keywordMatchMode: normalizeKeywordMatchMode(
+      item.keywordMatchMode
+    ),
     contacts: Array.isArray(item.contacts)
       ? item.contacts.map((contact: any) => ({
           ...contact,
@@ -151,6 +167,9 @@ async function getOrCreateUserLeadType(
       keywords: Array.isArray(sourceLeadType.keywords)
         ? sourceLeadType.keywords
         : [],
+      keywordMatchMode: normalizeKeywordMatchMode(
+        sourceLeadType.keywordMatchMode
+      ),
       contacts: [],
     });
   }
@@ -217,6 +236,9 @@ export async function GET() {
         keywords: Array.isArray(item.keywords)
           ? item.keywords
           : [],
+        keywordMatchMode: normalizeKeywordMatchMode(
+          item.keywordMatchMode
+        ),
         contacts: visibleContacts.map((contact: any) => ({
           ...contact,
           _id: String(contact._id),
@@ -265,6 +287,10 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json();
 
+    /* =====================================================
+       ADD CONTACT
+    ===================================================== */
+
     if (body.action === "addContact") {
       const {
         leadTypeId,
@@ -306,7 +332,8 @@ export async function POST(request: NextRequest) {
         return NextResponse.json(
           {
             success: false,
-            message: "Custom source is only allowed when source is Other.",
+            message:
+              "Custom source is only allowed when source is Other.",
           },
           { status: 400 }
         );
@@ -326,7 +353,8 @@ export async function POST(request: NextRequest) {
         return NextResponse.json(
           {
             success: false,
-            message: "Customer name and phone number are required.",
+            message:
+              "Customer name and phone number are required.",
           },
           { status: 400 }
         );
@@ -369,7 +397,8 @@ export async function POST(request: NextRequest) {
         return NextResponse.json(
           {
             success: false,
-            message: "This contact already exists in this Lead Type.",
+            message:
+              "This contact already exists in this Lead Type.",
           },
           { status: 409 }
         );
@@ -459,6 +488,10 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    /* =====================================================
+       CREATE LEAD TYPE
+    ===================================================== */
+
     const name = String(body.name || "").trim();
 
     if (!name) {
@@ -474,6 +507,7 @@ export async function POST(request: NextRequest) {
       createdBy: context.user._id,
       name,
       keywords: [],
+      keywordMatchMode: "exact",
       contacts: [],
     });
 
@@ -515,12 +549,13 @@ export async function PATCH(request: NextRequest) {
     const body = await request.json();
 
     /* =====================================================
-       UPDATE KEYWORDS
+       UPDATE KEYWORDS + MATCH MODE
        Frontend payload:
        {
          action: "updateKeywords",
          leadTypeId: "...",
-         keywords: [...]
+         keywords: [...],
+         keywordMatchMode: "exact" | "include"
        }
     ===================================================== */
 
@@ -558,6 +593,12 @@ export async function PATCH(request: NextRequest) {
 
       leadType.keywords = cleanKeywords(body.keywords);
 
+      if (body.keywordMatchMode !== undefined) {
+        leadType.keywordMatchMode = normalizeKeywordMatchMode(
+          body.keywordMatchMode
+        );
+      }
+
       await leadType.save();
 
       return NextResponse.json({
@@ -588,7 +629,8 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json(
           {
             success: false,
-            message: "Invalid Lead Type, contact, or destination user.",
+            message:
+              "Invalid Lead Type, contact, or destination user.",
           },
           { status: 400 }
         );
@@ -645,7 +687,8 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json(
           {
             success: false,
-            message: "You do not have permission to transfer this lead.",
+            message:
+              "You do not have permission to transfer this lead.",
           },
           { status: 403 }
         );
@@ -796,7 +839,8 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json(
           {
             success: false,
-            message: "Customer name and phone number are required.",
+            message:
+              "Customer name and phone number are required.",
           },
           { status: 400 }
         );
@@ -1048,7 +1092,8 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json(
           {
             success: false,
-            message: "This contact already exists in the target stage.",
+            message:
+              "This contact already exists in the target stage.",
           },
           { status: 409 }
         );
@@ -1096,7 +1141,7 @@ export async function PATCH(request: NextRequest) {
       body.leadTypeId ||
       body.sourceLeadTypeId;
 
-    const { name, keywords } = body;
+    const { name, keywords, keywordMatchMode } = body;
 
     if (!id || !mongoose.Types.ObjectId.isValid(id)) {
       return NextResponse.json(
@@ -1142,6 +1187,12 @@ export async function PATCH(request: NextRequest) {
       }
 
       leadType.keywords = cleanKeywords(keywords);
+    }
+
+    if (keywordMatchMode !== undefined) {
+      leadType.keywordMatchMode = normalizeKeywordMatchMode(
+        keywordMatchMode
+      );
     }
 
     await leadType.save();
