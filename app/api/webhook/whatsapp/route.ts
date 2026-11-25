@@ -12,6 +12,8 @@ import Form from "@/models/Form";
 import FormResponse from "@/models/FormResponse";
 import Campaign from "@/models/Campaign";
 import CampaignReport from "@/models/CampaignReport";
+import SheetCampaign from "@/models/SheetCampaign";
+import SheetMessage from "@/models/SheetMessage";
 import Agent from "@/models/Agent";
 import { getAgentResponse } from "@/lib/ai-agent";
 import fs from "fs";
@@ -789,45 +791,65 @@ async function captureLeadFromReply(
     }
 
     // Resolve the campaign associated with this reply.
+ 
+    // Resolve the campaign associated with this reply.
     let replyCampaignName = "";
 
     try {
       const contextMessageId = String(msg.context?.id || "").trim();
-      let campaignReport: any = null;
 
-      // First preference: match the exact outgoing campaign message.
       if (contextMessageId) {
-        campaignReport = await CampaignReport.findOne({
+        // STEP 1: Check Sheet Sync Campaign messages first.
+        const sheetMessage: any = await SheetMessage.findOne({
           userId: numberOwnerId,
-          sentWamid: contextMessageId,
+          whatsappMessageId: contextMessageId,
+          direction: "out",
+          isSheetCampaign: true,
         }).lean();
+
+        if (sheetMessage?.campaignId) {
+          const sheetCampaign: any = await SheetCampaign.findOne({
+            _id: sheetMessage.campaignId,
+            userId: numberOwnerId,
+          })
+            .select("name")
+            .lean();
+
+          if (sheetCampaign?.name) {
+            replyCampaignName = String(sheetCampaign.name).trim();
+          }
+        }
+
+        // STEP 2: If not a Sheet Sync message, check normal campaigns.
+        if (!replyCampaignName) {
+          const campaignReport: any = await CampaignReport.findOne({
+            userId: numberOwnerId,
+            sentWamid: contextMessageId,
+          }).lean();
+
+          if (campaignReport?.campaignId) {
+            const campaign: any = await Campaign.findById(
+              campaignReport.campaignId
+            )
+              .select("name")
+              .lean();
+
+            replyCampaignName = String(campaign?.name || "").trim();
+          }
+        }
       }
 
-      // Fallback: find the latest campaign report for this phone.
-      if (!campaignReport) {
-        campaignReport = await CampaignReport.findOne({
-          userId: numberOwnerId,
-          phone: customerPhone,
-        })
-          .sort({ createdAt: -1 })
-          .lean();
-      }
-
-      if (campaignReport?.campaignId) {
-        const campaign: any = await Campaign.findById(
-          campaignReport.campaignId
-        )
-          .select("name")
-          .lean();
-
-        replyCampaignName = String(campaign?.name || "").trim();
-      }
+      console.log(
+        "[AUTO LEAD] Resolved campaign:",
+        replyCampaignName || "No exact campaign match"
+      );
     } catch (campaignLookupError) {
       console.error(
         "[AUTO LEAD] Could not resolve campaign name:",
         campaignLookupError
       );
     }
+
 
     // Resolve the actual tenant.
     const tenantId = numberOwner.isTenant
