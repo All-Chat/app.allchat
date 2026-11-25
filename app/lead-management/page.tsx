@@ -235,12 +235,14 @@ type LeadTypeReportExportProps = {
   leadTypeId: string;
   leadTypeName: string;
   campaignNames: string[];
+  campaignCounts: Record<string, number>;
 };
 
 function LeadTypeReportExport({
   leadTypeId,
   leadTypeName,
   campaignNames,
+  campaignCounts,
 }: LeadTypeReportExportProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState("all");
@@ -357,7 +359,11 @@ function LeadTypeReportExport({
                   className="w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm text-slate-700 outline-none focus:border-[#0CCB66]"
                 >
                   <option value="all">All Campaigns — All Contacts</option>
-                  {campaignNames.map((campaign) => <option key={campaign} value={campaign}>{campaign}</option>)}
+                  {campaignNames.map((campaign) => (
+                    <option key={campaign} value={campaign}>
+                      {campaign} ({(campaignCounts[campaign] || 0).toLocaleString()} contacts)
+                    </option>
+                  ))}
                 </select>
                 <p className="mt-2 text-xs text-slate-500">
                   {selectedCampaign === "all" ? "The report will include all contacts." : `The report will include contacts from ${selectedCampaign} only.`}
@@ -1302,6 +1308,11 @@ const toggleAutoAssignment = async () => {
       )
     ).sort((a, b) => a.localeCompare(b));
 
+  const getStageCampaignContactCount = (stage: LeadType, campaignName: string) =>
+    (Array.isArray(stage.contacts) ? stage.contacts : []).filter(
+      (contact) => getContactCampaignName(contact) === campaignName
+    ).length;
+
 
   const updateContactSearch = (stageId: string, value: string) => {
 
@@ -1724,7 +1735,12 @@ const toggleAutoAssignment = async () => {
                             leadTypeName={stage.name}
 
                             campaignNames={getStageCampaigns(stage)}
-
+                            campaignCounts={Object.fromEntries(
+                              getStageCampaigns(stage).map((campaign) => [
+                                campaign,
+                                getStageCampaignContactCount(stage, campaign),
+                              ])
+                            )}
                           />
 
                           <button
@@ -1888,7 +1904,7 @@ const toggleAutoAssignment = async () => {
                             <option value="all">All Campaigns</option>
                             {getStageCampaigns(stage).map((campaign) => (
                               <option key={campaign} value={campaign}>
-                                {campaign}
+                                {campaign} ({getStageCampaignContactCount(stage, campaign).toLocaleString()} contacts)
                               </option>
                             ))}
                           </select>
