@@ -952,14 +952,15 @@ async function captureLeadFromReply(
       ? `Campaign: ${replyCampaignName}\n`
       : "";
 
-    matchedLeadType.contacts.push({
-      name: finalName,
-      phone: customerPhone,
-      notes: `${campaignNote}Automatically captured from WhatsApp reply: "${text}"`,
-      source: "WhatsApp",
-      customSource: "",
-      assignedTo: assignedTo,
-    } as any);
+matchedLeadType.contacts.push({
+  name: finalName,
+  phone: customerPhone,
+  campaignName: replyCampaignName || "",
+  notes: `${campaignNote}Automatically captured from WhatsApp reply: "${text}"`,
+  source: "WhatsApp",
+  customSource: "",
+  assignedTo: assignedTo,
+} as any);
 
     await matchedLeadType.save();
 
