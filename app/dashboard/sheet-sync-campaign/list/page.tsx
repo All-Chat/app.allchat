@@ -325,12 +325,12 @@ export default function SheetCampaignList() {
                         <p className="font-bold text-orange-700 text-sm mt-0.5">{c.failedCount}</p>
                       </div>
 
-                      {amountSpent > 0 && (
+                      {/* {amountSpent > 0 && (
                         <div className="bg-blue-50 p-2 rounded-xl border border-blue-100 col-span-2 sm:col-span-1">
                           <p className="text-[9px] text-blue-600 font-bold uppercase tracking-wider flex items-center justify-center gap-0.5"><Wallet size={8} /> Spent</p>
                           <p className="font-bold text-blue-700 text-sm mt-0.5">{formatINR(amountSpent)}</p>
                         </div>
-                      )}
+                      )} */}
 
                       <div className="bg-slate-50 p-2 rounded-xl border border-slate-100 flex flex-col items-center justify-center col-span-2 sm:col-span-1">
                         <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider mb-1">Progress</p>
